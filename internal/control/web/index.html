@@ -1,0 +1,117 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>sb-control</title>
+  <style>
+    :root { color-scheme: dark; --bg:#0a0d12; --surface:#10151d; --line:#26303d; --text:#edf2f8; --muted:#8b98a9; --accent:#57a8ff; --good:#5bd39b; --warn:#efb85c; }
+    * { box-sizing:border-box; }
+    body { margin:0; background:var(--bg); color:var(--text); font:14px/1.45 Inter,ui-sans-serif,system-ui,"Microsoft YaHei",sans-serif; }
+    button,input { font:inherit; }
+    button { border:0; border-radius:7px; color:#06101d; background:var(--accent); padding:9px 13px; font-weight:650; cursor:pointer; transition:transform .16s ease,filter .16s ease; }
+    button:hover { filter:brightness(1.08); transform:translateY(-1px); }
+    button:disabled { cursor:not-allowed; opacity:.45; transform:none; }
+    .shell { max-width:1180px; margin:0 auto; padding:36px 28px 56px; animation:rise .42s ease both; }
+    .bar { display:flex; align-items:center; justify-content:space-between; padding-bottom:28px; border-bottom:1px solid var(--line); }
+    .brand { font-size:20px; font-weight:760; letter-spacing:-.04em; }
+    .brand span { color:var(--accent); }
+    .subtle { color:var(--muted); font-size:12px; }
+    .login { width:min(390px,100%); margin:15vh auto 0; }
+    .login h1 { margin:0 0 8px; font-size:32px; letter-spacing:-.055em; }
+    .login p { margin:0 0 28px; color:var(--muted); }
+    label { display:block; color:var(--muted); font-size:12px; margin:15px 0 6px; }
+    input { width:100%; border:1px solid var(--line); border-radius:7px; background:var(--surface); color:var(--text); padding:11px; outline:none; }
+    input:focus { border-color:var(--accent); box-shadow:0 0 0 3px #57a8ff20; }
+    .login button { width:100%; margin-top:20px; }
+    .error { min-height:20px; color:#ff8d92; margin:12px 0 0; font-size:12px; }
+    .workspace { display:none; }
+    .workspace.ready { display:block; }
+    .headline { display:flex; justify-content:space-between; align-items:end; gap:20px; padding:34px 0 25px; }
+    h1 { margin:0; font-size:28px; letter-spacing:-.05em; }
+    .headline p { color:var(--muted); margin:6px 0 0; }
+    .layout { display:grid; grid-template-columns:minmax(0,1fr) 300px; gap:44px; }
+    .section { border-top:1px solid var(--line); padding-top:16px; }
+    .section h2 { font-size:12px; letter-spacing:.07em; text-transform:uppercase; color:var(--muted); margin:0 0 11px; }
+    .node { display:grid; grid-template-columns:12px minmax(0,1fr) auto auto; gap:14px; align-items:center; padding:14px 2px; border-bottom:1px solid var(--line); animation:fade .28s ease both; }
+    .dot { width:8px; height:8px; border-radius:99px; background:var(--warn); }
+    .dot.online { background:var(--good); box-shadow:0 0 0 4px #5bd39b12; }
+    .node-name { font-weight:650; }
+    .node-meta,.empty { color:var(--muted); font-size:12px; }
+    .tag { color:var(--muted); font:12px ui-monospace,SFMono-Regular,Consolas,monospace; }
+    .pending { padding:14px 0; border-bottom:1px solid var(--line); }
+    .pending strong { display:block; margin-bottom:4px; }
+    .pending .row { display:flex; justify-content:space-between; gap:12px; align-items:center; }
+    .pending button { padding:6px 9px; font-size:12px; }
+    .token { display:none; margin-top:14px; padding:10px 0; color:var(--accent); font:12px ui-monospace,SFMono-Regular,Consolas,monospace; word-break:break-all; }
+    .token.show { display:block; animation:fade .2s ease; }
+    .secondary { background:transparent; color:var(--text); border:1px solid var(--line); }
+    @keyframes rise { from { opacity:0; transform:translateY(9px); } to { opacity:1; transform:none; } }
+    @keyframes fade { from { opacity:0; } to { opacity:1; } }
+    @media (max-width:760px) { .shell { padding:24px 18px 40px; } .layout { grid-template-columns:1fr; gap:32px; } .headline { align-items:start; flex-direction:column; } .node { grid-template-columns:12px minmax(0,1fr) auto; } .node-meta { display:none; } }
+  </style>
+</head>
+<body>
+  <main class="shell">
+    <section id="login" class="login">
+      <div class="brand">sb<span>-</span>control</div>
+      <h1>管理入口</h1>
+      <p>使用管理员账户与验证器代码登录。</p>
+      <form id="password-form">
+        <label for="email">管理员邮箱</label><input id="email" type="email" autocomplete="username" required>
+        <label for="password">密码</label><input id="password" type="password" autocomplete="current-password" required>
+        <button>继续</button>
+      </form>
+      <form id="mfa-form" hidden>
+        <label for="mfa-code">验证器代码</label><input id="mfa-code" inputmode="numeric" autocomplete="one-time-code" maxlength="6" required>
+        <button>登录</button>
+      </form>
+      <div id="error" class="error" role="alert"></div>
+    </section>
+
+    <section id="workspace" class="workspace">
+      <header class="bar"><div class="brand">sb<span>-</span>control</div><button class="secondary" id="logout">退出</button></header>
+      <div class="headline"><div><h1>节点状态</h1><p>仅显示 agent 已验证上报的数据。</p></div><button class="secondary" id="refresh">刷新</button></div>
+      <div class="layout">
+        <section class="section"><h2>受管节点</h2><div id="nodes" aria-live="polite"></div></section>
+        <aside>
+          <section class="section"><h2>注册</h2><button id="new-token">生成一次性注册凭据</button><div id="token" class="token"></div></section>
+          <section class="section" style="margin-top:34px"><h2>等待审核</h2><div id="registrations"></div></section>
+        </aside>
+      </div>
+    </section>
+  </main>
+  <script>
+    let challenge = '', csrf = '';
+    const $ = id => document.getElementById(id);
+    async function api(path, options = {}) {
+      const headers = {'Content-Type':'application/json', ...(options.headers || {})};
+      if (csrf) headers['X-CSRF-Token'] = csrf;
+      const res = await fetch(path, {...options, headers, credentials:'same-origin'});
+      if (!res.ok) { const data = await res.json().catch(() => ({})); throw new Error(data.error || '请求失败'); }
+      return res.status === 204 ? null : res.json();
+    }
+    function error(message = '') { $('error').textContent = message; }
+    $('password-form').addEventListener('submit', async e => {
+      e.preventDefault(); error();
+      try { const data = await api('/api/v1/auth/login',{method:'POST',body:JSON.stringify({email:$('email').value,password:$('password').value})}); challenge=data.challenge_id; $('password-form').hidden=true; $('mfa-form').hidden=false; $('mfa-code').focus(); }
+      catch (err) { error(err.message); }
+    });
+    $('mfa-form').addEventListener('submit', async e => {
+      e.preventDefault(); error();
+      try { const data = await api('/api/v1/auth/mfa',{method:'POST',body:JSON.stringify({challenge_id:challenge,code:$('mfa-code').value})}); csrf=data.csrf_token; $('login').style.display='none'; $('workspace').classList.add('ready'); await refresh(); }
+      catch (err) { error(err.message); }
+    });
+    async function refresh() {
+      const [nodes, registrations] = await Promise.all([api('/api/v1/nodes'),api('/api/v1/registrations')]);
+      $('nodes').innerHTML = nodes.nodes.length ? nodes.nodes.map(node => `<div class="node"><i class="dot ${node.online?'online':''}"></i><div><div class="node-name">${escapeHTML(node.name)}</div><div class="node-meta">${escapeHTML(node.os || '尚未上报')} · ${escapeHTML(node.architecture || '')}</div></div><span class="tag">${node.online?'在线':'离线'}</span><span class="tag">${escapeHTML(node.sing_box_version || '—')}</span></div>`).join('') : '<p class="empty">尚无已审核节点。</p>';
+      $('registrations').innerHTML = registrations.registrations.length ? registrations.registrations.map(reg => `<div class="pending"><strong>${escapeHTML(reg.node_name)}</strong><div class="row"><span class="node-meta">${escapeHTML(reg.created_at)}</span><button data-registration="${reg.id}">审核并签发</button></div></div>`).join('') : '<p class="empty">没有待审核注册。</p>';
+      document.querySelectorAll('[data-registration]').forEach(button => button.onclick = async () => { button.disabled=true; try { await api('/api/v1/nodes/'+button.dataset.registration+'/approve',{method:'POST',body:''}); await refresh(); } catch (err) { button.disabled=false; alert(err.message); } });
+    }
+    $('refresh').onclick = () => refresh().catch(err => alert(err.message));
+    $('new-token').onclick = async () => { try { const data=await api('/api/v1/nodes/registration-tokens',{method:'POST',body:JSON.stringify({lifetime_seconds:900})}); $('token').textContent='仅显示一次：'+data.token; $('token').classList.add('show'); } catch (err) { alert(err.message); } };
+    $('logout').onclick = async () => { try { await api('/api/v1/auth/logout',{method:'POST',body:''}); } finally { location.reload(); } };
+    function escapeHTML(value) { const node=document.createElement('span'); node.textContent=value || ''; return node.innerHTML; }
+  </script>
+</body>
+</html>

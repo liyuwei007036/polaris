@@ -1,0 +1,6 @@
+bin/
+.tools/
+data/
+*.db
+*.pem
+*.key
