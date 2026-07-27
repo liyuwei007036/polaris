@@ -12,7 +12,7 @@ import (
 	"time"
 )
 
-const cloudflareAPI = "https://api.cloudflare.com/client/v4"
+var cloudflareAPI = "https://api.cloudflare.com/client/v4"
 
 type CloudflareRecord struct {
 	ID      string `json:"id,omitempty"`

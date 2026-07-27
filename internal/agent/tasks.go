@@ -45,6 +45,8 @@ func executeTask(ctx context.Context, task Task, dataDir string) TaskResult {
 		return applyNginxConfig(ctx, task)
 	case "firewall.apply":
 		return applyNftables(ctx, task)
+	case "fail2ban.apply":
+		return applyFail2Ban(ctx, task)
 	case "singbox.install", "singbox.upgrade":
 		return installSingBox(ctx, task, dataDir)
 	default:

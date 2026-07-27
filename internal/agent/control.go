@@ -34,6 +34,37 @@ type MetricReport struct {
 	CollectedAt  string                      `json:"collected_at"`
 	Node         map[string]uint64           `json:"node,omitempty"`
 	Capabilities map[string]MetricCapability `json:"capabilities"`
+	Connections  []ConnectionInfo            `json:"connections,omitempty"`
+	Fail2Ban     *Fail2BanReport             `json:"fail2ban,omitempty"`
+}
+
+// ConnectionInfo mirrors what the local sing-box Clash API reports. Fields the
+// API does not provide stay empty; nothing is inferred.
+type ConnectionInfo struct {
+	ID          string `json:"id,omitempty"`
+	Inbound     string `json:"inbound,omitempty"`
+	Network     string `json:"network,omitempty"`
+	Source      string `json:"source,omitempty"`
+	Destination string `json:"destination,omitempty"`
+	Host        string `json:"host,omitempty"`
+	Upload      int64  `json:"upload"`
+	Download    int64  `json:"download"`
+	StartedAt   string `json:"started_at,omitempty"`
+	Outbound    string `json:"outbound,omitempty"`
+	Rule        string `json:"rule,omitempty"`
+}
+
+type Fail2BanReport struct {
+	Available bool                 `json:"available"`
+	Jails     []Fail2BanJailStatus `json:"jails"`
+}
+
+type Fail2BanJailStatus struct {
+	Name            string   `json:"name"`
+	CurrentlyBanned string   `json:"currently_banned,omitempty"`
+	TotalBanned     string   `json:"total_banned,omitempty"`
+	BannedIPs       []string `json:"banned_ips,omitempty"`
+	Error           string   `json:"error,omitempty"`
 }
 
 type MetricCapability struct {

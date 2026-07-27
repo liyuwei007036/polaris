@@ -77,6 +77,21 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/v1/nodes/{id}/firewall/publish", s.publishNodeFirewall)
 	mux.HandleFunc("POST /api/v1/firewall/rules/{id}/enabled", s.setFirewallRuleEnabled)
 	mux.HandleFunc("DELETE /api/v1/firewall/rules/{id}", s.deleteFirewallRule)
+	mux.HandleFunc("GET /api/v1/nodes/{id}/fail2ban/jails", s.listFail2BanJails)
+	mux.HandleFunc("POST /api/v1/nodes/{id}/fail2ban/jails", s.createFail2BanJail)
+	mux.HandleFunc("POST /api/v1/nodes/{id}/fail2ban/publish", s.publishNodeFail2Ban)
+	mux.HandleFunc("PUT /api/v1/fail2ban/jails/{id}", s.updateFail2BanJail)
+	mux.HandleFunc("POST /api/v1/fail2ban/jails/{id}/enabled", s.setFail2BanJailEnabled)
+	mux.HandleFunc("DELETE /api/v1/fail2ban/jails/{id}", s.deleteFail2BanJail)
+	mux.HandleFunc("GET /api/v1/nodes/{id}/connections", s.nodeConnections)
+	mux.HandleFunc("GET /api/v1/cloudflare/settings", s.cloudflareSettings)
+	mux.HandleFunc("PUT /api/v1/cloudflare/settings", s.setCloudflareSettings)
+	mux.HandleFunc("GET /api/v1/cloudflare/records", s.listCloudflareRecords)
+	mux.HandleFunc("POST /api/v1/cloudflare/records", s.createCloudflareRecord)
+	mux.HandleFunc("PUT /api/v1/cloudflare/records/{id}", s.updateCloudflareRecord)
+	mux.HandleFunc("DELETE /api/v1/cloudflare/records/{id}", s.deleteCloudflareRecord)
+	mux.HandleFunc("POST /api/v1/cloudflare/records/{id}/publish", s.publishCloudflareRecord)
+	mux.HandleFunc("POST /api/v1/cloudflare/sync", s.syncCloudflareRecords)
 	mux.HandleFunc("GET /api/v1/tasks", s.listTasks)
 	mux.HandleFunc("GET /api/v1/audit-events", s.listAuditEvents)
 	mux.HandleFunc("GET /api/v1/subscriptions", s.listSubscriptions)
@@ -98,6 +113,11 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("PUT /api/v1/listeners/{id}", s.updateListener)
 	mux.HandleFunc("POST /api/v1/listeners/{id}/enabled", s.setListenerEnabled)
 	mux.HandleFunc("DELETE /api/v1/listeners/{id}", s.deleteListener)
+	mux.HandleFunc("GET /api/v1/outbounds", s.listOutbounds)
+	mux.HandleFunc("POST /api/v1/outbounds", s.createOutbound)
+	mux.HandleFunc("PUT /api/v1/outbounds/{id}", s.updateOutbound)
+	mux.HandleFunc("POST /api/v1/outbounds/{id}/enabled", s.setOutboundEnabled)
+	mux.HandleFunc("DELETE /api/v1/outbounds/{id}", s.deleteOutbound)
 	mux.HandleFunc("GET /api/v1/listeners/{id}/endpoints", s.listEndpoints)
 	mux.HandleFunc("POST /api/v1/listeners/{id}/endpoints", s.createEndpoint)
 	mux.HandleFunc("PUT /api/v1/endpoints/{id}", s.updateEndpoint)
@@ -214,7 +234,23 @@ func (s *Server) me(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, operator)
+	cookie, err := r.Cookie(sessionCookieName)
+	if err != nil {
+		writeError(w, ErrUnauthorized)
+		return
+	}
+	csrfToken, err := s.store.ReissueCSRF(r.Context(), cookie.Value)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"id":         operator.ID,
+		"email":      operator.Email,
+		"role":       operator.Role,
+		"enabled":    operator.Enabled,
+		"csrf_token": csrfToken,
+	})
 }
 
 func (s *Server) logout(w http.ResponseWriter, r *http.Request) {
@@ -1262,6 +1298,104 @@ func (s *Server) deleteListener(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := s.store.AppendAudit(r.Context(), operator.ID, "listener.deleted", "listener", r.PathValue("id"), "listener and endpoints deleted"); err != nil {
+		writeError(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Server) listOutbounds(w http.ResponseWriter, r *http.Request) {
+	if _, err := s.operator(r, false); err != nil {
+		writeError(w, err)
+		return
+	}
+	outbounds, err := s.store.ListOutbounds(r.Context(), r.URL.Query().Get("node_id"))
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"outbounds": outbounds})
+}
+
+func (s *Server) createOutbound(w http.ResponseWriter, r *http.Request) {
+	operator, err := s.writer(r)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	var outbound Outbound
+	if !decodeJSON(w, r, &outbound) {
+		return
+	}
+	created, err := s.store.CreateOutbound(r.Context(), outbound)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	if err := s.store.AppendAudit(r.Context(), operator.ID, "outbound.created", "outbound", created.ID, "outbound definition created"); err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, created)
+}
+
+func (s *Server) updateOutbound(w http.ResponseWriter, r *http.Request) {
+	operator, err := s.writer(r)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	var outbound Outbound
+	if !decodeJSON(w, r, &outbound) {
+		return
+	}
+	outbound.ID = r.PathValue("id")
+	updated, err := s.store.UpdateOutbound(r.Context(), outbound)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	if err := s.store.AppendAudit(r.Context(), operator.ID, "outbound.updated", "outbound", updated.ID, "outbound definition updated"); err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, updated)
+}
+
+func (s *Server) setOutboundEnabled(w http.ResponseWriter, r *http.Request) {
+	operator, err := s.writer(r)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	var input struct {
+		Enabled bool `json:"enabled"`
+	}
+	if !decodeJSON(w, r, &input) {
+		return
+	}
+	if err := s.store.SetOutboundEnabled(r.Context(), r.PathValue("id"), input.Enabled); err != nil {
+		writeError(w, err)
+		return
+	}
+	if err := s.store.AppendAudit(r.Context(), operator.ID, "outbound.state_changed", "outbound", r.PathValue("id"), "outbound enabled state changed"); err != nil {
+		writeError(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Server) deleteOutbound(w http.ResponseWriter, r *http.Request) {
+	operator, err := s.admin(r)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	if err := s.store.DeleteOutbound(r.Context(), r.PathValue("id")); err != nil {
+		writeError(w, err)
+		return
+	}
+	if err := s.store.AppendAudit(r.Context(), operator.ID, "outbound.deleted", "outbound", r.PathValue("id"), "outbound deleted"); err != nil {
 		writeError(w, err)
 		return
 	}

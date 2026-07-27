@@ -43,10 +43,41 @@ func (s *Store) CompileNodeConfig(ctx context.Context, nodeID string) (string, s
 			compiledRules = append(compiledRules, compileRouteRule(rule))
 		}
 	}
+	// Managed outbounds: a built-in "direct" plus any enabled SOCKS5/HTTP proxies.
+	managedOutbounds, err := s.loadEnabledOutbounds(ctx, nodeID)
+	if err != nil {
+		return "", "", err
+	}
+	outbounds := []map[string]any{{"type": "direct", "tag": "direct"}}
+	outboundTags := make(map[string]string, len(managedOutbounds))
+	for _, ob := range managedOutbounds {
+		tag := "outbound-" + ob.ID
+		outbounds = append(outbounds, compileOutbound(ob, tag))
+		outboundTags[ob.ID] = tag
+	}
+	// Each listener with a selected outbound gets a fallback rule routing its
+	// inbound to that outbound; user-defined rules above still take precedence.
+	for _, listener := range listeners {
+		if !listener.Enabled || listener.OutboundID == "" {
+			continue
+		}
+		tag, ok := outboundTags[listener.OutboundID]
+		if !ok {
+			continue
+		}
+		compiledRules = append(compiledRules, map[string]any{
+			"inbound":  []string{"listener-" + listener.ID},
+			"action":   "route",
+			"outbound": tag,
+		})
+	}
 	configuration := map[string]any{
 		"log":       map[string]any{"level": "info", "timestamp": true},
 		"inbounds":  inbounds,
-		"outbounds": []map[string]any{{"type": "direct", "tag": "direct"}},
+		"outbounds": outbounds,
+		// Loopback-only Clash API: the agent reads current connections from it
+		// for F-12; it is never exposed beyond the node itself.
+		"experimental": map[string]any{"clash_api": map[string]any{"external_controller": "127.0.0.1:9090"}},
 	}
 	if len(compiledRules) > 0 {
 		configuration["route"] = map[string]any{"rules": compiledRules}
@@ -129,6 +160,57 @@ func compileRouteRule(rule RouteRule) map[string]any {
 	return compiled
 }
 
+// compileOutbound renders a managed outbound as a sing-box outbound object.
+func compileOutbound(ob Outbound, tag string) map[string]any {
+	if ob.Type == "direct" {
+		return map[string]any{"type": "direct", "tag": tag}
+	}
+	outbound := map[string]any{"type": ob.Type, "tag": tag, "server": ob.Server, "server_port": ob.ServerPort}
+	if ob.Type == "socks" {
+		outbound["version"] = "5"
+	}
+	if ob.Username != "" {
+		outbound["username"] = ob.Username
+		outbound["password"] = ob.Password
+	}
+	return outbound
+}
+
+// compileTransport renders a v2ray-style transport (ws/grpc/httpupgrade/http/
+// quic) as a sing-box inbound "transport" object. An empty type keeps the
+// listener on plain TCP by returning nil (no transport block emitted). This is
+// what makes VLESS+WS / VLESS+gRPC and CDN fronting actually reach the node.
+func compileTransport(t TransportOptions) map[string]any {
+	switch t.Type {
+	case "ws":
+		transport := map[string]any{"type": "ws", "path": t.Path}
+		if t.Host != "" {
+			transport["headers"] = map[string]any{"Host": t.Host}
+		}
+		return transport
+	case "httpupgrade":
+		transport := map[string]any{"type": "httpupgrade", "path": t.Path}
+		if t.Host != "" {
+			transport["host"] = t.Host
+		}
+		return transport
+	case "grpc":
+		return map[string]any{"type": "grpc", "service_name": t.ServiceName}
+	case "http":
+		transport := map[string]any{"type": "http"}
+		if t.Host != "" {
+			transport["host"] = []string{t.Host}
+		}
+		if t.Path != "" {
+			transport["path"] = t.Path
+		}
+		return transport
+	case "quic":
+		return map[string]any{"type": "quic"}
+	}
+	return nil
+}
+
 type endpointWithCredentials struct {
 	Endpoint
 	Credentials EndpointCredentials
@@ -170,6 +252,9 @@ func (s *Store) compileInbound(ctx context.Context, listener Listener, endpoints
 			return nil, err
 		}
 		inbound["tls"] = tls
+	}
+	if transport := compileTransport(listener.Spec.Transport); transport != nil {
+		inbound["transport"] = transport
 	}
 	users := make([]map[string]any, 0, len(endpoints))
 	for _, endpoint := range endpoints {

@@ -137,6 +137,13 @@ func ValidateProtocolSpec(spec ProtocolSpec) error {
 	if spec.Transport.Type != "" && spec.Transport.Type != "http" && spec.Transport.Type != "ws" && spec.Transport.Type != "httpupgrade" && spec.Transport.Type != "grpc" && spec.Transport.Type != "quic" {
 		return errors.New("unsupported listener transport")
 	}
+	if spec.Transport.Type != "" {
+		switch spec.Protocol {
+		case "vless", "vmess", "trojan", "http":
+		default:
+			return errors.New("transport is only supported by VLESS, VMess, Trojan, or HTTP listeners")
+		}
+	}
 	if (spec.Transport.Type == "ws" || spec.Transport.Type == "httpupgrade" || spec.Transport.Type == "grpc") && spec.Transport.Path == "" && spec.Transport.ServiceName == "" {
 		return errors.New("selected transport requires a path or service name")
 	}

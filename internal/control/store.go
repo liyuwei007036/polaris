@@ -147,6 +147,7 @@ type Listener struct {
 	BackendPort uint16       `json:"backend_port"`
 	Enabled     bool         `json:"enabled"`
 	Spec        ProtocolSpec `json:"spec"`
+	OutboundID  string       `json:"outbound_id,omitempty"`
 }
 
 type Endpoint struct {
@@ -503,6 +504,35 @@ func (s *Store) Authenticate(ctx context.Context, sessionToken, csrfToken string
 func (s *Store) DeleteSession(ctx context.Context, sessionToken string) error {
 	_, err := s.db.ExecContext(ctx, `DELETE FROM sessions WHERE id_hash = ?`, security.TokenHash(sessionToken))
 	return err
+}
+
+// ReissueCSRF binds a fresh CSRF token to an existing, unexpired session. The
+// browser loses its in-memory CSRF token on a page refresh (the session lives
+// in an HttpOnly cookie, the CSRF token does not), so the read-only /auth/me
+// bootstrap calls this to rehydrate it without forcing a re-login. Only the
+// token hash is stored, so a stable token cannot be returned; rotation is the
+// only option and is safe because the caller already holds the session cookie.
+func (s *Store) ReissueCSRF(ctx context.Context, sessionToken string) (string, error) {
+	if sessionToken == "" {
+		return "", ErrUnauthorized
+	}
+	csrfToken, err := security.RandomToken(32)
+	if err != nil {
+		return "", err
+	}
+	result, err := s.db.ExecContext(ctx, `UPDATE sessions SET csrf_hash = ? WHERE id_hash = ? AND expires_at > ?`,
+		security.TokenHash(csrfToken), security.TokenHash(sessionToken), time.Now().UTC().Unix())
+	if err != nil {
+		return "", fmt.Errorf("reissue CSRF token: %w", err)
+	}
+	changed, err := result.RowsAffected()
+	if err != nil {
+		return "", fmt.Errorf("reissue CSRF token: %w", err)
+	}
+	if changed != 1 {
+		return "", ErrUnauthorized
+	}
+	return csrfToken, nil
 }
 
 func (s *Store) CreateRegistrationToken(ctx context.Context, operatorID string, ttl time.Duration) (RegistrationToken, error) {
@@ -945,6 +975,9 @@ func (s *Store) CreateListener(ctx context.Context, listener Listener) (Listener
 	} else if !errors.Is(err, sql.ErrNoRows) {
 		return Listener{}, fmt.Errorf("check listener name conflict: %w", err)
 	}
+	if err := s.ensureOutboundOnNode(ctx, listener.NodeID, listener.OutboundID); err != nil {
+		return Listener{}, err
+	}
 	spec, err := json.Marshal(listener.Spec)
 	if err != nil {
 		return Listener{}, fmt.Errorf("encode listener spec: %w", err)
@@ -953,8 +986,8 @@ func (s *Store) CreateListener(ctx context.Context, listener Listener) (Listener
 	if err != nil {
 		return Listener{}, err
 	}
-	_, err = s.db.ExecContext(ctx, `INSERT INTO listeners (id, node_id, name, protocol, network, listen_address, port, backend_port, enabled, spec, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, listener.ID, listener.NodeID, listener.Name, listener.Spec.Protocol, listener.Spec.Network, listener.ListenAddr, listener.Port, listener.BackendPort, listener.Enabled, string(spec), nowUnix(), nowUnix())
+	_, err = s.db.ExecContext(ctx, `INSERT INTO listeners (id, node_id, name, protocol, network, listen_address, port, backend_port, enabled, spec, outbound_id, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, listener.ID, listener.NodeID, listener.Name, listener.Spec.Protocol, listener.Spec.Network, listener.ListenAddr, listener.Port, listener.BackendPort, listener.Enabled, string(spec), listener.OutboundID, nowUnix(), nowUnix())
 	if err != nil {
 		return Listener{}, fmt.Errorf("create listener: %w", err)
 	}
@@ -1011,12 +1044,15 @@ func (s *Store) UpdateListener(ctx context.Context, listener Listener) (Listener
 	if !errors.Is(err, sql.ErrNoRows) {
 		return Listener{}, fmt.Errorf("check listener name conflict: %w", err)
 	}
+	if err := s.ensureOutboundOnNode(ctx, listener.NodeID, listener.OutboundID); err != nil {
+		return Listener{}, err
+	}
 	spec, err := json.Marshal(listener.Spec)
 	if err != nil {
 		return Listener{}, fmt.Errorf("encode listener spec: %w", err)
 	}
-	_, err = s.db.ExecContext(ctx, `UPDATE listeners SET name = ?, protocol = ?, network = ?, listen_address = ?, port = ?, backend_port = ?, enabled = ?, spec = ?, updated_at = ? WHERE id = ?`,
-		listener.Name, listener.Spec.Protocol, listener.Spec.Network, listener.ListenAddr, listener.Port, listener.BackendPort, listener.Enabled, string(spec), nowUnix(), listener.ID)
+	_, err = s.db.ExecContext(ctx, `UPDATE listeners SET name = ?, protocol = ?, network = ?, listen_address = ?, port = ?, backend_port = ?, enabled = ?, spec = ?, outbound_id = ?, updated_at = ? WHERE id = ?`,
+		listener.Name, listener.Spec.Protocol, listener.Spec.Network, listener.ListenAddr, listener.Port, listener.BackendPort, listener.Enabled, string(spec), listener.OutboundID, nowUnix(), listener.ID)
 	if err != nil {
 		return Listener{}, fmt.Errorf("update listener: %w", err)
 	}
@@ -1024,7 +1060,7 @@ func (s *Store) UpdateListener(ctx context.Context, listener Listener) (Listener
 }
 
 func (s *Store) ListListeners(ctx context.Context, nodeID string) ([]Listener, error) {
-	query := `SELECT id, node_id, name, listen_address, port, backend_port, enabled, spec FROM listeners`
+	query := `SELECT id, node_id, name, listen_address, port, backend_port, enabled, spec, outbound_id FROM listeners`
 	args := []any{}
 	if nodeID != "" {
 		query += " WHERE node_id = ?"
@@ -1040,7 +1076,7 @@ func (s *Store) ListListeners(ctx context.Context, nodeID string) ([]Listener, e
 	for rows.Next() {
 		var listener Listener
 		var spec string
-		if err := rows.Scan(&listener.ID, &listener.NodeID, &listener.Name, &listener.ListenAddr, &listener.Port, &listener.BackendPort, &listener.Enabled, &spec); err != nil {
+		if err := rows.Scan(&listener.ID, &listener.NodeID, &listener.Name, &listener.ListenAddr, &listener.Port, &listener.BackendPort, &listener.Enabled, &spec, &listener.OutboundID); err != nil {
 			return nil, fmt.Errorf("read listener: %w", err)
 		}
 		if err := json.Unmarshal([]byte(spec), &listener.Spec); err != nil {
@@ -1575,11 +1611,18 @@ CREATE TABLE IF NOT EXISTS tasks (
 CREATE TABLE IF NOT EXISTS listeners (
   id TEXT PRIMARY KEY, node_id TEXT NOT NULL REFERENCES nodes(id), name TEXT NOT NULL, protocol TEXT NOT NULL, network TEXT NOT NULL,
   listen_address TEXT NOT NULL, port INTEGER NOT NULL, backend_port INTEGER NOT NULL, enabled INTEGER NOT NULL, spec TEXT NOT NULL,
+  outbound_id TEXT NOT NULL DEFAULT '',
   created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL
 );
 CREATE TABLE IF NOT EXISTS endpoints (
   id TEXT PRIMARY KEY, listener_id TEXT NOT NULL REFERENCES listeners(id), name TEXT NOT NULL, credentials BLOB NOT NULL,
   enabled INTEGER NOT NULL, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS outbounds (
+  id TEXT PRIMARY KEY, node_id TEXT NOT NULL REFERENCES nodes(id), name TEXT NOT NULL, type TEXT NOT NULL,
+  server TEXT NOT NULL DEFAULT '', server_port INTEGER NOT NULL DEFAULT 0, username TEXT NOT NULL DEFAULT '',
+  credentials BLOB, enabled INTEGER NOT NULL, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
+  UNIQUE(node_id, name)
 );
 CREATE TABLE IF NOT EXISTS route_rules (
   id TEXT PRIMARY KEY, node_id TEXT NOT NULL REFERENCES nodes(id), priority INTEGER NOT NULL, enabled INTEGER NOT NULL,
@@ -1623,11 +1666,31 @@ CREATE TABLE IF NOT EXISTS firewall_rules (
   cidr TEXT NOT NULL, port INTEGER NOT NULL, expires_at INTEGER, enabled INTEGER NOT NULL,
   created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL
 );
+CREATE TABLE IF NOT EXISTS fail2ban_jails (
+  id TEXT PRIMARY KEY, node_id TEXT NOT NULL REFERENCES nodes(id), name TEXT NOT NULL,
+  log_path TEXT NOT NULL, filter_name TEXT NOT NULL, fail_regex TEXT NOT NULL,
+  max_retry INTEGER NOT NULL, find_time_seconds INTEGER NOT NULL, ban_time_seconds INTEGER NOT NULL,
+  enabled INTEGER NOT NULL, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
+  UNIQUE(node_id, name)
+);
+CREATE TABLE IF NOT EXISTS cloudflare_settings (
+  id INTEGER PRIMARY KEY CHECK (id = 1), zone_id TEXT NOT NULL, zone_name TEXT NOT NULL,
+  api_token BLOB NOT NULL, updated_at INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS cloudflare_records (
+  id TEXT PRIMARY KEY, remote_id TEXT NOT NULL DEFAULT '', name TEXT NOT NULL, type TEXT NOT NULL,
+  content TEXT NOT NULL, ttl INTEGER NOT NULL, proxied INTEGER NOT NULL,
+  node_id TEXT REFERENCES nodes(id), listener_id TEXT REFERENCES listeners(id),
+  status TEXT NOT NULL, last_error TEXT NOT NULL DEFAULT '', observed TEXT NOT NULL DEFAULT '', observed_at INTEGER,
+  created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
+  UNIQUE(name, type)
+);
 CREATE INDEX IF NOT EXISTS idx_sessions_expiry ON sessions(expires_at);
 CREATE INDEX IF NOT EXISTS idx_registrations_poll ON registrations(id, poll_hash);
 CREATE INDEX IF NOT EXISTS idx_tasks_node_status ON tasks(node_id, status, created_at);
 CREATE INDEX IF NOT EXISTS idx_listeners_port ON listeners(node_id, listen_address, network, port, enabled);
 CREATE INDEX IF NOT EXISTS idx_endpoints_listener ON endpoints(listener_id, enabled);
+CREATE INDEX IF NOT EXISTS idx_outbounds_node ON outbounds(node_id, enabled);
 CREATE INDEX IF NOT EXISTS idx_route_rules_node_priority ON route_rules(node_id, priority, id);
 CREATE INDEX IF NOT EXISTS idx_ingress_routes_node_endpoint ON ingress_routes(node_id, listen_address, port, sni, enabled);
 CREATE INDEX IF NOT EXISTS idx_singbox_releases_version_architecture ON singbox_releases(version, architecture, enabled);
@@ -1637,6 +1700,8 @@ CREATE INDEX IF NOT EXISTS idx_subscriptions_kind_enabled ON subscriptions(kind,
 CREATE INDEX IF NOT EXISTS idx_subscription_rules_subscription ON subscription_rules(subscription_id);
 CREATE INDEX IF NOT EXISTS idx_node_metrics_updated ON node_metrics(updated_at);
 CREATE INDEX IF NOT EXISTS idx_firewall_rules_node ON firewall_rules(node_id, enabled, expires_at);
+CREATE INDEX IF NOT EXISTS idx_fail2ban_jails_node ON fail2ban_jails(node_id, enabled);
+CREATE INDEX IF NOT EXISTS idx_cloudflare_records_binding ON cloudflare_records(node_id, listener_id, status);
 `)
 	if err != nil {
 		return fmt.Errorf("migrate database: %w", err)
@@ -1653,6 +1718,9 @@ CREATE INDEX IF NOT EXISTS idx_firewall_rules_node ON firewall_rules(node_id, en
 		return err
 	}
 	if err := s.addTaskColumn(ctx, "created_by TEXT REFERENCES operators(id)"); err != nil {
+		return err
+	}
+	if err := s.addListenerColumn(ctx, "outbound_id TEXT NOT NULL DEFAULT ''"); err != nil {
 		return err
 	}
 	return nil
@@ -1680,6 +1748,14 @@ func (s *Store) addTaskColumn(ctx context.Context, definition string) error {
 		return nil
 	}
 	return fmt.Errorf("migrate tasks table: %w", err)
+}
+
+func (s *Store) addListenerColumn(ctx context.Context, definition string) error {
+	_, err := s.db.ExecContext(ctx, "ALTER TABLE listeners ADD COLUMN "+definition)
+	if err == nil || strings.Contains(err.Error(), "duplicate column name") {
+		return nil
+	}
+	return fmt.Errorf("migrate listeners table: %w", err)
 }
 
 func loadOrCreateMasterKey(dataDir string) ([]byte, error) {
