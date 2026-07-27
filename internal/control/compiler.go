@@ -44,7 +44,8 @@ func (s *Store) CompileNodeConfig(ctx context.Context, nodeID string) (string, s
 		}
 	}
 	// Managed outbounds: a built-in "direct" plus any enabled SOCKS5/HTTP proxies.
-	managedOutbounds, err := s.loadEnabledOutbounds(ctx, nodeID)
+	// Outbounds are global, so every node's config carries the same egress set.
+	managedOutbounds, err := s.loadEnabledOutbounds(ctx)
 	if err != nil {
 		return "", "", err
 	}

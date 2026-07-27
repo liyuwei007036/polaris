@@ -416,7 +416,10 @@ func (s *Store) GenerateClientSubscription(ctx context.Context, token string) (s
 			lines = append(lines, line)
 		}
 	}
-	return strings.Join(lines, "\n") + "\n", nil
+	// Whole-body base64 is the de facto V2Ray/Xray subscription convention
+	// (v2rayN/v2rayNG/Shadowrocket/NekoBox/sing-box clients all expect it);
+	// plain-text lines are not universally recognized as a subscription.
+	return base64.StdEncoding.EncodeToString([]byte(strings.Join(lines, "\n") + "\n")), nil
 }
 
 func (s *Store) clientSubscriptionLine(ctx context.Context, endpointID string) (string, error) {

@@ -3,8 +3,6 @@ package control
 import (
 	"context"
 	"crypto/sha256"
-	"crypto/tls"
-	"crypto/x509"
 	_ "embed"
 	"encoding/hex"
 	"encoding/json"
@@ -16,6 +14,7 @@ import (
 	"time"
 
 	"github.com/sb-control/sb-control/internal/security"
+	"github.com/sb-control/sb-control/internal/wire"
 )
 
 const sessionCookieName = "sb_control_session"
@@ -25,10 +24,11 @@ var dashboardHTML []byte
 
 type Server struct {
 	store         *Store
-	ca            *CertificateAuthority
+	noiseKeypair  wire.Keypair
 	secureCookies bool
 	controlMu     sync.Mutex
 	controls      map[string]*controlSession
+	connHub       *connectionsHub
 }
 
 type controlSession struct {
@@ -37,15 +37,37 @@ type controlSession struct {
 }
 
 func NewServer(store *Store, secureCookies bool) (*Server, error) {
-	ca, err := LoadOrCreateCA(store.DataDir(), store.MasterKey())
+	keypair, err := LoadOrCreateNoiseKeypair(store.DataDir(), store.MasterKey())
 	if err != nil {
 		return nil, err
 	}
-	return &Server{store: store, ca: ca, secureCookies: secureCookies, controls: make(map[string]*controlSession)}, nil
+	return &Server{store: store, noiseKeypair: keypair, secureCookies: secureCookies, controls: make(map[string]*controlSession), connHub: newConnectionsHub()}, nil
 }
 
-func (s *Server) Handler() http.Handler {
+// NoisePublicKey returns the master's static public key, base64-encoded, for
+// operators to pin into agent configuration (see cmd/sb-control "master
+// show-pubkey") — the WireGuard-style replacement for distributing a CA cert.
+func (s *Server) NoisePublicKey() [wire.KeySize]byte {
+	return s.noiseKeypair.Public
+}
+
+// BrowserHandler serves the operator-facing web UI and API: plain HTTP is
+// fine here (put a reverse proxy in front for public HTTPS if desired), since
+// none of these routes depend on seeing a TLS client certificate. Agent
+// traffic never touches this handler.
+func (s *Server) BrowserHandler() http.Handler {
 	mux := http.NewServeMux()
+	s.registerBrowserRoutes(mux)
+	return securityHeaders(mux)
+}
+
+// Handler is an alias for BrowserHandler kept for callers (mainly tests)
+// that pre-date the split. Agent traffic is never HTTP — see ServeAgents.
+func (s *Server) Handler() http.Handler {
+	return s.BrowserHandler()
+}
+
+func (s *Server) registerBrowserRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /", s.dashboard)
 	mux.HandleFunc("GET /api/v1/health", s.health)
 	mux.HandleFunc("POST /api/v1/auth/login", s.login)
@@ -65,11 +87,6 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/v1/reality-keys", s.createRealityKey)
 	mux.HandleFunc("POST /api/v1/reality-keys/{id}/enabled", s.setRealityKeyEnabled)
 	mux.HandleFunc("POST /api/v1/nodes/registration-tokens", s.createRegistrationToken)
-	mux.HandleFunc("POST /api/v1/agent/registrations", s.registerAgent)
-	mux.HandleFunc("GET /api/v1/agent/registrations/{id}", s.pollRegistration)
-	mux.HandleFunc("POST /api/v1/agent/heartbeat", s.agentHeartbeat)
-	mux.HandleFunc("GET /api/v1/agent/control", s.agentControl)
-	mux.HandleFunc("POST /api/v1/agent/tasks/{id}/result", s.completeAgentTask)
 	mux.HandleFunc("GET /api/v1/nodes", s.listNodes)
 	mux.HandleFunc("GET /api/v1/nodes/{id}/metrics", s.nodeMetrics)
 	mux.HandleFunc("GET /api/v1/nodes/{id}/firewall/rules", s.listFirewallRules)
@@ -84,6 +101,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/v1/fail2ban/jails/{id}/enabled", s.setFail2BanJailEnabled)
 	mux.HandleFunc("DELETE /api/v1/fail2ban/jails/{id}", s.deleteFail2BanJail)
 	mux.HandleFunc("GET /api/v1/nodes/{id}/connections", s.nodeConnections)
+	mux.HandleFunc("GET /api/v1/events/connections", s.browserConnectionsStream)
 	mux.HandleFunc("GET /api/v1/cloudflare/settings", s.cloudflareSettings)
 	mux.HandleFunc("PUT /api/v1/cloudflare/settings", s.setCloudflareSettings)
 	mux.HandleFunc("GET /api/v1/cloudflare/records", s.listCloudflareRecords)
@@ -137,50 +155,12 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/v1/registrations", s.listPendingRegistrations)
 	mux.HandleFunc("POST /api/v1/nodes/{id}/approve", s.approveRegistration)
 	mux.HandleFunc("POST /api/v1/nodes/{id}/revoke", s.revokeNode)
-	mux.HandleFunc("POST /api/v1/nodes/{id}/certificates/rotate", s.rotateCertificate)
-	return securityHeaders(mux)
 }
 
 func (s *Server) dashboard(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Content-Security-Policy", "default-src 'self'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; base-uri 'none'; frame-ancestors 'none'")
 	_, _ = w.Write(dashboardHTML)
-}
-
-// TLSConfig accepts normal browser TLS and validates a client certificate when
-// an agent presents one. Agent endpoints additionally require that certificate.
-func (s *Server) TLSConfig() (*tls.Config, error) {
-	pool := x509.NewCertPool()
-	if ok := pool.AppendCertsFromPEM(s.ca.CertificatePEM()); !ok {
-		return nil, errors.New("load agent CA certificate")
-	}
-	return &tls.Config{
-		MinVersion: tls.VersionTLS13,
-		ClientAuth: tls.RequestClientCert,
-		ClientCAs:  pool,
-		VerifyPeerCertificate: func(rawCertificates [][]byte, _ [][]*x509.Certificate) error {
-			if len(rawCertificates) == 0 {
-				return nil
-			}
-			leaf, err := x509.ParseCertificate(rawCertificates[0])
-			if err != nil {
-				return fmt.Errorf("parse agent certificate: %w", err)
-			}
-			intermediates := x509.NewCertPool()
-			for _, raw := range rawCertificates[1:] {
-				certificate, err := x509.ParseCertificate(raw)
-				if err != nil {
-					return fmt.Errorf("parse agent certificate chain: %w", err)
-				}
-				intermediates.AddCert(certificate)
-			}
-			if _, err := leaf.Verify(x509.VerifyOptions{Roots: pool, Intermediates: intermediates, KeyUsages: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth}}); err != nil {
-				return fmt.Errorf("verify agent certificate: %w", err)
-			}
-			_, err = s.store.NodeForCertificate(context.Background(), leaf.SerialNumber.Text(16))
-			return err
-		},
-	}, nil
 }
 
 func (s *Server) health(w http.ResponseWriter, _ *http.Request) {
@@ -537,157 +517,6 @@ func (s *Server) createRegistrationToken(w http.ResponseWriter, r *http.Request)
 	writeJSON(w, http.StatusCreated, map[string]string{"token": token.Token, "expires_at": token.ExpiresAt.Format(time.RFC3339)})
 }
 
-func (s *Server) registerAgent(w http.ResponseWriter, r *http.Request) {
-	var input struct {
-		Token        string          `json:"token"`
-		NodeName     string          `json:"node_name"`
-		CSRPEM       string          `json:"csr_pem"`
-		Capabilities json.RawMessage `json:"capabilities"`
-	}
-	if !decodeJSON(w, r, &input) {
-		return
-	}
-	if !json.Valid(input.Capabilities) {
-		writeError(w, errors.New("capabilities must be JSON"))
-		return
-	}
-	if err := ValidateCSR([]byte(input.CSRPEM)); err != nil {
-		writeError(w, err)
-		return
-	}
-	registration, err := s.store.RegisterAgent(r.Context(), RegistrationInput{
-		Token: input.Token, NodeName: input.NodeName, CSRPEM: []byte(input.CSRPEM), Capabilities: string(input.Capabilities),
-	})
-	if err != nil {
-		writeError(w, err)
-		return
-	}
-	writeJSON(w, http.StatusAccepted, map[string]string{
-		"registration_id": registration.ID,
-		"poll_token":      registration.PollToken,
-		"status":          registration.Status,
-	})
-}
-
-func (s *Server) pollRegistration(w http.ResponseWriter, r *http.Request) {
-	registration, err := s.store.PollRegistration(r.Context(), r.PathValue("id"), r.Header.Get("X-Registration-Poll-Token"), s.ca)
-	if err != nil {
-		writeError(w, err)
-		return
-	}
-	response := map[string]string{"registration_id": registration.ID, "status": registration.Status}
-	if registration.Status == "approved" {
-		response["node_id"] = registration.NodeID
-		response["certificate_pem"] = string(registration.Certificate)
-		response["ca_pem"] = string(registration.CAPEM)
-		publicKey, err := s.store.ReleaseSigningPublicKeyPEM()
-		if err != nil {
-			writeError(w, err)
-			return
-		}
-		response["release_signing_public_key_pem"] = string(publicKey)
-	}
-	writeJSON(w, http.StatusOK, response)
-}
-
-func (s *Server) agentHeartbeat(w http.ResponseWriter, r *http.Request) {
-	node, err := s.agent(r)
-	if err != nil {
-		writeError(w, err)
-		return
-	}
-	var input struct {
-		AgentVersion string          `json:"agent_version"`
-		OS           string          `json:"os"`
-		Architecture string          `json:"architecture"`
-		SingBox      string          `json:"sing_box_version"`
-		Capabilities json.RawMessage `json:"capabilities"`
-		Metrics      json.RawMessage `json:"metrics"`
-	}
-	if !decodeJSON(w, r, &input) {
-		return
-	}
-	if !json.Valid(input.Capabilities) {
-		writeError(w, errors.New("capabilities must be JSON"))
-		return
-	}
-	if len(input.Metrics) != 0 && !json.Valid(input.Metrics) {
-		writeError(w, errors.New("metrics must be JSON"))
-		return
-	}
-	if err := s.store.UpdateAgentStatus(r.Context(), node.ID, AgentStatus{
-		AgentVersion: input.AgentVersion, OS: input.OS, Architecture: input.Architecture, SingBox: input.SingBox, Capabilities: string(input.Capabilities), Metrics: string(input.Metrics),
-	}); err != nil {
-		writeError(w, err)
-		return
-	}
-	w.WriteHeader(http.StatusNoContent)
-}
-
-func (s *Server) agentControl(w http.ResponseWriter, r *http.Request) {
-	node, err := s.agent(r)
-	if err != nil {
-		writeError(w, err)
-		return
-	}
-	flusher, ok := w.(http.Flusher)
-	if !ok {
-		writeError(w, errors.New("streaming is unavailable"))
-		return
-	}
-	session := &controlSession{done: make(chan struct{}), tasks: make(chan Task, 16)}
-	s.controlMu.Lock()
-	if previous := s.controls[node.ID]; previous != nil {
-		close(previous.done)
-	}
-	s.controls[node.ID] = session
-	s.controlMu.Unlock()
-	defer func() {
-		s.controlMu.Lock()
-		if s.controls[node.ID] == session {
-			delete(s.controls, node.ID)
-		}
-		s.controlMu.Unlock()
-	}()
-	w.Header().Set("Content-Type", "application/x-ndjson")
-	w.WriteHeader(http.StatusOK)
-	encoder := json.NewEncoder(w)
-	_ = encoder.Encode(map[string]string{"type": "connected"})
-	flusher.Flush()
-	pending, err := s.store.PendingTasks(r.Context(), node.ID)
-	if err != nil {
-		return
-	}
-	for _, task := range pending {
-		if err := encoder.Encode(map[string]any{"type": "task", "task": task}); err != nil {
-			return
-		}
-		flusher.Flush()
-		_ = s.store.MarkTaskDispatched(r.Context(), task.ID, node.ID)
-	}
-	ticker := time.NewTicker(20 * time.Second)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-r.Context().Done():
-			return
-		case <-session.done:
-			return
-		case task := <-session.tasks:
-			if err := encoder.Encode(map[string]any{"type": "task", "task": task}); err != nil {
-				return
-			}
-			flusher.Flush()
-			_ = s.store.MarkTaskDispatched(r.Context(), task.ID, node.ID)
-		case <-ticker.C:
-			if err := encoder.Encode(map[string]string{"type": "keepalive"}); err != nil {
-				return
-			}
-			flusher.Flush()
-		}
-	}
-}
-
 // DispatchTask persists before delivery; an offline agent receives it after
 // reconnecting. Task kinds are validated by Store and agent independently.
 func (s *Server) DispatchTask(ctx context.Context, task Task) (Task, error) {
@@ -705,41 +534,6 @@ func (s *Server) DispatchTask(ctx context.Context, task Task) (Task, error) {
 		}
 	}
 	return created, nil
-}
-
-func (s *Server) completeAgentTask(w http.ResponseWriter, r *http.Request) {
-	node, err := s.agent(r)
-	if err != nil {
-		writeError(w, err)
-		return
-	}
-	var input struct {
-		Status         string `json:"status"`
-		Summary        string `json:"summary"`
-		SingBoxVersion string `json:"sing_box_version"`
-	}
-	if !decodeJSON(w, r, &input) {
-		return
-	}
-	task, err := s.store.TaskByID(r.Context(), r.PathValue("id"))
-	if err != nil {
-		writeError(w, err)
-		return
-	}
-	if err := s.store.CompleteTask(r.Context(), task.ID, node.ID, input.Status, input.Summary); err != nil {
-		writeError(w, err)
-		return
-	}
-	if input.Status == "succeeded" && input.SingBoxVersion != "" {
-		if err := s.store.SetNodeSingBoxVersion(r.Context(), node.ID, input.SingBoxVersion); err != nil {
-			writeError(w, err)
-			return
-		}
-	}
-	if task.OperatorID != "" {
-		_ = s.store.AppendAudit(r.Context(), task.OperatorID, "task.completed."+input.Status, "task", task.ID, "agent task completed: "+task.Kind)
-	}
-	w.WriteHeader(http.StatusNoContent)
 }
 
 func (s *Server) listTasks(w http.ResponseWriter, r *http.Request) {
@@ -1309,7 +1103,7 @@ func (s *Server) listOutbounds(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
-	outbounds, err := s.store.ListOutbounds(r.Context(), r.URL.Query().Get("node_id"))
+	outbounds, err := s.store.ListOutbounds(r.Context())
 	if err != nil {
 		writeError(w, err)
 		return
@@ -1737,12 +1531,12 @@ func (s *Server) approveRegistration(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
-	registration, err := s.store.ApproveRegistration(r.Context(), r.PathValue("id"), s.ca)
+	registration, err := s.store.ApproveRegistration(r.Context(), r.PathValue("id"))
 	if err != nil {
 		writeError(w, err)
 		return
 	}
-	_ = s.store.AppendAudit(r.Context(), operator.ID, "node.registration_approved", "registration", registration.ID, "node certificate issued")
+	_ = s.store.AppendAudit(r.Context(), operator.ID, "node.registration_approved", "registration", registration.ID, "node public key approved")
 	writeJSON(w, http.StatusOK, map[string]string{"node_id": registration.NodeID, "status": registration.Status})
 }
 
@@ -1768,31 +1562,6 @@ func (s *Server) disconnectAgent(nodeID string) {
 	if session := s.controls[nodeID]; session != nil {
 		close(session.done)
 	}
-}
-
-func (s *Server) rotateCertificate(w http.ResponseWriter, r *http.Request) {
-	operator, err := s.admin(r)
-	if err != nil {
-		writeError(w, err)
-		return
-	}
-	var input struct {
-		CSRPEM string `json:"csr_pem"`
-	}
-	if !decodeJSON(w, r, &input) {
-		return
-	}
-	if err := ValidateCSR([]byte(input.CSRPEM)); err != nil {
-		writeError(w, err)
-		return
-	}
-	registration, err := s.store.RotateNodeCertificate(r.Context(), r.PathValue("id"), []byte(input.CSRPEM), s.ca)
-	if err != nil {
-		writeError(w, err)
-		return
-	}
-	_ = s.store.AppendAudit(r.Context(), operator.ID, "node.certificate_rotated", "node", registration.NodeID, "previous certificate revoked")
-	writeJSON(w, http.StatusOK, map[string]string{"node_id": registration.NodeID, "certificate_pem": string(registration.Certificate), "ca_pem": string(registration.CAPEM)})
 }
 
 func (s *Server) operator(r *http.Request, requireCSRF bool) (Operator, error) {
@@ -1826,13 +1595,6 @@ func (s *Server) writer(r *http.Request) (Operator, error) {
 		return Operator{}, ErrForbidden
 	}
 	return operator, nil
-}
-
-func (s *Server) agent(r *http.Request) (Node, error) {
-	if r.TLS == nil || len(r.TLS.PeerCertificates) == 0 {
-		return Node{}, ErrUnauthorized
-	}
-	return s.store.NodeForCertificate(r.Context(), r.TLS.PeerCertificates[0].SerialNumber.Text(16))
 }
 
 func decodeJSON(w http.ResponseWriter, r *http.Request, target any) bool {

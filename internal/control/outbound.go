@@ -10,12 +10,13 @@ import (
 	"github.com/sb-control/sb-control/internal/security"
 )
 
-// Outbound is a managed egress definition. A node's compiled sing-box config
-// always contains a built-in "direct" outbound; managed outbounds add proxy
-// egress (SOCKS5/HTTP) that listeners can select as their default route.
+// Outbound is a managed egress definition, shared globally across every node:
+// it describes where traffic exits to, independent of which node's listener
+// uses it. A node's compiled sing-box config always contains a built-in
+// "direct" outbound; managed outbounds add proxy egress (SOCKS5/HTTP) that any
+// listener on any node can select as its default route.
 type Outbound struct {
 	ID         string `json:"id"`
-	NodeID     string `json:"node_id"`
 	Name       string `json:"name"`
 	Type       string `json:"type"` // direct | socks | http
 	Server     string `json:"server,omitempty"`
@@ -30,8 +31,8 @@ type outboundSecret struct {
 }
 
 func validateOutbound(o Outbound) error {
-	if o.NodeID == "" || o.Name == "" || len(o.Name) > 128 {
-		return errors.New("outbound node and a name up to 128 characters are required")
+	if o.Name == "" || len(o.Name) > 128 {
+		return errors.New("a name up to 128 characters is required")
 	}
 	switch o.Type {
 	case "direct":
@@ -61,15 +62,8 @@ func (s *Store) CreateOutbound(ctx context.Context, o Outbound) (Outbound, error
 	if err := validateOutbound(o); err != nil {
 		return Outbound{}, err
 	}
-	var exists int
-	if err := s.db.QueryRowContext(ctx, `SELECT 1 FROM nodes WHERE id = ? AND revoked_at IS NULL`, o.NodeID).Scan(&exists); err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return Outbound{}, ErrNotFound
-		}
-		return Outbound{}, err
-	}
 	var conflict string
-	if err := s.db.QueryRowContext(ctx, `SELECT id FROM outbounds WHERE node_id = ? AND name = ?`, o.NodeID, o.Name).Scan(&conflict); err == nil {
+	if err := s.db.QueryRowContext(ctx, `SELECT id FROM outbounds WHERE name = ?`, o.Name).Scan(&conflict); err == nil {
 		return Outbound{}, ErrConflict
 	} else if !errors.Is(err, sql.ErrNoRows) {
 		return Outbound{}, fmt.Errorf("check outbound name conflict: %w", err)
@@ -82,8 +76,8 @@ func (s *Store) CreateOutbound(ctx context.Context, o Outbound) (Outbound, error
 	if err != nil {
 		return Outbound{}, err
 	}
-	_, err = s.db.ExecContext(ctx, `INSERT INTO outbounds (id, node_id, name, type, server, server_port, username, credentials, enabled, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, o.ID, o.NodeID, o.Name, o.Type, o.Server, o.ServerPort, o.Username, encrypted, o.Enabled, nowUnix(), nowUnix())
+	_, err = s.db.ExecContext(ctx, `INSERT INTO outbounds (id, name, type, server, server_port, username, credentials, enabled, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, o.ID, o.Name, o.Type, o.Server, o.ServerPort, o.Username, encrypted, o.Enabled, nowUnix(), nowUnix())
 	if err != nil {
 		return Outbound{}, fmt.Errorf("create outbound: %w", err)
 	}
@@ -99,19 +93,16 @@ func (s *Store) UpdateOutbound(ctx context.Context, o Outbound) (Outbound, error
 	if err := validateOutbound(o); err != nil {
 		return Outbound{}, err
 	}
-	var existingNode string
-	err := s.db.QueryRowContext(ctx, `SELECT node_id FROM outbounds WHERE id = ?`, o.ID).Scan(&existingNode)
+	var exists int
+	err := s.db.QueryRowContext(ctx, `SELECT 1 FROM outbounds WHERE id = ?`, o.ID).Scan(&exists)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Outbound{}, ErrNotFound
 	}
 	if err != nil {
 		return Outbound{}, fmt.Errorf("load outbound: %w", err)
 	}
-	if existingNode != o.NodeID {
-		return Outbound{}, ErrForbidden
-	}
 	var conflict string
-	err = s.db.QueryRowContext(ctx, `SELECT id FROM outbounds WHERE node_id = ? AND name = ? AND id <> ?`, o.NodeID, o.Name, o.ID).Scan(&conflict)
+	err = s.db.QueryRowContext(ctx, `SELECT id FROM outbounds WHERE name = ? AND id <> ?`, o.Name, o.ID).Scan(&conflict)
 	if err == nil {
 		return Outbound{}, ErrConflict
 	}
@@ -137,17 +128,11 @@ func (s *Store) UpdateOutbound(ctx context.Context, o Outbound) (Outbound, error
 	return o, nil
 }
 
-// ListOutbounds returns managed outbounds without decrypting secrets; passwords
-// are never exposed through the API.
-func (s *Store) ListOutbounds(ctx context.Context, nodeID string) ([]Outbound, error) {
-	query := `SELECT id, node_id, name, type, server, server_port, username, enabled FROM outbounds`
-	args := []any{}
-	if nodeID != "" {
-		query += " WHERE node_id = ?"
-		args = append(args, nodeID)
-	}
-	query += " ORDER BY node_id, name, id"
-	rows, err := s.db.QueryContext(ctx, query, args...)
+// ListOutbounds returns every managed outbound (they are global, not scoped to
+// a node) without decrypting secrets; passwords are never exposed through the
+// API.
+func (s *Store) ListOutbounds(ctx context.Context) ([]Outbound, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT id, name, type, server, server_port, username, enabled FROM outbounds ORDER BY name, id`)
 	if err != nil {
 		return nil, fmt.Errorf("list outbounds: %w", err)
 	}
@@ -155,7 +140,7 @@ func (s *Store) ListOutbounds(ctx context.Context, nodeID string) ([]Outbound, e
 	var outbounds []Outbound
 	for rows.Next() {
 		var o Outbound
-		if err := rows.Scan(&o.ID, &o.NodeID, &o.Name, &o.Type, &o.Server, &o.ServerPort, &o.Username, &o.Enabled); err != nil {
+		if err := rows.Scan(&o.ID, &o.Name, &o.Type, &o.Server, &o.ServerPort, &o.Username, &o.Enabled); err != nil {
 			return nil, fmt.Errorf("read outbound: %w", err)
 		}
 		outbounds = append(outbounds, o)
@@ -163,10 +148,10 @@ func (s *Store) ListOutbounds(ctx context.Context, nodeID string) ([]Outbound, e
 	return outbounds, rows.Err()
 }
 
-// loadEnabledOutbounds returns enabled outbounds with decrypted passwords for
-// configuration compilation. It never leaves the compiler.
-func (s *Store) loadEnabledOutbounds(ctx context.Context, nodeID string) ([]Outbound, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT id, node_id, name, type, server, server_port, username, credentials FROM outbounds WHERE node_id = ? AND enabled = 1 ORDER BY name, id`, nodeID)
+// loadEnabledOutbounds returns every enabled outbound with decrypted passwords
+// for configuration compilation. It never leaves the compiler.
+func (s *Store) loadEnabledOutbounds(ctx context.Context) ([]Outbound, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT id, name, type, server, server_port, username, credentials FROM outbounds WHERE enabled = 1 ORDER BY name, id`)
 	if err != nil {
 		return nil, fmt.Errorf("load outbounds: %w", err)
 	}
@@ -175,7 +160,7 @@ func (s *Store) loadEnabledOutbounds(ctx context.Context, nodeID string) ([]Outb
 	for rows.Next() {
 		var o Outbound
 		var encrypted []byte
-		if err := rows.Scan(&o.ID, &o.NodeID, &o.Name, &o.Type, &o.Server, &o.ServerPort, &o.Username, &encrypted); err != nil {
+		if err := rows.Scan(&o.ID, &o.Name, &o.Type, &o.Server, &o.ServerPort, &o.Username, &encrypted); err != nil {
 			return nil, fmt.Errorf("read outbound: %w", err)
 		}
 		if len(encrypted) > 0 {
@@ -246,16 +231,17 @@ func (s *Store) encryptOutboundSecret(password string) ([]byte, error) {
 	return encrypted, nil
 }
 
-// ensureOutboundOnNode verifies a listener's selected outbound exists on the
-// same node, preventing listeners from referencing a dangling outbound tag.
-func (s *Store) ensureOutboundOnNode(ctx context.Context, nodeID, outboundID string) error {
+// ensureOutboundExists verifies a listener's selected outbound exists,
+// preventing listeners from referencing a dangling outbound tag. Outbounds
+// are global, so any listener on any node may reference any of them.
+func (s *Store) ensureOutboundExists(ctx context.Context, outboundID string) error {
 	if outboundID == "" {
 		return nil
 	}
 	var exists int
-	err := s.db.QueryRowContext(ctx, `SELECT 1 FROM outbounds WHERE id = ? AND node_id = ?`, outboundID, nodeID).Scan(&exists)
+	err := s.db.QueryRowContext(ctx, `SELECT 1 FROM outbounds WHERE id = ?`, outboundID).Scan(&exists)
 	if errors.Is(err, sql.ErrNoRows) {
-		return errors.New("selected outbound does not exist on this node")
+		return errors.New("selected outbound does not exist")
 	}
 	return err
 }

@@ -10,17 +10,18 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/sb-control/sb-control/internal/agent"
 	"github.com/sb-control/sb-control/internal/control"
+	"github.com/sb-control/sb-control/internal/wire"
 )
 
-func approveTestNode(t *testing.T, baseURL, session, csrfToken, nodeName string) string {
+func approveTestNode(t *testing.T, server *control.Server, baseURL, session, csrfToken, nodeName string) string {
 	t.Helper()
-	csr, err := agent.CreateCSR(t.TempDir(), nodeName)
+	agentAddr := startAgentListener(t, server)
+	keypair, err := wire.GenerateKeypair()
 	if err != nil {
 		t.Fatal(err)
 	}
-	registrationID, _ := registerAgent(t, baseURL, createRegistrationToken(t, baseURL, session, csrfToken), csr)
+	registrationID := registerAgent(t, agentAddr, server.NoisePublicKey(), keypair, createRegistrationToken(t, baseURL, session, csrfToken), nodeName)
 	response := request(t, http.MethodPost, baseURL+"/api/v1/nodes/"+registrationID+"/approve", nil, session, csrfToken)
 	if response.StatusCode != http.StatusOK {
 		t.Fatalf("approve registration: got %d", response.StatusCode)
@@ -80,7 +81,7 @@ func TestFail2BanJailLifecycleAndPublish(t *testing.T) {
 	httpServer := httptest.NewServer(server.Handler())
 	defer httpServer.Close()
 	session, csrfToken := login(t, httpServer.URL, secret)
-	nodeID := approveTestNode(t, httpServer.URL, session, csrfToken, "fail2ban-node")
+	nodeID := approveTestNode(t, server, httpServer.URL, session, csrfToken, "fail2ban-node")
 
 	response := request(t, http.MethodPost, httpServer.URL+"/api/v1/nodes/"+nodeID+"/fail2ban/jails", map[string]any{
 		"name": "singbox-auth", "log_path": "/var/log/sing-box.log", "filter_name": "singbox-auth",
@@ -341,7 +342,7 @@ func TestCloudflareProxyValidationFollowsListenerType(t *testing.T) {
 	httpServer := httptest.NewServer(server.Handler())
 	defer httpServer.Close()
 	session, csrfToken := login(t, httpServer.URL, secret)
-	nodeID := approveTestNode(t, httpServer.URL, session, csrfToken, "cdn-node")
+	nodeID := approveTestNode(t, server, httpServer.URL, session, csrfToken, "cdn-node")
 	if err := store.SetCloudflareSettings(t.Context(), "zone1", "example.com", "test-token-1234567890"); err != nil {
 		t.Fatal(err)
 	}
@@ -427,7 +428,7 @@ func TestNodeConnectionsAndClashAPICompilation(t *testing.T) {
 	httpServer := httptest.NewServer(server.Handler())
 	defer httpServer.Close()
 	session, csrfToken := login(t, httpServer.URL, secret)
-	nodeID := approveTestNode(t, httpServer.URL, session, csrfToken, "metrics-node")
+	nodeID := approveTestNode(t, server, httpServer.URL, session, csrfToken, "metrics-node")
 
 	certificatePEM, privateKeyPEM := testCertificate(t)
 	certificate, err := store.CreateManagedCertificate(t.Context(), control.ManagedCertificateInput{Name: "metrics-cert", CertificatePEM: certificatePEM, PrivateKeyPEM: privateKeyPEM, Enabled: true})

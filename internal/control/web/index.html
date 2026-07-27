@@ -109,7 +109,7 @@ svg{display:block;flex:none}
 .sec-head .sp{flex:1}
 .grid{display:grid;gap:16px}
 .stats{grid-template-columns:repeat(4,1fr)}
-.cards-3{grid-template-columns:repeat(auto-fill,minmax(340px,1fr))}
+.cards-3{grid-template-columns:repeat(auto-fill,minmax(280px,1fr))}
 .cards-2{grid-template-columns:repeat(auto-fill,minmax(440px,1fr))}
 
 .stat{padding:18px 18px;position:relative;overflow:hidden}
@@ -123,7 +123,7 @@ svg{display:block;flex:none}
 
 /* node cards */
 .node{padding:0;overflow:hidden;display:flex;flex-direction:column}
-.node-h{padding:16px 17px;display:flex;align-items:flex-start;gap:12px;border-bottom:1px solid var(--border-soft)}
+.node-h{padding:13px 16px;display:flex;align-items:flex-start;gap:12px;border-bottom:1px solid var(--border-soft)}
 .node-h .nm{flex:1;min-width:0}
 .node-h .nm b{font-size:15px;display:flex;align-items:center;gap:8px}
 .node-h .nm .sub{font-size:12px;color:var(--muted);margin-top:3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
@@ -131,17 +131,12 @@ svg{display:block;flex:none}
 .dot.on{background:var(--ok);box-shadow:0 0 0 0 rgba(34,197,94,.5);animation:pulse 2.2s infinite}
 .dot.off{background:var(--faint)}
 @keyframes pulse{0%{box-shadow:0 0 0 0 rgba(34,197,94,.5)}70%{box-shadow:0 0 0 7px rgba(34,197,94,0)}100%{box-shadow:0 0 0 0 rgba(34,197,94,0)}}
-.node-body{padding:15px 17px;display:flex;flex-direction:column;gap:14px;flex:1}
-.kv{display:grid;grid-template-columns:1fr 1fr;gap:11px 14px}
-.kv .i .l{font-size:11px;color:var(--faint);text-transform:uppercase;letter-spacing:.4px}
-.kv .i .val{font-size:13px;margin-top:2px;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.traffic{display:grid;grid-template-columns:1fr 1fr;gap:11px}
-.tf{background:rgba(255,255,255,.03);border:1px solid var(--border-soft);border-radius:var(--r-sm);padding:11px 12px}
-.tf .l{font-size:11px;color:var(--muted);display:flex;align-items:center;gap:6px}
-.tf .v{font-size:18px;font-weight:700;margin-top:4px;font-variant-numeric:tabular-nums}
-.tf.dn .l svg{color:#7dd3fc}.tf.up .l svg{color:#fcd34d}
+.node-body{padding:10px 16px 13px;display:flex;flex-direction:column;gap:8px;flex:1}
+.meta-line{display:flex;align-items:center;gap:8px;flex-wrap:wrap;font-size:12.5px;color:var(--muted)}
+.meta-line svg{width:14px;height:14px;vertical-align:-2px;margin-right:3px}
+.meta-line .dsep{color:var(--border);font-size:11px}
 .caps{display:flex;flex-wrap:wrap;gap:6px}
-.node-f{padding:12px 17px;border-top:1px solid var(--border-soft);display:flex;gap:8px;flex-wrap:wrap}
+.node-f{padding:10px 16px;border-top:1px solid var(--border-soft);display:flex;gap:8px;flex-wrap:wrap}
 
 /* chips */
 .chip{display:inline-flex;align-items:center;gap:5px;padding:3px 9px;border-radius:20px;font-size:11.5px;font-weight:600;background:rgba(255,255,255,.05);border:1px solid var(--border-soft);color:var(--muted)}
@@ -267,6 +262,7 @@ td.actions .icon-btn{width:30px;height:30px}
 .toast .ti{flex:none}.toast.ok .ti{color:var(--ok)}.toast.error .ti{color:var(--bad)}.toast.info .ti{color:var(--info)}
 
 .hint-box{background:var(--acc-soft);border:1px solid rgba(99,102,241,.24);border-radius:var(--r-sm);padding:12px 14px;font-size:12.5px;color:var(--acc-ink);display:flex;gap:10px;line-height:1.55}
+.hint-box.warn{background:var(--warn-soft);border-color:rgba(245,158,11,.3);color:#fcd34d}
 .hint-box svg{flex:none;margin-top:1px}
 
 /* responsive */
@@ -280,7 +276,7 @@ td.actions .icon-btn{width:30px;height:30px}
   .scrim{position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:39;display:none}
   .scrim.show{display:block}
 }
-@media(max-width:560px){.stats{grid-template-columns:1fr}.kv{grid-template-columns:1fr}}
+@media(max-width:560px){.stats{grid-template-columns:1fr}}
 </style>
 </head>
 <body>
@@ -343,7 +339,14 @@ td.actions .icon-btn{width:30px;height:30px}
 <script>
 "use strict";
 /* ==================== state & utils ==================== */
-const S = { role:null, email:null, csrf:null, view:'dashboard', nodes:[], node:localStorage.getItem('sb_node')||'' };
+const S = { role:null, email:null, csrf:localStorage.getItem('sb_control_csrf')||null, view:'dashboard', nodes:[], node:localStorage.getItem('sb_node')||'' };
+// CSRF token is rotated on every /auth/me call (server can only store its hash, not the
+// original value, so a stable token can't be returned). Keeping it in localStorage instead
+// of a page-local variable means every open tab shares one token: when tab A refreshes and
+// rotates it, tab B is notified via the "storage" event and updates before it next submits,
+// instead of holding a now-invalid token until its own next reload.
+function setCsrf(token){S.csrf=token||null;if(token)localStorage.setItem('sb_control_csrf',token);else localStorage.removeItem('sb_control_csrf');}
+window.addEventListener('storage',e=>{if(e.key==='sb_control_csrf')S.csrf=e.newValue;});
 const $ = (s,r=document)=>r.querySelector(s);
 const $$ = (s,r=document)=>[...r.querySelectorAll(s)];
 const esc = s => String(s==null?'':s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
@@ -433,32 +436,33 @@ $('#lg-login').onclick=async()=>{
   const code=$('#lg-code').value.trim();
   if(!/^\d{6}$/.test(code)){lgErr(2,'请输入 6 位数字验证码');return;}
   lgErr(2);const b=$('#lg-login');b.disabled=true;b.textContent='登录中…';
-  try{const r=await api('/auth/mfa',{method:'POST',body:{challenge_id:challengeId,code}});S.csrf=r.csrf_token;S.role=r.role;await enterApp();}
+  try{const r=await api('/auth/mfa',{method:'POST',body:{challenge_id:challengeId,code}});setCsrf(r.csrf_token);S.role=r.role;await enterApp();}
   catch(err){lgErr(2,err.status===401?'验证码错误或已过期':err.message);}
   finally{b.disabled=false;b.textContent='登录';}
 };
 $('#lg-pass').addEventListener('keydown',e=>{if(e.key==='Enter')$('#lg-next').click();});
 $('#lg-code').addEventListener('keydown',e=>{if(e.key==='Enter')$('#lg-login').click();});
 
-function onUnauthorized(){S.csrf=null;S.role=null;$('#app').style.display='none';$('#login').style.display='flex';$('.lg-step-mfa').style.display='none';$('.lg-step-cred').style.display='block';}
+function onUnauthorized(){setCsrf(null);S.role=null;$('#app').style.display='none';$('#login').style.display='flex';$('.lg-step-mfa').style.display='none';$('.lg-step-cred').style.display='block';}
 $('#btn-logout').onclick=async()=>{try{await api('/auth/logout',{method:'POST'});}catch{}onUnauthorized();};
 
 function fillOp(){$('#op-email').textContent=S.email||'—';$('#op-role').textContent=({admin:'管理员',operator:'运维',viewer:'只读'}[S.role]||S.role||'—');$('#op-avatar').textContent=(S.email||'A').charAt(0).toUpperCase();}
+async function bootSession(){const me=await api('/auth/me');S.email=me.email;S.role=me.role;if(me.csrf_token)setCsrf(me.csrf_token);}
 async function enterApp(){
-  try{const me=await api('/auth/me');S.email=me.email;S.role=me.role;if(me.csrf_token)S.csrf=me.csrf_token;}catch{}
+  try{await bootSession();}catch{}
   $('#login').style.display='none';$('#app').style.display='block';
   fillOp();buildNav();
   window.addEventListener('hashchange',route);
   route();
 }
 /* restore session on load: /auth/me rehydrates the CSRF token so writes work after a refresh */
-(async()=>{try{const me=await api('/auth/me');S.email=me.email;S.role=me.role;if(me.csrf_token)S.csrf=me.csrf_token;$('#login').style.display='none';$('#app').style.display='block';fillOp();buildNav();window.addEventListener('hashchange',route);route();}catch{onUnauthorized();}})();
+(async()=>{try{await bootSession();$('#login').style.display='none';$('#app').style.display='block';fillOp();buildNav();window.addEventListener('hashchange',route);route();}catch{onUnauthorized();}})();
 
 /* ==================== navigation ==================== */
 const NAV=[
   {g:'监控',items:[
     {id:'dashboard',label:'概览',icon:'grid',sub:'集群与节点总览'},
-    {id:'connections',label:'实时连接',icon:'activity',sub:'查看节点当前活跃连接'},
+    {id:'connections',label:'实时连接',icon:'activity',sub:'所有节点当前活跃连接，实时更新'},
     {id:'audit',label:'任务与审计',icon:'history',sub:'配置下发任务与操作日志'},
   ]},
   {g:'配置',items:[
@@ -488,6 +492,7 @@ const VIEWS={dashboard:vDashboard,nodes:vNodes,listeners:vListeners,outbounds:vO
 async function route(){
   let id=(location.hash.replace(/^#\/?/,'')||'dashboard');
   if(!VIEWS[id])id='dashboard';
+  if(id!=='connections')closeConnStream();
   S.view=id;setActive();
   const m=VIEW_META[id];$('#tb-title').textContent=m.label;$('#tb-sub').textContent=m.sub;
   const wrap=$('#content .wrap');wrap.innerHTML='<div class="loading"><div class="spin"></div>加载中…</div>';
@@ -522,6 +527,7 @@ function fieldHTML(f){
   if(f.type==='textarea')inner=`<textarea id="${id}" rows="${f.rows||4}" placeholder="${esc(f.placeholder||'')}">${esc(f.value||'')}</textarea>`;
   else if(f.type==='select'){inner=`<select id="${id}">${(f.options||[]).map(optOf).map(o=>`<option value="${esc(o.value)}" ${String(o.value)===String(f.value)?'selected':''}>${esc(o.label)}</option>`).join('')}</select>`;}
   else if(f.type==='switch')return `<div class="field switch-field" id="fw_${f.key}"><div class="field-l"><label>${esc(f.label)}</label>${f.hint?`<span class="field-hint">${esc(f.hint)}</span>`:''}</div><label class="switch"><input type="checkbox" id="${id}" ${f.value?'checked':''}><span class="slider"></span></label></div>`;
+  else if(f.type==='note')return `<div class="field" id="fw_${f.key}"><div class="hint-box" style="margin:2px 0">${ICON.info}<div>${esc(f.value||'')}</div></div></div>`;
   else if(f.type==='segmented'){const opts=(f.options||[]).map(optOf);const cur=f.value!=null?f.value:(opts[0]&&opts[0].value);inner=`<input type="hidden" id="${id}" value="${esc(cur)}"><div class="seg" data-for="${id}">${opts.map(o=>`<button type="button" class="seg-b ${String(o.value)===String(cur)?'active':''}" data-v="${esc(o.value)}">${esc(o.label)}</button>`).join('')}</div>`;}
   else if(f.type==='tags'){const arr=Array.isArray(f.value)?f.value:[];inner=`<div class="tags" data-key="${f.key}"><input type="hidden" id="${id}" value="${esc(JSON.stringify(arr))}"><div class="tags-wrap" id="tw_${f.key}"></div><input class="tags-in" id="ti_${f.key}" placeholder="${esc(f.placeholder||'输入后回车添加')}"></div>`;}
   else if(f.type==='multiselect'){const arr=Array.isArray(f.value)?f.value:[];const opts=(f.options||[]).map(optOf);inner=`<div class="ms" id="${id}">${opts.length?opts.map(o=>`<label class="ms-o"><input type="checkbox" value="${esc(o.value)}" ${arr.includes(o.value)?'checked':''}><span>${esc(o.label)}</span></label>`).join(''):`<div class="ms-empty">${esc(f.emptyText||'暂无可选项')}</div>`}</div>`;}
@@ -582,14 +588,26 @@ function parseCaps(raw){if(!raw)return[];try{const o=typeof raw==='string'?JSON.
 async function vDashboard(wrap){
   await loadNodes();
   const online=S.nodes.filter(n=>n.online).length;
-  const [listeners,subs]=await Promise.all([api('/listeners').then(r=>r.listeners||[]).catch(()=>[]),api('/subscriptions').then(r=>r.subscriptions||[]).catch(()=>[])]);
+  const offline=S.nodes.filter(n=>!n.online);
+  const listeners=await api('/listeners').then(r=>r.listeners||[]).catch(()=>[]);
   const metrics=await Promise.all(S.nodes.map(n=>nodeMetrics(n.id)));
+  let totalRx=0,totalTx=0,anyTraffic=false;
+  metrics.forEach(m=>{if(m&&m.node){anyTraffic=true;totalRx+=Number(m.node.received_bytes||0);totalTx+=Number(m.node.sent_bytes||0);}});
+  const tasks=await api('/tasks').then(r=>r.tasks||[]).catch(()=>[]);
+  const recentFailed=tasks.filter(t=>t.status==='failed').slice(0,5);
+
   const stat=(cls,ic,v,k)=>`<div class="card stat ${cls}"><div class="ic">${ICON[ic]}</div><div class="v">${v}</div><div class="k">${k}</div></div>`;
-  let html=`<div class="grid stats section">
+  let html='';
+  // Problems surface first — an admin should see "what needs attention" before
+  // any other number on this page.
+  if(offline.length)html+=`<div class="hint-box warn" style="margin-bottom:14px">${ICON.warn}<div><b>${offline.length} 个节点离线</b>：${offline.map(n=>esc(n.name)).join('、')}。离线节点不会响应配置下发，请检查其 agent 进程与网络连通性。</div></div>`;
+  if(recentFailed.length)html+=`<div class="hint-box warn" style="margin-bottom:14px">${ICON.warn}<div><b>最近有 ${recentFailed.length} 个任务失败</b>，详见下方"最近任务"列表。</div></div>`;
+
+  html+=`<div class="grid stats section">
     ${stat('g1','server',S.nodes.length,'受控节点')}
     ${stat('g2','activity',online+' / '+S.nodes.length,'在线节点')}
     ${stat('g3','inbound',listeners.length,'入站服务')}
-    ${stat('g4','rss',subs.length,'订阅')}
+    ${stat('g4','activity',anyTraffic?(fmtBytes(totalRx)+' / '+fmtBytes(totalTx)):'—','全部节点累计下行/上行')}
   </div>`;
 
   html+=`<div class="section">${secHead('节点概览','实时状态与主机累计流量',`<button class="btn ghost sm" onclick="location.hash='#/nodes'">${ICON.server}管理节点</button>`)}`;
@@ -597,7 +615,6 @@ async function vDashboard(wrap){
   else{html+=`<div class="grid cards-3">${S.nodes.map((n,i)=>nodeCard(n,metrics[i],true)).join('')}</div>`;}
   html+=`</div>`;
 
-  const tasks=await api('/tasks').then(r=>r.tasks||[]).catch(()=>[]);
   html+=`<div class="section">${secHead('最近任务','配置下发与安装任务')}`;
   if(!tasks.length)html+=`<div class="card">${emptyState('history','暂无任务','对节点执行“发布配置 / 安装”后，任务会显示在这里。')}</div>`;
   else html+=`<div class="card tbl-wrap"><table><thead><tr><th>类型</th><th>节点</th><th>状态</th><th>结果</th><th>时间</th></tr></thead><tbody>${tasks.slice(0,6).map(t=>`<tr><td>${taskKind(t.kind)}</td><td>${esc(nodeName(t.node_id))}</td><td>${taskStatus(t.status)}</td><td style="color:var(--muted);max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(t.result_summary||'—')}</td><td style="color:var(--muted)">${fmtTime(t.created_at)}</td></tr>`).join('')}</tbody></table></div>`;
@@ -618,24 +635,18 @@ function nodeCard(n,m,compact){
     f=`<div class="node-f">`;
     if(canWrite())f+=`<button class="btn ghost sm" data-act="publish" data-id="${n.id}">${ICON.up}发布配置</button>`;
     if(isAdmin())f+=`<button class="btn subtle sm" data-act="install" data-id="${n.id}">${ICON.box}安装/升级</button>`;
-    if(isAdmin())f+=`<button class="btn subtle sm" data-act="nginx" data-id="${n.id}">Nginx</button>`;
     if(isAdmin())f+=`<button class="btn danger sm" data-act="revoke" data-id="${n.id}" style="margin-left:auto">${ICON.power}吊销</button>`;
     f+=`</div>`;
   }
+  // One compact meta line + one traffic line replaces the old 2x2 grid and
+  // boxed traffic panels — the same information in a fraction of the height.
+  const meta=[esc(n.sing_box_version||'未安装 sing-box'),'心跳 '+rel(n.last_seen_at),'连接 '+(conns==null?'—':conns)];
   return `<div class="card node">
     <div class="node-h"><div class="nm"><b><span class="dot ${n.online?'on':'off'}"></span>${esc(n.name)}</b><div class="sub">${esc((n.os||'?')+' · '+(n.architecture||'?'))}</div></div>${n.online?'<span class="chip on">在线</span>':'<span class="chip off">离线</span>'}</div>
     <div class="node-body">
-      <div class="kv">
-        <div class="i"><div class="l">sing-box</div><div class="val">${esc(n.sing_box_version||'未安装')}</div></div>
-        <div class="i"><div class="l">Agent</div><div class="val">${esc(n.agent_version||'—')}</div></div>
-        <div class="i"><div class="l">最后心跳</div><div class="val">${rel(n.last_seen_at)}</div></div>
-        <div class="i"><div class="l">活跃连接</div><div class="val">${conns==null?'—':conns}</div></div>
-      </div>
-      <div class="traffic">
-        <div class="tf dn"><div class="l">${ICON.dn}下行累计</div><div class="v">${rx==null?'<span style="color:var(--faint);font-size:13px">等待上报</span>':fmtBytes(rx)}</div></div>
-        <div class="tf up"><div class="l">${ICON.up}上行累计</div><div class="v">${tx==null?'<span style="color:var(--faint);font-size:13px">等待上报</span>':fmtBytes(tx)}</div></div>
-      </div>
-      ${caps.length?`<div class="caps">${caps.slice(0,8).map(c=>`<span class="chip">${esc(c)}</span>`).join('')}</div>`:''}
+      <div class="meta-line">${meta.join('<span class="dsep">·</span>')}</div>
+      <div class="meta-line"><span>${ICON.dn}${rx==null?'等待上报':fmtBytes(rx)}</span><span>${ICON.up}${tx==null?'等待上报':fmtBytes(tx)}</span></div>
+      ${caps.length?`<div class="caps">${caps.slice(0,4).map(c=>`<span class="chip">${esc(c)}</span>`).join('')}${caps.length>4?`<span class="chip">+${caps.length-4}</span>`:''}</div>`:''}
     </div>${f}
   </div>`;
 }
@@ -663,7 +674,7 @@ async function vNodes(wrap){
 
   if($('#btn-token'))$('#btn-token').onclick=genToken;
   if($('#btn-token2'))$('#btn-token2').onclick=genToken;
-  $$('[data-approve]',wrap).forEach(b=>b.onclick=()=>{if(needCSRF())return;confirmDialog({title:'批准该节点接入？',message:'批准后节点将获得客户端证书并开始上报心跳。',confirmLabel:'批准',onConfirm:async()=>{await api('/nodes/'+b.dataset.approve+'/approve',{method:'POST'});toast('已批准');route();}});});
+  $$('[data-approve]',wrap).forEach(b=>b.onclick=()=>{if(needCSRF())return;confirmDialog({title:'批准该节点接入？',message:'批准后该节点的密钥即被信任，agent 将开始上报状态。',confirmLabel:'批准',onConfirm:async()=>{await api('/nodes/'+b.dataset.approve+'/approve',{method:'POST'});toast('已批准');route();}});});
   $$('[data-act]',wrap).forEach(b=>b.onclick=()=>nodeAction(b.dataset.act,b.dataset.id));
 }
 function genToken(){
@@ -686,8 +697,7 @@ function showToken(token,exp){showCodeModal('注册凭据已生成','有效期�
 async function nodeAction(act,id){
   if(needCSRF())return;
   if(act==='publish')confirmDialog({title:'发布 sing-box 配置？',message:'将当前入站服务与规则编译后下发到该节点。',confirmLabel:'发布',onConfirm:async()=>{await api('/nodes/'+id+'/configurations/publish',{method:'POST'});toast('已下发配置任务');route();}});
-  else if(act==='nginx')confirmDialog({title:'发布 Nginx 配置？',message:'将该节点已启用的入站路由编译为 Nginx 配置并下发。',confirmLabel:'发布',onConfirm:async()=>{await api('/nodes/'+id+'/nginx/publish',{method:'POST'});toast('已下发 Nginx 任务');route();}});
-  else if(act==='revoke')confirmDialog({title:'吊销该节点？',message:'吊销后该节点证书失效，将无法再上报或接收配置。此操作不可撤销。',confirmLabel:'吊销',danger:true,onConfirm:async()=>{await api('/nodes/'+id+'/revoke',{method:'POST'});toast('已吊销节点');route();}});
+  else if(act==='revoke')confirmDialog({title:'吊销该节点？',message:'吊销后该节点的密钥不再被信任，将无法再上报或接收配置。此操作不可撤销。',confirmLabel:'吊销',danger:true,onConfirm:async()=>{await api('/nodes/'+id+'/revoke',{method:'POST'});toast('已吊销节点');route();}});
   else if(act==='install'){
     let releases=[];try{releases=(await api('/sing-box/releases')).releases||[];}catch{}
     const node=S.nodes.find(n=>n.id===id);const arch=node&&node.architecture;
@@ -718,6 +728,7 @@ async function vListeners(wrap){
     const openNew=()=>openListenerForm();if($('#btn-new-listener'))$('#btn-new-listener').onclick=openNew;if($('#btn-new-listener2'))$('#btn-new-listener2').onclick=openNew;return;
   }
   html+=`<div class="grid cards-2" id="lst-grid"></div>`;
+  html+=`<div class="section" id="ingress-section"></div>`;
   wrap.innerHTML=html;
   wireNodeSelector(()=>route());
   if($('#btn-new-listener'))$('#btn-new-listener').onclick=()=>openListenerForm();
@@ -726,6 +737,43 @@ async function vListeners(wrap){
   grid.innerHTML=cards.join('');
   $$('[data-lact]',grid).forEach(b=>b.onclick=()=>listenerAction(b.dataset.lact,b.dataset.id,shown.find(l=>l.id===b.dataset.id)));
   $$('[data-epact]',grid).forEach(b=>b.onclick=()=>endpointAction(b.dataset.epact,b.dataset.id,b.dataset.listener,b.dataset.proto));
+  await renderIngressSection(shown);
+}
+
+/* ---- 端口复用 / SNI 分流（高级）：多个 TLS/Reality 入站共享同一公网端口 ---- */
+function ingressEligible(l){const sp=l.spec||{};return sp.network==='tcp'&&sp.tls&&sp.tls.enabled&&(l.listen_address==='127.0.0.1'||l.listen_address==='::1')&&l.backend_port&&l.backend_port!==l.port;}
+async function renderIngressSection(nodeListeners){
+  const sec=$('#ingress-section');if(!sec)return;
+  let routes=[];try{routes=(await api('/ingress-routes'+(S.node?'?node_id='+S.node:''))).ingress_routes||[];}catch{}
+  const eligible=nodeListeners.filter(ingressEligible);
+  const lname=id=>{const l=nodeListeners.find(x=>x.id===id);return l?l.name:id;};
+  sec.innerHTML=`<details id="ingress-details">
+    <summary style="cursor:pointer;font-weight:600;color:var(--fg);padding:6px 0">${ICON.route} 端口复用 / SNI 分流（高级，可选）</summary>
+    <div class="hint-box" style="margin:10px 0">${ICON.info}<div>大多数情况下<b>不需要</b>这个功能。仅当你想让<b>多个 TLS / Reality 入站服务共用同一个公网端口</b>（例如都用 443 端口，靠域名 SNI 区分）时才需要：先把入站服务的监听地址改成 <span class="mono">127.0.0.1</span> 并设置一个不同的"回落端口"（入站服务的高级选项），再在这里创建一条规则，把"公网端口 + 域名"指向该入站服务；系统会生成 Nginx 配置做转发。当前可用于此功能的入站服务：${eligible.length ? eligible.map(l=>esc(l.name)).join('、') : '暂无（需先按上述方式配置一个入站服务）'}。</div></div>
+    ${routes.length?`<div class="card rows">${routes.map(r=>`<div class="row"><div class="main-c"><b class="mono">${esc(r.listen_address)}:${r.port}</b><div class="sub">SNI ${esc(r.sni)} → ${esc(lname(r.listener_id))}</div></div><div class="acts">${enabledChip(r.enabled)}${isAdmin()?`<button class="icon-btn" data-iract="delete" data-id="${r.id}" title="删除">${ICON.trash}</button>`:''}</div></div>`).join('')}</div>`:''}
+    ${canWrite()?`<div style="margin-top:12px"><button class="btn ghost sm" id="btn-new-ingress" ${eligible.length?'':'disabled'}>${ICON.plus}新建端口复用规则</button>${isAdmin()?`<button class="btn ghost sm" id="btn-ingress-publish" style="margin-left:8px">${ICON.up}发布 Nginx 配置</button>`:''}</div>`:''}
+  </details>`;
+  if($('#btn-new-ingress'))$('#btn-new-ingress').onclick=()=>openIngressRouteForm(eligible);
+  if($('#btn-ingress-publish'))$('#btn-ingress-publish').onclick=()=>{
+    if(!routes.some(r=>r.enabled)){toast('该节点还没有已启用的端口复用规则，请先创建一条','error');return;}
+    confirmDialog({title:'发布 Nginx 配置？',message:'将该节点已启用的端口复用规则编译为 Nginx 配置并下发。',confirmLabel:'发布',onConfirm:async()=>{await api('/nodes/'+S.node+'/nginx/publish',{method:'POST'});toast('已下发 Nginx 任务');route();}});
+  };
+  $$('[data-iract]',sec).forEach(b=>b.onclick=()=>{
+    if(b.dataset.iract==='delete')confirmDialog({title:'删除该规则？',message:'删除后需要重新发布 Nginx 配置才会在节点上生效。',confirmLabel:'删除',danger:true,onConfirm:async()=>{await api('/ingress-routes/'+b.dataset.id,{method:'DELETE'});toast('已删除');route();}});
+  });
+}
+function openIngressRouteForm(eligible){
+  if(needCSRF())return;
+  openForm({title:'新建端口复用规则',subtitle:'按域名 (SNI) 把公网端口的流量转发给一个入站服务',fields:[
+    {key:'listener_id',label:'转发到入站服务',type:'select',required:true,options:eligible.map(l=>({value:l.id,label:l.name}))},
+    {key:'listen_address',label:'公网监听地址',type:'text',required:true,value:'0.0.0.0',placeholder:'0.0.0.0'},
+    {key:'port',label:'公网端口',type:'number',required:true,value:443,placeholder:'443'},
+    {key:'sni',label:'域名 (SNI)',type:'text',required:true,placeholder:'proxy.example.com',hint:'客户端连接时使用的域名，需与该入站服务证书/Reality 域名一致'},
+    {key:'enabled',label:'启用',type:'switch',value:true},
+  ],submitLabel:'创建',onSubmit:async(v)=>{
+    await api('/ingress-routes',{method:'POST',body:{node_id:S.node,listener_id:v.listener_id,listen_address:v.listen_address,port:Number(v.port),sni:v.sni,enabled:!!v.enabled}});
+    toast('已创建');route();
+  }});
 }
 async function listenerCard(l,obMap){
   const eps=(await api('/listeners/'+l.id+'/endpoints').catch(()=>({endpoints:[]}))).endpoints||[];
@@ -758,7 +806,7 @@ async function openListenerForm(existing){
   const sp=existing?existing.spec||{}:{};
   const curSec=sp.reality&&sp.reality.enabled?'reality':(sp.tls&&sp.tls.enabled?'tls':'none');
   const nodeDefault=existing?existing.node_id:(S.node||S.nodes[0].id);
-  const obOpts=nid=>[{value:'',label:'直连（默认）'}].concat(outbounds.filter(o=>o.node_id===nid).map(o=>({value:o.id,label:o.name+(o.enabled?'':'（已停用）')})));
+  const obOpts=()=>[{value:'',label:'直连（默认）'}].concat(outbounds.map(o=>({value:o.id,label:o.name+(o.enabled?'':'（已停用）')})));
   // Editing shows all fields (avoid silently dropping existing advanced settings);
   // creating starts collapsed so novices see only the essentials.
   const fields=[
@@ -766,23 +814,24 @@ async function openListenerForm(existing){
     {key:'name',label:'名称',type:'text',required:true,value:existing?existing.name:'',placeholder:'例如：香港-VLESS'},
     {key:'protocol',label:'协议',type:'select',required:true,value:sp.protocol||'vless',options:EP_PROTOCOLS.map(p=>({value:p,label:PROTO_LABEL[p]}))},
     {key:'port',label:'端口',type:'number',required:true,value:existing?existing.port:'',placeholder:'443'},
-    {key:'security',label:'传输安全',type:'segmented',value:curSec,options:[{value:'none',label:'无'},{value:'tls',label:'TLS'},{value:'reality',label:'Reality'}]},
+    {key:'security',label:'传输安全',type:'segmented',value:curSec,options:[{value:'none',label:'无'},{value:'tls',label:'TLS'},{value:'reality',label:'Reality'}],hint:'仅 VLESS 支持 REALITY'},
+    {key:'_reality_incompatible',type:'note',value:'REALITY 目前仅支持 VLESS：REALITY 伪装的是一次真实的 TCP TLS 握手，而当前协议使用自己的握手机制（例如 Hysteria2 基于 QUIC），两者无法叠加，保存会失败。请把协议改为 VLESS，或改用“TLS”。',show:v=>v.security==='reality'&&v.protocol!=='vless'},
     {key:'tls_sni',label:'TLS 域名 (SNI)',type:'text',value:sp.tls?sp.tls.server_name||'':'',placeholder:'example.com',show:v=>v.security==='tls'},
-    {key:'cert_id',label:'TLS 证书',type:'select',required:true,value:sp.tls?sp.tls.certificate_id||'':'',options:certs.length?certs.map(c=>({value:c.id,label:c.name})):[{value:'',label:'（无可用证书）'}],show:v=>v.security==='tls',hint:certs.length?'':'请先在“系统设置 → 证书”导入证书'},
-    {key:'rk_handshake',label:'握手服务器',type:'text',required:true,value:sp.reality?sp.reality.handshake_server||'':'',placeholder:'www.microsoft.com',show:v=>v.security==='reality',hint:'Reality 用于伪装的真实站点域名'},
-    {key:'rk_port',label:'握手端口',type:'number',required:true,value:sp.reality&&sp.reality.handshake_port?sp.reality.handshake_port:443,show:v=>v.security==='reality'},
-    {key:'rk_key',label:'Reality 密钥',type:'select',required:true,value:sp.reality?sp.reality.key_id||'':'',options:rkeys.length?rkeys.map(k=>({value:k.id,label:k.name})):[{value:'',label:'（无可用密钥）'}],show:v=>v.security==='reality',hint:rkeys.length?'':'请先在“系统设置 → Reality 密钥”生成'},
-    {key:'outbound_id',label:'出站方式',type:'select',value:existing?existing.outbound_id||'':'',options:obOpts(nodeDefault),refresh:v=>obOpts(v.node_id),hint:'该入站流量的出口：直连或经代理转发；可在“出站方式”页管理'},
+    {key:'cert_id',label:'TLS 证书',type:'select',required:true,value:sp.tls?sp.tls.certificate_id||'':(certs.length===1?certs[0].id:''),options:certs.length?certs.map(c=>({value:c.id,label:c.name})):[{value:'',label:'（无可用证书）'}],show:v=>v.security==='tls',hint:certs.length?'只有一个证书时已自动选中':'请先在“系统设置 → 证书”导入证书'},
+    {key:'rk_handshake',label:'握手服务器',type:'text',required:true,value:sp.reality?sp.reality.handshake_server||'':'www.microsoft.com',placeholder:'www.microsoft.com',show:v=>v.security==='reality',hint:'伪装成一个真实存在的知名网站，已给出常用默认值，也可以自行修改'},
+    {key:'rk_port',label:'握手端口',type:'number',required:true,value:sp.reality&&sp.reality.handshake_port?sp.reality.handshake_port:443,show:v=>v.security==='reality',hint:'一般保持 443 不变'},
+    {key:'rk_key',label:'Reality 密钥',type:'select',required:true,value:sp.reality?sp.reality.key_id||'':(rkeys.length===1?rkeys[0].id:''),options:rkeys.length?rkeys.map(k=>({value:k.id,label:k.name})):[{value:'',label:'（无可用密钥）'}],show:v=>v.security==='reality',hint:rkeys.length===1?'只有一个密钥时已自动选中':(rkeys.length?'':'请先在“系统设置 → Reality 密钥”生成')},
+    {key:'outbound_id',label:'出站方式',type:'select',value:existing?existing.outbound_id||'':'',options:obOpts(),hint:'该入站流量的出口：直连或经代理转发（出站方式与节点无关，可在“出站方式”页统一管理）'},
     {key:'enabled',label:'启用',type:'switch',value:existing?existing.enabled:true,hint:'停用后不参与配置下发'},
     {key:'_adv',label:'显示高级选项',type:'switch',value:!!existing,hint:'监听地址、回落端口、传输层等（一般无需修改）'},
     {key:'network',label:'网络',type:'segmented',value:sp.network||'tcp',options:[{value:'tcp',label:'TCP'},{value:'udp',label:'UDP'}],show:v=>v._adv&&v.protocol==='shadowsocks',hint:'仅 Shadowsocks 可选 TCP/UDP'},
     {key:'listen_address',label:'监听地址',type:'text',value:existing?existing.listen_address:'0.0.0.0',placeholder:'0.0.0.0',show:v=>v._adv,hint:'留空默认监听所有网卡'},
     {key:'backend_port',label:'回落端口',type:'number',value:existing&&existing.backend_port?existing.backend_port:'',placeholder:'可留空',show:v=>v._adv,hint:'置于 Nginx 之后时的本地回落端口'},
     {key:'rk_short',label:'Short IDs',type:'tags',value:sp.reality?sp.reality.short_ids||[]:[],placeholder:'可选，回车添加',show:v=>v._adv&&v.security==='reality'},
-    {key:'transport',label:'传输层',type:'select',value:sp.transport?sp.transport.type||'':'',options:[{value:'',label:'默认（TCP）'},{value:'ws',label:'WebSocket'},{value:'grpc',label:'gRPC'},{value:'httpupgrade',label:'HTTPUpgrade'},{value:'http',label:'HTTP'},{value:'quic',label:'QUIC'}],show:v=>v._adv},
-    {key:'tr_path',label:'路径 Path',type:'text',value:sp.transport?sp.transport.path||'':'',placeholder:'/download',show:v=>v._adv&&(v.transport==='ws'||v.transport==='httpupgrade'||v.transport==='http')},
-    {key:'tr_host',label:'Host',type:'text',value:sp.transport?sp.transport.host||'':'',placeholder:'可选',show:v=>v._adv&&(v.transport==='ws'||v.transport==='httpupgrade'||v.transport==='http')},
-    {key:'tr_svc',label:'gRPC ServiceName',type:'text',value:sp.transport?sp.transport.service_name||'':'',placeholder:'grpc',show:v=>v._adv&&v.transport==='grpc'},
+    {key:'transport',label:'传输层',type:'select',value:sp.transport?sp.transport.type||'':'',options:[{value:'',label:'默认（TCP）'},{value:'ws',label:'WebSocket'},{value:'grpc',label:'gRPC'},{value:'httpupgrade',label:'HTTPUpgrade'},{value:'http',label:'HTTP'},{value:'quic',label:'QUIC'}],show:v=>v._adv,hint:'想套 CDN（如 Cloudflare）中转时选 WebSocket 或 gRPC；不套 CDN 用默认 TCP 即可'},
+    {key:'tr_path',label:'路径 Path',type:'text',value:sp.transport?sp.transport.path||'':'',placeholder:'/download',show:v=>v._adv&&(v.transport==='ws'||v.transport==='httpupgrade'||v.transport==='http'),hint:'客户端与本服务器约定的 URL 路径，任意填写但两边要一致'},
+    {key:'tr_host',label:'Host',type:'text',value:sp.transport?sp.transport.host||'':'',placeholder:'可选，套 CDN 时填 CDN 上配置的域名',show:v=>v._adv&&(v.transport==='ws'||v.transport==='httpupgrade'||v.transport==='http'),hint:'套 CDN 时：客户端连接 CDN 域名，CDN 再按这个 Host 转发到本服务器；不套 CDN 可留空'},
+    {key:'tr_svc',label:'gRPC ServiceName',type:'text',value:sp.transport?sp.transport.service_name||'':'',placeholder:'grpc',show:v=>v._adv&&v.transport==='grpc',hint:'客户端与本服务器约定的服务名，任意填写但两边要一致'},
   ];
   openForm({title:existing?'编辑入站服务':'新建入站服务',subtitle:existing?existing.name:'为客户端提供代理入口',wide:true,fields,submitLabel:existing?'保存修改':'创建',onSubmit:async(v)=>{
     const network=v.protocol==='shadowsocks'?(v.network||'tcp'):(PROTO_NET[v.protocol]||'tcp');
@@ -805,7 +854,7 @@ async function listenerAction(act,id,l){
 }
 function endpointFields(proto,existing){
   const f=[{key:'name',label:'名称 / 备注',type:'text',required:true,value:existing?existing.name:'',placeholder:'例如：user01'}];
-  if(['vless','vmess','tuic'].includes(proto))f.push({key:'uuid',label:'UUID',type:'text',required:true,value:'',placeholder:'点击右侧生成',suffix:'生成',onSuffix:el=>el.value=uuid()});
+  if(['vless','vmess','tuic'].includes(proto))f.push({key:'uuid',label:'UUID',type:'text',required:true,value:'',placeholder:'点击右侧生成',suffix:'生成',onSuffix:el=>el.value=uuid(),hint:'客户端连接用的身份标识，点击“生成”即可，不需要自己填写'});
   if(proto==='vmess')f.push({key:'alter_id',label:'AlterID',type:'number',value:0,hint:'一般填 0'});
   if(proto==='vless')f.push({key:'flow',label:'Flow',type:'select',value:'',options:[{value:'',label:'无'},{value:'xtls-rprx-vision',label:'xtls-rprx-vision（Reality 推荐）'}]});
   if(proto==='tuic')f.push({key:'password',label:'密码',type:'text',value:'',placeholder:'可选'});
@@ -844,19 +893,16 @@ async function endpointAction(act,id,listenerId,proto){
 const OB_TYPE_LABEL={direct:'直连',socks:'SOCKS5 代理',http:'HTTP 代理'};
 async function vOutbounds(wrap){
   await loadNodes();
-  if(!S.nodes.length){wrap.innerHTML=`<div class="card">${emptyState('server','请先添加节点','出站方式绑定到具体节点，请先在“节点”页面接入一台服务器。',`<button class="btn primary" onclick="location.hash='#/nodes'">前往节点</button>`)}</div>`;return;}
-  const all=(await api('/outbounds')).outbounds||[];
-  const shown=(S.node?all.filter(o=>o.node_id===S.node):all);
-  let html=`<div class="hint-box" style="margin-bottom:16px">${ICON.info}<div>出站方式决定入站流量从本节点<b>如何出网</b>。系统内置一条<b>直连</b>；如需经上游代理中转，可在此添加 <b>SOCKS5 / HTTP</b> 代理，再到入站服务中选它作为默认出站。</div></div>`;
-  html+=`<div class="toolbar">${nodeSelector()}<div class="tb-spacer" style="flex:1"></div>${canWrite()?`<button class="btn primary" id="btn-new-ob">${ICON.plus}新建出站</button>`:''}</div>`;
+  const shown=(await api('/outbounds')).outbounds||[];
+  let html=`<div class="hint-box" style="margin-bottom:16px">${ICON.info}<div>出站方式定义流量<b>从这台服务器去往哪里出网</b>，和具体某个节点无关——创建一次，任何节点上的入站服务都可以选它作为出口。系统内置一条<b>直连</b>；如需经上游代理中转，可在此添加 <b>SOCKS5 / HTTP</b> 代理，再到入站服务中选它作为默认出站。</div></div>`;
+  html+=`<div class="toolbar"><div class="tb-spacer" style="flex:1"></div>${canWrite()?`<button class="btn primary" id="btn-new-ob">${ICON.plus}新建出站</button>`:''}</div>`;
   if(!shown.length){
-    html+=`<div class="card">${emptyState('outbound','该节点还没有自定义出站','默认已有“直连”出口。若要让流量经上游 SOCKS5 / HTTP 代理出网，请在此添加。',canWrite()?`<button class="btn primary" id="btn-new-ob2">${ICON.plus}添加代理出站</button>`:'')}</div>`;
-    wrap.innerHTML=html;wireNodeSelector(()=>route());
+    html+=`<div class="card">${emptyState('outbound','还没有自定义出站','默认已有“直连”出口。若要让流量经上游 SOCKS5 / HTTP 代理出网，请在此添加，任何节点都能复用。',canWrite()?`<button class="btn primary" id="btn-new-ob2">${ICON.plus}添加代理出站</button>`:'')}</div>`;
+    wrap.innerHTML=html;
     const openNew=()=>openOutboundForm();if($('#btn-new-ob'))$('#btn-new-ob').onclick=openNew;if($('#btn-new-ob2'))$('#btn-new-ob2').onclick=openNew;return;
   }
   html+=`<div class="grid cards-2" id="ob-grid">${shown.map(outboundCard).join('')}</div>`;
   wrap.innerHTML=html;
-  wireNodeSelector(()=>route());
   if($('#btn-new-ob'))$('#btn-new-ob').onclick=()=>openOutboundForm();
   $$('[data-obact]',wrap).forEach(b=>b.onclick=()=>outboundAction(b.dataset.obact,b.dataset.id,shown.find(o=>o.id===b.dataset.id)));
 }
@@ -874,19 +920,17 @@ function outboundCard(o){
 }
 function openOutboundForm(existing){
   if(needCSRF())return;
-  const nodeDefault=existing?existing.node_id:(S.node||S.nodes[0].id);
   const fields=[
-    {key:'node_id',label:'节点',type:'select',required:true,value:nodeDefault,options:S.nodes.map(n=>({value:n.id,label:n.name}))},
     {key:'name',label:'名称',type:'text',required:true,value:existing?existing.name:'',placeholder:'例如：上游-HK-Socks'},
     {key:'type',label:'类型',type:'segmented',value:existing?existing.type:'socks',options:[{value:'socks',label:'SOCKS5'},{value:'http',label:'HTTP'}]},
-    {key:'server',label:'服务器地址',type:'text',required:true,value:existing?existing.server||'':'',placeholder:'1.2.3.4 或 域名'},
+    {key:'server',label:'服务器地址',type:'text',required:true,value:existing?existing.server||'':'',placeholder:'1.2.3.4 或 域名',hint:'这台上游代理服务器的地址，不是本系统里的某个节点'},
     {key:'server_port',label:'端口',type:'number',required:true,value:existing&&existing.server_port?existing.server_port:'',placeholder:'1080'},
     {key:'username',label:'用户名',type:'text',value:existing?existing.username||'':'',placeholder:'可选，需认证时填写'},
     {key:'password',label:'密码',type:'password',value:'',placeholder:existing?'留空表示不修改':'可选，需认证时填写',hint:'密码在服务端加密存储，不会回显'},
-    {key:'enabled',label:'启用',type:'switch',value:existing?existing.enabled:true,hint:'停用后不写入节点配置'},
+    {key:'enabled',label:'启用',type:'switch',value:existing?existing.enabled:true,hint:'停用后不写入任何节点配置'},
   ];
-  openForm({title:existing?'编辑出站':'新建出站',subtitle:existing?existing.name:'定义一个代理出口',wide:true,fields,submitLabel:existing?'保存修改':'创建',onSubmit:async(v)=>{
-    const body={node_id:v.node_id,name:v.name,type:v.type,server:v.server||'',server_port:v.server_port?Number(v.server_port):0,username:v.username||'',password:v.password||'',enabled:!!v.enabled};
+  openForm({title:existing?'编辑出站':'新建出站',subtitle:existing?existing.name:'定义一个代理出口，任意节点的入站服务都可以复用它',wide:true,fields,submitLabel:existing?'保存修改':'创建',onSubmit:async(v)=>{
+    const body={name:v.name,type:v.type,server:v.server||'',server_port:v.server_port?Number(v.server_port):0,username:v.username||'',password:v.password||'',enabled:!!v.enabled};
     if(existing)await api('/outbounds/'+existing.id,{method:'PUT',body});
     else await api('/outbounds',{method:'POST',body});
     toast(existing?'已保存':'已创建出站');route();
@@ -904,16 +948,16 @@ async function vSubscriptions(wrap){
   await loadNodes();
   const subs=(await api('/subscriptions')).subscriptions||[];
   const up=subs.filter(s=>s.kind==='upstream'),client=subs.filter(s=>s.kind==='client');
-  let html=`<div class="toolbar"><div class="tb-spacer" style="flex:1"></div>${canWrite()?`<button class="btn ghost" id="btn-up">${ICON.plus}上游订阅</button><button class="btn primary" id="btn-client">${ICON.plus}客户端订阅</button>`:''}</div>`;
-  html+=`<div class="hint-box" style="margin-bottom:20px">${ICON.info}<div><b>客户端订阅</b>：把选中的用户凭据聚合成一条可分享的链接，粘贴到客户端即可一键导入。&nbsp;&nbsp;<b>上游订阅</b>：从外部拉取路由规则并合并进分流。</div></div>`;
+  let html=`<div class="toolbar"><div class="tb-spacer" style="flex:1"></div>${canWrite()?`<button class="btn ghost" id="btn-up">${ICON.plus}远程分流规则订阅</button><button class="btn primary" id="btn-client">${ICON.plus}客户端订阅</button>`:''}</div>`;
+  html+=`<div class="hint-box" style="margin-bottom:20px">${ICON.info}<div>这两个"订阅"是完全不同的功能，名字相似但用途无关：<br><b>客户端订阅</b>——给你自己的代理客户端用（Shadowrocket / v2rayN / mihomo 等）。把这台服务器上已创建的若干用户凭据打包成一条链接，客户端粘贴这条链接就能一键导入连接方式。<br><b>远程分流规则订阅</b>——给"分流规则"页面用，和代理节点、客户端无关。定期从一个 URL 拉取一份规则列表（哪些域名走代理、哪些直连），自动合并进对应节点的分流规则。<b>如果你不需要自动更新分流规则，这个功能可以完全不用</b>，手动在"分流规则"页面添加规则即可。</div></div>`;
 
-  html+=`<div class="section">${secHead('客户端订阅','聚合凭据生成分享链接')}`;
+  html+=`<div class="section">${secHead('客户端订阅','聚合凭据生成分享链接，给你自己的代理客户端导入用')}`;
   if(!client.length)html+=`<div class="card">${emptyState('link','还没有客户端订阅','把多个用户凭据打包成一条链接，方便在手机 / 电脑客户端一键导入。',canWrite()?`<button class="btn primary" id="btn-client2">${ICON.plus}创建客户端订阅</button>`:'')}</div>`;
   else html+=`<div class="card rows">${client.map(s=>subRow(s)).join('')}</div>`;
   html+=`</div>`;
 
-  html+=`<div class="section">${secHead('上游订阅','拉取外部路由规则')}`;
-  if(!up.length)html+=`<div class="card">${emptyState('rss','还没有上游订阅','订阅外部的路由规则集，会自动并入对应节点的分流规则。')}</div>`;
+  html+=`<div class="section">${secHead('远程分流规则订阅','可选功能：自动拉取外部规则合并进分流，非必需')}`;
+  if(!up.length)html+=`<div class="card">${emptyState('rss','还没有远程分流规则订阅','可选功能。订阅一个外部的路由规则列表，会自动并入对应节点的分流规则；不需要自动更新规则的话可以跳过这个功能。')}</div>`;
   else html+=`<div class="card rows">${up.map(s=>subRow(s)).join('')}</div>`;
   html+=`</div>`;
   wrap.innerHTML=html;
@@ -937,10 +981,10 @@ function subRow(s){
 function openUpstreamForm(){
   if(needCSRF())return;
   if(!S.nodes.length){toast('请先添加节点','error');return;}
-  openForm({title:'新建上游订阅',subtitle:'拉取外部路由规则集',fields:[
+  openForm({title:'新建远程分流规则订阅',subtitle:'定期拉取外部规则，自动合并进所选节点的分流规则',fields:[
     {key:'name',label:'名称',type:'text',required:true,placeholder:'例如：广告拦截规则'},
     {key:'node_id',label:'应用到节点',type:'select',required:true,value:S.node||S.nodes[0].id,options:S.nodes.map(n=>({value:n.id,label:n.name}))},
-    {key:'url',label:'订阅地址',type:'text',required:true,placeholder:'https://...'},
+    {key:'url',label:'订阅地址',type:'text',required:true,placeholder:'https://...',hint:'注意：这里必须是一个返回本系统专用 JSON 格式（{"version":1,"rules":[...]}）的地址，不是 Clash/mihomo 的 YAML 订阅链接，两者不兼容。'},
   ],submitLabel:'创建',onSubmit:async(v)=>{
     await api('/subscriptions',{method:'POST',body:{kind:'upstream',name:v.name,node_id:v.node_id,url:v.url,format:'route_rules_v1',enabled:true}});
     toast('已创建上游订阅');route();
@@ -983,11 +1027,13 @@ async function vRules(wrap){
   if(!S.node)S.node=S.nodes[0].id;
   const rules=(await api('/nodes/'+S.node+'/rules')).rules||[];
   rules.sort((a,b)=>a.priority-b.priority);
-  let html=`<div class="toolbar">${nodeSelector()}<div class="tb-spacer" style="flex:1"></div>${canWrite()?`<button class="btn primary" id="btn-new-rule">${ICON.plus}新建规则</button>`:''}</div>`;
+  let obMap={};try{((await api('/outbounds')).outbounds||[]).forEach(o=>obMap[o.id]=o.name);}catch{}
+  let html=`<div class="hint-box" style="margin-bottom:16px">${ICON.info}<div>分流规则决定<b>符合条件的流量怎么走</b>：直连、拒绝，或转发给某个出站方式；从上到下按优先级（数字越小越先匹配），第一条命中的规则生效，都不命中则默认直连。</div></div>`;
+  html+=`<div class="toolbar">${nodeSelector()}<div class="tb-spacer" style="flex:1"></div>${canWrite()?`<button class="btn primary" id="btn-new-rule">${ICON.plus}新建规则</button>`:''}</div>`;
   if(!rules.length){
     html+=`<div class="card">${emptyState('route','该节点还没有分流规则','规则决定流量走向：直连、拒绝或指定出站。数字越小优先级越高。',canWrite()?`<button class="btn primary" id="btn-new-rule2">${ICON.plus}创建第一条规则</button>`:'')}</div>`;
   }else{
-    html+=`<div class="card tbl-wrap"><table><thead><tr><th style="width:70px">优先级</th><th>匹配条件</th><th>动作</th><th>状态</th><th></th></tr></thead><tbody>${rules.map(r=>ruleRow(r)).join('')}</tbody></table></div>`;
+    html+=`<div class="card tbl-wrap"><table><thead><tr><th style="width:70px">优先级</th><th>匹配条件</th><th>动作</th><th>状态</th><th></th></tr></thead><tbody>${rules.map(r=>ruleRow(r,obMap)).join('')}</tbody></table></div>`;
   }
   wrap.innerHTML=html;
   wireNodeSelector(()=>route());
@@ -1005,25 +1051,35 @@ function ruleConds(r){
   if(r.network)c.push(r.network.toUpperCase());
   return c.length?c.map(x=>`<span class="chip">${esc(x)}</span>`).join(' '):'<span class="chip">全部流量</span>';
 }
-function ruleActionChip(r){const m={direct:['直连','on'],reject:['拒绝','bad'],outbound:['出站：'+(r.outbound_tag||'?'),'acc']};const x=m[r.action]||[r.action,'off'];return `<span class="chip ${x[1]}">${x[0]}</span>`;}
-function ruleRow(r){
-  return `<tr><td><b>${r.priority}</b></td><td>${ruleConds(r)}</td><td>${ruleActionChip(r)}</td><td>${enabledChip(r.enabled)}</td><td class="actions">${canWrite()?`<button class="btn subtle sm" data-ract="toggle" data-id="${r.id}">${r.enabled?'停用':'启用'}</button><button class="icon-btn" data-ract="edit" data-id="${r.id}" title="编辑">${ICON.edit}</button><button class="icon-btn" data-ract="delete" data-id="${r.id}" title="删除">${ICON.trash}</button>`:''}</td></tr>`;
+function ruleActionChip(r,obMap){
+  const obName=r.outbound_tag&&r.outbound_tag.startsWith('outbound-')?(obMap&&obMap[r.outbound_tag.slice('outbound-'.length)]||'已删除的出站'):(r.outbound_tag||'?');
+  const m={direct:['直连','on'],reject:['拒绝','bad'],outbound:['出站：'+esc(obName),'acc']};
+  const x=m[r.action]||[r.action,'off'];return `<span class="chip ${x[1]}">${x[0]}</span>`;
 }
-function openRuleForm(existing){
+function ruleRow(r,obMap){
+  return `<tr><td><b>${r.priority}</b></td><td>${ruleConds(r)}</td><td>${ruleActionChip(r,obMap)}</td><td>${enabledChip(r.enabled)}</td><td class="actions">${canWrite()?`<button class="btn subtle sm" data-ract="toggle" data-id="${r.id}">${r.enabled?'停用':'启用'}</button><button class="icon-btn" data-ract="edit" data-id="${r.id}" title="编辑">${ICON.edit}</button><button class="icon-btn" data-ract="delete" data-id="${r.id}" title="删除">${ICON.trash}</button>`:''}</td></tr>`;
+}
+async function openRuleForm(existing){
   if(needCSRF())return;
   const r=existing||{};
+  let outbounds=[];try{outbounds=(await api('/outbounds')).outbounds||[];}catch{}
+  // outbound_tag is the raw sing-box outbound tag the compiler emits
+  // ("outbound-"+id for a managed outbound); a free-text field would force
+  // users to know that internal format, so this offers a name-based picker
+  // and derives the tag itself.
+  const curOutboundId=r.outbound_tag&&r.outbound_tag.startsWith('outbound-')?r.outbound_tag.slice('outbound-'.length):'';
   openForm({title:existing?'编辑规则':'新建分流规则',subtitle:'节点：'+nodeName(S.node),wide:true,fields:[
-    {key:'priority',label:'优先级',type:'number',required:true,value:r.priority!=null?r.priority:100,hint:'数字越小越先匹配'},
-    {key:'action',label:'动作',type:'segmented',value:r.action||'direct',options:[{value:'direct',label:'直连'},{value:'reject',label:'拒绝'},{value:'outbound',label:'指定出站'}]},
-    {key:'outbound_tag',label:'出站标签',type:'text',required:true,value:r.outbound_tag||'',placeholder:'出站 tag',show:v=>v.action==='outbound'},
-    {key:'domains',label:'精确域名',type:'tags',value:r.domains||[],placeholder:'如 example.com，回车添加'},
-    {key:'domain_suffix',label:'域名后缀',type:'tags',value:r.domain_suffix||[],placeholder:'如 google.com'},
-    {key:'cidrs',label:'IP / CIDR',type:'tags',value:r.cidrs||[],placeholder:'如 8.8.8.8/32'},
-    {key:'port',label:'端口',type:'number',value:r.port||'',placeholder:'可选'},
+    {key:'priority',label:'优先级',type:'number',required:true,value:r.priority!=null?r.priority:100,hint:'数字越小越先匹配，多条规则同时满足时以此排序'},
+    {key:'action',label:'动作',type:'segmented',value:r.action||'direct',options:[{value:'direct',label:'直连'},{value:'reject',label:'拒绝'},{value:'outbound',label:'指定出站'}],hint:'直连：不经代理直接访问；拒绝：直接断开；指定出站：经某个代理出口转发'},
+    {key:'outbound_id',label:'出站方式',type:'select',required:true,value:curOutboundId||(outbounds[0]?outbounds[0].id:''),options:outbounds.length?outbounds.map(o=>({value:o.id,label:o.name})):[{value:'',label:'（还没有出站方式，请先在“出站方式”页创建）'}],show:v=>v.action==='outbound'},
+    {key:'domains',label:'精确域名',type:'tags',value:r.domains||[],placeholder:'如 example.com，回车添加',hint:'只匹配完全相同的域名，不含子域名'},
+    {key:'domain_suffix',label:'域名后缀',type:'tags',value:r.domain_suffix||[],placeholder:'如 google.com',hint:'匹配该域名及其所有子域名，最常用'},
+    {key:'cidrs',label:'IP / CIDR',type:'tags',value:r.cidrs||[],placeholder:'如 8.8.8.8/32 或 10.0.0.0/8',hint:'按目标 IP 段匹配'},
+    {key:'port',label:'端口',type:'number',value:r.port||'',placeholder:'可留空表示不限',hint:'只按目标端口匹配，一般留空'},
     {key:'network',label:'网络',type:'segmented',value:r.network||'',options:[{value:'',label:'不限'},{value:'tcp',label:'TCP'},{value:'udp',label:'UDP'}]},
     {key:'enabled',label:'启用',type:'switch',value:existing?r.enabled:true},
   ],submitLabel:existing?'保存':'创建',onSubmit:async(v)=>{
-    const body={priority:Number(v.priority),action:v.action,outbound_tag:v.action==='outbound'?v.outbound_tag:'',domains:v.domains||[],domain_suffix:v.domain_suffix||[],cidrs:v.cidrs||[],port:v.port?Number(v.port):0,network:v.network||'',protocol:'',inbound_tag:'',endpoint_name:'',enabled:!!v.enabled};
+    const body={priority:Number(v.priority),action:v.action,outbound_tag:v.action==='outbound'?'outbound-'+v.outbound_id:'',domains:v.domains||[],domain_suffix:v.domain_suffix||[],cidrs:v.cidrs||[],port:v.port?Number(v.port):0,network:v.network||'',protocol:'',inbound_tag:'',endpoint_name:'',enabled:!!v.enabled};
     if(existing)await api('/rules/'+existing.id,{method:'PUT',body:{...body,node_id:S.node}});
     else await api('/nodes/'+S.node+'/rules',{method:'POST',body});
     toast(existing?'已保存':'已创建规则');route();
@@ -1037,24 +1093,43 @@ async function ruleAction(act,id,r){
 }
 
 /* ==================== VIEW: connections ==================== */
+// Real-time, all-nodes view: the master streams updates over Server-Sent
+// Events as agents push them (agents poll their own local sing-box and push
+// proactively — the master never asks an agent for this data). No node
+// picker and no manual refresh: every node's connections show at once and
+// update live.
+let esConn=null;
+function closeConnStream(){if(esConn){esConn.close();esConn=null;}}
 async function vConnections(wrap){
   await loadNodes();
-  if(!S.nodes.length){wrap.innerHTML=`<div class="card">${emptyState('server','请先添加节点','实时连接需要节点上报运行数据。',`<button class="btn primary" onclick="location.hash='#/nodes'">前往节点</button>`)}</div>`;return;}
-  if(!S.node)S.node=S.nodes[0].id;
-  let data;
-  try{data=await api('/nodes/'+S.node+'/connections');}
-  catch(err){
-    let html=`<div class="toolbar">${nodeSelector()}</div>`;
-    html+=`<div class="card">${emptyState('activity','暂无运行数据',err.status===404?'该节点尚未上报运行指标（agent 首次心跳后才会出现连接数据）。':err.message)}</div>`;
-    wrap.innerHTML=html;wireNodeSelector(()=>route());return;
+  closeConnStream();
+  if(!S.nodes.length){wrap.innerHTML=`<div class="card">${emptyState('server','请先添加节点','实时连接需要至少一个节点上报运行数据。',`<button class="btn primary" onclick="location.hash='#/nodes'">前往节点</button>`)}</div>`;return;}
+  const nodeNames={};S.nodes.forEach(n=>nodeNames[n.id]=n.name);
+  const state={};
+  let live=false;
+  function render(){
+    let all=[];
+    for(const nid in state){for(const c of (state[nid].connections||[]))all.push({...c,_node:nid});}
+    all.sort((a,b)=>((b.download||0)+(b.upload||0))-((a.download||0)+(a.upload||0)));
+    const reporting=Object.keys(state).length;
+    let html=`<div class="toolbar"><span class="chip ${live?'on':'off'}">${live?'● 实时连接中':'○ 连接中…'}</span><span class="chip acc">${all.length} 个活跃连接</span><span class="chip">${reporting} / ${S.nodes.length} 个节点已上报</span></div>`;
+    if(!all.length){html+=`<div class="card">${emptyState('activity','当前没有活跃连接','当有客户端通过任意节点代理流量时，连接会自动实时显示在这里，无需手动刷新。')}</div>`;}
+    else{
+      html+=`<div class="card tbl-wrap"><table><thead><tr><th>节点</th><th>入站</th><th>网络</th><th>来源</th><th>目标</th><th>下载</th><th>上传</th><th>规则</th></tr></thead><tbody>${all.map(c=>`<tr><td>${esc(nodeNames[c._node]||c._node)}</td><td>${esc(c.inbound||'—')}</td><td><span class="chip">${esc((c.network||'').toUpperCase())}</span></td><td class="mono">${esc(c.source||'—')}</td><td class="mono">${esc(c.host||c.destination||'—')}</td><td>${fmtBytes(c.download)}</td><td>${fmtBytes(c.upload)}</td><td style="color:var(--muted)">${esc(c.rule||c.outbound||'—')}</td></tr>`).join('')}</tbody></table></div>`;
+    }
+    wrap.innerHTML=html;
   }
-  const conns=data.connections||[];
-  let html=`<div class="toolbar">${nodeSelector()}<div class="tb-spacer" style="flex:1"></div><span class="chip acc">${conns.length} 个活跃连接</span><span class="chip">采集于 ${rel(data.reported_at)}</span></div>`;
-  if(!conns.length){html+=`<div class="card">${emptyState('activity','当前没有活跃连接','当有客户端通过该节点代理流量时，连接会实时显示在这里。')}</div>`;}
-  else{
-    html+=`<div class="card tbl-wrap"><table><thead><tr><th>入站</th><th>网络</th><th>来源</th><th>目标</th><th>下载</th><th>上传</th><th>规则</th></tr></thead><tbody>${conns.map(c=>`<tr><td>${esc(c.inbound||'—')}</td><td><span class="chip">${esc((c.network||'').toUpperCase())}</span></td><td class="mono">${esc(c.source||'—')}</td><td class="mono">${esc(c.host||c.destination||'—')}</td><td>${fmtBytes(c.download)}</td><td>${fmtBytes(c.upload)}</td><td style="color:var(--muted)">${esc(c.rule||c.outbound||'—')}</td></tr>`).join('')}</tbody></table></div>`;
-  }
-  wrap.innerHTML=html;wireNodeSelector(()=>route());
+  render();
+  if(typeof EventSource==='undefined'){wrap.innerHTML=`<div class="card">${emptyState('activity','浏览器不支持实时推送','请更换到较新版本的浏览器。')}</div>`;return;}
+  esConn=new EventSource('/api/v1/events/connections');
+  esConn.addEventListener('snapshot',e=>{
+    try{const d=JSON.parse(e.data);(d.nodes||[]).forEach(n=>{state[n.node_id]={collected_at:n.collected_at,connections:n.connections||[]};});live=true;render();}catch{}
+  });
+  esConn.addEventListener('node',e=>{
+    try{const n=JSON.parse(e.data);state[n.node_id]={collected_at:n.collected_at,connections:n.connections||[]};live=true;render();}catch{}
+  });
+  esConn.addEventListener('keepalive',()=>{live=true;});
+  esConn.onerror=()=>{live=false;render();};
 }
 
 /* ==================== VIEW: security ==================== */
@@ -1081,10 +1156,11 @@ async function renderFirewall(el){
 function openFirewallForm(){
   if(needCSRF())return;
   openForm({title:'新建防火墙规则',subtitle:'节点：'+nodeName(S.node),fields:[
-    {key:'action',label:'动作',type:'segmented',value:'drop',options:[{value:'drop',label:'封禁'},{value:'accept',label:'放行'}]},
+    {key:'_note',type:'note',value:'规则按“来源 IP 段 + 协议 + 端口”匹配，命中后按下面选的动作处理。创建后别忘了点“发布到节点”，否则不会生效。'},
+    {key:'action',label:'动作',type:'segmented',value:'drop',options:[{value:'drop',label:'封禁'},{value:'accept',label:'放行'}],hint:'封禁：丢弃匹配的流量；放行：明确允许（用于在整体封禁之外开个口子）'},
     {key:'protocol',label:'协议',type:'segmented',value:'tcp',options:[{value:'tcp',label:'TCP'},{value:'udp',label:'UDP'}]},
-    {key:'cidr',label:'来源 CIDR',type:'text',value:'',placeholder:'如 1.2.3.0/24，留空表示任意'},
-    {key:'port',label:'端口',type:'number',required:true,value:'',placeholder:'如 22'},
+    {key:'cidr',label:'来源 CIDR',type:'text',value:'',placeholder:'如 1.2.3.0/24，留空表示任意',hint:'只针对某个 IP 段生效；留空表示不限来源'},
+    {key:'port',label:'端口',type:'number',required:true,value:'',placeholder:'如 22',hint:'该规则只影响这一个端口'},
   ],submitLabel:'创建',onSubmit:async(v)=>{await api('/nodes/'+S.node+'/firewall/rules',{method:'POST',body:{action:v.action,protocol:v.protocol,cidr:v.cidr||'',port:Number(v.port),enabled:true}});toast('已创建，记得“发布到节点”');route();}});
 }
 async function renderFail2ban(el){
@@ -1096,13 +1172,14 @@ async function renderFail2ban(el){
 function openJailForm(){
   if(needCSRF())return;
   openForm({title:'新建 Fail2Ban Jail',subtitle:'节点：'+nodeName(S.node),wide:true,fields:[
-    {key:'name',label:'名称',type:'text',required:true,placeholder:'sshd',hint:'仅字母、数字、_ 、-'},
-    {key:'filter_name',label:'过滤器名称',type:'text',required:true,value:'sshd',hint:'仅字母、数字、_ 、-'},
-    {key:'log_path',label:'日志路径',type:'text',required:true,placeholder:'/var/log/auth.log'},
-    {key:'fail_regex',label:'匹配正则',type:'text',required:true,placeholder:'Failed password.*from <HOST>'},
-    {key:'max_retry',label:'最大失败次数',type:'number',required:true,value:5},
-    {key:'find_time_seconds',label:'统计窗口（秒）',type:'number',required:true,value:600},
-    {key:'ban_time_seconds',label:'封禁时长（秒）',type:'number',required:true,value:3600},
+    {key:'_note',type:'note',value:'Fail2Ban 会持续监视一个日志文件，当某个来源 IP 在“统计窗口”内失败次数达到“最大失败次数”，就自动封禁它“封禁时长”那么久，用来防暴力破解。下面已经预填了保护 SSH 登录最常用的默认值，直接创建即可；如果这台机器的 SSH 端口/日志路径不同，再自行修改。'},
+    {key:'name',label:'名称',type:'text',required:true,value:'sshd',placeholder:'sshd',hint:'仅字母、数字、_ 、-，用于区分不同 Jail'},
+    {key:'filter_name',label:'过滤器名称',type:'text',required:true,value:'sshd',hint:'仅字母、数字、_ 、-，通常和名称保持一致即可'},
+    {key:'log_path',label:'日志路径',type:'text',required:true,value:'/var/log/auth.log',placeholder:'/var/log/auth.log',hint:'要监视的日志文件；Debian/Ubuntu 默认是 /var/log/auth.log，CentOS/RHEL 是 /var/log/secure'},
+    {key:'fail_regex',label:'匹配正则',type:'text',required:true,value:'Failed password.*from <HOST>',placeholder:'Failed password.*from <HOST>',hint:'用于从日志中识别“失败尝试”的正则表达式；<HOST> 是固定占位符，代表来源 IP，不要删除'},
+    {key:'max_retry',label:'最大失败次数',type:'number',required:true,value:5,hint:'超过这个次数才封禁'},
+    {key:'find_time_seconds',label:'统计窗口（秒）',type:'number',required:true,value:600,hint:'在这段时间内累计失败次数；默认 600 秒 = 10 分钟'},
+    {key:'ban_time_seconds',label:'封禁时长（秒）',type:'number',required:true,value:3600,hint:'封禁多久后自动解封；默认 3600 秒 = 1 小时'},
   ],submitLabel:'创建',onSubmit:async(v)=>{await api('/nodes/'+S.node+'/fail2ban/jails',{method:'POST',body:{name:v.name,filter_name:v.filter_name,log_path:v.log_path,fail_regex:v.fail_regex,max_retry:Number(v.max_retry),find_time_seconds:Number(v.find_time_seconds),ban_time_seconds:Number(v.ban_time_seconds),enabled:true}});toast('已创建，记得“发布到节点”');route();}});
 }
 

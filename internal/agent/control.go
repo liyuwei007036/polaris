@@ -1,30 +1,23 @@
 package agent
 
 import (
-	"bufio"
-	"bytes"
 	"context"
-	"crypto/tls"
-	"crypto/x509"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
-	"net/http"
-	"os"
-	"path/filepath"
+	"net"
 	"runtime"
-	"strings"
 	"time"
+
+	"github.com/sb-control/sb-control/internal/wire"
 )
 
 type Status struct {
-	AgentVersion string         `json:"agent_version"`
-	OS           string         `json:"os"`
-	Architecture string         `json:"architecture"`
-	SingBox      string         `json:"sing_box_version"`
-	Capabilities map[string]any `json:"capabilities"`
-	Metrics      MetricReport   `json:"metrics"`
+	AgentVersion string
+	OS           string
+	Architecture string
+	SingBox      string
+	Capabilities map[string]any
+	Metrics      MetricReport
 }
 
 // MetricReport deliberately separates host-interface counters from
@@ -97,138 +90,185 @@ func DefaultStatus(singBoxVersion string) Status {
 		OS:           runtime.GOOS,
 		Architecture: runtime.GOARCH,
 		SingBox:      singBoxVersion,
-		Capabilities: map[string]any{"systemd": runtime.GOOS == "linux", "control_channel": "https-ndjson"},
+		Capabilities: map[string]any{"systemd": runtime.GOOS == "linux", "control_channel": "noise-tcp"},
 		Metrics:      CollectMetrics(),
 	}
 }
 
-func NewMTLSClient(dataDir, masterCAPath string) (*http.Client, error) {
-	certificate, err := tls.LoadX509KeyPair(filepath.Join(dataDir, "agent.crt"), filepath.Join(dataDir, privateKeyFile))
+// Connect dials the master's agent port and completes the Noise_XK
+// handshake. The agent is the initiator and must already know the master's
+// static public key (configured out of band by the operator) — the
+// WireGuard-style replacement for pinning a CA certificate.
+func Connect(ctx context.Context, masterAddr string, local wire.Keypair, masterPub [wire.KeySize]byte) (*wire.Conn, error) {
+	dialer := net.Dialer{Timeout: 10 * time.Second}
+	raw, err := dialer.DialContext(ctx, "tcp", masterAddr)
 	if err != nil {
-		return nil, fmt.Errorf("load agent certificate: %w", err)
+		return nil, fmt.Errorf("dial master: %w", err)
 	}
-	roots, err := x509.SystemCertPool()
-	if err != nil || roots == nil {
-		roots = x509.NewCertPool()
+	conn, err := wire.DialXK(raw, local, masterPub)
+	if err != nil {
+		raw.Close()
+		return nil, fmt.Errorf("handshake with master: %w", err)
 	}
-	if masterCAPath != "" {
-		masterCAPEM, err := os.ReadFile(masterCAPath)
-		if err != nil {
-			return nil, fmt.Errorf("read master HTTPS CA: %w", err)
-		}
-		if ok := roots.AppendCertsFromPEM(masterCAPEM); !ok {
-			return nil, errors.New("master HTTPS CA does not contain a certificate")
-		}
-	}
-	return &http.Client{Transport: &http.Transport{TLSClientConfig: &tls.Config{
-		MinVersion:   tls.VersionTLS13,
-		Certificates: []tls.Certificate{certificate},
-		RootCAs:      roots,
-	}}}, nil
+	return conn, nil
 }
 
-func SendHeartbeat(ctx context.Context, client *http.Client, masterURL string, status Status) error {
-	body, err := json.Marshal(status)
+// Register sends the one registration/status-check message every connection
+// starts with, and returns the master's answer. token is required only the
+// first time (before the node has been approved); an already-approved agent
+// can pass an empty token — the master recognizes it by its already-pinned
+// public key regardless.
+func Register(conn *wire.Conn, token, nodeName string, capabilities map[string]string) (wire.RegisterAck, error) {
+	body, err := wire.Encode(wire.RegisterRequest{Token: token, NodeName: nodeName, Capabilities: capabilities})
 	if err != nil {
-		return fmt.Errorf("encode heartbeat: %w", err)
+		return wire.RegisterAck{}, err
 	}
-	request, err := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimRight(masterURL, "/")+"/api/v1/agent/heartbeat", bytes.NewReader(body))
+	if err := conn.WriteMessage(wire.MsgRegister, body); err != nil {
+		return wire.RegisterAck{}, fmt.Errorf("send registration: %w", err)
+	}
+	msgType, respBody, err := conn.ReadMessage()
 	if err != nil {
-		return err
+		return wire.RegisterAck{}, fmt.Errorf("read registration ack: %w", err)
 	}
-	request.Header.Set("Content-Type", "application/json")
-	response, err := client.Do(request)
-	if err != nil {
-		return fmt.Errorf("send agent heartbeat: %w", err)
+	if msgType != wire.MsgRegisterAck {
+		return wire.RegisterAck{}, errors.New("unexpected response to registration")
 	}
-	defer response.Body.Close()
-	if response.StatusCode != http.StatusNoContent {
-		return apiError(response)
+	var ack wire.RegisterAck
+	if err := wire.Decode(respBody, &ack); err != nil {
+		return wire.RegisterAck{}, err
 	}
-	return nil
+	return ack, nil
 }
 
-// KeepControlChannel reconnects the agent-owned mTLS stream. The master emits
-// only structured events on this stream; no shell input is accepted here.
-func KeepControlChannel(ctx context.Context, client *http.Client, masterURL string, handler TaskHandler) error {
-	for {
-		request, err := http.NewRequestWithContext(ctx, http.MethodGet, strings.TrimRight(masterURL, "/")+"/api/v1/agent/control", nil)
-		if err != nil {
-			return err
-		}
-		response, err := client.Do(request)
-		if err == nil {
-			if response.StatusCode == http.StatusOK {
-				err = consumeControl(ctx, client, masterURL, response.Body, handler)
-			} else {
-				err = apiError(response)
+// RunSession is the long-lived per-connection loop for an approved node: it
+// reports Status and pushes Connections on their own independent cadences,
+// executes Task messages the master pushes, and reports results back — all
+// multiplexed over the one Noise connection. It returns when ctx is
+// canceled or the connection fails (the caller reconnects with backoff).
+func RunSession(ctx context.Context, conn *wire.Conn, handler TaskHandler, heartbeatInterval, connectionsInterval time.Duration, singBoxVersion string) error {
+	incoming := make(chan wireInboundMessage, 8)
+	readErr := make(chan error, 1)
+	go func() {
+		for {
+			msgType, body, err := conn.ReadMessage()
+			if err != nil {
+				readErr <- err
+				return
 			}
-			response.Body.Close()
-		}
-		if ctx.Err() != nil {
-			return nil
-		}
-		if err != nil {
 			select {
+			case incoming <- wireInboundMessage{msgType, body}:
 			case <-ctx.Done():
-				return nil
-			case <-time.After(5 * time.Second):
+				return
 			}
-			continue
 		}
-	}
-}
+	}()
 
-func consumeControl(ctx context.Context, client *http.Client, masterURL string, body io.Reader, handler TaskHandler) error {
-	scanner := bufio.NewScanner(body)
-	scanner.Buffer(make([]byte, 64*1024), 4*1024*1024)
-	for scanner.Scan() {
-		var event struct {
-			Type string `json:"type"`
-			Task Task   `json:"task"`
-		}
-		if err := json.Unmarshal(scanner.Bytes(), &event); err != nil {
-			return fmt.Errorf("decode control event: %w", err)
-		}
-		if event.Type != "task" {
-			continue
-		}
-		result := TaskResult{Status: "failed", Summary: "agent has no handler for this task"}
-		if handler != nil {
-			result = handler(ctx, event.Task)
-		}
-		if err := submitTaskResult(ctx, client, masterURL, event.Task.ID, result); err != nil {
+	sendStatus := func() error {
+		body, err := wire.Encode(toWireStatus(DefaultStatus(singBoxVersion)))
+		if err != nil {
 			return err
 		}
+		return conn.WriteMessage(wire.MsgStatus, body)
 	}
-	return scanner.Err()
-}
+	sendConnections := func() error {
+		connections, err := CollectConnections(ctx)
+		if err != nil {
+			return nil // best-effort, same as the heartbeat path always was
+		}
+		body, err := wire.Encode(wire.ConnectionsPush{CollectedAt: time.Now().UTC().Format(time.RFC3339), Connections: toWireConnections(connections)})
+		if err != nil {
+			return err
+		}
+		return conn.WriteMessage(wire.MsgConnections, body)
+	}
 
-func submitTaskResult(ctx context.Context, client *http.Client, masterURL, taskID string, result TaskResult) error {
-	if result.Status != "succeeded" && result.Status != "failed" && result.Status != "rolled_back" {
-		return errors.New("invalid task result status")
-	}
-	body, err := json.Marshal(result)
-	if err != nil {
+	if err := sendStatus(); err != nil {
 		return err
 	}
-	request, err := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimRight(masterURL, "/")+"/api/v1/agent/tasks/"+taskID+"/result", bytes.NewReader(body))
-	if err != nil {
-		return err
+
+	heartbeatTicker := time.NewTicker(heartbeatInterval)
+	defer heartbeatTicker.Stop()
+	connectionsTicker := time.NewTicker(connectionsInterval)
+	defer connectionsTicker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return nil
+		case err := <-readErr:
+			return err
+		case msg := <-incoming:
+			if msg.msgType != wire.MsgTask {
+				continue // keepalive or anything else: nothing to do
+			}
+			var task wire.Task
+			if err := wire.Decode(msg.body, &task); err != nil {
+				continue
+			}
+			result := TaskResult{Status: "failed", Summary: "agent has no handler for this task"}
+			if handler != nil {
+				result = handler(ctx, Task{ID: task.ID, Kind: task.Kind, IdempotencyKey: task.IdempotencyKey, Payload: task.Payload, ExpectedHash: task.ExpectedHash})
+			}
+			resBody, err := wire.Encode(wire.TaskResult{TaskID: task.ID, Status: result.Status, Summary: result.Summary, SingBoxVersion: result.SingBoxVersion})
+			if err != nil {
+				return err
+			}
+			if err := conn.WriteMessage(wire.MsgTaskResult, resBody); err != nil {
+				return err
+			}
+		case <-heartbeatTicker.C:
+			if err := sendStatus(); err != nil {
+				return err
+			}
+		case <-connectionsTicker.C:
+			if err := sendConnections(); err != nil {
+				return err
+			}
+		}
 	}
-	request.Header.Set("Content-Type", "application/json")
-	response, err := client.Do(request)
-	if err != nil {
-		return fmt.Errorf("submit task result: %w", err)
-	}
-	defer response.Body.Close()
-	if response.StatusCode != http.StatusNoContent {
-		return apiError(response)
-	}
-	return nil
 }
 
-func apiError(response *http.Response) error {
-	content, _ := io.ReadAll(io.LimitReader(response.Body, 4096))
-	return fmt.Errorf("master returned %s: %s", response.Status, strings.TrimSpace(string(content)))
+type wireInboundMessage struct {
+	msgType byte
+	body    []byte
+}
+
+func toWireStatus(local Status) wire.Status {
+	caps := make(map[string]string, len(local.Capabilities))
+	for k, v := range local.Capabilities {
+		caps[k] = fmt.Sprint(v)
+	}
+	st := wire.Status{
+		CollectedAt:    local.Metrics.CollectedAt,
+		AgentVersion:   local.AgentVersion,
+		OS:             local.OS,
+		Architecture:   local.Architecture,
+		SingBoxVersion: local.SingBox,
+		Capabilities:   caps,
+	}
+	if local.Metrics.Node != nil {
+		st.HasNodeTotals = true
+		st.NodeReceivedBytes = local.Metrics.Node["received_bytes"]
+		st.NodeSentBytes = local.Metrics.Node["sent_bytes"]
+	}
+	if local.Metrics.Fail2Ban != nil {
+		st.Fail2BanAvailable = local.Metrics.Fail2Ban.Available
+		for _, j := range local.Metrics.Fail2Ban.Jails {
+			st.Fail2BanJails = append(st.Fail2BanJails, wire.Fail2BanJailStatus{
+				Name: j.Name, CurrentlyBanned: j.CurrentlyBanned, TotalBanned: j.TotalBanned, BannedIPs: j.BannedIPs, Error: j.Error,
+			})
+		}
+	}
+	return st
+}
+
+func toWireConnections(in []ConnectionInfo) []wire.ConnectionInfo {
+	out := make([]wire.ConnectionInfo, 0, len(in))
+	for _, c := range in {
+		out = append(out, wire.ConnectionInfo{
+			ID: c.ID, Inbound: c.Inbound, Network: c.Network, Source: c.Source, Destination: c.Destination,
+			Host: c.Host, Upload: c.Upload, Download: c.Download, StartedAt: c.StartedAt, Outbound: c.Outbound, Rule: c.Rule,
+		})
+	}
+	return out
 }

@@ -66,19 +66,16 @@ type RegistrationToken struct {
 }
 
 type Registration struct {
-	ID          string
-	PollToken   string
-	NodeName    string
-	Status      string
-	NodeID      string
-	Certificate []byte
-	CAPEM       []byte
+	ID       string
+	NodeName string
+	Status   string
+	NodeID   string
 }
 
 type RegistrationInput struct {
 	Token        string
 	NodeName     string
-	CSRPEM       []byte
+	PublicKey    []byte // raw 32-byte Curve25519 public key, not a CSR
 	Capabilities string
 }
 
@@ -92,6 +89,7 @@ type Node struct {
 	Capabilities string `json:"capabilities"`
 	Online       bool   `json:"online"`
 	LastSeenAt   string `json:"last_seen_at,omitempty"`
+	PublicKey    []byte `json:"-"`
 }
 
 type AgentStatus struct {
@@ -559,12 +557,30 @@ func (s *Store) CreateRegistrationToken(ctx context.Context, operatorID string, 
 	return RegistrationToken{Token: token, ExpiresAt: expiresAt}, nil
 }
 
+// RegisterAgent records a node's public key as pending approval. It is
+// idempotent per public key: an agent's connect-retry loop calls this again
+// on every reconnect attempt while still pending (there is no separate poll
+// token to track), so a prior registration for the same key is returned
+// as-is instead of requiring — and burning through — a fresh one-time token
+// each retry.
 func (s *Store) RegisterAgent(ctx context.Context, input RegistrationInput) (Registration, error) {
-	if input.Token == "" || input.NodeName == "" || len(input.CSRPEM) == 0 {
-		return Registration{}, errors.New("registration token, node name and CSR are required")
+	if input.NodeName == "" || len(input.PublicKey) != 32 {
+		return Registration{}, errors.New("node name and a 32-byte public key are required")
 	}
 	if len(input.NodeName) > 128 || len(input.Capabilities) > 32*1024 {
 		return Registration{}, errors.New("registration input exceeds allowed size")
+	}
+	var existing Registration
+	err := s.db.QueryRowContext(ctx, `SELECT id, node_name, status, COALESCE(node_id, '') FROM registrations WHERE public_key = ?`, input.PublicKey).
+		Scan(&existing.ID, &existing.NodeName, &existing.Status, &existing.NodeID)
+	if err == nil {
+		return existing, nil
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return Registration{}, fmt.Errorf("check existing registration: %w", err)
+	}
+	if input.Token == "" {
+		return Registration{}, errors.New("registration token is required")
 	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -584,10 +600,6 @@ func (s *Store) RegisterAgent(ctx context.Context, input RegistrationInput) (Reg
 	if err != nil {
 		return Registration{}, err
 	}
-	pollToken, err := security.RandomToken(32)
-	if err != nil {
-		return Registration{}, err
-	}
 	updated, err := tx.ExecContext(ctx, `UPDATE registration_tokens SET used_at = ? WHERE id = ? AND used_at IS NULL`, nowUnix(), tokenID)
 	if err != nil {
 		return Registration{}, fmt.Errorf("consume registration token: %w", err)
@@ -597,22 +609,22 @@ func (s *Store) RegisterAgent(ctx context.Context, input RegistrationInput) (Reg
 		return Registration{}, ErrUnauthorized
 	}
 	_, err = tx.ExecContext(ctx, `INSERT INTO registrations
-		(id, poll_hash, node_name, csr_pem, capabilities, status, node_id, expires_at, created_at, approved_at)
-		VALUES (?, ?, ?, ?, ?, 'pending', NULL, ?, ?, NULL)`, registrationID, security.TokenHash(pollToken), input.NodeName, input.CSRPEM, input.Capabilities, time.Now().UTC().Add(registrationPollTTL).Unix(), nowUnix())
+		(id, public_key, node_name, capabilities, status, node_id, expires_at, created_at, approved_at)
+		VALUES (?, ?, ?, ?, 'pending', NULL, ?, ?, NULL)`, registrationID, input.PublicKey, input.NodeName, input.Capabilities, time.Now().UTC().Add(registrationPollTTL).Unix(), nowUnix())
 	if err != nil {
 		return Registration{}, fmt.Errorf("create registration request: %w", err)
 	}
 	if err := tx.Commit(); err != nil {
 		return Registration{}, fmt.Errorf("commit registration: %w", err)
 	}
-	return Registration{ID: registrationID, PollToken: pollToken, NodeName: input.NodeName, Status: "pending"}, nil
+	return Registration{ID: registrationID, NodeName: input.NodeName, Status: "pending"}, nil
 }
 
-func (s *Store) ApproveRegistration(ctx context.Context, registrationID string, ca *CertificateAuthority) (Registration, error) {
+func (s *Store) ApproveRegistration(ctx context.Context, registrationID string) (Registration, error) {
 	var nodeName string
-	var csrPEM []byte
+	var publicKey []byte
 	var status string
-	err := s.db.QueryRowContext(ctx, `SELECT node_name, csr_pem, status FROM registrations WHERE id = ?`, registrationID).Scan(&nodeName, &csrPEM, &status)
+	err := s.db.QueryRowContext(ctx, `SELECT node_name, public_key, status FROM registrations WHERE id = ?`, registrationID).Scan(&nodeName, &publicKey, &status)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Registration{}, ErrNotFound
 	}
@@ -623,10 +635,6 @@ func (s *Store) ApproveRegistration(ctx context.Context, registrationID string, 
 		return Registration{}, ErrConflict
 	}
 	nodeID, err := newID()
-	if err != nil {
-		return Registration{}, err
-	}
-	certificate, serial, err := ca.SignNodeCSR(csrPEM, nodeID, nodeName)
 	if err != nil {
 		return Registration{}, err
 	}
@@ -643,120 +651,48 @@ func (s *Store) ApproveRegistration(ctx context.Context, registrationID string, 
 	if err != nil || changed != 1 {
 		return Registration{}, ErrConflict
 	}
-	_, err = tx.ExecContext(ctx, `INSERT INTO nodes (id, name, certificate_pem, certificate_serial, revoked_at, created_at)
-		VALUES (?, ?, ?, ?, NULL, ?)`, nodeID, nodeName, certificate, serial, nowUnix())
+	_, err = tx.ExecContext(ctx, `INSERT INTO nodes (id, name, public_key, revoked_at, created_at)
+		VALUES (?, ?, ?, NULL, ?)`, nodeID, nodeName, publicKey, nowUnix())
 	if err != nil {
 		return Registration{}, fmt.Errorf("create node: %w", err)
-	}
-	_, err = tx.ExecContext(ctx, `INSERT INTO certificates (serial, node_id, certificate_pem, revoked_at, issued_at)
-		VALUES (?, ?, ?, NULL, ?)`, serial, nodeID, certificate, nowUnix())
-	if err != nil {
-		return Registration{}, fmt.Errorf("record node certificate: %w", err)
 	}
 	if err := tx.Commit(); err != nil {
 		return Registration{}, fmt.Errorf("commit registration approval: %w", err)
 	}
-	return Registration{ID: registrationID, NodeName: nodeName, Status: "approved", NodeID: nodeID, Certificate: certificate, CAPEM: ca.CertificatePEM()}, nil
-}
-
-func (s *Store) PollRegistration(ctx context.Context, registrationID, pollToken string, ca *CertificateAuthority) (Registration, error) {
-	var registration Registration
-	var pollHash []byte
-	var expiresAt int64
-	err := s.db.QueryRowContext(ctx, `SELECT r.node_name, r.status, COALESCE(r.node_id, ''), r.poll_hash, r.expires_at, COALESCE(n.certificate_pem, X'')
-		FROM registrations r LEFT JOIN nodes n ON n.id = r.node_id WHERE r.id = ?`, registrationID).
-		Scan(&registration.NodeName, &registration.Status, &registration.NodeID, &pollHash, &expiresAt, &registration.Certificate)
-	if errors.Is(err, sql.ErrNoRows) {
-		return Registration{}, ErrNotFound
-	}
-	if err != nil {
-		return Registration{}, fmt.Errorf("load registration status: %w", err)
-	}
-	if time.Now().UTC().Unix() > expiresAt || !constantTimeEqual(pollHash, security.TokenHash(pollToken)) {
-		return Registration{}, ErrUnauthorized
-	}
-	registration.ID = registrationID
-	if registration.Status == "approved" {
-		registration.CAPEM = ca.CertificatePEM()
-	}
-	return registration, nil
-}
-
-func (s *Store) RotateNodeCertificate(ctx context.Context, nodeID string, csrPEM []byte, ca *CertificateAuthority) (Registration, error) {
-	var nodeName, previousSerial string
-	err := s.db.QueryRowContext(ctx, `SELECT name, certificate_serial FROM nodes WHERE id = ? AND revoked_at IS NULL`, nodeID).Scan(&nodeName, &previousSerial)
-	if errors.Is(err, sql.ErrNoRows) {
-		return Registration{}, ErrNotFound
-	}
-	if err != nil {
-		return Registration{}, fmt.Errorf("load node: %w", err)
-	}
-	certificate, serial, err := ca.SignNodeCSR(csrPEM, nodeID, nodeName)
-	if err != nil {
-		return Registration{}, err
-	}
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return Registration{}, fmt.Errorf("start certificate rotation: %w", err)
-	}
-	defer tx.Rollback()
-	_, err = tx.ExecContext(ctx, `UPDATE certificates SET revoked_at = ? WHERE serial = ?`, nowUnix(), previousSerial)
-	if err != nil {
-		return Registration{}, fmt.Errorf("revoke prior certificate: %w", err)
-	}
-	_, err = tx.ExecContext(ctx, `UPDATE nodes SET certificate_pem = ?, certificate_serial = ? WHERE id = ?`, certificate, serial, nodeID)
-	if err != nil {
-		return Registration{}, fmt.Errorf("replace node certificate: %w", err)
-	}
-	_, err = tx.ExecContext(ctx, `INSERT INTO certificates (serial, node_id, certificate_pem, revoked_at, issued_at)
-		VALUES (?, ?, ?, NULL, ?)`, serial, nodeID, certificate, nowUnix())
-	if err != nil {
-		return Registration{}, fmt.Errorf("record rotated certificate: %w", err)
-	}
-	if err := tx.Commit(); err != nil {
-		return Registration{}, fmt.Errorf("commit certificate rotation: %w", err)
-	}
-	return Registration{NodeID: nodeID, NodeName: nodeName, Status: "approved", Certificate: certificate, CAPEM: ca.CertificatePEM()}, nil
+	return Registration{ID: registrationID, NodeName: nodeName, Status: "approved", NodeID: nodeID}, nil
 }
 
 func (s *Store) RevokeNode(ctx context.Context, nodeID string) error {
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return fmt.Errorf("start node revocation: %w", err)
-	}
-	defer tx.Rollback()
-	var serial string
-	err = tx.QueryRowContext(ctx, `SELECT certificate_serial FROM nodes WHERE id = ? AND revoked_at IS NULL`, nodeID).Scan(&serial)
-	if errors.Is(err, sql.ErrNoRows) {
-		return ErrNotFound
-	}
-	if err != nil {
-		return fmt.Errorf("load node certificate: %w", err)
-	}
-	_, err = tx.ExecContext(ctx, `UPDATE nodes SET revoked_at = ? WHERE id = ?`, nowUnix(), nodeID)
+	updated, err := s.db.ExecContext(ctx, `UPDATE nodes SET revoked_at = ? WHERE id = ? AND revoked_at IS NULL`, nowUnix(), nodeID)
 	if err != nil {
 		return fmt.Errorf("revoke node: %w", err)
 	}
-	_, err = tx.ExecContext(ctx, `UPDATE certificates SET revoked_at = ? WHERE serial = ?`, nowUnix(), serial)
+	changed, err := updated.RowsAffected()
 	if err != nil {
-		return fmt.Errorf("revoke node certificate: %w", err)
+		return fmt.Errorf("read node revocation: %w", err)
 	}
-	return tx.Commit()
+	if changed != 1 {
+		return ErrNotFound
+	}
+	return nil
 }
 
-func (s *Store) NodeForCertificate(ctx context.Context, serial string) (Node, error) {
+// NodeForPublicKey looks up an approved, non-revoked node by the raw public
+// key revealed during the Noise handshake — the direct replacement for the
+// old mTLS "which client certificate is this" lookup.
+func (s *Store) NodeForPublicKey(ctx context.Context, publicKey []byte) (Node, error) {
 	var node Node
-	err := s.db.QueryRowContext(ctx, `SELECT n.id, n.name, n.agent_version, n.os, n.architecture, n.sing_box_version,
-		COALESCE(n.capabilities, ''), n.last_seen_at
-		FROM certificates c JOIN nodes n ON n.id = c.node_id
-		WHERE c.serial = ? AND c.revoked_at IS NULL AND n.revoked_at IS NULL`, serial).
+	err := s.db.QueryRowContext(ctx, `SELECT id, name, agent_version, os, architecture, sing_box_version,
+		COALESCE(capabilities, ''), last_seen_at
+		FROM nodes WHERE public_key = ? AND revoked_at IS NULL`, publicKey).
 		Scan(&node.ID, &node.Name, &node.AgentVersion, &node.OS, &node.Architecture, &node.SingBox, &node.Capabilities, new(sql.NullInt64))
 	if errors.Is(err, sql.ErrNoRows) {
 		return Node{}, ErrUnauthorized
 	}
 	if err != nil {
-		return Node{}, fmt.Errorf("load certificate node: %w", err)
+		return Node{}, fmt.Errorf("load node by public key: %w", err)
 	}
+	node.PublicKey = publicKey
 	return node, nil
 }
 
@@ -764,8 +700,24 @@ func (s *Store) UpdateAgentStatus(ctx context.Context, nodeID string, status Age
 	if len(status.AgentVersion) > 128 || len(status.OS) > 128 || len(status.Architecture) > 128 || len(status.SingBox) > 128 || len(status.Capabilities) > 32*1024 || len(status.Metrics) > 256*1024 {
 		return errors.New("agent status exceeds allowed size")
 	}
+	if err := s.UpdateNodeIdentity(ctx, nodeID, status.AgentVersion, status.OS, status.Architecture, status.SingBox, status.Capabilities); err != nil {
+		return err
+	}
+	if status.Metrics != "" {
+		if err := s.UpdateNodeMetrics(ctx, nodeID, status.Metrics); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// UpdateNodeIdentity records agent build/version info and bumps last_seen_at,
+// independent of metrics — the fast-cadence real-time connections push
+// updates metrics on its own, much more often than identity ever changes,
+// and must not clobber these fields back to empty in between heartbeats.
+func (s *Store) UpdateNodeIdentity(ctx context.Context, nodeID, agentVersion, os, architecture, singBox, capabilities string) error {
 	updated, err := s.db.ExecContext(ctx, `UPDATE nodes SET agent_version = ?, os = ?, architecture = ?, sing_box_version = ?, capabilities = ?, last_seen_at = ?
-		WHERE id = ? AND revoked_at IS NULL`, status.AgentVersion, status.OS, status.Architecture, status.SingBox, status.Capabilities, nowUnix(), nodeID)
+		WHERE id = ? AND revoked_at IS NULL`, agentVersion, os, architecture, singBox, capabilities, nowUnix(), nodeID)
 	if err != nil {
 		return fmt.Errorf("update agent status: %w", err)
 	}
@@ -776,12 +728,19 @@ func (s *Store) UpdateAgentStatus(ctx context.Context, nodeID string, status Age
 	if changed != 1 {
 		return ErrUnauthorized
 	}
-	if status.Metrics != "" {
-		_, err := s.db.ExecContext(ctx, `INSERT INTO node_metrics (node_id, report, updated_at) VALUES (?, ?, ?)
-			ON CONFLICT(node_id) DO UPDATE SET report = excluded.report, updated_at = excluded.updated_at`, nodeID, status.Metrics, nowUnix())
-		if err != nil {
-			return fmt.Errorf("store node metrics: %w", err)
-		}
+	return nil
+}
+
+// UpdateNodeMetrics replaces the stored metrics/connections snapshot for a
+// node. Callers merge in whatever fields they don't have (see
+// mergeNodeMetrics in server_agents.go) so a fast connections-only push
+// doesn't erase the slower-cadence heartbeat's node/fail2ban fields, and
+// vice versa.
+func (s *Store) UpdateNodeMetrics(ctx context.Context, nodeID, metricsJSON string) error {
+	_, err := s.db.ExecContext(ctx, `INSERT INTO node_metrics (node_id, report, updated_at) VALUES (?, ?, ?)
+		ON CONFLICT(node_id) DO UPDATE SET report = excluded.report, updated_at = excluded.updated_at`, nodeID, metricsJSON, nowUnix())
+	if err != nil {
+		return fmt.Errorf("store node metrics: %w", err)
 	}
 	return nil
 }
@@ -919,10 +878,23 @@ func (s *Store) CreateTask(ctx context.Context, task Task) (Task, error) {
 		COALESCE(started_at, 0), COALESCE(finished_at, 0) FROM tasks WHERE node_id = ? AND idempotency_key = ?`, task.NodeID, task.IdempotencyKey).
 		Scan(&existing.ID, &existing.NodeID, &existing.OperatorID, &existing.Kind, &existing.IdempotencyKey, &existing.Payload, &existing.ExpectedHash, &existing.Status, &existing.ResultSummary,
 			new(int64), new(int64), new(int64))
-	if err == nil {
+	if err == nil && existing.Status != "failed" && existing.Status != "rolled_back" {
 		return existing, nil
 	}
-	if !errors.Is(err, sql.ErrNoRows) {
+	if err == nil {
+		// A prior attempt with identical content failed. The idempotency key
+		// never changes for identical content, so without this the same
+		// failed task would be handed back forever and a retry (e.g. after
+		// fixing an environment issue) would silently do nothing. This must
+		// get a brand new ID rather than reuse the old row: the agent keeps
+		// its own local, task-ID-keyed record of completed tasks (see
+		// completed() in task_executor.go) specifically to avoid re-running
+		// a task it already executed, so reusing the ID would make the
+		// agent just replay the old failed result without retrying at all.
+		if _, delErr := s.db.ExecContext(ctx, `DELETE FROM tasks WHERE id = ?`, existing.ID); delErr != nil {
+			return Task{}, fmt.Errorf("clear failed task before retry: %w", delErr)
+		}
+	} else if !errors.Is(err, sql.ErrNoRows) {
 		return Task{}, fmt.Errorf("lookup idempotent task: %w", err)
 	}
 	task.ID, err = newID()
@@ -975,7 +947,7 @@ func (s *Store) CreateListener(ctx context.Context, listener Listener) (Listener
 	} else if !errors.Is(err, sql.ErrNoRows) {
 		return Listener{}, fmt.Errorf("check listener name conflict: %w", err)
 	}
-	if err := s.ensureOutboundOnNode(ctx, listener.NodeID, listener.OutboundID); err != nil {
+	if err := s.ensureOutboundExists(ctx, listener.OutboundID); err != nil {
 		return Listener{}, err
 	}
 	spec, err := json.Marshal(listener.Spec)
@@ -1044,7 +1016,7 @@ func (s *Store) UpdateListener(ctx context.Context, listener Listener) (Listener
 	if !errors.Is(err, sql.ErrNoRows) {
 		return Listener{}, fmt.Errorf("check listener name conflict: %w", err)
 	}
-	if err := s.ensureOutboundOnNode(ctx, listener.NodeID, listener.OutboundID); err != nil {
+	if err := s.ensureOutboundExists(ctx, listener.OutboundID); err != nil {
 		return Listener{}, err
 	}
 	spec, err := json.Marshal(listener.Spec)
@@ -1583,20 +1555,21 @@ CREATE TABLE IF NOT EXISTS registration_tokens (
   id TEXT PRIMARY KEY, token_hash BLOB NOT NULL UNIQUE, created_by TEXT NOT NULL REFERENCES operators(id),
   expires_at INTEGER NOT NULL, used_at INTEGER, created_at INTEGER NOT NULL
 );
+-- Agent identity is a raw Curve25519 public key (Noise/WireGuard-style trust,
+-- pinned by the master once approved), not an X.509 certificate — there is no
+-- CA and nothing to sign. A poll token is unnecessary too: an agent checks
+-- its own registration status simply by reconnecting with the same keypair,
+-- which the master looks up directly by public_key.
 CREATE TABLE IF NOT EXISTS registrations (
-  id TEXT PRIMARY KEY, poll_hash BLOB NOT NULL, node_name TEXT NOT NULL, csr_pem BLOB NOT NULL,
+  id TEXT PRIMARY KEY, public_key BLOB NOT NULL UNIQUE, node_name TEXT NOT NULL,
   capabilities TEXT NOT NULL, status TEXT NOT NULL, node_id TEXT, expires_at INTEGER NOT NULL,
   created_at INTEGER NOT NULL, approved_at INTEGER
 );
 CREATE TABLE IF NOT EXISTS nodes (
-  id TEXT PRIMARY KEY, name TEXT NOT NULL, certificate_pem BLOB NOT NULL, certificate_serial TEXT NOT NULL UNIQUE,
+  id TEXT PRIMARY KEY, name TEXT NOT NULL, public_key BLOB NOT NULL UNIQUE,
   agent_version TEXT NOT NULL DEFAULT '', os TEXT NOT NULL DEFAULT '', architecture TEXT NOT NULL DEFAULT '',
   sing_box_version TEXT NOT NULL DEFAULT '', capabilities TEXT, last_seen_at INTEGER,
   revoked_at INTEGER, created_at INTEGER NOT NULL
-);
-CREATE TABLE IF NOT EXISTS certificates (
-  serial TEXT PRIMARY KEY, node_id TEXT NOT NULL REFERENCES nodes(id), certificate_pem BLOB NOT NULL,
-  revoked_at INTEGER, issued_at INTEGER NOT NULL
 );
 CREATE TABLE IF NOT EXISTS audit_events (
   id TEXT PRIMARY KEY, operator_id TEXT NOT NULL REFERENCES operators(id), action TEXT NOT NULL,
@@ -1618,11 +1591,12 @@ CREATE TABLE IF NOT EXISTS endpoints (
   id TEXT PRIMARY KEY, listener_id TEXT NOT NULL REFERENCES listeners(id), name TEXT NOT NULL, credentials BLOB NOT NULL,
   enabled INTEGER NOT NULL, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL
 );
+-- Outbounds are global egress definitions shared by every node: a listener on
+-- any node may route through the same upstream proxy without redefining it.
 CREATE TABLE IF NOT EXISTS outbounds (
-  id TEXT PRIMARY KEY, node_id TEXT NOT NULL REFERENCES nodes(id), name TEXT NOT NULL, type TEXT NOT NULL,
+  id TEXT PRIMARY KEY, name TEXT NOT NULL UNIQUE, type TEXT NOT NULL,
   server TEXT NOT NULL DEFAULT '', server_port INTEGER NOT NULL DEFAULT 0, username TEXT NOT NULL DEFAULT '',
-  credentials BLOB, enabled INTEGER NOT NULL, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
-  UNIQUE(node_id, name)
+  credentials BLOB, enabled INTEGER NOT NULL, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL
 );
 CREATE TABLE IF NOT EXISTS route_rules (
   id TEXT PRIMARY KEY, node_id TEXT NOT NULL REFERENCES nodes(id), priority INTEGER NOT NULL, enabled INTEGER NOT NULL,
@@ -1686,11 +1660,11 @@ CREATE TABLE IF NOT EXISTS cloudflare_records (
   UNIQUE(name, type)
 );
 CREATE INDEX IF NOT EXISTS idx_sessions_expiry ON sessions(expires_at);
-CREATE INDEX IF NOT EXISTS idx_registrations_poll ON registrations(id, poll_hash);
+CREATE INDEX IF NOT EXISTS idx_registrations_public_key ON registrations(public_key);
 CREATE INDEX IF NOT EXISTS idx_tasks_node_status ON tasks(node_id, status, created_at);
 CREATE INDEX IF NOT EXISTS idx_listeners_port ON listeners(node_id, listen_address, network, port, enabled);
 CREATE INDEX IF NOT EXISTS idx_endpoints_listener ON endpoints(listener_id, enabled);
-CREATE INDEX IF NOT EXISTS idx_outbounds_node ON outbounds(node_id, enabled);
+CREATE INDEX IF NOT EXISTS idx_outbounds_enabled ON outbounds(enabled);
 CREATE INDEX IF NOT EXISTS idx_route_rules_node_priority ON route_rules(node_id, priority, id);
 CREATE INDEX IF NOT EXISTS idx_ingress_routes_node_endpoint ON ingress_routes(node_id, listen_address, port, sni, enabled);
 CREATE INDEX IF NOT EXISTS idx_singbox_releases_version_architecture ON singbox_releases(version, architecture, enabled);

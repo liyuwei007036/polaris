@@ -8,15 +8,16 @@ import (
 	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha1" // #nosec G505 -- test reproduces RFC 6238 TOTP client output.
-	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/base32"
+	"encoding/base64"
 	"encoding/binary"
 	"encoding/json"
 	"encoding/pem"
 	"fmt"
 	"math/big"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -25,6 +26,7 @@ import (
 
 	"github.com/sb-control/sb-control/internal/agent"
 	"github.com/sb-control/sb-control/internal/control"
+	"github.com/sb-control/sb-control/internal/wire"
 )
 
 func TestSecureRegistrationLifecycle(t *testing.T) {
@@ -43,14 +45,15 @@ func TestSecureRegistrationLifecycle(t *testing.T) {
 	}
 	httpServer := httptest.NewServer(server.Handler())
 	defer httpServer.Close()
+	agentAddr := startAgentListener(t, server)
 
 	session, csrfToken := login(t, httpServer.URL, secret)
-	csr, err := agent.CreateCSR(t.TempDir(), "test-node")
+	keypair, err := wire.GenerateKeypair()
 	if err != nil {
 		t.Fatal(err)
 	}
 	registrationToken := createRegistrationToken(t, httpServer.URL, session, csrfToken)
-	registrationID, pollToken := registerAgent(t, httpServer.URL, registrationToken, csr)
+	registrationID := registerAgent(t, agentAddr, server.NoisePublicKey(), keypair, registrationToken, "test-node")
 
 	response := request(t, http.MethodPost, httpServer.URL+"/api/v1/nodes/"+registrationID+"/approve", nil, session, csrfToken)
 	if response.StatusCode != http.StatusOK {
@@ -64,27 +67,23 @@ func TestSecureRegistrationLifecycle(t *testing.T) {
 		t.Fatal("approval did not return a node ID")
 	}
 
-	pollRequest, err := http.NewRequest(http.MethodGet, httpServer.URL+"/api/v1/agent/registrations/"+registrationID, nil)
+	// Reconnecting with the same keypair after approval must be recognized
+	// directly (no certificate to fetch — the public key itself is the
+	// identity) and proceed straight into a normal session.
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	conn, err := agent.Connect(ctx, agentAddr, keypair, server.NoisePublicKey())
 	if err != nil {
 		t.Fatal(err)
 	}
-	pollRequest.Header.Set("X-Registration-Poll-Token", pollToken)
-	pollResponse, err := http.DefaultClient.Do(pollRequest)
+	ack, err := agent.Register(conn, "", "", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if pollResponse.StatusCode != http.StatusOK {
-		t.Fatalf("poll registration: got %d", pollResponse.StatusCode)
+	if ack.Status != "approved" || ack.NodeID != approved.NodeID {
+		t.Fatalf("unexpected post-approval ack: %#v", ack)
 	}
-	var issued struct {
-		Status         string `json:"status"`
-		CertificatePEM string `json:"certificate_pem"`
-		CAPEM          string `json:"ca_pem"`
-	}
-	decodeBody(t, pollResponse, &issued)
-	if issued.Status != "approved" || issued.CertificatePEM == "" || issued.CAPEM == "" {
-		t.Fatalf("unexpected issued registration: %#v", issued)
-	}
+	conn.Close()
 
 	response = request(t, http.MethodPost, httpServer.URL+"/api/v1/nodes/"+approved.NodeID+"/revoke", nil, session, csrfToken)
 	if response.StatusCode != http.StatusNoContent {
@@ -108,21 +107,55 @@ func TestRegistrationTokenCanOnlyBeUsedOnce(t *testing.T) {
 	}
 	httpServer := httptest.NewServer(server.Handler())
 	defer httpServer.Close()
+	agentAddr := startAgentListener(t, server)
 
 	session, csrfToken := login(t, httpServer.URL, secret)
-	csr, err := agent.CreateCSR(t.TempDir(), "test-node")
+	token := createRegistrationToken(t, httpServer.URL, session, csrfToken)
+	firstKeypair, err := wire.GenerateKeypair()
 	if err != nil {
 		t.Fatal(err)
 	}
-	token := createRegistrationToken(t, httpServer.URL, session, csrfToken)
-	registerAgent(t, httpServer.URL, token, csr)
-	response := request(t, http.MethodPost, httpServer.URL+"/api/v1/agent/registrations", map[string]any{
-		"token": token, "node_name": "another-node", "csr_pem": string(csr), "capabilities": map[string]string{"os": "linux"},
-	}, "", "")
-	if response.StatusCode != http.StatusUnauthorized {
-		t.Fatalf("reused registration token: got %d, want %d", response.StatusCode, http.StatusUnauthorized)
+	registerAgent(t, agentAddr, server.NoisePublicKey(), firstKeypair, token, "test-node")
+
+	// A second, different node trying to reuse the same (now-consumed) token
+	// must be rejected. Idempotency in RegisterAgent is keyed by public key,
+	// so this must use a fresh keypair to actually exercise that path
+	// instead of just re-observing the first node's pending registration.
+	secondKeypair, err := wire.GenerateKeypair()
+	if err != nil {
+		t.Fatal(err)
 	}
-	response.Body.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	conn, err := agent.Connect(ctx, agentAddr, secondKeypair, server.NoisePublicKey())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	ack, err := agent.Register(conn, token, "another-node", map[string]string{"os": "linux"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ack.Status != "rejected" {
+		t.Fatalf("reused registration token: got status %q, want rejected", ack.Status)
+	}
+}
+
+// startAgentListener runs the given server's agent-facing Noise/TCP accept
+// loop on an ephemeral local port for the duration of the test.
+func startAgentListener(t *testing.T, server *control.Server) string {
+	t.Helper()
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() { _ = server.ServeAgents(ctx, listener) }()
+	t.Cleanup(func() {
+		cancel()
+		listener.Close()
+	})
+	return listener.Addr().String()
 }
 
 func TestOperatorManagementPreservesAnEnabledAdministrator(t *testing.T) {
@@ -171,12 +204,13 @@ func TestCompileTLSAndRealityListeners(t *testing.T) {
 	}
 	httpServer := httptest.NewServer(server.Handler())
 	defer httpServer.Close()
+	agentAddr := startAgentListener(t, server)
 	session, csrfToken := login(t, httpServer.URL, secret)
-	csr, err := agent.CreateCSR(t.TempDir(), "config-node")
+	keypair, err := wire.GenerateKeypair()
 	if err != nil {
 		t.Fatal(err)
 	}
-	registrationID, _ := registerAgent(t, httpServer.URL, createRegistrationToken(t, httpServer.URL, session, csrfToken), csr)
+	registrationID := registerAgent(t, agentAddr, server.NoisePublicKey(), keypair, createRegistrationToken(t, httpServer.URL, session, csrfToken), "config-node")
 	response := request(t, http.MethodPost, httpServer.URL+"/api/v1/nodes/"+registrationID+"/approve", nil, session, csrfToken)
 	if response.StatusCode != http.StatusOK {
 		t.Fatalf("approve registration: got %d", response.StatusCode)
@@ -233,15 +267,17 @@ func TestCompileTLSAndRealityListeners(t *testing.T) {
 		t.Fatalf("create client subscription: %#v, %v", subscription, err)
 	}
 	content, err := store.GenerateClientSubscription(t.Context(), accessToken)
-	if err != nil || !strings.Contains(content, "trojan://") {
-		t.Fatalf("generate client subscription: %q, %v", content, err)
+	decoded, decodeErr := base64.StdEncoding.DecodeString(content)
+	if err != nil || decodeErr != nil || !strings.Contains(string(decoded), "trojan://") {
+		t.Fatalf("generate client subscription: %q, %v, %v", content, err, decodeErr)
 	}
 	if err := store.SetEndpointEnabled(t.Context(), tlsEndpoint.ID, false); err != nil {
 		t.Fatal(err)
 	}
 	content, err = store.GenerateClientSubscription(t.Context(), accessToken)
-	if err != nil || strings.Contains(content, "trojan://") {
-		t.Fatalf("disabled endpoint remained in client subscription: %q, %v", content, err)
+	decoded, decodeErr = base64.StdEncoding.DecodeString(content)
+	if err != nil || decodeErr != nil || strings.Contains(string(decoded), "trojan://") {
+		t.Fatalf("disabled endpoint remained in client subscription: %q, %v, %v", content, err, decodeErr)
 	}
 }
 
@@ -263,7 +299,13 @@ func testCertificate(t *testing.T) (string, string) {
 	return string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})), string(pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: keyDER}))
 }
 
-func TestAgentHeartbeatRequiresAnActiveMTLSCertificate(t *testing.T) {
+// TestApprovedAgentSessionUpdatesNodeStatus exercises the whole Noise-based
+// session end to end: an unapproved key is rejected from the normal session,
+// approval unblocks it, and a Status message sent over the session updates
+// the node's stored identity — the replacement for the old mTLS-certificate
+// heartbeat test (there is no certificate anymore; the public key itself,
+// verified during the Noise_XK handshake, is the identity).
+func TestApprovedAgentSessionUpdatesNodeStatus(t *testing.T) {
 	store, err := control.Open(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
@@ -277,74 +319,57 @@ func TestAgentHeartbeatRequiresAnActiveMTLSCertificate(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	registrationServer := httptest.NewServer(server.Handler())
-	defer registrationServer.Close()
-	session, csrfToken := login(t, registrationServer.URL, secret)
-	agentDataDir := t.TempDir()
-	csr, err := agent.CreateCSR(agentDataDir, "mTLS-node")
+	httpServer := httptest.NewServer(server.Handler())
+	defer httpServer.Close()
+	agentAddr := startAgentListener(t, server)
+	session, csrfToken := login(t, httpServer.URL, secret)
+
+	keypair, err := wire.GenerateKeypair()
 	if err != nil {
 		t.Fatal(err)
 	}
-	registrationID, pollToken := registerAgent(t, registrationServer.URL, createRegistrationToken(t, registrationServer.URL, session, csrfToken), csr)
-	response := request(t, http.MethodPost, registrationServer.URL+"/api/v1/nodes/"+registrationID+"/approve", nil, session, csrfToken)
+	registrationID := registerAgent(t, agentAddr, server.NoisePublicKey(), keypair, createRegistrationToken(t, httpServer.URL, session, csrfToken), "status-node")
+	response := request(t, http.MethodPost, httpServer.URL+"/api/v1/nodes/"+registrationID+"/approve", nil, session, csrfToken)
 	if response.StatusCode != http.StatusOK {
 		t.Fatalf("approve registration: got %d", response.StatusCode)
 	}
 	response.Body.Close()
-	pollRequest, err := http.NewRequest(http.MethodGet, registrationServer.URL+"/api/v1/agent/registrations/"+registrationID, nil)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	conn, err := agent.Connect(ctx, agentAddr, keypair, server.NoisePublicKey())
 	if err != nil {
 		t.Fatal(err)
 	}
-	pollRequest.Header.Set("X-Registration-Poll-Token", pollToken)
-	pollResponse, err := http.DefaultClient.Do(pollRequest)
+	defer conn.Close()
+	ack, err := agent.Register(conn, "", "", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	var issued struct {
-		CertificatePEM string `json:"certificate_pem"`
-		CAPEM          string `json:"ca_pem"`
+	if ack.Status != "approved" {
+		t.Fatalf("unexpected ack after approval: %#v", ack)
 	}
-	decodeBody(t, pollResponse, &issued)
-	if err := agent.SaveCertificate(agentDataDir, []byte(issued.CertificatePEM), []byte(issued.CAPEM)); err != nil {
+	statusBody, err := wire.Encode(wire.Status{AgentVersion: "test", OS: "linux", Architecture: "amd64", SingBoxVersion: "1.0", Capabilities: map[string]string{"systemd": "true"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := conn.WriteMessage(wire.MsgStatus, statusBody); err != nil {
 		t.Fatal(err)
 	}
 
-	tlsConfig, err := server.TLSConfig()
-	if err != nil {
-		t.Fatal(err)
-	}
-	tlsServer := httptest.NewUnstartedServer(server.Handler())
-	tlsServer.TLS = tlsConfig
-	tlsServer.StartTLS()
-	defer tlsServer.Close()
-	certificate, err := tls.LoadX509KeyPair(agentDataDir+"/agent.crt", agentDataDir+"/agent.key.pem")
-	if err != nil {
-		t.Fatal(err)
-	}
-	transport := tlsServer.Client().Transport.(*http.Transport).Clone()
-	transport.TLSClientConfig = transport.TLSClientConfig.Clone()
-	transport.TLSClientConfig.Certificates = []tls.Certificate{certificate}
-	client := &http.Client{Transport: transport}
-	body := bytes.NewBufferString(`{"agent_version":"test","os":"linux","architecture":"amd64","sing_box_version":"1.0","capabilities":{"systemd":true}}`)
-	heartbeatRequest, err := http.NewRequestWithContext(context.Background(), http.MethodPost, tlsServer.URL+"/api/v1/agent/heartbeat", body)
-	if err != nil {
-		t.Fatal(err)
-	}
-	heartbeatRequest.Header.Set("Content-Type", "application/json")
-	heartbeatResponse, err := client.Do(heartbeatRequest)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer heartbeatResponse.Body.Close()
-	if heartbeatResponse.StatusCode != http.StatusNoContent {
-		t.Fatalf("mTLS heartbeat: got %d", heartbeatResponse.StatusCode)
-	}
-	nodes, err := store.ListNodes(t.Context())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(nodes) != 1 || !nodes[0].Online || nodes[0].AgentVersion != "test" || nodes[0].SingBox != "1.0" {
-		t.Fatalf("unexpected node status: %#v", nodes)
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		nodes, err := store.ListNodes(t.Context())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(nodes) == 1 && nodes[0].AgentVersion == "test" && nodes[0].SingBox == "1.0" {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("node status was not updated in time: %#v", nodes)
+		}
+		time.Sleep(20 * time.Millisecond)
 	}
 }
 
@@ -396,20 +421,27 @@ func createRegistrationToken(t *testing.T, baseURL, session, csrfToken string) s
 	return result.Token
 }
 
-func registerAgent(t *testing.T, baseURL, token string, csr []byte) (string, string) {
+// registerAgent dials the agent Noise listener with keypair and submits a
+// registration; it fails the test unless the result is "pending" (the
+// expected outcome for a fresh, not-yet-approved key), returning the new
+// registration's ID for the caller to approve via the admin API.
+func registerAgent(t *testing.T, agentAddr string, masterPub [wire.KeySize]byte, keypair wire.Keypair, token, nodeName string) string {
 	t.Helper()
-	response := request(t, http.MethodPost, baseURL+"/api/v1/agent/registrations", map[string]any{
-		"token": token, "node_name": "test-node", "csr_pem": string(csr), "capabilities": map[string]string{"os": "linux"},
-	}, "", "")
-	if response.StatusCode != http.StatusAccepted {
-		t.Fatalf("register agent: got %d", response.StatusCode)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	conn, err := agent.Connect(ctx, agentAddr, keypair, masterPub)
+	if err != nil {
+		t.Fatal(err)
 	}
-	var registration struct {
-		ID        string `json:"registration_id"`
-		PollToken string `json:"poll_token"`
+	defer conn.Close()
+	ack, err := agent.Register(conn, token, nodeName, map[string]string{"os": "linux"})
+	if err != nil {
+		t.Fatal(err)
 	}
-	decodeBody(t, response, &registration)
-	return registration.ID, registration.PollToken
+	if ack.Status != "pending" {
+		t.Fatalf("register agent: unexpected status %q", ack.Status)
+	}
+	return ack.RegistrationID
 }
 
 func request(t *testing.T, method, url string, value any, session, csrfToken string) *http.Response {

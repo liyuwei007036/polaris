@@ -24,6 +24,17 @@ import (
 const managedSingBoxConfig = "/etc/sing-box/config.json"
 const managedNginxConfig = "/etc/nginx/stream-conf.d/sb-control.conf"
 
+// permissionHint appends operator guidance to a raw OS error when the failure
+// is caused by insufficient privileges. The agent must be able to write to
+// system paths such as /etc/sing-box and /etc/nginx; on a non-root install
+// every such write fails with an unexplained "permission denied".
+func permissionHint(err error) string {
+	if os.IsPermission(err) {
+		return "; agent 没有写入权限，需要以 root 身份运行 sb-control agent（例如通过 systemd 并设置 User=root），或对该目录授予写权限后重试"
+	}
+	return ""
+}
+
 // ExecuteTask only invokes a fixed local program with fixed arguments. It does
 // not accept shell text or a caller-supplied executable path.
 func ExecuteTask(ctx context.Context, task Task) TaskResult {
@@ -90,7 +101,7 @@ func installSingBox(ctx context.Context, task Task, dataDir string) TaskResult {
 	const maximumArtifactBytes = 200 * 1024 * 1024
 	binaryDirectory := filepath.Dir(binaryPath)
 	if err := os.MkdirAll(binaryDirectory, 0o755); err != nil {
-		return TaskResult{Status: "failed", Summary: "create sing-box binary directory: " + err.Error()}
+		return TaskResult{Status: "failed", Summary: "create sing-box binary directory: " + err.Error() + permissionHint(err)}
 	}
 	artifact, err := os.CreateTemp(binaryDirectory, ".sb-control-sing-box-*")
 	if err != nil {
@@ -262,7 +273,7 @@ func applyNginxConfig(ctx context.Context, task Task) TaskResult {
 	}
 	directory := filepath.Dir(managedNginxConfig)
 	if err := os.MkdirAll(directory, 0o750); err != nil {
-		return TaskResult{Status: "failed", Summary: "create Nginx stream directory: " + err.Error()}
+		return TaskResult{Status: "failed", Summary: "create Nginx stream directory: " + err.Error() + permissionHint(err)}
 	}
 	temporary, err := os.CreateTemp(directory, ".sb-control-stream-*.conf")
 	if err != nil {
@@ -292,23 +303,23 @@ func applyNginxConfig(ctx context.Context, task Task) TaskResult {
 	if err := os.Rename(temporaryPath, managedNginxConfig); err != nil {
 		return TaskResult{Status: "failed", Summary: "atomically replace Nginx configuration: " + err.Error()}
 	}
-	if _, err := exec.CommandContext(ctx, "nginx", "-t").CombinedOutput(); err == nil {
-		if output, reloadErr := exec.CommandContext(ctx, "systemctl", "reload", "nginx.service").CombinedOutput(); reloadErr == nil {
-			return TaskResult{Status: "succeeded", Summary: "Nginx configuration validated and reloaded"}
-		} else {
-			_ = output
-		}
+	var applyErr string
+	if testOutput, testErr := exec.CommandContext(ctx, "nginx", "-t").CombinedOutput(); testErr != nil {
+		applyErr = commandSummary("nginx -t", testOutput, testErr)
+	} else if reloadOutput, reloadErr := exec.CommandContext(ctx, "systemctl", "reload", "nginx.service").CombinedOutput(); reloadErr != nil {
+		applyErr = commandSummary("systemctl reload nginx.service", reloadOutput, reloadErr)
+	} else {
+		return TaskResult{Status: "succeeded", Summary: "Nginx configuration validated and reloaded"}
 	}
 	if backup, err := os.ReadFile(backupPath); err == nil {
 		if os.WriteFile(managedNginxConfig, backup, 0o640) == nil {
-			if output, restoreErr := exec.CommandContext(ctx, "nginx", "-t").CombinedOutput(); restoreErr == nil {
+			if _, restoreErr := exec.CommandContext(ctx, "nginx", "-t").CombinedOutput(); restoreErr == nil {
 				_, _ = exec.CommandContext(ctx, "systemctl", "reload", "nginx.service").CombinedOutput()
-				_ = output
-				return TaskResult{Status: "rolled_back", Summary: "Nginx validation or reload failed; restored last successful configuration"}
+				return TaskResult{Status: "rolled_back", Summary: "new Nginx configuration failed (" + applyErr + "); restored last successful configuration"}
 			}
 		}
 	}
-	return TaskResult{Status: "failed", Summary: "Nginx validation or reload failed and rollback did not complete"}
+	return TaskResult{Status: "failed", Summary: "Nginx configuration failed and automatic rollback did not complete: " + applyErr}
 }
 
 func applySingBoxConfig(ctx context.Context, task Task) TaskResult {
@@ -330,7 +341,7 @@ func applySingBoxConfig(ctx context.Context, task Task) TaskResult {
 	}
 	configDir := filepath.Dir(managedSingBoxConfig)
 	if err := os.MkdirAll(configDir, 0o750); err != nil {
-		return TaskResult{Status: "failed", Summary: "create sing-box configuration directory: " + err.Error()}
+		return TaskResult{Status: "failed", Summary: "create sing-box configuration directory: " + err.Error() + permissionHint(err)}
 	}
 	temporary, err := os.CreateTemp(configDir, ".sb-control-config-*.json")
 	if err != nil {
@@ -367,20 +378,68 @@ func applySingBoxConfig(ctx context.Context, task Task) TaskResult {
 	if err := os.Rename(temporaryPath, managedSingBoxConfig); err != nil {
 		return TaskResult{Status: "failed", Summary: "atomically replace configuration: " + err.Error()}
 	}
-	if result := restartSingBox(ctx); result.Status == "succeeded" {
+	result := restartSingBox(ctx)
+	if result.Status == "succeeded" {
 		return result
 	}
 	if backup, err := os.ReadFile(backupPath); err == nil {
 		if restoreErr := os.WriteFile(managedSingBoxConfig, backup, 0o640); restoreErr == nil {
 			if rollback := restartSingBox(ctx); rollback.Status == "succeeded" {
-				return TaskResult{Status: "rolled_back", Summary: "new configuration failed; restored last successful configuration"}
+				return TaskResult{Status: "rolled_back", Summary: "new configuration failed (" + result.Summary + "); restored last successful configuration"}
 			}
 		}
 	}
-	return TaskResult{Status: "failed", Summary: "new configuration failed and automatic rollback did not complete"}
+	// The specific failure (e.g. sing-box.service missing, or a runtime
+	// rejection check didn't catch) must survive here — this is the only
+	// message an operator sees, and it is often their very first deploy with
+	// no prior backup to roll back to.
+	return TaskResult{Status: "failed", Summary: "new configuration failed and automatic rollback did not complete: " + result.Summary}
+}
+
+const managedSingBoxUnit = "/etc/systemd/system/sing-box.service"
+const singBoxUnitContents = `[Unit]
+Description=sing-box service (managed by sb-control)
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/sing-box run -c /etc/sing-box/config.json
+ExecReload=/bin/kill -HUP $MAINPID
+Restart=on-failure
+RestartSec=2
+LimitNOFILE=1048576
+
+[Install]
+WantedBy=multi-user.target
+`
+
+// ensureSingBoxService installs and enables a systemd unit for sing-box the
+// first time one is needed. singbox.install only places the binary; without
+// this, "systemctl restart sing-box.service" fails with "unit not found" on
+// any node that never had sing-box set up through a package manager, and
+// that failure looks like a config or protocol problem rather than a missing
+// service definition. An existing unit (e.g. from the official package) is
+// left untouched.
+func ensureSingBoxService(ctx context.Context) error {
+	if exec.CommandContext(ctx, "systemctl", "cat", "sing-box.service").Run() == nil {
+		return nil
+	}
+	if err := os.WriteFile(managedSingBoxUnit, []byte(singBoxUnitContents), 0o644); err != nil {
+		return errors.New("write sing-box systemd unit: " + err.Error() + permissionHint(err))
+	}
+	if output, err := exec.CommandContext(ctx, "systemctl", "daemon-reload").CombinedOutput(); err != nil {
+		return errors.New(commandSummary("systemctl daemon-reload", output, err))
+	}
+	if output, err := exec.CommandContext(ctx, "systemctl", "enable", "sing-box.service").CombinedOutput(); err != nil {
+		return errors.New(commandSummary("systemctl enable sing-box.service", output, err))
+	}
+	return nil
 }
 
 func restartSingBox(ctx context.Context) TaskResult {
+	if err := ensureSingBoxService(ctx); err != nil {
+		return TaskResult{Status: "failed", Summary: "prepare sing-box service: " + err.Error()}
+	}
 	if output, err := exec.CommandContext(ctx, "systemctl", "restart", "sing-box.service").CombinedOutput(); err != nil {
 		return TaskResult{Status: "failed", Summary: commandSummary("systemctl restart sing-box.service", output, err)}
 	}

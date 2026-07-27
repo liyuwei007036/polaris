@@ -118,7 +118,7 @@ func ValidateProtocolSpec(spec ProtocolSpec) error {
 		return fmt.Errorf("protocol %s does not support %s", spec.Protocol, spec.Network)
 	}
 	if spec.Reality.Enabled && spec.Protocol != "vless" {
-		return errors.New("Reality is only supported by VLESS listeners")
+		return errors.New("Reality is only supported by VLESS listeners: Reality disguises a real TCP TLS handshake, and other protocols use their own handshake (e.g. Hysteria2 runs over QUIC), so the two cannot be combined")
 	}
 	if spec.Reality.Enabled && (!spec.TLS.Enabled || spec.Reality.HandshakeServer == "" || spec.Reality.HandshakePort == 0) {
 		return errors.New("Reality requires TLS, handshake server, and handshake port")

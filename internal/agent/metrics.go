@@ -69,6 +69,13 @@ func CollectMetrics() MetricReport {
 	return report
 }
 
+// CollectConnections independently polls the local Clash API for the current
+// connection list. It is used by the fast real-time push loop, which runs on
+// its own short interval decoupled from the slower heartbeat.
+func CollectConnections(ctx context.Context) ([]ConnectionInfo, error) {
+	return collectConnections(ctx)
+}
+
 // collectConnections reads current connections from the loopback sing-box
 // Clash API. Every value is copied verbatim; absent fields stay empty.
 func collectConnections(ctx context.Context) ([]ConnectionInfo, error) {

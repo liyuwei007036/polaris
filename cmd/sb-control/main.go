@@ -3,11 +3,12 @@ package main
 import (
 	"bufio"
 	"context"
-	"encoding/json"
+	"encoding/base64"
 	"errors"
 	"flag"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -17,6 +18,7 @@ import (
 
 	"github.com/sb-control/sb-control/internal/agent"
 	"github.com/sb-control/sb-control/internal/control"
+	"github.com/sb-control/sb-control/internal/wire"
 )
 
 func main() {
@@ -72,18 +74,32 @@ func runMaster(args []string) error {
 		fmt.Println("Administrator created. Add this TOTP secret to an authenticator now; it is displayed only once:")
 		fmt.Println(secret)
 		return nil
-	case "serve":
-		flags := flag.NewFlagSet("master serve", flag.ContinueOnError)
+	case "show-pubkey":
+		flags := flag.NewFlagSet("master show-pubkey", flag.ContinueOnError)
 		dataDir := flags.String("data-dir", "./data", "master data directory")
-		listen := flags.String("listen", ":8443", "HTTPS listen address")
-		certFile := flags.String("tls-cert", "", "HTTPS certificate PEM")
-		keyFile := flags.String("tls-key", "", "HTTPS private key PEM")
-		insecureCookies := flags.Bool("insecure-dev-cookies", false, "allow non-Secure cookies for local HTTP development only")
 		if err := flags.Parse(args[1:]); err != nil {
 			return err
 		}
-		if *certFile == "" || *keyFile == "" {
-			return errors.New("--tls-cert and --tls-key are required; master does not start HTTP in production mode")
+		store, err := control.Open(*dataDir)
+		if err != nil {
+			return err
+		}
+		defer store.Close()
+		server, err := control.NewServer(store, true)
+		if err != nil {
+			return err
+		}
+		public := server.NoisePublicKey()
+		fmt.Println(base64.StdEncoding.EncodeToString(public[:]))
+		return nil
+	case "serve":
+		flags := flag.NewFlagSet("master serve", flag.ContinueOnError)
+		dataDir := flags.String("data-dir", "./data", "master data directory")
+		agentListen := flags.String("agent-listen", ":8443", "TCP listen address for agents (Noise-encrypted, no certificate needed)")
+		browserListen := flags.String("browser-listen", ":8080", "plain HTTP listen address for the operator web UI/API; put a reverse proxy in front for public HTTPS")
+		insecureCookies := flags.Bool("insecure-dev-cookies", false, "allow non-Secure cookies; only needed if the browser listener is reached over plain HTTP with no TLS-terminating proxy in front")
+		if err := flags.Parse(args[1:]); err != nil {
+			return err
 		}
 		store, err := control.Open(*dataDir)
 		if err != nil {
@@ -94,21 +110,41 @@ func runMaster(args []string) error {
 		if err != nil {
 			return err
 		}
-		tlsConfig, err := server.TLSConfig()
+		agentListener, err := net.Listen("tcp", *agentListen)
 		if err != nil {
-			return err
+			return fmt.Errorf("listen for agents: %w", err)
 		}
-		httpServer := &http.Server{
-			Addr:              *listen,
-			Handler:           server.Handler(),
+		defer agentListener.Close()
+		// Agent traffic (status, task dispatch, task results, connection
+		// pushes) is Noise-encrypted raw TCP, never HTTP — see ServeAgents.
+		// The browser listener is plain HTTP by design; put nginx (or any
+		// reverse proxy) in front of it for public HTTPS, or leave it plain
+		// for LAN-only access.
+		browserServer := &http.Server{
+			Addr:              *browserListen,
+			Handler:           server.BrowserHandler(),
 			ReadHeaderTimeout: 10 * time.Second,
 			ReadTimeout:       30 * time.Second,
-			WriteTimeout:      0,
+			WriteTimeout:      0, // the real-time connections SSE stream is held open indefinitely
 			IdleTimeout:       60 * time.Second,
-			TLSConfig:         tlsConfig,
 		}
-		fmt.Fprintln(os.Stdout, "sb-control master listening on", *listen)
-		return httpServer.ListenAndServeTLS(*certFile, *keyFile)
+		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+		defer stop()
+		go func() {
+			<-ctx.Done()
+			_ = agentListener.Close()
+			_ = browserServer.Close()
+		}()
+		errs := make(chan error, 2)
+		go func() {
+			fmt.Fprintln(os.Stdout, "sb-control master (agent, Noise-encrypted TCP) listening on", *agentListen)
+			errs <- server.ServeAgents(ctx, agentListener)
+		}()
+		go func() {
+			fmt.Fprintln(os.Stdout, "sb-control master (browser, plain HTTP) listening on", *browserListen)
+			errs <- browserServer.ListenAndServe()
+		}()
+		return <-errs
 	default:
 		return fmt.Errorf("unknown master command %q", args[0])
 	}
@@ -119,23 +155,8 @@ func runAgent(args []string) error {
 		return errors.New("agent command is required")
 	}
 	switch args[0] {
-	case "create-csr":
-		flags := flag.NewFlagSet("agent create-csr", flag.ContinueOnError)
-		dataDir := flags.String("data-dir", "./agent-data", "agent data directory")
-		nodeName := flags.String("node-name", "", "node display name")
-		if err := flags.Parse(args[1:]); err != nil {
-			return err
-		}
-		csr, err := agent.CreateCSR(*dataDir, *nodeName)
-		if err != nil {
-			return err
-		}
-		_, err = os.Stdout.Write(csr)
-		return err
 	case "register":
 		return agentRegister(args[1:])
-	case "fetch-certificate":
-		return agentFetchCertificate(args[1:])
 	case "run":
 		return runAgentControl(args[1:])
 	default:
@@ -143,144 +164,161 @@ func runAgent(args []string) error {
 	}
 }
 
-func runAgentControl(args []string) error {
-	flags := flag.NewFlagSet("agent run", flag.ContinueOnError)
-	dataDir := flags.String("data-dir", "./agent-data", "agent data directory")
-	masterURL := flags.String("master", "", "master HTTPS base URL")
-	masterCA := flags.String("master-ca", "", "optional PEM CA for the master HTTPS certificate")
-	interval := flags.Duration("heartbeat-interval", 30*time.Second, "agent heartbeat interval")
-	singBoxVersion := flags.String("sing-box-version", "", "detected sing-box version")
-	if err := flags.Parse(args); err != nil {
-		return err
+func parseMasterPubKey(value string) ([wire.KeySize]byte, error) {
+	var out [wire.KeySize]byte
+	if value == "" {
+		return out, errors.New("--master-pubkey is required (see \"sb-control master show-pubkey\")")
 	}
-	if err := requireHTTPS(*masterURL); err != nil {
-		return err
-	}
-	if *interval < 5*time.Second || *interval > 5*time.Minute {
-		return errors.New("--heartbeat-interval must be between 5s and 5m")
-	}
-	client, err := agent.NewMTLSClient(*dataDir, *masterCA)
+	decoded, err := base64.StdEncoding.DecodeString(value)
 	if err != nil {
-		return err
+		return out, fmt.Errorf("decode --master-pubkey: %w", err)
 	}
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
-	defer stop()
-	status := agent.DefaultStatus(*singBoxVersion)
-	status.Capabilities["goos"] = runtime.GOOS
-	if err := agent.SendHeartbeat(ctx, client, *masterURL, status); err != nil {
-		return err
+	if len(decoded) != wire.KeySize {
+		return out, errors.New("--master-pubkey must decode to 32 bytes")
 	}
-	go func() { _ = agent.KeepControlChannel(ctx, client, *masterURL, agent.NewTaskHandler(*dataDir)) }()
-	ticker := time.NewTicker(*interval)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return nil
-		case <-ticker.C:
-			status.Metrics = agent.CollectMetrics()
-			if err := agent.SendHeartbeat(ctx, client, *masterURL, status); err != nil {
-				fmt.Fprintln(os.Stderr, "heartbeat failed:", err)
-			}
-		}
-	}
+	copy(out[:], decoded)
+	return out, nil
 }
 
 func agentRegister(args []string) error {
 	flags := flag.NewFlagSet("agent register", flag.ContinueOnError)
 	dataDir := flags.String("data-dir", "./agent-data", "agent data directory")
-	masterURL := flags.String("master", "", "master HTTPS base URL")
+	masterAddr := flags.String("master", "", "master agent-listen address, host:port")
+	masterPubKeyStr := flags.String("master-pubkey", "", "master's Noise public key, base64")
 	token := flags.String("token", "", "one-time registration token")
 	nodeName := flags.String("node-name", "", "node display name")
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
-	if err := requireHTTPS(*masterURL); err != nil {
-		return err
+	if *masterAddr == "" || *token == "" || *nodeName == "" {
+		return errors.New("--master, --token and --node-name are required")
 	}
-	if *token == "" || *nodeName == "" {
-		return errors.New("--token and --node-name are required")
-	}
-	csr, err := agent.CreateCSR(*dataDir, *nodeName)
+	masterPub, err := parseMasterPubKey(*masterPubKeyStr)
 	if err != nil {
 		return err
 	}
-	body, err := json.Marshal(map[string]any{
-		"token": *token, "node_name": *nodeName, "csr_pem": string(csr),
-		"capabilities": map[string]any{"os": "unknown", "architecture": "unknown", "agent_version": "dev"},
-	})
+	keypair, err := agent.LoadOrCreateKeypair(*dataDir)
 	if err != nil {
 		return err
 	}
-	request, err := http.NewRequest(http.MethodPost, strings.TrimRight(*masterURL, "/")+"/api/v1/agent/registrations", strings.NewReader(string(body)))
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	conn, err := agent.Connect(ctx, *masterAddr, keypair, masterPub)
 	if err != nil {
 		return err
 	}
-	request.Header.Set("Content-Type", "application/json")
-	response, err := (&http.Client{Timeout: 15 * time.Second}).Do(request)
+	defer conn.Close()
+	ack, err := agent.Register(conn, *token, *nodeName, map[string]string{"os": runtime.GOOS, "architecture": runtime.GOARCH, "agent_version": "dev"})
 	if err != nil {
-		return fmt.Errorf("submit registration: %w", err)
+		return err
 	}
-	defer response.Body.Close()
-	if response.StatusCode != http.StatusAccepted {
-		return readAPIError(response)
+	switch ack.Status {
+	case "approved":
+		if err := agent.SaveReleaseSigningPublicKey(*dataDir, ack.ReleaseSigningPublicKeyPEM); err != nil {
+			return err
+		}
+		fmt.Printf("Node already approved (node_id=%s). Ready to run \"agent run\".\n", ack.NodeID)
+	case "pending":
+		fmt.Printf("Registration pending approval (registration_id=%s). Ask an administrator to approve it, then run \"agent run\" — it retries until approved.\n", ack.RegistrationID)
+	default:
+		return fmt.Errorf("registration %s", ack.Status)
 	}
-	var result struct {
-		RegistrationID string `json:"registration_id"`
-		PollToken      string `json:"poll_token"`
-	}
-	if err := json.NewDecoder(response.Body).Decode(&result); err != nil {
-		return fmt.Errorf("decode registration response: %w", err)
-	}
-	fmt.Printf("Registration pending approval. Keep these values secret until the certificate is fetched:\nregistration_id=%s\npoll_token=%s\n", result.RegistrationID, result.PollToken)
 	return nil
 }
 
-func agentFetchCertificate(args []string) error {
-	flags := flag.NewFlagSet("agent fetch-certificate", flag.ContinueOnError)
+func runAgentControl(args []string) error {
+	flags := flag.NewFlagSet("agent run", flag.ContinueOnError)
 	dataDir := flags.String("data-dir", "./agent-data", "agent data directory")
-	masterURL := flags.String("master", "", "master HTTPS base URL")
-	registrationID := flags.String("registration-id", "", "registration ID")
-	pollToken := flags.String("poll-token", "", "registration poll token")
+	masterAddr := flags.String("master", "", "master agent-listen address, host:port")
+	masterPubKeyStr := flags.String("master-pubkey", "", "master's Noise public key, base64")
+	interval := flags.Duration("heartbeat-interval", 30*time.Second, "agent heartbeat interval")
+	connInterval := flags.Duration("connections-interval", 2*time.Second, "real-time connections push interval")
+	singBoxVersion := flags.String("sing-box-version", "", "detected sing-box version")
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
-	if err := requireHTTPS(*masterURL); err != nil {
-		return err
+	if *masterAddr == "" {
+		return errors.New("--master is required")
 	}
-	if *registrationID == "" || *pollToken == "" {
-		return errors.New("--registration-id and --poll-token are required")
+	if *interval < 5*time.Second || *interval > 5*time.Minute {
+		return errors.New("--heartbeat-interval must be between 5s and 5m")
 	}
-	request, err := http.NewRequest(http.MethodGet, strings.TrimRight(*masterURL, "/")+"/api/v1/agent/registrations/"+*registrationID, nil)
+	if *connInterval < time.Second || *connInterval > 30*time.Second {
+		return errors.New("--connections-interval must be between 1s and 30s")
+	}
+	masterPub, err := parseMasterPubKey(*masterPubKeyStr)
 	if err != nil {
 		return err
 	}
-	request.Header.Set("X-Registration-Poll-Token", *pollToken)
-	response, err := (&http.Client{Timeout: 15 * time.Second}).Do(request)
+	warnIfNotRoot()
+	keypair, err := agent.LoadOrCreateKeypair(*dataDir)
 	if err != nil {
-		return fmt.Errorf("fetch registration status: %w", err)
-	}
-	defer response.Body.Close()
-	if response.StatusCode != http.StatusOK {
-		return readAPIError(response)
-	}
-	var result struct {
-		Status                     string `json:"status"`
-		CertificatePEM             string `json:"certificate_pem"`
-		CAPEM                      string `json:"ca_pem"`
-		ReleaseSigningPublicKeyPEM string `json:"release_signing_public_key_pem"`
-	}
-	if err := json.NewDecoder(response.Body).Decode(&result); err != nil {
-		return fmt.Errorf("decode registration status: %w", err)
-	}
-	if result.Status != "approved" {
-		return fmt.Errorf("registration status is %s", result.Status)
-	}
-	if err := agent.SaveCertificate(*dataDir, []byte(result.CertificatePEM), []byte(result.CAPEM), []byte(result.ReleaseSigningPublicKeyPEM)); err != nil {
 		return err
 	}
-	fmt.Println("Agent certificate saved.")
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	defer stop()
+	handler := agent.NewTaskHandler(*dataDir)
+
+	backoff := 5 * time.Second
+	const maxBackoff = 60 * time.Second
+	for ctx.Err() == nil {
+		conn, err := agent.Connect(ctx, *masterAddr, keypair, masterPub)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "connect failed:", err)
+			if !sleepContext(ctx, backoff) {
+				return nil
+			}
+			continue
+		}
+		ack, err := agent.Register(conn, "", "", nil)
+		if err != nil {
+			conn.Close()
+			fmt.Fprintln(os.Stderr, "registration check failed:", err)
+			if !sleepContext(ctx, backoff) {
+				return nil
+			}
+			continue
+		}
+		if ack.Status != "approved" {
+			conn.Close()
+			fmt.Fprintf(os.Stderr, "node not approved yet (status=%s); run \"agent register\" if you haven't, then keep this running — it retries automatically\n", ack.Status)
+			if !sleepContext(ctx, backoff) {
+				return nil
+			}
+			continue
+		}
+		if err := agent.SaveReleaseSigningPublicKey(*dataDir, ack.ReleaseSigningPublicKeyPEM); err != nil {
+			conn.Close()
+			return err
+		}
+		backoff = 5 * time.Second
+		sessionErr := agent.RunSession(ctx, conn, handler, *interval, *connInterval, *singBoxVersion)
+		conn.Close()
+		if ctx.Err() != nil {
+			return nil
+		}
+		if sessionErr != nil {
+			fmt.Fprintln(os.Stderr, "session ended:", sessionErr)
+		}
+		if !sleepContext(ctx, backoff) {
+			return nil
+		}
+		if backoff < maxBackoff {
+			backoff *= 2
+		}
+	}
 	return nil
+}
+
+// sleepContext waits for d or ctx cancellation, reporting which happened
+// first so callers can stop their retry loop cleanly on shutdown.
+func sleepContext(ctx context.Context, d time.Duration) bool {
+	select {
+	case <-ctx.Done():
+		return false
+	case <-time.After(d):
+		return true
+	}
 }
 
 func readPassword(reader io.Reader) (string, error) {
@@ -295,19 +333,15 @@ func readPassword(reader io.Reader) (string, error) {
 	return password, nil
 }
 
-func requireHTTPS(rawURL string) error {
-	if !strings.HasPrefix(strings.ToLower(rawURL), "https://") {
-		return errors.New("--master must use an https:// URL")
+// warnIfNotRoot logs a clear, upfront warning instead of leaving the operator
+// to decode a bare "permission denied" the first time a task tries to write
+// to /etc/sing-box, /etc/nginx, or /etc/fail2ban.
+func warnIfNotRoot() {
+	if runtime.GOOS == "linux" && os.Geteuid() != 0 {
+		fmt.Fprintln(os.Stderr, "warning: agent is not running as root; tasks that write to /etc/sing-box, /etc/nginx, or /etc/fail2ban will fail with permission denied. Run via systemd with User=root (see deploy/sb-control-agent.service), or as root directly.")
 	}
-	return nil
-}
-
-func readAPIError(response *http.Response) error {
-	limited := io.LimitReader(response.Body, 4096)
-	content, _ := io.ReadAll(limited)
-	return fmt.Errorf("master returned %s: %s", response.Status, strings.TrimSpace(string(content)))
 }
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: sb-control master <init-admin|serve> ... | sb-control agent <create-csr|register|fetch-certificate|run> ...")
+	fmt.Fprintln(os.Stderr, "usage: sb-control master <init-admin|serve|show-pubkey> ... | sb-control agent <register|run> ...")
 }

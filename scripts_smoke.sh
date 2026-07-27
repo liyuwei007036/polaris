@@ -4,7 +4,8 @@ set -u
 BIN=/home/pi/sbtest/sb-control.new
 W=/tmp/sbv
 PORT=8553
-BASE=https://127.0.0.1:$PORT
+AGENT_PORT=8554
+BASE=http://127.0.0.1:$PORT
 PW='Verify-Pass-7731'
 export PATH=$PATH:/usr/local/go/bin
 rm -rf "$W"; mkdir -p "$W"; cd "$W"
@@ -27,17 +28,16 @@ try:
  d=json.load(sys.stdin); print(d.get(sys.argv[1],"") if isinstance(d,dict) else "")
 except: print("")' "$1"; }
 
-openssl req -x509 -newkey ed25519 -nodes -keyout key.pem -out cert.pem -days 2 \
-  -subj "/CN=sbv" -addext "subjectAltName=IP:127.0.0.1,DNS:localhost" >/dev/null 2>&1
-CA="$W/cert.pem"
-
 SECRET=$("$BIN" master init-admin --data-dir data --email admin@example.com --password-stdin <<<"$PW" 2>err.log | tail -1)
 [ ${#SECRET} -ge 16 ] && ok "init-admin (secret len ${#SECRET})" || no "init-admin: $(cat err.log)"
 
-nohup "$BIN" master serve --data-dir data --listen 127.0.0.1:$PORT --tls-cert cert.pem --tls-key key.pem >serve.log 2>&1 &
+# No certificate needed anywhere: agent traffic is Noise-encrypted (raw
+# public keys, auto-managed by master), and the browser listener is plain
+# HTTP by design (put a reverse proxy in front for public HTTPS).
+nohup "$BIN" master serve --data-dir data --agent-listen 127.0.0.1:$AGENT_PORT --browser-listen 127.0.0.1:$PORT --insecure-dev-cookies >serve.log 2>&1 &
 MPID=$!
 for i in $(seq 1 40); do
-  c=$(curl -s -o /dev/null -w '%{http_code}' --cacert "$CA" -X POST "$BASE/api/v1/auth/login" -H 'Content-Type: application/json' -d '{"email":"x","password":"y"}' 2>/dev/null)
+  c=$(curl -s -o /dev/null -w '%{http_code}' -X POST "$BASE/api/v1/auth/login" -H 'Content-Type: application/json' -d '{"email":"x","password":"y"}' 2>/dev/null)
   [ -n "$c" ] && [ "$c" != 000 ] && break; sleep 0.3
 done
 
@@ -45,7 +45,7 @@ CJ=/tmp/sbv_cookies; rm -f $CJ
 RESP=/tmp/sbv_resp
 # req prints the HTTP status code to stdout; response body is written to $RESP.
 req(){ local m=$1 p=$2 c=${3:-} b=${4:-}
-  local a=(-s -o $RESP -w '%{http_code}' --cacert "$CA" -X "$m" "$BASE$p" -b $CJ -c $CJ)
+  local a=(-s -o $RESP -w '%{http_code}' -X "$m" "$BASE$p" -b $CJ -c $CJ)
   [ -n "$c" ] && a+=(-H "X-CSRF-Token: $c")
   [ -n "$b" ] && a+=(-H 'Content-Type: application/json' -d "$b")
   curl "${a[@]}"
@@ -94,15 +94,17 @@ code=$(req POST /api/v1/certificates "$CSRF" "{\"name\":\"example.com\",\"certif
 code=$(req PUT /api/v1/cloudflare/settings "$CSRF" '{"zone_id":"z123","zone_name":"example.com","api_token":"tok-abc"}'); b=$(cat $RESP); ok2xx "$code" && ok "PUT cloudflare/settings" || no "cf settings: $code $b"
 # verify a client subscription can be created once an endpoint would exist: check empty-list 200 already covered.
 
-echo "-- managed outbound library --"
+echo "-- managed outbound library (global, not tied to a node) --"
 getcheck /api/v1/outbounds outbounds
-code=$(req POST /api/v1/outbounds "$CSRF" '{"node_id":"does-not-exist","name":"o1","type":"socks","server":"1.2.3.4","server_port":1080,"username":"","password":"","enabled":true}'); b=$(cat $RESP)
-[ "$code" = 404 ] && ok "POST outbounds bogus node -> 404" || no "outbound bogus node: $code $b"
-code=$(req POST /api/v1/outbounds "$CSRF" '{"node_id":"does-not-exist","name":"o2","type":"socks","server":"","server_port":0,"username":"","password":"","enabled":true}'); b=$(cat $RESP)
+code=$(req POST /api/v1/outbounds "$CSRF" '{"name":"o1","type":"socks","server":"1.2.3.4","server_port":1080,"username":"","password":"","enabled":true}'); b=$(cat $RESP)
+ok2xx "$code" && ok "POST outbounds (no node_id required) -> $code" || no "outbound create: $code $b"
+code=$(req POST /api/v1/outbounds "$CSRF" '{"name":"o2","type":"socks","server":"","server_port":0,"username":"","password":"","enabled":true}'); b=$(cat $RESP)
 [ "$code" = 400 ] && ok "POST outbounds missing server -> 400" || no "outbound validation: $code $b"
-UC=$(curl -s -o /dev/null -w '%{http_code}' --cacert "$CA" "$BASE/api/v1/outbounds")
+code=$(req POST /api/v1/outbounds "$CSRF" '{"name":"o1","type":"socks","server":"1.2.3.4","server_port":1080,"username":"","password":"","enabled":true}'); b=$(cat $RESP)
+[ "$code" = 409 ] && ok "POST outbounds duplicate name -> 409" || no "outbound duplicate: $code $b"
+UC=$(curl -s -o /dev/null -w '%{http_code}' "$BASE/api/v1/outbounds")
 [ "$UC" = 401 ] && ok "GET outbounds unauth -> 401" || no "outbound unauth: $UC"
-HC=$(curl -s --cacert "$CA" "$BASE/" | grep -c "出站方式")
+HC=$(curl -s "$BASE/" | grep -c "出站方式")
 [ "$HC" -ge 1 ] && ok "GET / serves outbound nav (matches=$HC)" || no "outbound nav missing in served HTML"
 
 echo "---- RESULT pass=$pass fail=$fail ----"

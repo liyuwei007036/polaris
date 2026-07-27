@@ -101,10 +101,10 @@ func applyFail2Ban(ctx context.Context, task Task) TaskResult {
 	}
 
 	if err := os.MkdirAll(filepath.Dir(managedFail2BanJail), 0o755); err != nil {
-		return TaskResult{Status: "failed", Summary: "create fail2ban jail directory: " + err.Error()}
+		return TaskResult{Status: "failed", Summary: "create fail2ban jail directory: " + err.Error() + permissionHint(err)}
 	}
 	if err := os.MkdirAll(managedFail2BanFilterDir, 0o755); err != nil {
-		return TaskResult{Status: "failed", Summary: "create fail2ban filter directory: " + err.Error()}
+		return TaskResult{Status: "failed", Summary: "create fail2ban filter directory: " + err.Error() + permissionHint(err)}
 	}
 	if err := writeFileAtomic(managedFail2BanJail, []byte(payload.Jail), 0o640); err != nil {
 		restore()
