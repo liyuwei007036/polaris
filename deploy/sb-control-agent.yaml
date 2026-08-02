@@ -1,0 +1,5 @@
+data_dir: /var/lib/sb-control-agent
+master_address: 127.0.0.1:8443
+master_public_key: REPLACE_WITH_MASTER_NOISE_PUBLIC_KEY
+heartbeat_interval: 30s
+connections_interval: 2s

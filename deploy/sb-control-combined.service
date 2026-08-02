@@ -1,0 +1,17 @@
+[Unit]
+Description=sb-control combined master and local agent
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+Group=root
+ExecStart=/usr/local/bin/sb-control combined serve --master-config /etc/sb-control/master.yaml --agent-config /etc/sb-control/agent.yaml
+Restart=on-failure
+RestartSec=3
+LimitNOFILE=1048576
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

@@ -32,9 +32,11 @@ func main() {
 		err = runMaster(os.Args[2:])
 	case "agent":
 		err = runAgent(os.Args[2:])
+	case "combined":
+		err = runCombined(os.Args[2:])
 	default:
 		usage()
-		err = errors.New("role must be master or agent")
+		err = errors.New("role must be master, agent, or combined")
 	}
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
@@ -49,10 +51,14 @@ func runMaster(args []string) error {
 	switch args[0] {
 	case "init-admin":
 		flags := flag.NewFlagSet("master init-admin", flag.ContinueOnError)
-		dataDir := flags.String("data-dir", "./data", "master data directory")
+		configurationFlags := addMasterFlags(flags)
 		email := flags.String("email", "", "administrator email")
 		passwordStdin := flags.Bool("password-stdin", false, "read password from standard input")
 		if err := flags.Parse(args[1:]); err != nil {
+			return err
+		}
+		configuration, err := resolveMasterFlags(flags, configurationFlags)
+		if err != nil {
 			return err
 		}
 		if *email == "" || !*passwordStdin {
@@ -62,7 +68,7 @@ func runMaster(args []string) error {
 		if err != nil {
 			return err
 		}
-		store, err := control.Open(*dataDir)
+		store, err := control.OpenWithDatabase(configuration.DataDir, configuration.DatabasePath)
 		if err != nil {
 			return err
 		}
@@ -76,15 +82,19 @@ func runMaster(args []string) error {
 		return nil
 	case "reset-mfa":
 		flags := flag.NewFlagSet("master reset-mfa", flag.ContinueOnError)
-		dataDir := flags.String("data-dir", "./data", "master data directory")
+		configurationFlags := addMasterFlags(flags)
 		email := flags.String("email", "", "operator email")
 		if err := flags.Parse(args[1:]); err != nil {
+			return err
+		}
+		configuration, err := resolveMasterFlags(flags, configurationFlags)
+		if err != nil {
 			return err
 		}
 		if *email == "" {
 			return errors.New("--email is required")
 		}
-		store, err := control.Open(*dataDir)
+		store, err := control.OpenWithDatabase(configuration.DataDir, configuration.DatabasePath)
 		if err != nil {
 			return err
 		}
@@ -107,11 +117,15 @@ func runMaster(args []string) error {
 		return errors.New("operator not found")
 	case "show-pubkey":
 		flags := flag.NewFlagSet("master show-pubkey", flag.ContinueOnError)
-		dataDir := flags.String("data-dir", "./data", "master data directory")
+		configurationFlags := addMasterFlags(flags)
 		if err := flags.Parse(args[1:]); err != nil {
 			return err
 		}
-		store, err := control.Open(*dataDir)
+		configuration, err := resolveMasterFlags(flags, configurationFlags)
+		if err != nil {
+			return err
+		}
+		store, err := control.OpenWithDatabase(configuration.DataDir, configuration.DatabasePath)
 		if err != nil {
 			return err
 		}
@@ -125,60 +139,67 @@ func runMaster(args []string) error {
 		return nil
 	case "serve":
 		flags := flag.NewFlagSet("master serve", flag.ContinueOnError)
-		dataDir := flags.String("data-dir", "./data", "master data directory")
-		agentListen := flags.String("agent-listen", ":8443", "TCP listen address for agents (Noise-encrypted, no certificate needed)")
-		browserListen := flags.String("browser-listen", ":8080", "plain HTTP listen address for the operator web UI/API; put a reverse proxy in front for public HTTPS")
-		insecureCookies := flags.Bool("insecure-dev-cookies", false, "allow non-Secure cookies; only needed if the browser listener is reached over plain HTTP with no TLS-terminating proxy in front")
+		configurationFlags := addMasterFlags(flags)
 		if err := flags.Parse(args[1:]); err != nil {
 			return err
 		}
-		store, err := control.Open(*dataDir)
+		configuration, err := resolveMasterFlags(flags, configurationFlags)
 		if err != nil {
 			return err
-		}
-		defer store.Close()
-		server, err := control.NewServer(store, !*insecureCookies)
-		if err != nil {
-			return err
-		}
-		agentListener, err := net.Listen("tcp", *agentListen)
-		if err != nil {
-			return fmt.Errorf("listen for agents: %w", err)
-		}
-		defer agentListener.Close()
-		// Agent traffic (status, task dispatch, task results, connection
-		// pushes) is Noise-encrypted raw TCP, never HTTP — see ServeAgents.
-		// The browser listener is plain HTTP by design; put nginx (or any
-		// reverse proxy) in front of it for public HTTPS, or leave it plain
-		// for LAN-only access.
-		browserServer := &http.Server{
-			Addr:              *browserListen,
-			Handler:           server.BrowserHandler(),
-			ReadHeaderTimeout: 10 * time.Second,
-			ReadTimeout:       30 * time.Second,
-			WriteTimeout:      0, // the real-time connections SSE stream is held open indefinitely
-			IdleTimeout:       60 * time.Second,
 		}
 		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 		defer stop()
-		go func() {
-			<-ctx.Done()
-			_ = agentListener.Close()
-			_ = browserServer.Close()
-		}()
-		errs := make(chan error, 2)
-		go func() {
-			fmt.Fprintln(os.Stdout, "sb-control master (agent, Noise-encrypted TCP) listening on", *agentListen)
-			errs <- server.ServeAgents(ctx, agentListener)
-		}()
-		go func() {
-			fmt.Fprintln(os.Stdout, "sb-control master (browser, plain HTTP) listening on", *browserListen)
-			errs <- browserServer.ListenAndServe()
-		}()
-		return <-errs
+		return serveMaster(ctx, configuration)
 	default:
 		return fmt.Errorf("unknown master command %q", args[0])
 	}
+}
+
+func serveMaster(ctx context.Context, configuration masterConfig) error {
+	store, err := control.OpenWithDatabase(configuration.DataDir, configuration.DatabasePath)
+	if err != nil {
+		return err
+	}
+	defer store.Close()
+	server, err := control.NewServer(store, !configuration.AllowInsecureHTTP)
+	if err != nil {
+		return err
+	}
+	agentAddress := portAddress(configuration.AgentPort)
+	agentListener, err := net.Listen("tcp", agentAddress)
+	if err != nil {
+		return fmt.Errorf("listen for agents: %w", err)
+	}
+	defer agentListener.Close()
+	browserAddress := portAddress(configuration.WebPort)
+	browserServer := &http.Server{
+		Addr:              browserAddress,
+		Handler:           server.BrowserHandler(),
+		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       30 * time.Second,
+		WriteTimeout:      0,
+		IdleTimeout:       60 * time.Second,
+	}
+	defer browserServer.Close()
+	go func() {
+		<-ctx.Done()
+		_ = agentListener.Close()
+		_ = browserServer.Close()
+	}()
+	errorsChannel := make(chan error, 2)
+	go func() {
+		fmt.Fprintln(os.Stdout, "sb-control master (agent, Noise-encrypted TCP) listening on", agentAddress)
+		errorsChannel <- server.ServeAgents(ctx, agentListener)
+	}()
+	go func() {
+		fmt.Fprintln(os.Stdout, "sb-control master (browser, plain HTTP) listening on", browserAddress)
+		errorsChannel <- browserServer.ListenAndServe()
+	}()
+	runErr := <-errorsChannel
+	if errors.Is(runErr, http.ErrServerClosed) || ctx.Err() != nil {
+		return nil
+	}
+	return runErr
 }
 
 func runAgent(args []string) error {
@@ -188,7 +209,7 @@ func runAgent(args []string) error {
 	switch args[0] {
 	case "register":
 		return agentRegister(args[1:])
-	case "run":
+	case "run", "serve":
 		return runAgentControl(args[1:])
 	default:
 		return fmt.Errorf("unknown agent command %q", args[0])
@@ -213,39 +234,44 @@ func parseMasterPubKey(value string) ([wire.KeySize]byte, error) {
 
 func agentRegister(args []string) error {
 	flags := flag.NewFlagSet("agent register", flag.ContinueOnError)
-	dataDir := flags.String("data-dir", "./agent-data", "agent data directory")
-	masterAddr := flags.String("master", "", "master agent-listen address, host:port")
-	masterPubKeyStr := flags.String("master-pubkey", "", "master's Noise public key, base64")
+	configurationFlags := addAgentFlags(flags)
 	token := flags.String("token", "", "one-time registration token")
-	nodeName := flags.String("node-name", "", "node display name")
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
-	if *masterAddr == "" || *token == "" || *nodeName == "" {
-		return errors.New("--master, --token and --node-name are required")
-	}
-	masterPub, err := parseMasterPubKey(*masterPubKeyStr)
+	configuration, err := resolveAgentFlags(flags, configurationFlags)
 	if err != nil {
 		return err
 	}
-	keypair, err := agent.LoadOrCreateKeypair(*dataDir)
+	if *token == "" {
+		return errors.New("--token is required")
+	}
+	masterPub, err := parseMasterPubKey(configuration.MasterPublicKey)
 	if err != nil {
 		return err
+	}
+	keypair, err := agent.LoadOrCreateKeypair(configuration.DataDir)
+	if err != nil {
+		return err
+	}
+	nodeName, err := os.Hostname()
+	if err != nil || strings.TrimSpace(nodeName) == "" {
+		return errors.New("read local hostname for agent registration")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
-	conn, err := agent.Connect(ctx, *masterAddr, keypair, masterPub)
+	conn, err := agent.Connect(ctx, configuration.MasterAddress, keypair, masterPub)
 	if err != nil {
 		return err
 	}
 	defer conn.Close()
-	ack, err := agent.Register(conn, *token, *nodeName, map[string]string{"os": runtime.GOOS, "architecture": runtime.GOARCH, "agent_version": "dev"})
+	ack, err := agent.Register(conn, *token, nodeName, map[string]string{"os": runtime.GOOS, "architecture": runtime.GOARCH, "agent_version": "dev"})
 	if err != nil {
 		return err
 	}
 	switch ack.Status {
 	case "approved":
-		if err := agent.SaveReleaseSigningPublicKey(*dataDir, ack.ReleaseSigningPublicKeyPEM); err != nil {
+		if err := agent.SaveReleaseSigningPublicKey(configuration.DataDir, ack.ReleaseSigningPublicKeyPEM); err != nil {
 			return err
 		}
 		fmt.Printf("Node already approved (node_id=%s). Ready to run \"agent run\".\n", ack.NodeID)
@@ -258,42 +284,39 @@ func agentRegister(args []string) error {
 }
 
 func runAgentControl(args []string) error {
-	flags := flag.NewFlagSet("agent run", flag.ContinueOnError)
-	dataDir := flags.String("data-dir", "./agent-data", "agent data directory")
-	masterAddr := flags.String("master", "", "master agent-listen address, host:port")
-	masterPubKeyStr := flags.String("master-pubkey", "", "master's Noise public key, base64")
-	interval := flags.Duration("heartbeat-interval", 30*time.Second, "agent heartbeat interval")
-	connInterval := flags.Duration("connections-interval", 2*time.Second, "real-time connections push interval")
-	singBoxVersion := flags.String("sing-box-version", "", "detected sing-box version")
+	flags := flag.NewFlagSet("agent serve", flag.ContinueOnError)
+	configurationFlags := addAgentFlags(flags)
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
-	if *masterAddr == "" {
-		return errors.New("--master is required")
+	configuration, err := resolveAgentFlags(flags, configurationFlags)
+	if err != nil {
+		return err
 	}
-	if *interval < 5*time.Second || *interval > 5*time.Minute {
-		return errors.New("--heartbeat-interval must be between 5s and 5m")
+	interval, connInterval, err := agentDurations(configuration)
+	if err != nil {
+		return err
 	}
-	if *connInterval < time.Second || *connInterval > 30*time.Second {
-		return errors.New("--connections-interval must be between 1s and 30s")
-	}
-	masterPub, err := parseMasterPubKey(*masterPubKeyStr)
+	masterPub, err := parseMasterPubKey(configuration.MasterPublicKey)
 	if err != nil {
 		return err
 	}
 	warnIfNotRoot()
-	keypair, err := agent.LoadOrCreateKeypair(*dataDir)
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	defer stop()
+	return runAgentLoop(ctx, configuration.DataDir, configuration.MasterAddress, masterPub, interval, connInterval, "")
+}
+
+func runAgentLoop(ctx context.Context, dataDir, masterAddr string, masterPub [wire.KeySize]byte, interval, connInterval time.Duration, singBoxVersion string) error {
+	keypair, err := agent.LoadOrCreateKeypair(dataDir)
 	if err != nil {
 		return err
 	}
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
-	defer stop()
-	handler := agent.NewTaskHandler(*dataDir)
-
+	handler := agent.NewTaskHandler(dataDir)
 	backoff := 5 * time.Second
 	const maxBackoff = 60 * time.Second
 	for ctx.Err() == nil {
-		conn, err := agent.Connect(ctx, *masterAddr, keypair, masterPub)
+		conn, err := agent.Connect(ctx, masterAddr, keypair, masterPub)
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "connect failed:", err)
 			if !sleepContext(ctx, backoff) {
@@ -318,12 +341,12 @@ func runAgentControl(args []string) error {
 			}
 			continue
 		}
-		if err := agent.SaveReleaseSigningPublicKey(*dataDir, ack.ReleaseSigningPublicKeyPEM); err != nil {
+		if err := agent.SaveReleaseSigningPublicKey(dataDir, ack.ReleaseSigningPublicKeyPEM); err != nil {
 			conn.Close()
 			return err
 		}
 		backoff = 5 * time.Second
-		sessionErr := agent.RunSession(ctx, conn, handler, *interval, *connInterval, *singBoxVersion)
+		sessionErr := agent.RunSession(ctx, conn, handler, interval, connInterval, singBoxVersion)
 		conn.Close()
 		if ctx.Err() != nil {
 			return nil
@@ -374,5 +397,5 @@ func warnIfNotRoot() {
 }
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: sb-control master <init-admin|reset-mfa|serve|show-pubkey> ... | sb-control agent <register|run> ...")
+	fmt.Fprintln(os.Stderr, "usage: sb-control master <init-admin|reset-mfa|serve|show-pubkey> ... | sb-control agent <register|run> ... | sb-control combined <init-admin|reset-mfa|serve|show-pubkey> --config FILE ...")
 }

@@ -475,27 +475,66 @@ func ensureNginxReady(ctx context.Context, needed bool) error {
 	if strings.TrimSpace(os.Getenv("SB_CONTROL_E2E_ROOT")) != "" {
 		return nil
 	}
+	installedByUs := false
 	if _, err := exec.LookPath("nginx"); err != nil {
 		if !needed {
 			return nil
 		}
 		var commands [][]string
+		packageManager := ""
 		switch {
 		case commandExists("apt-get"):
+			packageManager = "apt"
 			commands = [][]string{{"apt-get", "update"}, {"apt-get", "install", "-y", "nginx", "libnginx-mod-stream"}}
 		case commandExists("dnf"):
+			packageManager = "dnf"
 			commands = [][]string{{"dnf", "install", "-y", "nginx", "nginx-mod-stream"}}
 		case commandExists("yum"):
+			packageManager = "yum"
 			commands = [][]string{{"yum", "install", "-y", "nginx", "nginx-mod-stream"}}
 		case commandExists("apk"):
+			packageManager = "apk"
 			commands = [][]string{{"apk", "add", "nginx", "nginx-mod-stream"}}
 		default:
 			return errors.New("未找到 Nginx，也未识别到受支持的软件包管理器；请先安装带 stream 模块的 Nginx")
 		}
+		maskedByUs := false
+		alreadyMasked := false
+		if commandExists("systemctl") {
+			maskedOutput, _ := exec.CommandContext(ctx, "systemctl", "is-enabled", "nginx.service").CombinedOutput()
+			alreadyMasked = strings.Contains(strings.ToLower(string(maskedOutput)), "masked")
+			if !alreadyMasked {
+				if _, maskErr := exec.CommandContext(ctx, "systemctl", "mask", "nginx.service").CombinedOutput(); maskErr == nil {
+					maskedByUs = true
+				}
+			}
+		}
+		if packageManager == "apt" && !alreadyMasked && !maskedByUs {
+			return errors.New("无法在安装前阻止 Nginx 默认站点启动，已取消安装以避免暴露额外 HTTP 端口")
+		}
+		unmask := func() {
+			if maskedByUs {
+				_, _ = exec.CommandContext(ctx, "systemctl", "unmask", "nginx.service").CombinedOutput()
+			}
+		}
 		for _, arguments := range commands {
 			output, commandErr := exec.CommandContext(ctx, arguments[0], arguments[1:]...).CombinedOutput()
 			if commandErr != nil {
+				unmask()
 				return errors.New(commandSummary(strings.Join(arguments, " "), output, commandErr))
+			}
+		}
+		installedByUs = true
+		if commandExists("systemctl") {
+			_, _ = exec.CommandContext(ctx, "systemctl", "stop", "nginx.service").CombinedOutput()
+		}
+		unmask()
+		if packageManager == "apt" {
+			defaultSite := "/etc/nginx/sites-enabled/default"
+			if info, statErr := os.Lstat(defaultSite); statErr == nil && info.Mode()&os.ModeSymlink != 0 {
+				if removeErr := os.Remove(defaultSite); removeErr != nil {
+					return errors.New("关闭 Nginx 默认 HTTP 站点失败: " + removeErr.Error())
+				}
 			}
 		}
 	}
@@ -503,6 +542,9 @@ func ensureNginxReady(ctx context.Context, needed bool) error {
 		return nil
 	}
 	fullConfig, fullConfigErr := exec.CommandContext(ctx, "nginx", "-T").CombinedOutput()
+	if installedByUs && fullConfigErr == nil && nginxHasHTTPListener(string(fullConfig)) {
+		return errors.New("Nginx 配置仍包含 HTTP 监听端口；为避免暴露默认站点，自动端口分配已停止")
+	}
 	if fullConfigErr == nil && strings.Contains(string(fullConfig), "/etc/nginx/stream-conf.d/*.conf") {
 		return nil
 	}
@@ -531,6 +573,24 @@ func ensureNginxReady(ctx context.Context, needed bool) error {
 		return errors.New("写入 Nginx 自动端口配置入口失败: " + err.Error() + permissionHint(err))
 	}
 	return nil
+}
+
+func nginxHasHTTPListener(configuration string) bool {
+	for _, line := range strings.Split(configuration, "\n") {
+		line = strings.TrimSpace(strings.SplitN(line, "#", 2)[0])
+		if !strings.HasPrefix(line, "listen ") {
+			continue
+		}
+		fields := strings.Fields(line)
+		if len(fields) < 2 {
+			continue
+		}
+		address := strings.TrimSuffix(fields[1], ";")
+		if address == "80" || strings.HasSuffix(address, ":80") {
+			return true
+		}
+	}
+	return false
 }
 
 func commandExists(name string) bool {

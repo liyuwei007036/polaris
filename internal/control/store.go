@@ -158,6 +158,12 @@ type Endpoint struct {
 }
 
 func Open(dataDir string) (*Store, error) {
+	return OpenWithDatabase(dataDir, "")
+}
+
+// OpenWithDatabase keeps encryption/signing keys in dataDir while allowing
+// the SQLite file to live on a separately configured persistent volume.
+func OpenWithDatabase(dataDir, databasePath string) (*Store, error) {
 	if dataDir == "" {
 		return nil, errors.New("data directory is required")
 	}
@@ -172,7 +178,13 @@ func Open(dataDir string) (*Store, error) {
 	if err != nil {
 		return nil, err
 	}
-	db, err := sql.Open("sqlite", filepath.Join(dataDir, "sb-control.db"))
+	if databasePath == "" {
+		databasePath = filepath.Join(dataDir, "sb-control.db")
+	}
+	if err := os.MkdirAll(filepath.Dir(databasePath), 0o700); err != nil {
+		return nil, fmt.Errorf("create database directory: %w", err)
+	}
+	db, err := sql.Open("sqlite", databasePath)
 	if err != nil {
 		return nil, fmt.Errorf("open database: %w", err)
 	}

@@ -71,6 +71,74 @@ sing-box 安装任务目前只接受 `amd64` 和 `arm64`。master 自动查询�
 
 ## 安装概览
 
+### 三种运行模式
+
+程序严格提供三种模式。每种模式都支持 YAML 文件启动和纯命令行参数启动。
+
+#### 1. 只运行 Master
+
+使用文件：
+
+```bash
+sb-control master serve --config /etc/sb-control/master.yaml
+```
+
+使用命令行：
+
+```bash
+sb-control master serve \
+  --data-dir /var/lib/sb-control-master \
+  --database-path /var/lib/sb-control-master/sb-control.db \
+  --agent-port 8443 \
+  --web-port 8080
+```
+
+#### 2. 只运行 Agent
+
+使用文件：
+
+```bash
+sb-control agent serve --config /etc/sb-control/agent.yaml
+```
+
+使用命令行：
+
+```bash
+sb-control agent serve \
+  --data-dir /var/lib/sb-control-agent \
+  --master control.example.com:8443 \
+  --master-pubkey '<MASTER_NOISE_PUBKEY>'
+```
+
+#### 3. 一个进程同时运行 Master 和 Agent
+
+文件模式必须同时提供两份相互独立的配置：
+
+```bash
+sb-control combined serve \
+  --master-config /etc/sb-control/master.yaml \
+  --agent-config /etc/sb-control/agent.yaml
+```
+
+纯命令行模式：
+
+```bash
+sb-control combined serve \
+  --master-data-dir /var/lib/sb-control-master \
+  --database-path /var/lib/sb-control-master/sb-control.db \
+  --agent-port 8443 \
+  --web-port 8080 \
+  --agent-data-dir /var/lib/sb-control-agent \
+  --master 127.0.0.1:8443 \
+  --master-pubkey '<MASTER_NOISE_PUBKEY>'
+```
+
+Combined 模式只有一个长期运行进程，但不会自动信任本机 Agent。Agent 仍须使用一次性令牌注册、由管理员批准，并在后续连接中使用固定 Noise 公钥验证身份。
+
+Master 配置只包含端口，不配置监听 IP。Agent 名称自动读取操作系统主机名，不需要 `node_name`。配置文件只接受 `.yaml` 或 `.yml`，未知字段会导致启动失败。
+
+配置模板位于 `deploy/sb-control-master.yaml` 和 `deploy/sb-control-agent.yaml`。
+
 正式安装只使用 GitHub Release 已经编译完成的 Linux 二进制。安装 master 或 agent 时不在目标服务器上执行 `go build`、`npm ci` 或 `npm run build`。
 
 一个发布包中的 `sb-control` 二进制同时包含 master、agent 和已经嵌入的 Web 控制台，不需要下载不同角色的程序。
@@ -230,6 +298,8 @@ sudo install -d \
   -g sb-control \
   -m 0700 \
   /var/lib/sb-control-master
+sudo install -d -o root -g sb-control -m 0750 /etc/sb-control
+sudo install -o root -g sb-control -m 0640 deploy/sb-control-master.yaml /etc/sb-control/master.yaml
 ```
 
 如果发行版的 `nologin` 位于 `/sbin/nologin`，请相应修改 `useradd` 命令。master 不需要 root 权限；默认端口 `8080` 和 `8443` 都高于 1024。
@@ -243,7 +313,7 @@ read -rsp "请输入管理员密码: " SB_CONTROL_ADMIN_PASSWORD
 printf '\n'
 printf '%s\n' "$SB_CONTROL_ADMIN_PASSWORD" |
   sudo -u sb-control /usr/local/bin/sb-control master init-admin \
-    --data-dir /var/lib/sb-control-master \
+    --config /etc/sb-control/master.yaml \
     --email admin@example.com \
     --password-stdin
 unset SB_CONTROL_ADMIN_PASSWORD
@@ -253,7 +323,7 @@ unset SB_CONTROL_ADMIN_PASSWORD
 
 ```bash
 sudo -u sb-control /usr/local/bin/sb-control master reset-mfa \
-  --data-dir /var/lib/sb-control-master \
+  --config /etc/sb-control/master.yaml \
   --email admin@example.com
 ```
 
@@ -263,7 +333,7 @@ sudo -u sb-control /usr/local/bin/sb-control master reset-mfa \
 
 ```bash
 sudo -u sb-control /usr/local/bin/sb-control master show-pubkey \
-  --data-dir /var/lib/sb-control-master
+  --config /etc/sb-control/master.yaml
 ```
 
 保存输出的 Base64 字符串，后续把它作为 `MASTER_NOISE_PUBKEY` 使用。它是 32 字节 Curve25519 公钥，不是 HTTPS 证书、Reality 公钥或 Cloudflare Token。
@@ -284,7 +354,7 @@ Type=simple
 User=sb-control
 Group=sb-control
 UMask=0077
-ExecStart=/usr/local/bin/sb-control master serve --data-dir /var/lib/sb-control-master --agent-listen :8443 --browser-listen 127.0.0.1:8080
+ExecStart=/usr/local/bin/sb-control master serve --config /etc/sb-control/master.yaml
 Restart=on-failure
 RestartSec=5
 
@@ -320,7 +390,7 @@ sudo ss -lntp | grep -E ':(8080|8443)\b'
 
 ### 6. 为控制台配置 HTTPS
 
-master 的浏览器端口本身是普通 HTTP。生产环境应让它只监听 `127.0.0.1:8080`，并由 Nginx、Caddy 或其他反向代理终止 HTTPS。
+master 的浏览器端口本身是普通 HTTP。Master 配置只填写端口，程序监听所有本机地址；生产环境必须使用防火墙限制 `8080/TCP` 的来源，并由 Nginx、Caddy 或其他反向代理终止 HTTPS。
 
 Nginx 示例：
 
@@ -343,13 +413,13 @@ server {
 }
 ```
 
-默认登录 Cookie 带 `Secure` 属性，因此生产控制台必须通过 HTTPS 访问。只有可信内网或本机临时测试需要直接使用 HTTP 时，才把 master 启动参数改为：
+默认登录 Cookie 带 `Secure` 属性，因此生产控制台必须通过 HTTPS 访问。只有可信内网临时测试需要直接使用 HTTP 时，才显式添加：
 
 ```text
---browser-listen :8080 --insecure-dev-cookies
+--allow-insecure-http
 ```
 
-`--insecure-dev-cookies` 不应在公网使用。
+`--allow-insecure-http` 不应在公网使用；YAML 中对应 `allow_insecure_http: true`。
 
 ## 安装 agent
 
@@ -613,6 +683,8 @@ include /etc/nginx/stream-conf.d/*.conf;
 
 ## 安全模型
 
+自动安装 Nginx 时，Agent 会先阻止新安装的服务自动启动；在 Debian/Ubuntu 上移除软件包自带的默认站点，并确认新安装配置没有 HTTP 80 监听后，才会启用实际需要的 TCP 入口。如果无法确认不会暴露额外 HTTP 端口，任务会失败并保持 Nginx 停止。已存在的用户自建 Nginx 不会被自动删除或改写。
+
 - agent 与 master 使用 `Noise_XK` 加密的 TCP 长连接和固定的 Curve25519 身份密钥。
 - agent 预先固定 master 公钥；master 在管理员审批后固定 agent 公钥。
 - 节点私钥需要更换时，应吊销旧节点并重新注册，不支持原地轮换。
@@ -711,6 +783,11 @@ bash ./scripts_e2e.sh
 ```
 
 ## 命令索引
+
+- `sb-control combined init-admin --config FILE --email EMAIL --password-stdin`
+- `sb-control combined reset-mfa --config FILE --email EMAIL`
+- `sb-control combined show-pubkey --config FILE`
+- `sb-control combined serve --config FILE`
 
 ```text
 sb-control master init-admin ...

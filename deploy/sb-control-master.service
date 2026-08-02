@@ -1,0 +1,16 @@
+[Unit]
+Description=sb-control master
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=sb-control
+Group=sb-control
+UMask=0077
+ExecStart=/usr/local/bin/sb-control master serve --config /etc/sb-control/master.yaml
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

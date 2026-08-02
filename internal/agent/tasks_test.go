@@ -18,6 +18,24 @@ import (
 	"testing"
 )
 
+func TestNginxHTTPListenerDetection(t *testing.T) {
+	for name, test := range map[string]struct {
+		configuration string
+		want          bool
+	}{
+		"default IPv4": {"server {\n listen 80 default_server;\n}", true},
+		"default IPv6": {"server {\n listen [::]:80;\n}", true},
+		"managed TCP":  {"server {\n listen 0.0.0.0:443;\n ssl_preread on;\n}", false},
+		"comment":      {"# listen 80;", false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if got := nginxHasHTTPListener(test.configuration); got != test.want {
+				t.Fatalf("nginxHasHTTPListener() = %v, want %v", got, test.want)
+			}
+		})
+	}
+}
+
 func TestInitialSingBoxConfigIsValidJSON(t *testing.T) {
 	var configuration map[string]any
 	if err := json.Unmarshal([]byte(initialSingBoxConfig), &configuration); err != nil {
