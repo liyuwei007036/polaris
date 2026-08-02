@@ -8,16 +8,20 @@ const emit = defineEmits(['authenticated'])
 const step = ref('credentials')
 const loading = ref(false)
 const challengeID = ref('')
-const credentials = ref({ email: '', password: '' })
+const credentials = ref({ username: '', password: '' })
 const code = ref('')
 
 async function submitCredentials() {
-  if (!credentials.value.email || !credentials.value.password) return
+  if (!credentials.value.username || !credentials.value.password) return
   loading.value = true
   try {
     const result = await api('/auth/login', { method: 'POST', body: credentials.value })
-    challengeID.value = result.challenge_id
-    step.value = 'mfa'
+    if (result.requires_2fa) {
+      challengeID.value = result.challenge_id
+      step.value = 'mfa'
+    } else {
+      await finishAuthentication(result)
+    }
   } catch (error) {
     ElMessage.error(error.message)
   } finally {
@@ -33,14 +37,18 @@ async function submitMFA() {
       method: 'POST',
       body: { challenge_id: challengeID.value, code: code.value },
     })
-    setCsrfToken(result.csrf_token)
-    const session = await api('/auth/me')
-    emit('authenticated', session)
+    await finishAuthentication(result)
   } catch (error) {
     ElMessage.error(error.message)
   } finally {
     loading.value = false
   }
+}
+
+async function finishAuthentication(result) {
+  setCsrfToken(result.csrf_token)
+  const session = await api('/auth/me')
+  emit('authenticated', session)
 }
 </script>
 
@@ -60,9 +68,8 @@ async function submitMFA() {
     <section class="login-form-wrap">
       <el-form v-if="step === 'credentials'" class="login-form" label-position="top" @submit.prevent="submitCredentials">
         <h2>登录管理平台</h2>
-        <div class="login-form__sub">请输入您的管理账户</div>
-        <el-form-item label="邮箱">
-          <el-input v-model="credentials.email" size="large" autocomplete="username" placeholder="admin@example.com" />
+        <el-form-item label="用户名">
+          <el-input v-model="credentials.username" size="large" autocomplete="username" />
         </el-form-item>
         <el-form-item label="密码">
           <el-input
@@ -71,11 +78,10 @@ async function submitMFA() {
             type="password"
             show-password
             autocomplete="current-password"
-            placeholder="请输入密码"
             @keyup.enter="submitCredentials"
           />
         </el-form-item>
-        <el-button type="primary" size="large" :loading="loading" @click="submitCredentials">继续</el-button>
+        <el-button type="primary" size="large" :loading="loading" @click="submitCredentials">登录</el-button>
       </el-form>
 
       <el-form v-else class="login-form" label-position="top" @submit.prevent="submitMFA">

@@ -81,6 +81,28 @@ func TestInboundMutationCreatesAutomaticApplyTask(t *testing.T) {
 	if len(tasks.Tasks) != 1 || tasks.Tasks[0].Kind != "singbox.apply_config" {
 		t.Fatalf("automatic tasks = %#v", tasks.Tasks)
 	}
+
+	response = request(t, http.MethodPost, httpServer.URL+"/api/v1/listeners/quick", map[string]any{
+		"listener": map[string]any{
+			"node_id": nodeID, "name": "VLESS WebSocket", "port": 18444, "enabled": true,
+			"spec": map[string]any{
+				"protocol": "vless", "network": "tcp",
+				"transport": map[string]any{"type": "ws", "path": ""},
+			},
+		},
+	}, session, csrfToken)
+	if response.StatusCode != http.StatusCreated {
+		var problem map[string]any
+		decodeBody(t, response, &problem)
+		t.Fatalf("create VLESS WebSocket with default path: got %d, response %#v", response.StatusCode, problem)
+	}
+	var created struct {
+		Endpoints []control.Endpoint `json:"endpoints"`
+	}
+	decodeBody(t, response, &created)
+	if len(created.Endpoints) != 1 || created.Endpoints[0].Name != "默认账号" {
+		t.Fatalf("default generated account = %#v", created.Endpoints)
+	}
 }
 
 func TestSharedPortInboundCreatesMultipleUsersAndNginxRoutes(t *testing.T) {

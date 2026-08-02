@@ -103,7 +103,7 @@ onMounted(load)
       <el-button v-if="canWrite" type="primary" :icon="Plus" @click="openCreate">新建访问规则</el-button>
     </PageHeader>
     <main class="page-content page-content--tight">
-      <el-alert title="这里控制服务器如何转发连接。客户端中的访问规则请到“客户端访问规则”页面设置。" type="info" show-icon :closable="false" style="margin-bottom: 16px" />
+      <el-alert title="这里控制服务器如何转发连接。客户端侧的访问规则在新建或编辑“客户端配置”时设置。" type="info" show-icon :closable="false" style="margin-bottom: 16px" />
       <p class="subtle">这里显示全部服务器的规则，保存后会自动应用到对应服务器。</p>
       <div class="table-panel">
         <el-table v-loading="loading" :data="rows">

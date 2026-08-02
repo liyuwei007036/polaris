@@ -7,8 +7,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"net/url"
-	"strconv"
 	"strings"
 	"time"
 
@@ -274,9 +274,11 @@ func (s *Store) clientSubscriptionLine(ctx context.Context, endpointID string) (
 	var encrypted []byte
 	var listener Listener
 	var spec string
-	err := s.db.QueryRowContext(ctx, `SELECT e.id, e.listener_id, e.name, e.credentials, e.enabled, l.id, l.node_id, l.name, l.listen_address, l.port, l.backend_port, l.enabled, l.spec
-		FROM endpoints e JOIN listeners l ON l.id = e.listener_id WHERE e.id = ? AND e.enabled = 1 AND l.enabled = 1`, endpointID).
-		Scan(&endpoint.ID, &endpoint.ListenerID, &endpoint.Name, &encrypted, &endpoint.Enabled, &listener.ID, &listener.NodeID, &listener.Name, &listener.ListenAddr, &listener.Port, &listener.BackendPort, &listener.Enabled, &spec)
+	var clientAddress, nodeName string
+	err := s.db.QueryRowContext(ctx, `SELECT e.id, e.listener_id, e.name, e.alias, e.credentials, e.enabled, l.id, l.node_id, l.name, l.listen_address, l.port, l.backend_port, l.enabled, l.spec, n.client_address, n.name
+		FROM endpoints e JOIN listeners l ON l.id = e.listener_id JOIN nodes n ON n.id = l.node_id
+		WHERE e.id = ? AND e.enabled = 1 AND l.enabled = 1 AND n.revoked_at IS NULL`, endpointID).
+		Scan(&endpoint.ID, &endpoint.ListenerID, &endpoint.Name, &endpoint.Alias, &encrypted, &endpoint.Enabled, &listener.ID, &listener.NodeID, &listener.Name, &listener.ListenAddr, &listener.Port, &listener.BackendPort, &listener.Enabled, &spec, &clientAddress, &nodeName)
 	if errors.Is(err, sql.ErrNoRows) {
 		return "", ErrNotFound
 	}
@@ -293,7 +295,15 @@ func (s *Store) clientSubscriptionLine(ctx context.Context, endpointID string) (
 	if err := json.Unmarshal(plain, &endpoint.Credentials); err != nil {
 		return "", err
 	}
-	host, port, name := listener.ListenAddr, strconv.Itoa(int(listener.Port)), url.QueryEscape(endpoint.Name)
+	host := strings.TrimSpace(clientAddress)
+	if host == "" {
+		return "", fmt.Errorf("node %s has no client connection address", nodeName)
+	}
+	displayName := strings.TrimSpace(endpoint.Alias)
+	if displayName == "" {
+		displayName = nodeName + " · " + listener.Name + " · " + endpoint.Name
+	}
+	address, name := net.JoinHostPort(host, fmt.Sprint(listener.Port)), url.QueryEscape(displayName)
 	query := url.Values{}
 	if listener.Spec.TLS.Enabled {
 		query.Set("security", "tls")
@@ -321,17 +331,17 @@ func (s *Store) clientSubscriptionLine(ctx context.Context, endpointID string) (
 	}
 	switch listener.Spec.Protocol {
 	case "vless":
-		return "vless://" + url.QueryEscape(endpoint.Credentials.UUID) + "@" + host + ":" + port + suffix + "#" + name, nil
+		return "vless://" + url.QueryEscape(endpoint.Credentials.UUID) + "@" + address + suffix + "#" + name, nil
 	case "trojan":
-		return "trojan://" + url.QueryEscape(endpoint.Credentials.Password) + "@" + host + ":" + port + suffix + "#" + name, nil
+		return "trojan://" + url.QueryEscape(endpoint.Credentials.Password) + "@" + address + suffix + "#" + name, nil
 	case "shadowsocks":
-		return "ss://" + base64.RawStdEncoding.EncodeToString([]byte(endpoint.Credentials.Method+":"+endpoint.Credentials.Password)) + "@" + host + ":" + port + "#" + name, nil
+		return "ss://" + base64.RawStdEncoding.EncodeToString([]byte(endpoint.Credentials.Method+":"+endpoint.Credentials.Password)) + "@" + address + "#" + name, nil
 	case "hysteria2":
-		return "hysteria2://" + url.QueryEscape(endpoint.Credentials.Password) + "@" + host + ":" + port + suffix + "#" + name, nil
+		return "hysteria2://" + url.QueryEscape(endpoint.Credentials.Password) + "@" + address + suffix + "#" + name, nil
 	case "socks":
-		return "socks://" + url.QueryEscape(endpoint.Credentials.Username) + ":" + url.QueryEscape(endpoint.Credentials.Password) + "@" + host + ":" + port + "#" + name, nil
+		return "socks://" + url.QueryEscape(endpoint.Credentials.Username) + ":" + url.QueryEscape(endpoint.Credentials.Password) + "@" + address + "#" + name, nil
 	case "http":
-		return "http://" + url.QueryEscape(endpoint.Credentials.Username) + ":" + url.QueryEscape(endpoint.Credentials.Password) + "@" + host + ":" + port + "#" + name, nil
+		return "http://" + url.QueryEscape(endpoint.Credentials.Username) + ":" + url.QueryEscape(endpoint.Credentials.Password) + "@" + address + "#" + name, nil
 	}
 	return "", nil
 }

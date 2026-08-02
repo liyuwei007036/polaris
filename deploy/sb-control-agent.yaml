@@ -1,5 +1,8 @@
 data_dir: /var/lib/sb-control-agent
 master_address: 127.0.0.1:8443
+# 在 Master 服务器执行以下命令，并把输出的单行 Base64 公钥粘贴到下一行：
+# sudo -u sb-control /usr/local/bin/sb-control master show-pubkey --config /etc/sb-control/master.yaml
+# 这是 Master 的 Noise 公钥，不是 Reality 公钥、TLS 证书或注册令牌。
 master_public_key: REPLACE_WITH_MASTER_NOISE_PUBLIC_KEY
 heartbeat_interval: 30s
 connections_interval: 2s

@@ -14,7 +14,7 @@ import (
 	"github.com/sb-control/sb-control/internal/control"
 )
 
-func TestStoredMihomoCompositionSupportsMultipleGroupsAndProfiles(t *testing.T) {
+func TestStoredMihomoConfigOwnsNodesStrategyRulesAndAliases(t *testing.T) {
 	store, err := control.Open(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
@@ -45,7 +45,7 @@ func TestStoredMihomoCompositionSupportsMultipleGroupsAndProfiles(t *testing.T) 
 		if err != nil {
 			t.Fatal(err)
 		}
-		endpoint, err := store.CreateEndpoint(t.Context(), control.Endpoint{ListenerID: listener.ID, Name: "默认账号", Enabled: true},
+		endpoint, err := store.CreateEndpoint(t.Context(), control.Endpoint{ListenerID: listener.ID, Name: "默认账号", Alias: []string{"洛杉矶 01", "东京 01"}[index], Enabled: true},
 			control.EndpointCredentials{Username: "user", Password: "secret"})
 		if err != nil {
 			t.Fatal(err)
@@ -53,27 +53,8 @@ func TestStoredMihomoCompositionSupportsMultipleGroupsAndProfiles(t *testing.T) 
 		endpointIDs = append(endpointIDs, endpoint.ID)
 	}
 
-	manual, err := store.CreateMihomoProxyGroup(t.Context(), control.MihomoProxyGroup{
-		Name: "美国与日本", Strategy: "select", EndpointIDs: endpointIDs,
-		Aliases: map[string]string{endpointIDs[0]: "洛杉矶 01", endpointIDs[1]: "东京 01"},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	fallback, err := store.CreateMihomoProxyGroup(t.Context(), control.MihomoProxyGroup{
-		Name: "自动备用", Strategy: "fallback", EndpointIDs: endpointIDs,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	routing, err := store.CreateMihomoRoutingProfile(t.Context(), control.MihomoRoutingProfile{
-		Name: "国内直连", RulePreset: "china-direct", DefaultAction: "PROXY",
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
 	config, err := store.CreateMihomoClientConfig(t.Context(), control.MihomoClientConfig{
-		Name: "手机配置", ProxyGroupIDs: []string{manual.ID, fallback.ID}, RoutingProfileID: routing.ID,
+		Name: "手机配置", EndpointIDs: endpointIDs, Strategy: "fallback", RulePreset: "china-direct",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -88,7 +69,7 @@ func TestStoredMihomoCompositionSupportsMultipleGroupsAndProfiles(t *testing.T) 
 	if config.SubscriptionPath == "" {
 		t.Fatal("new Mihomo client config did not receive a subscription path")
 	}
-	for _, expected := range []string{`"name":"美国与日本"`, `"name":"自动备用"`, `"name":"PROXY"`, `"name":"洛杉矶 01"`, `"name":"东京 01"`, `"server":"us.example.com"`, `"server":"jp.example.com"`, "GEOSITE,CN,DIRECT"} {
+	for _, expected := range []string{`"name":"节点选择"`, `"type":"fallback"`, `"name":"PROXY"`, `"name":"洛杉矶 01"`, `"name":"东京 01"`, `"server":"us.example.com"`, `"server":"jp.example.com"`, "GEOSITE,CN,DIRECT"} {
 		if !strings.Contains(yaml, expected) {
 			t.Fatalf("stored YAML does not contain %q:\n%s", expected, yaml)
 		}
@@ -126,11 +107,11 @@ func TestStoredMihomoCompositionSupportsMultipleGroupsAndProfiles(t *testing.T) 
 			t.Fatalf("official Mihomo validation of stored composition failed: %v\n%s", err, output)
 		}
 	}
-	if err := store.DeleteMihomoProxyGroup(t.Context(), manual.ID); err != control.ErrConflict {
-		t.Fatalf("expected referenced group conflict, got %v", err)
-	}
-	if err := store.DeleteMihomoRoutingProfile(t.Context(), routing.ID); err != control.ErrConflict {
-		t.Fatalf("expected referenced profile conflict, got %v", err)
+	if _, err := store.CreateMihomoClientConfig(t.Context(), control.MihomoClientConfig{
+		Name: "非法终结规则", EndpointIDs: endpointIDs, Strategy: "select", RulePreset: "custom",
+		DefaultAction: "DIRECT", RawRules: "DOMAIN-SUFFIX,example.com,PROXY\nMATCH,DIRECT",
+	}); err == nil || !strings.Contains(err.Error(), "MATCH") {
+		t.Fatalf("custom client config accepted an explicit terminal MATCH: %v", err)
 	}
 }
 

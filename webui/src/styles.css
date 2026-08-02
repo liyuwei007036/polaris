@@ -68,10 +68,6 @@ button, input, textarea, select { font: inherit; }
 .protocol-summary__main span { color: var(--sb-muted); font-size: 12px; }
 .inbound-name { font-weight: 650; color: #1d2939; }
 .inbound-meta { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 6px; }
-.credential-list { margin-top: 10px; border-top: 1px solid var(--sb-border); }
-.credential-row { height: 42px; display: flex; align-items: center; border-bottom: 1px solid #f0f2f5; }
-.credential-row:last-child { border-bottom: none; }
-.credential-row__name { flex: 1; }
 .warning-strip { padding: 12px 14px; margin-bottom: 16px; border: 1px solid #fedf89; border-radius: 7px; background: #fffaeb; color: #93370d; font-size: 13px; }
 .info-strip { padding: 12px 14px; margin-bottom: 16px; border: 1px solid #b2ddff; border-radius: 7px; background: #eff8ff; color: #175cd3; font-size: 13px; }
 .danger-text { color: #d92d20; }

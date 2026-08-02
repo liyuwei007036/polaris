@@ -45,13 +45,21 @@ type MihomoRule struct {
 }
 
 type MihomoClientConfig struct {
-	ID               string   `json:"id"`
-	Name             string   `json:"name"`
-	ProxyGroupIDs    []string `json:"proxy_group_ids"`
-	RoutingProfileID string   `json:"routing_profile_id"`
-	CreatedAt        string   `json:"created_at,omitempty"`
-	UpdatedAt        string   `json:"updated_at,omitempty"`
-	SubscriptionPath string   `json:"subscription_path,omitempty"`
+	ID               string       `json:"id"`
+	Name             string       `json:"name"`
+	EndpointIDs      []string     `json:"endpoint_ids"`
+	Strategy         string       `json:"strategy"`
+	RulePreset       string       `json:"rule_preset"`
+	Rules            []MihomoRule `json:"rules,omitempty"`
+	RawRules         string       `json:"raw_rules,omitempty"`
+	DefaultAction    string       `json:"default_action"`
+	CreatedAt        string       `json:"created_at,omitempty"`
+	UpdatedAt        string       `json:"updated_at,omitempty"`
+	SubscriptionPath string       `json:"subscription_path,omitempty"`
+	// Legacy fields are retained only while existing rows are migrated to the
+	// self-contained client configuration table.
+	ProxyGroupIDs    []string `json:"proxy_group_ids,omitempty"`
+	RoutingProfileID string   `json:"routing_profile_id,omitempty"`
 }
 
 type mihomoRoutingRules struct {
@@ -310,15 +318,59 @@ func normalizeMihomoClientConfig(config *MihomoClientConfig) error {
 	if err := validateMihomoName(config.Name); err != nil {
 		return err
 	}
-	ids, err := normalizeUniqueIDs(config.ProxyGroupIDs)
+	ids, err := normalizeUniqueIDs(config.EndpointIDs)
 	if err != nil {
 		return err
 	}
-	config.ProxyGroupIDs = ids
-	config.RoutingProfileID = strings.TrimSpace(config.RoutingProfileID)
-	if config.RoutingProfileID == "" {
-		return errors.New("routing profile is required")
+	config.EndpointIDs = ids
+	if config.Strategy == "" {
+		config.Strategy = "select"
 	}
+	if config.Strategy != "select" && config.Strategy != "url-test" && config.Strategy != "fallback" {
+		return errors.New("unsupported Mihomo proxy strategy")
+	}
+	if config.RulePreset == "" {
+		config.RulePreset = "china-direct"
+	}
+	if config.RulePreset != "china-direct" && config.RulePreset != "proxy-all" && config.RulePreset != "direct-all" && config.RulePreset != "custom" {
+		return errors.New("unsupported Mihomo rule preset")
+	}
+	if config.RulePreset != "custom" {
+		config.Rules = nil
+		config.RawRules = ""
+		if config.RulePreset == "direct-all" {
+			config.DefaultAction = "DIRECT"
+		} else {
+			config.DefaultAction = "PROXY"
+		}
+		return nil
+	}
+	config.DefaultAction = strings.ToUpper(strings.TrimSpace(config.DefaultAction))
+	if config.DefaultAction != "PROXY" && config.DefaultAction != "DIRECT" {
+		return errors.New("custom Mihomo default action must be PROXY or DIRECT")
+	}
+	if strings.TrimSpace(config.RawRules) != "" {
+		config.Rules, err = parseMihomoRawRules(config.RawRules)
+		if err != nil {
+			return err
+		}
+	} else {
+		normalized := make([]MihomoRule, 0, len(config.Rules))
+		for _, rule := range config.Rules {
+			rule, err = normalizeMihomoRule(rule)
+			if err != nil {
+				return err
+			}
+			normalized = append(normalized, rule)
+		}
+		config.Rules = normalized
+	}
+	for _, rule := range config.Rules {
+		if rule.Type == "MATCH" {
+			return errors.New("MATCH is generated from the default action and must not appear in custom rules")
+		}
+	}
+	config.RawRules = formatMihomoRules(config.Rules)
 	return nil
 }
 
@@ -593,7 +645,7 @@ func (s *Store) DeleteMihomoRoutingProfile(ctx context.Context, id string) error
 	return nil
 }
 
-func (s *Store) ensureMihomoCompositionExists(ctx context.Context, config MihomoClientConfig) error {
+func (s *Store) legacyMihomoCompositionExists(ctx context.Context, config MihomoClientConfig) error {
 	var exists int
 	if err := s.db.QueryRowContext(ctx, `SELECT 1 FROM mihomo_routing_profiles WHERE id = ?`, config.RoutingProfileID).Scan(&exists); errors.Is(err, sql.ErrNoRows) {
 		return fmt.Errorf("routing profile: %w", ErrNotFound)
@@ -610,11 +662,11 @@ func (s *Store) ensureMihomoCompositionExists(ctx context.Context, config Mihomo
 	return nil
 }
 
-func (s *Store) CreateMihomoClientConfig(ctx context.Context, config MihomoClientConfig) (MihomoClientConfig, error) {
+func (s *Store) legacyCreateMihomoClientConfig(ctx context.Context, config MihomoClientConfig) (MihomoClientConfig, error) {
 	if err := normalizeMihomoClientConfig(&config); err != nil {
 		return MihomoClientConfig{}, err
 	}
-	if err := s.ensureMihomoCompositionExists(ctx, config); err != nil {
+	if err := s.legacyMihomoCompositionExists(ctx, config); err != nil {
 		return MihomoClientConfig{}, err
 	}
 	groups, err := encodeStringList(config.ProxyGroupIDs)
@@ -647,14 +699,14 @@ func (s *Store) CreateMihomoClientConfig(ctx context.Context, config MihomoClien
 	return config, nil
 }
 
-func (s *Store) UpdateMihomoClientConfig(ctx context.Context, config MihomoClientConfig) (MihomoClientConfig, error) {
+func (s *Store) legacyUpdateMihomoClientConfig(ctx context.Context, config MihomoClientConfig) (MihomoClientConfig, error) {
 	if config.ID == "" {
 		return MihomoClientConfig{}, errors.New("client config ID is required")
 	}
 	if err := normalizeMihomoClientConfig(&config); err != nil {
 		return MihomoClientConfig{}, err
 	}
-	if err := s.ensureMihomoCompositionExists(ctx, config); err != nil {
+	if err := s.legacyMihomoCompositionExists(ctx, config); err != nil {
 		return MihomoClientConfig{}, err
 	}
 	groups, err := encodeStringList(config.ProxyGroupIDs)
@@ -681,7 +733,7 @@ func (s *Store) UpdateMihomoClientConfig(ctx context.Context, config MihomoClien
 	return config, nil
 }
 
-func (s *Store) ListMihomoClientConfigs(ctx context.Context) ([]MihomoClientConfig, error) {
+func (s *Store) legacyListMihomoClientConfigs(ctx context.Context) ([]MihomoClientConfig, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT id, name, proxy_group_ids, routing_profile_id, subscription_token_encrypted, created_at, updated_at FROM mihomo_client_configs ORDER BY name, id`)
 	if err != nil {
 		return nil, fmt.Errorf("list Mihomo client configs: %w", err)
@@ -713,7 +765,7 @@ func (s *Store) ListMihomoClientConfigs(ctx context.Context) ([]MihomoClientConf
 	return configs, rows.Err()
 }
 
-func (s *Store) RotateMihomoClientSubscription(ctx context.Context, configID string) (string, error) {
+func (s *Store) legacyRotateMihomoClientSubscription(ctx context.Context, configID string) (string, error) {
 	token, err := security.RandomToken(32)
 	if err != nil {
 		return "", err
@@ -733,7 +785,7 @@ func (s *Store) RotateMihomoClientSubscription(ctx context.Context, configID str
 	return "/api/v1/mihomo/subscriptions/" + token, nil
 }
 
-func (s *Store) MihomoClientConfigIDByToken(ctx context.Context, token string) (string, error) {
+func (s *Store) legacyMihomoClientConfigIDByToken(ctx context.Context, token string) (string, error) {
 	var configID string
 	err := s.db.QueryRowContext(ctx, `SELECT id FROM mihomo_client_configs WHERE subscription_token_hash = ?`, security.TokenHash(token)).Scan(&configID)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -742,7 +794,7 @@ func (s *Store) MihomoClientConfigIDByToken(ctx context.Context, token string) (
 	return configID, err
 }
 
-func (s *Store) DeleteMihomoClientConfig(ctx context.Context, id string) error {
+func (s *Store) legacyDeleteMihomoClientConfig(ctx context.Context, id string) error {
 	result, err := s.db.ExecContext(ctx, `DELETE FROM mihomo_client_configs WHERE id = ?`, id)
 	if err != nil {
 		return fmt.Errorf("delete Mihomo client config: %w", err)
@@ -753,7 +805,7 @@ func (s *Store) DeleteMihomoClientConfig(ctx context.Context, id string) error {
 	return nil
 }
 
-func (s *Store) GenerateStoredMihomoYAML(ctx context.Context, configID string) (string, string, error) {
+func (s *Store) legacyGenerateStoredMihomoYAML(ctx context.Context, configID string) (string, string, error) {
 	var config MihomoClientConfig
 	var groupIDs string
 	err := s.db.QueryRowContext(ctx, `SELECT id, name, proxy_group_ids, routing_profile_id FROM mihomo_client_configs WHERE id = ?`, configID).

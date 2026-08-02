@@ -104,7 +104,7 @@ func runMaster(args []string) error {
 			return err
 		}
 		for _, operator := range operators {
-			if strings.EqualFold(operator.Email, *email) {
+			if strings.EqualFold(operator.Username, *email) {
 				secret, err := store.ResetOperatorTOTP(context.Background(), operator.ID)
 				if err != nil {
 					return err
@@ -161,6 +161,11 @@ func serveMaster(ctx context.Context, configuration masterConfig) error {
 		return err
 	}
 	defer store.Close()
+	if _, created, err := store.EnsureDefaultAdmin(ctx); err != nil {
+		return err
+	} else if created {
+		fmt.Printf("Default administrator %s created; change the initial password after login.\n", control.DefaultAdminUsername)
+	}
 	server, err := control.NewServer(store, !configuration.AllowInsecureHTTP)
 	if err != nil {
 		return err

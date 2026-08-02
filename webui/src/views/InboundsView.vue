@@ -1,12 +1,11 @@
 <script setup>
 import { computed, inject, onMounted, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Delete, Edit, Plus, Refresh, UserFilled } from '@element-plus/icons-vue'
+import { Delete, Edit, Plus, Refresh } from '@element-plus/icons-vue'
 import { api, del, post, put } from '../api'
 import { protocolMap } from '../protocols'
 import PageHeader from '../components/PageHeader.vue'
 import ListenerFormDialog from '../components/ListenerFormDialog.vue'
-import CredentialDialog from '../components/CredentialDialog.vue'
 
 const appState = inject('appState')
 const canWrite = inject('canWrite')
@@ -18,30 +17,24 @@ const saving = ref(false)
 const listeners = ref([])
 const outbounds = ref([])
 const certificates = ref([])
-const realityKeys = ref([])
 const endpointMap = ref({})
 const formOpen = ref(false)
-const credentialOpen = ref(false)
 const editing = ref(null)
-const credentialTarget = ref(null)
 
-const outboundNames = computed(() => Object.fromEntries(outbounds.value.map((item) => [item.id, item.name])))
 const nodeNames = computed(() => Object.fromEntries(appState.nodes.map((item) => [item.id, item.name])))
 
 async function load() {
   loading.value = true
   try {
     await loadNodes()
-    const [listenerResult, outboundResult, certificateResult, realityResult] = await Promise.all([
+    const [listenerResult, outboundResult, certificateResult] = await Promise.all([
       api('/listeners'),
       api('/outbounds').catch(() => ({ outbounds: [] })),
       api('/certificates').catch(() => ({ certificates: [] })),
-      api('/reality-keys').catch(() => ({ reality_keys: [] })),
     ])
     listeners.value = listenerResult.listeners || []
     outbounds.value = outboundResult.outbounds || []
     certificates.value = (certificateResult.certificates || []).filter((item) => item.enabled)
-    realityKeys.value = (realityResult.reality_keys || []).filter((item) => item.enabled)
     const pairs = await Promise.all(
       listeners.value.map(async (listener) => {
         const result = await api(`/listeners/${listener.id}/endpoints`).catch(() => ({ endpoints: [] }))
@@ -75,8 +68,9 @@ async function saveListener(payload) {
   try {
     if (editing.value) {
       await put(`/listeners/${editing.value.id}`, payload.listener)
+      await syncAccounts(editing.value.id, payload.accounts)
     } else {
-	  await post('/listeners/quick', { listener: payload.listener, accounts: payload.accounts })
+      await post('/listeners/quick', { listener: payload.listener, accounts: payload.accounts })
     }
     ElMessage.success(editing.value ? '接入服务已保存，正在自动应用' : '接入服务已创建，正在自动应用')
     formOpen.value = false
@@ -86,43 +80,44 @@ async function saveListener(payload) {
   }
 }
 
-function openCredential(listener) {
-  credentialTarget.value = listener
-  credentialOpen.value = true
-}
-
-async function saveCredential(payload) {
-  saving.value = true
-  try {
-    await post(`/listeners/${credentialTarget.value.id}/endpoints/quick`, payload)
-    ElMessage.success('接入用户已添加，正在自动应用')
-    credentialOpen.value = false
-    await load()
-  } finally {
-    saving.value = false
+async function syncAccounts(listenerID, accounts) {
+  const existing = endpointMap.value[listenerID] || []
+  const existingByID = new Map(existing.map((endpoint) => [endpoint.id, endpoint]))
+  const retained = new Set()
+  for (const account of accounts) {
+    if (!account.id) {
+      const created = await post(`/listeners/${listenerID}/endpoints/quick`, {
+        name: account.name,
+        alias: account.alias,
+        outbound_id: account.outbound_id,
+      })
+      if (!account.enabled) {
+        await put(`/endpoints/${created.id}`, {
+          listener_id: listenerID,
+          name: account.name,
+          alias: account.alias,
+          enabled: false,
+          outbound_id: account.outbound_id,
+        })
+      }
+      continue
+    }
+    retained.add(account.id)
+    const current = existingByID.get(account.id)
+    if (!current) continue
+    if (current.name !== account.name || (current.alias || '') !== account.alias || current.enabled !== account.enabled || (current.outbound_id || 'direct') !== account.outbound_id) {
+      await put(`/endpoints/${account.id}`, {
+        listener_id: listenerID,
+        name: account.name,
+        alias: account.alias,
+        enabled: account.enabled,
+        outbound_id: account.outbound_id,
+      })
+    }
   }
-}
-
-async function changeEndpointOutbound(listener, endpoint, outboundID) {
-  saving.value = true
-  try {
-    await put(`/endpoints/${endpoint.id}`, {
-      listener_id: listener.id,
-      name: endpoint.name,
-      enabled: endpoint.enabled,
-      outbound_id: outboundID,
-    })
-    ElMessage.success(`用户“${endpoint.name}”的上网出口已更新，正在自动应用`)
-    await load()
-  } finally {
-    saving.value = false
+  for (const endpoint of existing) {
+    if (!retained.has(endpoint.id)) await del(`/endpoints/${endpoint.id}`)
   }
-}
-
-function endpointOutboundLabel(endpoint) {
-  if (endpoint.outbound_id === 'direct') return '服务器直连'
-  if (endpoint.outbound_id) return outboundNames.value[endpoint.outbound_id] || '出口已失效'
-  return '服务器直连'
 }
 
 async function toggle(listener) {
@@ -142,16 +137,6 @@ async function removeListener(listener) {
   await load()
 }
 
-async function removeEndpoint(listener, endpoint) {
-  await ElMessageBox.confirm(`删除用户“${endpoint.name}”后，客户端将无法继续连接。`, '删除用户', {
-    type: 'warning',
-    confirmButtonText: '确认删除',
-  })
-  await del(`/endpoints/${endpoint.id}`)
-  ElMessage.success('接入用户已删除，正在自动应用')
-  await load()
-}
-
 onMounted(load)
 </script>
 
@@ -167,50 +152,6 @@ onMounted(load)
 
       <div class="table-panel">
         <el-table v-loading="loading" :data="listeners" row-key="id">
-          <el-table-column type="expand">
-            <template #default="{ row }">
-              <div style="padding: 8px 24px 18px 58px">
-                <div class="toolbar" style="margin-bottom: 8px">
-                  <strong>接入用户</strong>
-                  <span class="subtle">共 {{ endpointMap[row.id]?.length || 0 }} 个</span>
-                  <span class="toolbar__spacer" />
-                  <el-button v-if="canWrite" size="small" :icon="UserFilled" @click="openCredential(row)">添加用户</el-button>
-                </div>
-                <p class="subtle">每个用户都有独立的连接信息，并可单独选择上网出口。</p>
-                <div v-if="endpointMap[row.id]?.length" class="credential-list">
-                  <div v-for="endpoint in endpointMap[row.id]" :key="endpoint.id" class="credential-row">
-                    <span class="credential-row__name">{{ endpoint.name }}</span>
-                    <el-tag :type="endpoint.enabled ? 'success' : 'info'" size="small">{{ endpoint.enabled ? '启用' : '停用' }}</el-tag>
-                    <el-select
-                      :model-value="endpoint.outbound_id || 'direct'"
-                      size="small"
-                      style="width: 190px"
-                      :placeholder="endpointOutboundLabel(endpoint)"
-                      @change="changeEndpointOutbound(row, endpoint, $event)"
-                    >
-                      <el-option label="服务器直连" value="direct" />
-                      <el-option
-                        v-for="outbound in outbounds.filter((item) => item.enabled && item.type !== 'direct')"
-                        :key="outbound.id"
-                        :label="outbound.name"
-                        :value="outbound.id"
-                      />
-                    </el-select>
-                    <el-button
-                      v-if="canWrite"
-                      text
-                      type="danger"
-                      :icon="Delete"
-                      @click="removeEndpoint(row, endpoint)"
-                    >
-                      删除
-                    </el-button>
-                  </div>
-                </div>
-                <el-empty v-else :image-size="48" description="还没有用户，客户端暂时无法连接" />
-              </div>
-            </template>
-          </el-table-column>
           <el-table-column label="服务器" min-width="150"><template #default="{ row }">{{ nodeNames[row.node_id] || row.node_id }}</template></el-table-column>
           <el-table-column label="服务名称" min-width="190">
             <template #default="{ row }">
@@ -236,7 +177,7 @@ onMounted(load)
           </el-table-column>
           <el-table-column label="操作" width="220" fixed="right">
             <template #default="{ row }">
-              <el-button v-if="canWrite" link :icon="Edit" @click="openEdit(row)">编辑</el-button>
+              <el-button v-if="canWrite" link :icon="Edit" @click="openEdit(row)">修改</el-button>
               <el-button v-if="canWrite" link @click="toggle(row)">{{ row.enabled ? '停用' : '启用' }}</el-button>
               <el-button v-if="isAdmin" link type="danger" :icon="Delete" @click="removeListener(row)">删除</el-button>
             </template>
@@ -250,18 +191,10 @@ onMounted(load)
       :listener="editing"
       :nodes="appState.nodes"
       :certificates="certificates"
-      :reality-keys="realityKeys"
       :outbounds="outbounds"
+      :endpoints="editing ? endpointMap[editing.id] || [] : []"
       :saving="saving"
       @save="saveListener"
-    />
-
-    <CredentialDialog
-      v-if="credentialTarget"
-      v-model="credentialOpen"
-      :saving="saving"
-      :outbounds="outbounds"
-      @save="saveCredential"
     />
   </div>
 </template>

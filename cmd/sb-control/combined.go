@@ -142,6 +142,11 @@ func serveCombined(ctx context.Context, masterConfiguration masterConfig, agentC
 		return err
 	}
 	defer store.Close()
+	if _, created, err := store.EnsureDefaultAdmin(ctx); err != nil {
+		return err
+	} else if created {
+		fmt.Printf("Default administrator %s created; change the initial password after login.\n", control.DefaultAdminUsername)
+	}
 	server, err := control.NewServer(store, !masterConfiguration.AllowInsecureHTTP)
 	if err != nil {
 		return err

@@ -10,7 +10,7 @@
 ## 当前能力
 
 - Vue 3 + Element Plus PC 管理控制台，构建产物嵌入 Go 二进制。
-- 管理员密码、TOTP 两步验证、会话、CSRF 和 `admin` / `operator` / `viewer` 三类角色。
+- 管理员密码、可选的 TOTP 两步验证、首次登录强制改密、会话、CSRF 和 `admin` / `operator` / `viewer` 三类角色。
 - 一次性节点注册凭据、节点公钥审批、吊销、在线状态和自动重连。
 - sing-box 入站、用户凭据、TLS、Reality、传输层和路由规则管理。
 - 全局直连、SOCKS5、HTTP 出站管理。
@@ -151,6 +151,14 @@ allow_insecure_http: false
 
 `agent.yaml`：
 
+先在 Master 服务器执行：
+
+```bash
+sudo -u sb-control /usr/local/bin/sb-control master show-pubkey --config /etc/sb-control/master.yaml
+```
+
+把输出的单行 Base64 字符串写入 `master_public_key`。这是 Master 的 Noise 公钥，不是 Reality 公钥、TLS 证书或服务器注册令牌。
+
 ```yaml
 data_dir: /var/lib/sb-control-agent
 master_address: 127.0.0.1:8443
@@ -198,7 +206,7 @@ master 与 agent 可以安装在同一台服务器上，但生产环境通常把
 | master agent 地址 | `control.example.com:8443` | agent 建立 Noise TCP 连接时使用，不带 `http://` 或 `https://` |
 | master 数据目录 | `/var/lib/sb-control-master` | 数据库、主密钥和 Noise 私钥必须整体备份 |
 | agent 数据目录 | `/var/lib/sb-control-agent` | 保存节点私钥、发布签名公钥和任务幂等结果 |
-| 管理员邮箱 | `admin@example.com` | 首个管理员登录名 |
+| 默认管理员用户名 | `sb_admin` | 首次启动时自动创建，首次登录后必须修改初始密码 |
 
 master 服务器的网络要求：
 
@@ -326,28 +334,16 @@ sudo install -o root -g sb-control -m 0640 deploy/sb-control-master.yaml /etc/sb
 
 如果发行版的 `nologin` 位于 `/sbin/nologin`，请相应修改 `useradd` 命令。master 不需要 root 权限；默认端口 `8080` 和 `8443` 都高于 1024。
 
-### 2. 初始化第一个管理员
+### 2. 首次登录
 
-master 不创建默认账户或默认密码。密码至少需要 12 个字符：
+Master 或 Combined 模式首次启动时，如果数据库中没有管理账户，会自动创建：
 
-```bash
-read -rsp "请输入管理员密码: " SB_CONTROL_ADMIN_PASSWORD
-printf '\n'
-printf '%s\n' "$SB_CONTROL_ADMIN_PASSWORD" |
-  sudo -u sb-control /usr/local/bin/sb-control master init-admin \
-    --config /etc/sb-control/master.yaml \
-    --email admin@example.com \
-    --password-stdin
-unset SB_CONTROL_ADMIN_PASSWORD
-```
+- 用户名：`sb_admin`
+- 初始密码：`123456`
 
-命令会输出一次 TOTP 密钥。立即把它添加到身份验证器中；该原始密钥不会再次显示。若以后需要重置指定账户的 MFA：
+首次登录后只能进入修改密码页面。新密码至少 12 位；修改完成前，其他管理接口会由服务端拒绝。两步验证默认关闭，可以在“系统设置 → 登录安全”中使用验证器应用扫描二维码启用；启用后，后续登录必须输入动态验证码。
 
-```bash
-sudo -u sb-control /usr/local/bin/sb-control master reset-mfa \
-  --config /etc/sb-control/master.yaml \
-  --email admin@example.com
-```
+`master init-admin` 和 `master reset-mfa` 仅保留给已有自动化脚本兼容使用，新部署不需要执行。
 
 ### 3. 获取并保存 master Noise 公钥
 
@@ -478,7 +474,7 @@ master 与 agent 使用同一个二进制；运行角色由后面的 `master` �
 
 ### 3. 在控制台生成一次性注册令牌
 
-1. 使用管理员邮箱、密码和 TOTP 登录控制台。
+1. 使用管理员用户名和密码登录控制台；仅在账户已启用两步验证时输入动态验证码。
 2. 打开“服务器”页面。
 3. 点击“添加服务器”。
 4. 立即复制只显示一次的注册令牌。
@@ -607,7 +603,7 @@ sudo systemctl status sb-control-agent.service
 - 生产环境确认通过 HTTPS 访问。
 - 确认反向代理把请求转发到 `127.0.0.1:8080`。
 - 只有明文 HTTP 测试环境才使用 `--allow-insecure-http`。
-- 确认浏览器和 master 系统时间准确，否则 TOTP 可能失败。
+- 如果已启用两步验证，确认浏览器、验证器设备和 master 系统时间准确，否则动态验证码可能失败。
 
 ### agent 无法连接 master
 
@@ -635,12 +631,12 @@ sudo systemctl status sb-control-agent.service
 推荐按以下顺序配置：
 
 1. 在“节点”中接入并批准服务器。
-2. 节点首次上线后会自动安装官方最新稳定版 sing-box；按需在“系统设置”中导入 TLS 证书或生成 Reality 密钥。
+2. 节点首次上线后会自动安装官方最新稳定版 sing-box；普通 TLS 按需在“系统设置”中导入证书，Reality 密钥与 Short ID 在创建接入服务时自动生成，控制台不提供手动配置入口。
 3. 在“出口代理”中按需创建全局 SOCKS5 或 HTTP 出口；不配置时使用内置 `direct`。
-4. 在“入站协议”中创建入站并同时创建首个访问账户；保存后自动应用到对应节点。
+4. 在“接入服务”中创建服务并添加用户；每个用户属于该服务所在的服务器，并填写唯一的“客户端节点别名”，保存后自动生成凭据并应用到对应服务器。
 5. 在“流量路由”中按需配置直连、拒绝或指定出口规则；变更后自动应用。
 6. 在“任务与审计”中确认自动配置任务的执行结果。
-7. 按需配置防火墙、Fail2Ban、客户端订阅、Mihomo 分流策略和 Cloudflare。
+7. 在“客户端配置”中直接选择用户、节点使用方式和访问规则，生成 Mihomo 更新地址；按需配置防火墙、Fail2Ban 和 Cloudflare。
 
 ### 入站协议
 
@@ -654,11 +650,11 @@ sudo systemctl status sb-control-agent.service
 
 ### 订阅
 
-客户端订阅把多个 Endpoint 生成的分享链接合并后整体 Base64 编码。目前能生成链接的协议为 VLESS、Trojan、Shadowsocks、Hysteria2、SOCKS 和 HTTP。
+客户端订阅把多个 Endpoint 生成的分享链接合并后整体 Base64 编码。目前能生成链接的协议为 VLESS、Trojan、Shadowsocks、Hysteria2、SOCKS 和 HTTP。连接主机始终取服务器的“客户端连接地址”，显示名称始终取用户的“客户端节点别名”；缺少连接地址时拒绝生成无效订阅。
 
 ### Mihomo YAML
 
-“Mihomo 分流策略”只生成供客户端下载的 YAML，不改变 sing-box 服务端配置。生成时选择入站访问账户、填写客户端实际可连接的服务器域名或 IP，并配置直连、代理、拦截域名及代理网段。支持手动选择、自动测速和故障切换三种代理组策略。
+“客户端配置”只生成供客户端下载的 YAML，不改变 sing-box 服务端配置。每份配置自包含所选用户、节点使用方式和访问规则，不再引用可被其他配置共享修改的“客户端节点组”或“客户端访问规则”。节点支持手动选择、自动测速和故障切换；访问规则支持国内直连、全部代理、全部直连及自定义。自定义规则不允许填写 `MATCH`，系统根据默认动作生成且只生成一条终结规则。保存和下载时会重新校验用户状态、服务器连接地址、协议兼容性与客户端节点别名唯一性。
 
 ### Cloudflare
 
@@ -700,7 +696,7 @@ include /etc/nginx/stream-conf.d/*.conf;
 - agent 与 master 使用 `Noise_XK` 加密的 TCP 长连接和固定的 Curve25519 身份密钥。
 - agent 预先固定 master 公钥；master 在管理员审批后固定 agent 公钥。
 - 节点私钥需要更换时，应吊销旧节点并重新注册，不支持原地轮换。
-- 管理员密码使用 Argon2id 保存，登录必须完成 TOTP。
+- 管理员密码使用 Argon2id 保存；初始密码必须在首次登录时更换。TOTP 两步验证由每个用户自行扫码启用，启用后登录必须完成动态验证码校验。
 - 写请求要求会话 Cookie 和 CSRF Token；Cookie 使用 `HttpOnly`、`SameSite=Strict`，生产默认启用 `Secure`。
 - Endpoint 凭据、TLS 私钥、Reality 私钥和 Cloudflare Token 使用 master key 加密后写入 SQLite。
 - API 列表不会回传 Endpoint 密码、TLS 私钥或完整 Cloudflare Token。
@@ -764,8 +760,8 @@ bash ./scripts_e2e.sh
 
 统一入口会依次运行两层测试：
 
-1. `go test -tags=e2e -count=1 -v ./e2e`：构建真实 `sb-control` 可执行文件，分别启动 master 和 agent 进程，通过真实 HTTP 与 Noise TCP 连接完成管理员 MFA、节点注册与审批、心跳、实时连接上报、任务下发与回传、自动应用配置、按用户选择出口、两个 VLESS 自动使用 TCP 443、Hysteria2 使用 UDP 443、自动端口分配、防火墙、Fail2Ban、Mihomo YAML 下载、分页和注销闭环。
-2. `npm --prefix webui run test:e2e`：重新构建嵌入式前端，使用真实 Chrome 打开管理平台，完成登录、MFA、全部功能入口、全局服务器筛选、任务分页、接入服务多用户表单、Mihomo 配置入口和手机尺寸布局检查。
+1. `go test -tags=e2e -count=1 -v ./e2e`：构建真实 `sb-control` 可执行文件，分别启动 master 和 agent 进程，通过真实 HTTP 与 Noise TCP 连接完成管理员认证、节点注册与审批、心跳、实时连接上报、任务下发与回传、自动应用配置、按用户选择出口、两个 VLESS 自动使用 TCP 443、Hysteria2 使用 UDP 443、自动端口分配、防火墙、Fail2Ban、Mihomo YAML 下载、分页和注销闭环。
+2. `npm --prefix webui run test:e2e`：重新构建嵌入式前端，使用真实 Chrome 打开管理平台，验证默认账户、首次强制改密、扫码启用两步验证、启用后的动态验证码登录、全部功能入口、全局服务器筛选、任务分页、接入服务多用户表单、Mihomo 配置入口和手机尺寸布局。
 
 进程级 E2E 使用真实 agent 任务执行器和真实临时文件替换。为了不修改测试宿主机的 `/etc` 与 `/usr/local`，测试启动的 agent 会设置 `SB_CONTROL_E2E_ROOT`，并以可记录调用的确定性命令替代 `sing-box` 和 `systemctl`。生产进程未设置该变量时仍使用标准系统路径。目标 Linux 服务器上的真实 systemd、Nginx、nftables、Fail2Ban 和公网客户端连通性属于部署验收，不能由安全的本地 E2E 替代。
 
@@ -800,8 +796,8 @@ bash ./scripts_e2e.sh
 - `sb-control combined serve --master-data-dir DIR --database-path FILE --agent-port PORT --web-port PORT --agent-data-dir DIR --master HOST:PORT --master-pubkey KEY`
 
 ```text
-sb-control master init-admin ...
-sb-control master reset-mfa ...
+sb-control master init-admin ...   # 兼容旧自动化，新部署不需要
+sb-control master reset-mfa ...    # 兼容旧自动化，新部署从系统设置管理
 sb-control master show-pubkey ...
 sb-control master serve ...
 sb-control agent register ...

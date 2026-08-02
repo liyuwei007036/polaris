@@ -16,8 +16,8 @@ const props = defineProps({
   listener: { type: Object, default: null },
   nodes: { type: Array, default: () => [] },
   certificates: { type: Array, default: () => [] },
-  realityKeys: { type: Array, default: () => [] },
   outbounds: { type: Array, default: () => [] },
+  endpoints: { type: Array, default: () => [] },
   saving: { type: Boolean, default: false },
 })
 const emit = defineEmits(['update:modelValue', 'save'])
@@ -47,7 +47,6 @@ const rules = computed(() => ({
   port: [{ required: true, message: '请输入服务端口', trigger: 'blur' }],
   certificate_id: showTLS.value ? [{ required: true, message: '请选择加密证书', trigger: 'change' }] : [],
   tls_server_name: showTLS.value ? [{ required: true, message: '请输入证书域名', trigger: 'blur' }] : [],
-  reality_key_id: showReality.value ? [{ required: true, message: '请选择 Reality 连接密钥', trigger: 'change' }] : [],
   reality_handshake_server: showReality.value ? [{ required: true, message: '请输入 Reality 目标网站', trigger: 'blur' }] : [],
 }))
 
@@ -56,7 +55,15 @@ watch(
   async (open) => {
     if (!open) return
     model.value = createListenerModel(props.listener, props.nodes[0]?.id || '')
-    accounts.value = [{ name: '用户 1', outbound_id: 'direct' }]
+    accounts.value = props.listener
+      ? props.endpoints.map((endpoint) => ({
+          id: endpoint.id,
+          name: endpoint.name,
+          alias: endpoint.alias || '',
+          enabled: endpoint.enabled,
+          outbound_id: endpoint.outbound_id || 'direct',
+        }))
+      : [{ id: '', name: '默认账号', alias: '', enabled: true, outbound_id: 'direct' }]
     normalizeProtocol()
     await nextTick()
     formRef.value?.clearValidate()
@@ -88,7 +95,7 @@ function close() {
 }
 
 function addAccount() {
-  accounts.value.push({ name: `用户 ${accounts.value.length + 1}`, outbound_id: 'direct' })
+  accounts.value.push({ id: '', name: `用户 ${accounts.value.length + 1}`, alias: '', enabled: true, outbound_id: 'direct' })
 }
 
 function removeAccount(index) {
@@ -98,23 +105,24 @@ function removeAccount(index) {
 async function save() {
   try {
     await formRef.value.validate()
-    if (
-      ['ws', 'httpupgrade'].includes(model.value.transport_type) &&
-      !model.value.transport_path
-    ) {
-      throw new Error('请填写客户端请求路径')
-    }
     if (model.value.transport_type === 'grpc' && !model.value.transport_service_name) {
       throw new Error('请填写 gRPC 服务名称')
     }
-	if (!props.listener) {
-	  const names = accounts.value.map((item) => item.name.trim())
-	  if (!names.length || names.some((name) => !name)) throw new Error('请至少添加一个已填写名称的用户')
-	  if (new Set(names).size !== names.length) throw new Error('同一接入服务中的用户名称不能重复')
-	}
+    const names = accounts.value.map((item) => item.name.trim())
+    const aliases = accounts.value.map((item) => item.alias.trim())
+    if (!names.length || names.some((name) => !name)) throw new Error('请至少保留一个已填写名称的用户')
+    if (new Set(names).size !== names.length) throw new Error('同一接入服务中的用户名称不能重复')
+    if (aliases.some((alias) => !alias)) throw new Error('请为每个用户填写客户端节点别名')
+    if (new Set(aliases).size !== aliases.length) throw new Error('同一接入服务中的客户端节点别名不能重复')
     emit('save', {
       listener: listenerPayload(model.value),
-	  accounts: props.listener ? [] : accounts.value.map((item) => ({ name: item.name.trim(), outbound_id: item.outbound_id || 'direct' })),
+      accounts: accounts.value.map((item) => ({
+            id: item.id,
+            name: item.name.trim(),
+            alias: item.alias.trim(),
+            enabled: item.enabled,
+            outbound_id: item.outbound_id || 'direct',
+          })),
     })
   } catch (error) {
     if (error instanceof Error) ElMessage.error(error.message)
@@ -125,7 +133,7 @@ async function save() {
 <template>
   <el-dialog
     :model-value="modelValue"
-    :title="listener ? '编辑接入服务' : '新建接入服务'"
+    :title="listener ? '修改接入服务' : '新建接入服务'"
     width="min(1040px, 96vw)"
     destroy-on-close
     @close="close"
@@ -209,24 +217,18 @@ async function save() {
           </el-row>
 
           <el-row v-if="showReality" :gutter="16">
-            <el-col :span="8">
+            <el-col :span="14">
               <el-form-item label="目标网站" prop="reality_handshake_server">
                 <el-input v-model="model.reality_handshake_server" placeholder="www.microsoft.com" />
               </el-form-item>
             </el-col>
-            <el-col :span="6">
+            <el-col :span="10">
               <el-form-item label="网站端口">
                 <el-input-number v-model="model.reality_handshake_port" :min="1" :max="65535" style="width: 100%" />
               </el-form-item>
             </el-col>
-            <el-col :span="10">
-              <el-form-item label="Reality 连接密钥" prop="reality_key_id">
-                <el-select v-model="model.reality_key_id" style="width: 100%" placeholder="请选择已生成的密钥">
-                  <el-option v-for="key in realityKeys" :key="key.id" :label="key.name" :value="key.id" />
-                </el-select>
-              </el-form-item>
-            </el-col>
           </el-row>
+          <el-alert v-if="showReality" title="Reality 密钥和 Short ID 会在创建接入服务时自动生成，无需手动配置。" type="success" :closable="false" />
         </div>
 
         <el-collapse v-if="definition.transports">
@@ -262,19 +264,21 @@ async function save() {
           </el-collapse-item>
         </el-collapse>
 
-        <div v-if="!listener" class="form-section">
+        <div class="form-section">
           <div class="account-section-head">
-            <div><div class="form-section__head">接入用户与上网出口</div><span>每个用户都会获得独立连接信息，并可使用不同的上网出口。</span></div>
+            <div><div class="form-section__head">用户与客户端节点</div><span>每个用户只属于当前服务器；客户端节点别名会直接写入该用户的订阅配置。</span></div>
             <el-button :icon="Plus" @click="addAccount">添加用户</el-button>
           </div>
           <div class="account-list">
-            <div v-for="(account, index) in accounts" :key="index" class="account-row">
+            <div v-for="(account, index) in accounts" :key="account.id || `new-${index}`" class="account-row">
               <span class="account-index">{{ index + 1 }}</span>
-              <el-input v-model="account.name" placeholder="用户名称" />
+              <el-input v-model="account.name" aria-label="用户名称" placeholder="用户名称" />
+              <el-input v-model="account.alias" aria-label="客户端节点别名" maxlength="128" placeholder="客户端节点别名" />
               <el-select v-model="account.outbound_id" style="width: 100%">
                 <el-option label="服务器直连" value="direct" />
                 <el-option v-for="outbound in outbounds.filter((item) => item.type !== 'direct')" :key="outbound.id" :label="outbound.name" :value="outbound.id" />
               </el-select>
+              <el-switch v-model="account.enabled" inline-prompt active-text="启用" inactive-text="停用" />
               <el-button text type="danger" :icon="Delete" :disabled="accounts.length === 1" aria-label="删除用户" @click="removeAccount(index)" />
             </div>
           </div>
@@ -302,12 +306,12 @@ async function save() {
 .account-section-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 20px; margin-bottom: 14px; }
 .account-section-head span { color: var(--sb-muted); font-size: 12px; }
 .account-list { border-top: 1px solid var(--sb-border); }
-.account-row { display: grid; grid-template-columns: 32px minmax(160px, 1fr) minmax(220px, 1.25fr) 38px; gap: 10px; align-items: center; padding: 10px 0; border-bottom: 1px solid var(--sb-border); }
+.account-row { display: grid; grid-template-columns: 32px minmax(140px, 1fr) minmax(160px, 1fr) minmax(190px, 1.2fr) 62px 38px; gap: 10px; align-items: center; padding: 10px 0; border-bottom: 1px solid var(--sb-border); }
 .account-index { color: var(--sb-muted); text-align: center; font-variant-numeric: tabular-nums; }
 .dialog-footer { display: flex; justify-content: flex-end; gap: 8px; }
 @media (max-width: 680px) {
   .listener-dialog-body :deep(.el-col) { max-width: 100%; flex: 0 0 100%; }
-  .account-row { grid-template-columns: 28px 1fr 36px; }
-  .account-row :deep(.el-select) { grid-column: 2; }
+  .account-row { grid-template-columns: 28px 1fr 62px 36px; }
+  .account-row :deep(.el-input), .account-row :deep(.el-select) { grid-column: 2 / -1; }
 }
 </style>

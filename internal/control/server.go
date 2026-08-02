@@ -12,6 +12,7 @@ import (
 	"io"
 	"mime"
 	"net/http"
+	"net/url"
 	"path"
 	"strings"
 	"sync"
@@ -86,6 +87,10 @@ func (s *Server) registerBrowserRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/v1/auth/login", s.login)
 	mux.HandleFunc("POST /api/v1/auth/mfa", s.finishLogin)
 	mux.HandleFunc("GET /api/v1/auth/me", s.me)
+	mux.HandleFunc("POST /api/v1/auth/password", s.changeOwnPassword)
+	mux.HandleFunc("POST /api/v1/auth/2fa/setup", s.beginOwnTOTPSetup)
+	mux.HandleFunc("POST /api/v1/auth/2fa/enable", s.enableOwnTOTP)
+	mux.HandleFunc("POST /api/v1/auth/2fa/disable", s.disableOwnTOTP)
 	mux.HandleFunc("POST /api/v1/auth/logout", s.logout)
 	mux.HandleFunc("GET /api/v1/operators", s.listOperators)
 	mux.HandleFunc("POST /api/v1/operators", s.createOperator)
@@ -96,11 +101,9 @@ func (s *Server) registerBrowserRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/v1/certificates", s.createManagedCertificate)
 	mux.HandleFunc("PUT /api/v1/certificates/{id}", s.replaceManagedCertificate)
 	mux.HandleFunc("DELETE /api/v1/certificates/{id}", s.deleteManagedCertificate)
-	mux.HandleFunc("GET /api/v1/reality-keys", s.listRealityKeys)
-	mux.HandleFunc("POST /api/v1/reality-keys", s.createRealityKey)
-	mux.HandleFunc("POST /api/v1/reality-keys/{id}/enabled", s.setRealityKeyEnabled)
 	mux.HandleFunc("POST /api/v1/nodes/registration-tokens", s.createRegistrationToken)
 	mux.HandleFunc("GET /api/v1/nodes", s.listNodes)
+	mux.HandleFunc("PUT /api/v1/nodes/{id}/name", s.setNodeName)
 	mux.HandleFunc("PUT /api/v1/nodes/{id}/client-address", s.setNodeClientAddress)
 	mux.HandleFunc("GET /api/v1/nodes/{id}/metrics", s.nodeMetrics)
 	mux.HandleFunc("GET /api/v1/nodes/{id}/firewall/rules", s.listFirewallRules)
@@ -222,18 +225,22 @@ func (s *Server) health(w http.ResponseWriter, _ *http.Request) {
 
 func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 	var input struct {
-		Email    string `json:"email"`
+		Username string `json:"username"`
 		Password string `json:"password"`
 	}
 	if !decodeJSON(w, r, &input) {
 		return
 	}
-	challenge, err := s.store.StartLogin(r.Context(), input.Email, input.Password)
+	result, err := s.store.StartLogin(r.Context(), input.Username, input.Password)
 	if err != nil {
 		writeError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]string{"challenge_id": challenge})
+	if result.RequiresTOTP {
+		writeJSON(w, http.StatusOK, map[string]any{"requires_2fa": true, "challenge_id": result.ChallengeID})
+		return
+	}
+	s.writeLoginSession(w, *result.Session)
 }
 
 func (s *Server) finishLogin(w http.ResponseWriter, r *http.Request) {
@@ -249,6 +256,10 @@ func (s *Server) finishLogin(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
+	s.writeLoginSession(w, session)
+}
+
+func (s *Server) writeLoginSession(w http.ResponseWriter, session Session) {
 	http.SetCookie(w, &http.Cookie{
 		Name:     sessionCookieName,
 		Value:    session.Token,
@@ -258,7 +269,12 @@ func (s *Server) finishLogin(w http.ResponseWriter, r *http.Request) {
 		Secure:   s.secureCookies,
 		SameSite: http.SameSiteStrictMode,
 	})
-	writeJSON(w, http.StatusOK, map[string]string{"csrf_token": session.CSRFToken, "role": session.Role})
+	writeJSON(w, http.StatusOK, map[string]any{
+		"requires_2fa":         false,
+		"csrf_token":           session.CSRFToken,
+		"role":                 session.Role,
+		"must_change_password": session.MustChangePassword,
+	})
 }
 
 func (s *Server) me(w http.ResponseWriter, r *http.Request) {
@@ -278,12 +294,100 @@ func (s *Server) me(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"id":         operator.ID,
-		"email":      operator.Email,
-		"role":       operator.Role,
-		"enabled":    operator.Enabled,
-		"csrf_token": csrfToken,
+		"id":                   operator.ID,
+		"username":             operator.Username,
+		"role":                 operator.Role,
+		"enabled":              operator.Enabled,
+		"totp_enabled":         operator.TOTPEnabled,
+		"must_change_password": operator.MustChangePassword,
+		"csrf_token":           csrfToken,
 	})
+}
+
+func (s *Server) changeOwnPassword(w http.ResponseWriter, r *http.Request) {
+	operator, err := s.operator(r, true)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	var input struct {
+		CurrentPassword string `json:"current_password"`
+		NewPassword     string `json:"new_password"`
+	}
+	if !decodeJSON(w, r, &input) {
+		return
+	}
+	cookie, err := r.Cookie(sessionCookieName)
+	if err != nil {
+		writeError(w, ErrUnauthorized)
+		return
+	}
+	if err := s.store.ChangeOwnPassword(r.Context(), operator.ID, input.CurrentPassword, input.NewPassword, cookie.Value); err != nil {
+		writeError(w, err)
+		return
+	}
+	_ = s.store.AppendAudit(r.Context(), operator.ID, "operator.password_changed", "operator", operator.ID, "operator changed own password")
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Server) beginOwnTOTPSetup(w http.ResponseWriter, r *http.Request) {
+	operator, err := s.operator(r, true)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	secret, err := s.store.BeginOperatorTOTPSetup(r.Context(), operator.ID)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	issuer := "sb-control"
+	label := url.PathEscape(issuer + ":" + operator.Username)
+	query := url.Values{"secret": {secret}, "issuer": {issuer}, "algorithm": {"SHA1"}, "digits": {"6"}, "period": {"30"}}
+	writeJSON(w, http.StatusOK, map[string]string{
+		"secret":      secret,
+		"otpauth_uri": "otpauth://totp/" + label + "?" + query.Encode(),
+	})
+}
+
+func (s *Server) enableOwnTOTP(w http.ResponseWriter, r *http.Request) {
+	operator, err := s.operator(r, true)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	var input struct {
+		Code string `json:"code"`
+	}
+	if !decodeJSON(w, r, &input) {
+		return
+	}
+	if err := s.store.ConfirmOperatorTOTP(r.Context(), operator.ID, input.Code); err != nil {
+		writeError(w, err)
+		return
+	}
+	_ = s.store.AppendAudit(r.Context(), operator.ID, "operator.mfa_enabled", "operator", operator.ID, "operator enabled two-factor authentication")
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Server) disableOwnTOTP(w http.ResponseWriter, r *http.Request) {
+	operator, err := s.operator(r, true)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	var input struct {
+		Password string `json:"password"`
+	}
+	if !decodeJSON(w, r, &input) {
+		return
+	}
+	if err := s.store.DisableOperatorTOTP(r.Context(), operator.ID, input.Password); err != nil {
+		writeError(w, err)
+		return
+	}
+	_ = s.store.AppendAudit(r.Context(), operator.ID, "operator.mfa_disabled", "operator", operator.ID, "operator disabled two-factor authentication")
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func (s *Server) logout(w http.ResponseWriter, r *http.Request) {
@@ -322,14 +426,14 @@ func (s *Server) createOperator(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var input struct {
-		Email    string `json:"email"`
+		Username string `json:"username"`
 		Password string `json:"password"`
 		Role     string `json:"role"`
 	}
 	if !decodeJSON(w, r, &input) {
 		return
 	}
-	operator, secret, err := s.store.CreateOperator(r.Context(), input.Email, input.Password, input.Role)
+	operator, err := s.store.CreateOperatorWithoutTOTP(r.Context(), input.Username, input.Password, input.Role)
 	if err != nil {
 		writeError(w, err)
 		return
@@ -338,7 +442,7 @@ func (s *Server) createOperator(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusCreated, map[string]any{"operator": operator, "totp_secret": secret})
+	writeJSON(w, http.StatusCreated, map[string]any{"operator": operator})
 }
 
 func (s *Server) updateOperator(w http.ResponseWriter, r *http.Request) {
@@ -399,16 +503,15 @@ func (s *Server) resetOperatorTOTP(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
-	secret, err := s.store.ResetOperatorTOTP(r.Context(), r.PathValue("id"))
-	if err != nil {
+	if err := s.store.ClearOperatorTOTP(r.Context(), r.PathValue("id")); err != nil {
 		writeError(w, err)
 		return
 	}
-	if err := s.store.AppendAudit(r.Context(), administrator.ID, "operator.mfa_reset", "operator", r.PathValue("id"), "operator MFA reset; secret omitted"); err != nil {
+	if err := s.store.AppendAudit(r.Context(), administrator.ID, "operator.mfa_reset", "operator", r.PathValue("id"), "operator two-factor authentication disabled"); err != nil {
 		writeError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]string{"totp_secret": secret})
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func (s *Server) listManagedCertificates(w http.ResponseWriter, r *http.Request) {
@@ -936,6 +1039,35 @@ func (s *Server) setNodeClientAddress(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, node)
 }
 
+func (s *Server) setNodeName(w http.ResponseWriter, r *http.Request) {
+	operator, err := s.writer(r)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	var input struct {
+		Name string `json:"name"`
+	}
+	if !decodeJSON(w, r, &input) {
+		return
+	}
+	nodeID := r.PathValue("id")
+	if err := s.store.SetNodeName(r.Context(), nodeID, input.Name); err != nil {
+		writeError(w, err)
+		return
+	}
+	if err := s.store.AppendAudit(r.Context(), operator.ID, "node.name_updated", "node", nodeID, "node name updated"); err != nil {
+		writeError(w, err)
+		return
+	}
+	node, err := s.store.GetNode(r.Context(), nodeID)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, node)
+}
+
 func (s *Server) nodeMetrics(w http.ResponseWriter, r *http.Request) {
 	if _, err := s.operator(r, false); err != nil {
 		writeError(w, err)
@@ -1229,6 +1361,12 @@ func (s *Server) createListener(w http.ResponseWriter, r *http.Request) {
 	if !decodeJSON(w, r, &listener) {
 		return
 	}
+	automaticRealityKeyID, err := s.prepareAutomaticReality(r.Context(), &listener)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	defer func() { _ = s.store.DeleteRealityKeyIfUnused(r.Context(), automaticRealityKeyID) }()
 	created, err := s.store.CreateListener(r.Context(), listener)
 	if err != nil {
 		writeError(w, err)
@@ -1259,20 +1397,28 @@ func (s *Server) createListenerWithDefaultAccount(w http.ResponseWriter, r *http
 		DefaultOutboundID string   `json:"default_outbound_id"`
 		Accounts          []struct {
 			Name       string `json:"name"`
+			Alias      string `json:"alias"`
 			OutboundID string `json:"outbound_id"`
 		} `json:"accounts"`
 	}
 	if !decodeJSON(w, r, &input) {
 		return
 	}
+	automaticRealityKeyID, err := s.prepareAutomaticReality(r.Context(), &input.Listener)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	defer func() { _ = s.store.DeleteRealityKeyIfUnused(r.Context(), automaticRealityKeyID) }()
 	if len(input.Accounts) == 0 {
 		if input.DefaultOutboundID == "" {
 			input.DefaultOutboundID = "direct"
 		}
 		input.Accounts = append(input.Accounts, struct {
 			Name       string `json:"name"`
+			Alias      string `json:"alias"`
 			OutboundID string `json:"outbound_id"`
-		}{Name: "默认账号", OutboundID: input.DefaultOutboundID})
+		}{Name: "默认账号", Alias: input.Listener.Name + " · 默认节点", OutboundID: input.DefaultOutboundID})
 	}
 	// Public and internal bind addresses are system-managed. Users only choose
 	// the public service port; sharing is enabled automatically when needed.
@@ -1297,6 +1443,7 @@ func (s *Server) createListenerWithDefaultAccount(w http.ResponseWriter, r *http
 		endpoint, err := s.store.CreateEndpoint(r.Context(), Endpoint{
 			ListenerID: created.ID,
 			Name:       strings.TrimSpace(account.Name),
+			Alias:      strings.TrimSpace(account.Alias),
 			Enabled:    true,
 			OutboundID: account.OutboundID,
 		}, credentials)
@@ -1344,6 +1491,12 @@ func (s *Server) updateListener(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	listener.ID = r.PathValue("id")
+	automaticRealityKeyID, err := s.prepareAutomaticReality(r.Context(), &listener)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	defer func() { _ = s.store.DeleteRealityKeyIfUnused(r.Context(), automaticRealityKeyID) }()
 	automaticRoute, err := s.store.prepareAutomaticRouteUpdate(r.Context(), listener)
 	if err != nil {
 		writeError(w, err)
@@ -1384,6 +1537,53 @@ func (s *Server) updateListener(w http.ResponseWriter, r *http.Request) {
 		setAutoApplyNginxTaskHeader(w, nginxTask)
 	}
 	writeJSON(w, http.StatusOK, updated)
+}
+
+func (s *Server) prepareAutomaticReality(ctx context.Context, listener *Listener) (string, error) {
+	if !listener.Spec.Reality.Enabled {
+		return "", nil
+	}
+	// Reality key material is never accepted from browser input. Editing an
+	// existing Reality listener preserves its generated key and short IDs;
+	// enabling Reality or creating a listener generates fresh values.
+	if listener.ID != "" {
+		var encoded string
+		if err := s.store.db.QueryRowContext(ctx, `SELECT spec FROM listeners WHERE id = ?`, listener.ID).Scan(&encoded); err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return "", ErrNotFound
+			}
+			return "", err
+		}
+		var existing ProtocolSpec
+		if err := json.Unmarshal([]byte(encoded), &existing); err != nil {
+			return "", err
+		}
+		if existing.Reality.Enabled && existing.Reality.KeyID != "" {
+			listener.Spec.Reality.KeyID = existing.Reality.KeyID
+			listener.Spec.Reality.ShortIDs = append([]string(nil), existing.Reality.ShortIDs...)
+			return "", nil
+		}
+	}
+	listener.Spec.Reality.KeyID = ""
+	listener.Spec.Reality.ShortIDs = nil
+	identifier, err := newID()
+	if err != nil {
+		return "", err
+	}
+	key, _, err := s.store.CreateRealityKey(ctx, "自动生成 · "+listener.Name+" · "+identifier[:8])
+	if err != nil {
+		return "", err
+	}
+	listener.Spec.Reality.KeyID = key.ID
+	if len(listener.Spec.Reality.ShortIDs) == 0 {
+		shortID, err := GenerateRealityShortID()
+		if err != nil {
+			_ = s.store.DeleteRealityKeyIfUnused(ctx, key.ID)
+			return "", err
+		}
+		listener.Spec.Reality.ShortIDs = []string{shortID}
+	}
+	return key.ID, nil
 }
 
 func (s *Server) setListenerEnabled(w http.ResponseWriter, r *http.Request) {
@@ -1632,6 +1832,7 @@ func (s *Server) createEndpoint(w http.ResponseWriter, r *http.Request) {
 	}
 	var input struct {
 		Name        string              `json:"name"`
+		Alias       string              `json:"alias"`
 		Enabled     bool                `json:"enabled"`
 		OutboundID  string              `json:"outbound_id"`
 		Credentials EndpointCredentials `json:"credentials"`
@@ -1639,7 +1840,7 @@ func (s *Server) createEndpoint(w http.ResponseWriter, r *http.Request) {
 	if !decodeJSON(w, r, &input) {
 		return
 	}
-	endpoint, err := s.store.CreateEndpoint(r.Context(), Endpoint{ListenerID: r.PathValue("id"), Name: input.Name, Enabled: input.Enabled, OutboundID: input.OutboundID}, input.Credentials)
+	endpoint, err := s.store.CreateEndpoint(r.Context(), Endpoint{ListenerID: r.PathValue("id"), Name: input.Name, Alias: input.Alias, Enabled: input.Enabled, OutboundID: input.OutboundID}, input.Credentials)
 	if err != nil {
 		writeError(w, err)
 		return
@@ -1670,6 +1871,7 @@ func (s *Server) createGeneratedEndpoint(w http.ResponseWriter, r *http.Request)
 	}
 	var input struct {
 		Name       string `json:"name"`
+		Alias      string `json:"alias"`
 		OutboundID string `json:"outbound_id"`
 	}
 	if !decodeJSON(w, r, &input) {
@@ -1695,6 +1897,7 @@ func (s *Server) createGeneratedEndpoint(w http.ResponseWriter, r *http.Request)
 	endpoint, err := s.store.CreateEndpoint(r.Context(), Endpoint{
 		ListenerID: r.PathValue("id"),
 		Name:       input.Name,
+		Alias:      input.Alias,
 		Enabled:    true,
 		OutboundID: input.OutboundID,
 	}, credentials)
@@ -1729,6 +1932,7 @@ func (s *Server) updateEndpoint(w http.ResponseWriter, r *http.Request) {
 	var input struct {
 		ListenerID  string               `json:"listener_id"`
 		Name        string               `json:"name"`
+		Alias       string               `json:"alias"`
 		Enabled     bool                 `json:"enabled"`
 		OutboundID  string               `json:"outbound_id"`
 		Credentials *EndpointCredentials `json:"credentials"`
@@ -1736,7 +1940,7 @@ func (s *Server) updateEndpoint(w http.ResponseWriter, r *http.Request) {
 	if !decodeJSON(w, r, &input) {
 		return
 	}
-	updated, err := s.store.UpdateEndpoint(r.Context(), Endpoint{ID: r.PathValue("id"), ListenerID: input.ListenerID, Name: input.Name, Enabled: input.Enabled, OutboundID: input.OutboundID}, input.Credentials)
+	updated, err := s.store.UpdateEndpoint(r.Context(), Endpoint{ID: r.PathValue("id"), ListenerID: input.ListenerID, Name: input.Name, Alias: input.Alias, Enabled: input.Enabled, OutboundID: input.OutboundID}, input.Credentials)
 	if err != nil {
 		writeError(w, err)
 		return
@@ -2157,7 +2361,18 @@ func (s *Server) operator(r *http.Request, requireCSRF bool) (Operator, error) {
 	if err != nil {
 		return Operator{}, ErrUnauthorized
 	}
-	return s.store.Authenticate(r.Context(), cookie.Value, r.Header.Get("X-CSRF-Token"), requireCSRF)
+	operator, err := s.store.Authenticate(r.Context(), cookie.Value, r.Header.Get("X-CSRF-Token"), requireCSRF)
+	if err != nil {
+		return Operator{}, err
+	}
+	if operator.MustChangePassword {
+		switch r.URL.Path {
+		case "/api/v1/auth/me", "/api/v1/auth/password", "/api/v1/auth/logout":
+		default:
+			return Operator{}, ErrPasswordChangeRequired
+		}
+	}
+	return operator, nil
 }
 
 func (s *Server) admin(r *http.Request) (Operator, error) {
@@ -2217,6 +2432,8 @@ func writeError(w http.ResponseWriter, err error) {
 	message := "invalid request"
 	var visibleError *userFacingError
 	switch {
+	case errors.Is(err, ErrPasswordChangeRequired):
+		status, message = http.StatusPreconditionRequired, "必须先修改初始密码"
 	case errors.Is(err, ErrInvalidCredentials), errors.Is(err, ErrUnauthorized):
 		status, message = http.StatusUnauthorized, "authentication failed"
 	case errors.Is(err, ErrForbidden):

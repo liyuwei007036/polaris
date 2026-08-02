@@ -10,9 +10,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"net/mail"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 
@@ -21,19 +21,22 @@ import (
 )
 
 var (
-	ErrInvalidCredentials = errors.New("invalid credentials")
-	ErrUnauthorized       = errors.New("unauthorized")
-	ErrForbidden          = errors.New("forbidden")
-	ErrNotFound           = errors.New("not found")
-	ErrConflict           = errors.New("conflict")
+	ErrInvalidCredentials     = errors.New("invalid credentials")
+	ErrUnauthorized           = errors.New("unauthorized")
+	ErrForbidden              = errors.New("forbidden")
+	ErrNotFound               = errors.New("not found")
+	ErrConflict               = errors.New("conflict")
+	ErrPasswordChangeRequired = errors.New("password change required")
 )
 
 const (
-	masterKeyFile       = "master.key"
-	defaultSessionTTL   = 8 * time.Hour
-	defaultTokenTTL     = 15 * time.Minute
-	maximumTokenTTL     = time.Hour
-	registrationPollTTL = 24 * time.Hour
+	DefaultAdminUsername = "sb_admin"
+	DefaultAdminPassword = "123456"
+	masterKeyFile        = "master.key"
+	defaultSessionTTL    = 8 * time.Hour
+	defaultTokenTTL      = 15 * time.Minute
+	maximumTokenTTL      = time.Hour
+	registrationPollTTL  = 24 * time.Hour
 )
 
 type Store struct {
@@ -44,20 +47,29 @@ type Store struct {
 }
 
 type Operator struct {
-	ID          string `json:"id"`
-	Email       string `json:"email"`
-	Role        string `json:"role"`
-	Enabled     bool   `json:"enabled"`
-	CreatedAt   string `json:"created_at,omitempty"`
-	LastLoginAt string `json:"last_login_at,omitempty"`
+	ID                 string `json:"id"`
+	Username           string `json:"username"`
+	Role               string `json:"role"`
+	Enabled            bool   `json:"enabled"`
+	TOTPEnabled        bool   `json:"totp_enabled"`
+	MustChangePassword bool   `json:"must_change_password"`
+	CreatedAt          string `json:"created_at,omitempty"`
+	LastLoginAt        string `json:"last_login_at,omitempty"`
 }
 
 type Session struct {
-	Token      string
-	CSRFToken  string
-	OperatorID string
-	Role       string
-	ExpiresAt  time.Time
+	Token              string
+	CSRFToken          string
+	OperatorID         string
+	Role               string
+	MustChangePassword bool
+	ExpiresAt          time.Time
+}
+
+type LoginResult struct {
+	ChallengeID  string
+	RequiresTOTP bool
+	Session      *Session
 }
 
 type RegistrationToken struct {
@@ -129,7 +141,7 @@ type Task struct {
 type AuditEvent struct {
 	ID         string `json:"id"`
 	OperatorID string `json:"operator_id"`
-	Email      string `json:"operator_email"`
+	Username   string `json:"operator_username"`
 	Action     string `json:"action"`
 	TargetType string `json:"target_type"`
 	TargetID   string `json:"target_id"`
@@ -153,6 +165,7 @@ type Endpoint struct {
 	ID         string `json:"id"`
 	ListenerID string `json:"listener_id"`
 	Name       string `json:"name"`
+	Alias      string `json:"alias"`
 	Enabled    bool   `json:"enabled"`
 	OutboundID string `json:"outbound_id,omitempty"`
 }
@@ -207,7 +220,19 @@ func (s *Store) MasterKey() []byte {
 	return key
 }
 
-func (s *Store) CreateInitialAdmin(ctx context.Context, email, password string) (secret string, err error) {
+func (s *Store) EnsureDefaultAdmin(ctx context.Context) (Operator, bool, error) {
+	var count int
+	if err := s.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM operators").Scan(&count); err != nil {
+		return Operator{}, false, fmt.Errorf("count operators: %w", err)
+	}
+	if count > 0 {
+		return Operator{}, false, nil
+	}
+	operator, _, err := s.createOperator(ctx, DefaultAdminUsername, DefaultAdminPassword, "admin", false, true, true)
+	return operator, err == nil, err
+}
+
+func (s *Store) CreateInitialAdmin(ctx context.Context, username, password string) (secret string, err error) {
 	var count int
 	if err := s.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM operators").Scan(&count); err != nil {
 		return "", fmt.Errorf("count operators: %w", err)
@@ -215,14 +240,15 @@ func (s *Store) CreateInitialAdmin(ctx context.Context, email, password string) 
 	if count > 0 {
 		return "", ErrConflict
 	}
-	_, createdSecret, createErr := s.createOperator(ctx, email, password, "admin")
+	_, createdSecret, createErr := s.createOperator(ctx, username, password, "admin", true, false, false)
 	return createdSecret, createErr
 }
 
-func validateOperatorInput(email, role string) error {
-	parsed, err := mail.ParseAddress(email)
-	if err != nil || parsed.Address != email || len(email) > 320 {
-		return errors.New("operator email is invalid")
+var operatorUsernamePattern = regexp.MustCompile(`^[A-Za-z0-9_.@-]+$`)
+
+func validateOperatorInput(username, role string) error {
+	if len(username) < 3 || len(username) > 64 || !operatorUsernamePattern.MatchString(username) {
+		return errors.New("operator username must contain 3 to 64 letters, numbers, dots, underscores, hyphens, or @ signs")
 	}
 	if role != "admin" && role != "operator" && role != "viewer" {
 		return errors.New("operator role must be admin, operator, or viewer")
@@ -230,17 +256,26 @@ func validateOperatorInput(email, role string) error {
 	return nil
 }
 
-func (s *Store) createOperator(ctx context.Context, email, password, role string) (Operator, string, error) {
-	if err := validateOperatorInput(email, role); err != nil {
+func (s *Store) createOperator(ctx context.Context, username, password, role string, totpEnabled, mustChangePassword, temporaryPassword bool) (Operator, string, error) {
+	if err := validateOperatorInput(username, role); err != nil {
 		return Operator{}, "", err
 	}
-	passwordHash, err := security.HashPassword(password)
+	var passwordHash string
+	var err error
+	if temporaryPassword {
+		passwordHash, err = security.HashTemporaryPassword(password)
+	} else {
+		passwordHash, err = security.HashPassword(password)
+	}
 	if err != nil {
 		return Operator{}, "", err
 	}
-	secret, err := security.NewTOTPSecret()
-	if err != nil {
-		return Operator{}, "", err
+	var secret string
+	if totpEnabled {
+		secret, err = security.NewTOTPSecret()
+		if err != nil {
+			return Operator{}, "", err
+		}
 	}
 	encryptedSecret, err := security.Encrypt(s.masterKey, []byte(secret))
 	if err != nil {
@@ -251,20 +286,25 @@ func (s *Store) createOperator(ctx context.Context, email, password, role string
 		return Operator{}, "", err
 	}
 	createdAt := nowUnix()
-	_, err = s.db.ExecContext(ctx, `INSERT INTO operators (id, email, password_hash, totp_secret, role, enabled, created_at, last_login_at)
-		VALUES (?, ?, ?, ?, ?, 1, ?, NULL)`, identifier, email, passwordHash, encryptedSecret, role, createdAt)
+	_, err = s.db.ExecContext(ctx, `INSERT INTO operators (id, email, password_hash, totp_secret, role, enabled, created_at, last_login_at, totp_enabled, must_change_password)
+		VALUES (?, ?, ?, ?, ?, 1, ?, NULL, ?, ?)`, identifier, username, passwordHash, encryptedSecret, role, createdAt, totpEnabled, mustChangePassword)
 	if err != nil {
 		return Operator{}, "", fmt.Errorf("create operator: %w", err)
 	}
-	return Operator{ID: identifier, Email: email, Role: role, Enabled: true, CreatedAt: time.Unix(createdAt, 0).UTC().Format(time.RFC3339)}, secret, nil
+	return Operator{ID: identifier, Username: username, Role: role, Enabled: true, TOTPEnabled: totpEnabled, MustChangePassword: mustChangePassword, CreatedAt: time.Unix(createdAt, 0).UTC().Format(time.RFC3339)}, secret, nil
 }
 
-func (s *Store) CreateOperator(ctx context.Context, email, password, role string) (Operator, string, error) {
-	return s.createOperator(ctx, email, password, role)
+func (s *Store) CreateOperator(ctx context.Context, username, password, role string) (Operator, string, error) {
+	return s.createOperator(ctx, username, password, role, true, false, false)
+}
+
+func (s *Store) CreateOperatorWithoutTOTP(ctx context.Context, username, password, role string) (Operator, error) {
+	operator, _, err := s.createOperator(ctx, username, password, role, false, true, false)
+	return operator, err
 }
 
 func (s *Store) ListOperators(ctx context.Context) ([]Operator, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT id, email, role, enabled, created_at, last_login_at FROM operators ORDER BY email, id`)
+	rows, err := s.db.QueryContext(ctx, `SELECT id, email, role, enabled, totp_enabled, must_change_password, created_at, last_login_at FROM operators ORDER BY email, id`)
 	if err != nil {
 		return nil, fmt.Errorf("list operators: %w", err)
 	}
@@ -274,7 +314,7 @@ func (s *Store) ListOperators(ctx context.Context) ([]Operator, error) {
 		var operator Operator
 		var createdAt int64
 		var lastLogin sql.NullInt64
-		if err := rows.Scan(&operator.ID, &operator.Email, &operator.Role, &operator.Enabled, &createdAt, &lastLogin); err != nil {
+		if err := rows.Scan(&operator.ID, &operator.Username, &operator.Role, &operator.Enabled, &operator.TOTPEnabled, &operator.MustChangePassword, &createdAt, &lastLogin); err != nil {
 			return nil, fmt.Errorf("read operator: %w", err)
 		}
 		operator.CreatedAt = time.Unix(createdAt, 0).UTC().Format(time.RFC3339)
@@ -339,7 +379,12 @@ func (s *Store) SetOperatorPassword(ctx context.Context, operatorID, password st
 	if err != nil {
 		return err
 	}
-	result, err := s.db.ExecContext(ctx, `UPDATE operators SET password_hash = ? WHERE id = ?`, passwordHash, operatorID)
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("start operator password reset: %w", err)
+	}
+	defer tx.Rollback()
+	result, err := tx.ExecContext(ctx, `UPDATE operators SET password_hash = ?, must_change_password = 1 WHERE id = ?`, passwordHash, operatorID)
 	if err != nil {
 		return fmt.Errorf("set operator password: %w", err)
 	}
@@ -350,7 +395,134 @@ func (s *Store) SetOperatorPassword(ctx context.Context, operatorID, password st
 	if changed != 1 {
 		return ErrNotFound
 	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM sessions WHERE operator_id = ?`, operatorID); err != nil {
+		return fmt.Errorf("remove operator sessions after password reset: %w", err)
+	}
+	return tx.Commit()
+}
+
+func (s *Store) ChangeOwnPassword(ctx context.Context, operatorID, currentPassword, newPassword, sessionToken string) error {
+	var currentHash string
+	if err := s.db.QueryRowContext(ctx, `SELECT password_hash FROM operators WHERE id = ?`, operatorID).Scan(&currentHash); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return ErrNotFound
+		}
+		return fmt.Errorf("load current operator password: %w", err)
+	}
+	ok, err := security.VerifyPassword(currentHash, currentPassword)
+	if err != nil || !ok {
+		return ErrInvalidCredentials
+	}
+	if currentPassword == newPassword {
+		return errors.New("new password must be different from the current password")
+	}
+	passwordHash, err := security.HashPassword(newPassword)
+	if err != nil {
+		return err
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("start own password change: %w", err)
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx, `UPDATE operators SET password_hash = ?, must_change_password = 0 WHERE id = ?`, passwordHash, operatorID); err != nil {
+		return fmt.Errorf("change own password: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM sessions WHERE operator_id = ? AND id_hash <> ?`, operatorID, security.TokenHash(sessionToken)); err != nil {
+		return fmt.Errorf("remove other operator sessions: %w", err)
+	}
+	return tx.Commit()
+}
+
+func (s *Store) BeginOperatorTOTPSetup(ctx context.Context, operatorID string) (string, error) {
+	secret, err := security.NewTOTPSecret()
+	if err != nil {
+		return "", err
+	}
+	encrypted, err := security.Encrypt(s.masterKey, []byte(secret))
+	if err != nil {
+		return "", fmt.Errorf("encrypt pending TOTP secret: %w", err)
+	}
+	result, err := s.db.ExecContext(ctx, `UPDATE operators SET pending_totp_secret = ? WHERE id = ? AND enabled = 1`, encrypted, operatorID)
+	if err != nil {
+		return "", fmt.Errorf("begin operator TOTP setup: %w", err)
+	}
+	changed, err := result.RowsAffected()
+	if err != nil {
+		return "", err
+	}
+	if changed != 1 {
+		return "", ErrNotFound
+	}
+	return secret, nil
+}
+
+func (s *Store) ConfirmOperatorTOTP(ctx context.Context, operatorID, code string) error {
+	var encrypted []byte
+	if err := s.db.QueryRowContext(ctx, `SELECT pending_totp_secret FROM operators WHERE id = ?`, operatorID).Scan(&encrypted); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return ErrNotFound
+		}
+		return fmt.Errorf("load pending TOTP setup: %w", err)
+	}
+	if len(encrypted) == 0 {
+		return ErrConflict
+	}
+	secret, err := security.Decrypt(s.masterKey, encrypted)
+	if err != nil || !security.VerifyTOTP(string(secret), code, time.Now().UTC()) {
+		return ErrInvalidCredentials
+	}
+	result, err := s.db.ExecContext(ctx, `UPDATE operators SET totp_secret = pending_totp_secret, pending_totp_secret = NULL, totp_enabled = 1 WHERE id = ?`, operatorID)
+	if err != nil {
+		return fmt.Errorf("enable operator TOTP: %w", err)
+	}
+	changed, err := result.RowsAffected()
+	if err != nil || changed != 1 {
+		return ErrConflict
+	}
 	return nil
+}
+
+func (s *Store) DisableOperatorTOTP(ctx context.Context, operatorID, password string) error {
+	var passwordHash string
+	if err := s.db.QueryRowContext(ctx, `SELECT password_hash FROM operators WHERE id = ?`, operatorID).Scan(&passwordHash); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return ErrNotFound
+		}
+		return err
+	}
+	ok, err := security.VerifyPassword(passwordHash, password)
+	if err != nil || !ok {
+		return ErrInvalidCredentials
+	}
+	return s.ClearOperatorTOTP(ctx, operatorID)
+}
+
+func (s *Store) ClearOperatorTOTP(ctx context.Context, operatorID string) error {
+	emptySecret, err := security.Encrypt(s.masterKey, nil)
+	if err != nil {
+		return err
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	result, err := tx.ExecContext(ctx, `UPDATE operators SET totp_secret = ?, pending_totp_secret = NULL, totp_enabled = 0 WHERE id = ?`, emptySecret, operatorID)
+	if err != nil {
+		return fmt.Errorf("disable operator TOTP: %w", err)
+	}
+	changed, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if changed != 1 {
+		return ErrNotFound
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM login_challenges WHERE operator_id = ?`, operatorID); err != nil {
+		return fmt.Errorf("remove operator login challenges: %w", err)
+	}
+	return tx.Commit()
 }
 
 func (s *Store) ResetOperatorTOTP(ctx context.Context, operatorID string) (string, error) {
@@ -367,7 +539,7 @@ func (s *Store) ResetOperatorTOTP(ctx context.Context, operatorID string) (strin
 		return "", fmt.Errorf("start MFA reset: %w", err)
 	}
 	defer tx.Rollback()
-	result, err := tx.ExecContext(ctx, `UPDATE operators SET totp_secret = ? WHERE id = ?`, encrypted, operatorID)
+	result, err := tx.ExecContext(ctx, `UPDATE operators SET totp_secret = ?, pending_totp_secret = NULL, totp_enabled = 1 WHERE id = ?`, encrypted, operatorID)
 	if err != nil {
 		return "", fmt.Errorf("reset operator MFA: %w", err)
 	}
@@ -394,8 +566,8 @@ func (s *Store) operatorByID(ctx context.Context, operatorID string) (Operator, 
 	var operator Operator
 	var createdAt int64
 	var lastLogin sql.NullInt64
-	err := s.db.QueryRowContext(ctx, `SELECT id, email, role, enabled, created_at, last_login_at FROM operators WHERE id = ?`, operatorID).
-		Scan(&operator.ID, &operator.Email, &operator.Role, &operator.Enabled, &createdAt, &lastLogin)
+	err := s.db.QueryRowContext(ctx, `SELECT id, email, role, enabled, totp_enabled, must_change_password, created_at, last_login_at FROM operators WHERE id = ?`, operatorID).
+		Scan(&operator.ID, &operator.Username, &operator.Role, &operator.Enabled, &operator.TOTPEnabled, &operator.MustChangePassword, &createdAt, &lastLogin)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Operator{}, ErrNotFound
 	}
@@ -409,30 +581,38 @@ func (s *Store) operatorByID(ctx context.Context, operatorID string) (Operator, 
 	return operator, nil
 }
 
-func (s *Store) StartLogin(ctx context.Context, email, password string) (string, error) {
-	var operatorID, passwordHash string
-	var enabled bool
-	err := s.db.QueryRowContext(ctx, `SELECT id, password_hash, enabled FROM operators WHERE email = ?`, email).Scan(&operatorID, &passwordHash, &enabled)
+func (s *Store) StartLogin(ctx context.Context, username, password string) (LoginResult, error) {
+	var operatorID, passwordHash, role string
+	var enabled, totpEnabled, mustChangePassword bool
+	err := s.db.QueryRowContext(ctx, `SELECT id, password_hash, role, enabled, totp_enabled, must_change_password FROM operators WHERE email = ?`, username).
+		Scan(&operatorID, &passwordHash, &role, &enabled, &totpEnabled, &mustChangePassword)
 	if errors.Is(err, sql.ErrNoRows) || !enabled {
-		return "", ErrInvalidCredentials
+		return LoginResult{}, ErrInvalidCredentials
 	}
 	if err != nil {
-		return "", fmt.Errorf("load operator: %w", err)
+		return LoginResult{}, fmt.Errorf("load operator: %w", err)
 	}
 	ok, err := security.VerifyPassword(passwordHash, password)
 	if err != nil || !ok {
-		return "", ErrInvalidCredentials
+		return LoginResult{}, ErrInvalidCredentials
+	}
+	if !totpEnabled {
+		session, err := s.createSession(ctx, operatorID, role, mustChangePassword)
+		if err != nil {
+			return LoginResult{}, err
+		}
+		return LoginResult{Session: &session}, nil
 	}
 	challengeID, err := security.RandomToken(32)
 	if err != nil {
-		return "", err
+		return LoginResult{}, err
 	}
 	_, err = s.db.ExecContext(ctx, `INSERT INTO login_challenges (id_hash, operator_id, expires_at, used_at)
 		VALUES (?, ?, ?, NULL)`, security.TokenHash(challengeID), operatorID, time.Now().UTC().Add(5*time.Minute).Unix())
 	if err != nil {
-		return "", fmt.Errorf("create MFA challenge: %w", err)
+		return LoginResult{}, fmt.Errorf("create MFA challenge: %w", err)
 	}
-	return challengeID, nil
+	return LoginResult{ChallengeID: challengeID, RequiresTOTP: true}, nil
 }
 
 func (s *Store) FinishLogin(ctx context.Context, challengeID, code string) (Session, error) {
@@ -442,11 +622,13 @@ func (s *Store) FinishLogin(ctx context.Context, challengeID, code string) (Sess
 	}
 	defer tx.Rollback()
 	var operatorID, role string
+	var mustChangePassword bool
 	var encryptedSecret []byte
 	var expiresAt int64
-	err = tx.QueryRowContext(ctx, `SELECT c.operator_id, o.role, o.totp_secret, c.expires_at
+	err = tx.QueryRowContext(ctx, `SELECT c.operator_id, o.role, o.totp_secret, c.expires_at, o.must_change_password
 		FROM login_challenges c JOIN operators o ON o.id = c.operator_id
-		WHERE c.id_hash = ? AND c.used_at IS NULL AND o.enabled = 1`, security.TokenHash(challengeID)).Scan(&operatorID, &role, &encryptedSecret, &expiresAt)
+		WHERE c.id_hash = ? AND c.used_at IS NULL AND o.enabled = 1 AND o.totp_enabled = 1`, security.TokenHash(challengeID)).
+		Scan(&operatorID, &role, &encryptedSecret, &expiresAt, &mustChangePassword)
 	if errors.Is(err, sql.ErrNoRows) || time.Now().UTC().Unix() > expiresAt {
 		return Session{}, ErrInvalidCredentials
 	}
@@ -465,6 +647,33 @@ func (s *Store) FinishLogin(ctx context.Context, challengeID, code string) (Sess
 	if err != nil || changed != 1 {
 		return Session{}, ErrInvalidCredentials
 	}
+	session, err := createSessionInTx(ctx, tx, operatorID, role, mustChangePassword)
+	if err != nil {
+		return Session{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return Session{}, fmt.Errorf("commit MFA verification: %w", err)
+	}
+	return session, nil
+}
+
+func (s *Store) createSession(ctx context.Context, operatorID, role string, mustChangePassword bool) (Session, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return Session{}, fmt.Errorf("start session creation: %w", err)
+	}
+	defer tx.Rollback()
+	session, err := createSessionInTx(ctx, tx, operatorID, role, mustChangePassword)
+	if err != nil {
+		return Session{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return Session{}, fmt.Errorf("commit session creation: %w", err)
+	}
+	return session, nil
+}
+
+func createSessionInTx(ctx context.Context, tx *sql.Tx, operatorID, role string, mustChangePassword bool) (Session, error) {
 	sessionToken, err := security.RandomToken(32)
 	if err != nil {
 		return Session{}, err
@@ -482,10 +691,7 @@ func (s *Store) FinishLogin(ctx context.Context, challengeID, code string) (Sess
 	if _, err := tx.ExecContext(ctx, `UPDATE operators SET last_login_at = ? WHERE id = ?`, nowUnix(), operatorID); err != nil {
 		return Session{}, fmt.Errorf("record operator login: %w", err)
 	}
-	if err := tx.Commit(); err != nil {
-		return Session{}, fmt.Errorf("commit MFA verification: %w", err)
-	}
-	return Session{Token: sessionToken, CSRFToken: csrfToken, OperatorID: operatorID, Role: role, ExpiresAt: expires}, nil
+	return Session{Token: sessionToken, CSRFToken: csrfToken, OperatorID: operatorID, Role: role, MustChangePassword: mustChangePassword, ExpiresAt: expires}, nil
 }
 
 func (s *Store) Authenticate(ctx context.Context, sessionToken, csrfToken string, requireCSRF bool) (Operator, error) {
@@ -495,9 +701,9 @@ func (s *Store) Authenticate(ctx context.Context, sessionToken, csrfToken string
 	var operator Operator
 	var csrfHash []byte
 	var expiresAt int64
-	err := s.db.QueryRowContext(ctx, `SELECT o.id, o.email, o.role, o.enabled, s.csrf_hash, s.expires_at
+	err := s.db.QueryRowContext(ctx, `SELECT o.id, o.email, o.role, o.enabled, o.totp_enabled, o.must_change_password, s.csrf_hash, s.expires_at
 		FROM sessions s JOIN operators o ON o.id = s.operator_id
-		WHERE s.id_hash = ?`, security.TokenHash(sessionToken)).Scan(&operator.ID, &operator.Email, &operator.Role, &operator.Enabled, &csrfHash, &expiresAt)
+		WHERE s.id_hash = ?`, security.TokenHash(sessionToken)).Scan(&operator.ID, &operator.Username, &operator.Role, &operator.Enabled, &operator.TOTPEnabled, &operator.MustChangePassword, &csrfHash, &expiresAt)
 	if errors.Is(err, sql.ErrNoRows) || !operator.Enabled || time.Now().UTC().Unix() > expiresAt {
 		return Operator{}, ErrUnauthorized
 	}
@@ -803,6 +1009,29 @@ func (s *Store) ListNodes(ctx context.Context) ([]Node, error) {
 		return nil, fmt.Errorf("iterate nodes: %w", err)
 	}
 	return nodes, nil
+}
+
+func (s *Store) SetNodeName(ctx context.Context, nodeID, name string) error {
+	name = strings.TrimSpace(name)
+	if nodeID == "" || name == "" || len(name) > 128 || strings.ContainsAny(name, "\r\n") {
+		return errors.New("node ID and a name up to 128 characters are required")
+	}
+	var conflict string
+	err := s.db.QueryRowContext(ctx, `SELECT id FROM nodes WHERE name = ? AND id <> ? AND revoked_at IS NULL`, name, nodeID).Scan(&conflict)
+	if err == nil {
+		return ErrConflict
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return fmt.Errorf("check node name conflict: %w", err)
+	}
+	result, err := s.db.ExecContext(ctx, `UPDATE nodes SET name = ? WHERE id = ? AND revoked_at IS NULL`, name, nodeID)
+	if err != nil {
+		return fmt.Errorf("update node name: %w", err)
+	}
+	if changed, _ := result.RowsAffected(); changed != 1 {
+		return ErrNotFound
+	}
+	return nil
 }
 
 func (s *Store) GetNode(ctx context.Context, nodeID string) (Node, error) {
@@ -1163,6 +1392,19 @@ func (s *Store) SetListenerEnabled(ctx context.Context, listenerID string, enabl
 }
 
 func (s *Store) DeleteListener(ctx context.Context, listenerID string) error {
+	var references int
+	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM mihomo_client_configs_v2 c, json_each(c.endpoint_ids) e WHERE e.value IN (SELECT id FROM endpoints WHERE listener_id = ?)`, listenerID).Scan(&references); err != nil {
+		return fmt.Errorf("check listener client config references: %w", err)
+	}
+	if references != 0 {
+		return ErrConflict
+	}
+	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM subscriptions s, json_each(s.endpoint_ids) e WHERE s.kind = 'client' AND e.value IN (SELECT id FROM endpoints WHERE listener_id = ?)`, listenerID).Scan(&references); err != nil {
+		return fmt.Errorf("check listener subscription references: %w", err)
+	}
+	if references != 0 {
+		return ErrConflict
+	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
@@ -1186,7 +1428,9 @@ func (s *Store) DeleteListener(ctx context.Context, listenerID string) error {
 }
 
 func (s *Store) CreateEndpoint(ctx context.Context, endpoint Endpoint, credentials EndpointCredentials) (Endpoint, error) {
-	if endpoint.ListenerID == "" || endpoint.Name == "" || len(endpoint.Name) > 128 {
+	endpoint.Name = strings.TrimSpace(endpoint.Name)
+	endpoint.Alias = strings.TrimSpace(endpoint.Alias)
+	if endpoint.ListenerID == "" || endpoint.Name == "" || len(endpoint.Name) > 128 || len(endpoint.Alias) > 128 || strings.ContainsAny(endpoint.Alias, "\r\n") {
 		return Endpoint{}, errors.New("endpoint listener and a name up to 128 characters are required")
 	}
 	var spec string
@@ -1212,6 +1456,13 @@ func (s *Store) CreateEndpoint(ctx context.Context, endpoint Endpoint, credentia
 	} else if !errors.Is(err, sql.ErrNoRows) {
 		return Endpoint{}, fmt.Errorf("check endpoint name conflict: %w", err)
 	}
+	if endpoint.Alias != "" {
+		if err := s.db.QueryRowContext(ctx, `SELECT id FROM endpoints WHERE alias = ?`, endpoint.Alias).Scan(&duplicate); err == nil {
+			return Endpoint{}, ErrConflict
+		} else if !errors.Is(err, sql.ErrNoRows) {
+			return Endpoint{}, fmt.Errorf("check endpoint alias conflict: %w", err)
+		}
+	}
 	plain, err := json.Marshal(credentials)
 	if err != nil {
 		return Endpoint{}, err
@@ -1224,7 +1475,7 @@ func (s *Store) CreateEndpoint(ctx context.Context, endpoint Endpoint, credentia
 	if err != nil {
 		return Endpoint{}, err
 	}
-	_, err = s.db.ExecContext(ctx, `INSERT INTO endpoints (id, listener_id, name, credentials, enabled, outbound_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`, endpoint.ID, endpoint.ListenerID, endpoint.Name, encrypted, endpoint.Enabled, endpoint.OutboundID, nowUnix(), nowUnix())
+	_, err = s.db.ExecContext(ctx, `INSERT INTO endpoints (id, listener_id, name, alias, credentials, enabled, outbound_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`, endpoint.ID, endpoint.ListenerID, endpoint.Name, endpoint.Alias, encrypted, endpoint.Enabled, endpoint.OutboundID, nowUnix(), nowUnix())
 	if err != nil {
 		return Endpoint{}, fmt.Errorf("create endpoint: %w", err)
 	}
@@ -1232,7 +1483,9 @@ func (s *Store) CreateEndpoint(ctx context.Context, endpoint Endpoint, credentia
 }
 
 func (s *Store) UpdateEndpoint(ctx context.Context, endpoint Endpoint, credentials *EndpointCredentials) (Endpoint, error) {
-	if endpoint.ID == "" || endpoint.ListenerID == "" || endpoint.Name == "" || len(endpoint.Name) > 128 {
+	endpoint.Name = strings.TrimSpace(endpoint.Name)
+	endpoint.Alias = strings.TrimSpace(endpoint.Alias)
+	if endpoint.ID == "" || endpoint.ListenerID == "" || endpoint.Name == "" || len(endpoint.Name) > 128 || len(endpoint.Alias) > 128 || strings.ContainsAny(endpoint.Alias, "\r\n") {
 		return Endpoint{}, errors.New("endpoint ID, listener and a name up to 128 characters are required")
 	}
 	var protocol, existingListener string
@@ -1257,8 +1510,17 @@ func (s *Store) UpdateEndpoint(ctx context.Context, endpoint Endpoint, credentia
 	if !errors.Is(err, sql.ErrNoRows) {
 		return Endpoint{}, fmt.Errorf("check endpoint name conflict: %w", err)
 	}
+	if endpoint.Alias != "" {
+		err = s.db.QueryRowContext(ctx, `SELECT id FROM endpoints WHERE alias = ? AND id <> ?`, endpoint.Alias, endpoint.ID).Scan(&duplicate)
+		if err == nil {
+			return Endpoint{}, ErrConflict
+		}
+		if !errors.Is(err, sql.ErrNoRows) {
+			return Endpoint{}, fmt.Errorf("check endpoint alias conflict: %w", err)
+		}
+	}
 	if credentials == nil {
-		_, err = s.db.ExecContext(ctx, `UPDATE endpoints SET name = ?, enabled = ?, outbound_id = ?, updated_at = ? WHERE id = ?`, endpoint.Name, endpoint.Enabled, endpoint.OutboundID, nowUnix(), endpoint.ID)
+		_, err = s.db.ExecContext(ctx, `UPDATE endpoints SET name = ?, alias = ?, enabled = ?, outbound_id = ?, updated_at = ? WHERE id = ?`, endpoint.Name, endpoint.Alias, endpoint.Enabled, endpoint.OutboundID, nowUnix(), endpoint.ID)
 	} else {
 		if err := ValidateEndpointCredentials(protocol, *credentials); err != nil {
 			return Endpoint{}, err
@@ -1271,7 +1533,7 @@ func (s *Store) UpdateEndpoint(ctx context.Context, endpoint Endpoint, credentia
 		if err != nil {
 			return Endpoint{}, err
 		}
-		_, err = s.db.ExecContext(ctx, `UPDATE endpoints SET name = ?, credentials = ?, enabled = ?, outbound_id = ?, updated_at = ? WHERE id = ?`, endpoint.Name, encrypted, endpoint.Enabled, endpoint.OutboundID, nowUnix(), endpoint.ID)
+		_, err = s.db.ExecContext(ctx, `UPDATE endpoints SET name = ?, alias = ?, credentials = ?, enabled = ?, outbound_id = ?, updated_at = ? WHERE id = ?`, endpoint.Name, endpoint.Alias, encrypted, endpoint.Enabled, endpoint.OutboundID, nowUnix(), endpoint.ID)
 	}
 	if err != nil {
 		return Endpoint{}, fmt.Errorf("update endpoint: %w", err)
@@ -1295,6 +1557,19 @@ func (s *Store) SetEndpointEnabled(ctx context.Context, endpointID string, enabl
 }
 
 func (s *Store) DeleteEndpoint(ctx context.Context, endpointID string) error {
+	var references int
+	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM mihomo_client_configs_v2 c, json_each(c.endpoint_ids) e WHERE e.value = ?`, endpointID).Scan(&references); err != nil {
+		return fmt.Errorf("check client config references: %w", err)
+	}
+	if references != 0 {
+		return ErrConflict
+	}
+	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM subscriptions s, json_each(s.endpoint_ids) e WHERE s.kind = 'client' AND e.value = ?`, endpointID).Scan(&references); err != nil {
+		return fmt.Errorf("check subscription references: %w", err)
+	}
+	if references != 0 {
+		return ErrConflict
+	}
 	result, err := s.db.ExecContext(ctx, `DELETE FROM endpoints WHERE id = ?`, endpointID)
 	if err != nil {
 		return fmt.Errorf("delete endpoint: %w", err)
@@ -1310,7 +1585,7 @@ func (s *Store) DeleteEndpoint(ctx context.Context, endpointID string) error {
 }
 
 func (s *Store) ListEndpoints(ctx context.Context, listenerID string) ([]Endpoint, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT id, listener_id, name, enabled, outbound_id FROM endpoints WHERE listener_id = ? ORDER BY name, id`, listenerID)
+	rows, err := s.db.QueryContext(ctx, `SELECT id, listener_id, name, alias, enabled, outbound_id FROM endpoints WHERE listener_id = ? ORDER BY name, id`, listenerID)
 	if err != nil {
 		return nil, err
 	}
@@ -1318,7 +1593,7 @@ func (s *Store) ListEndpoints(ctx context.Context, listenerID string) ([]Endpoin
 	var endpoints []Endpoint
 	for rows.Next() {
 		var endpoint Endpoint
-		if err := rows.Scan(&endpoint.ID, &endpoint.ListenerID, &endpoint.Name, &endpoint.Enabled, &endpoint.OutboundID); err != nil {
+		if err := rows.Scan(&endpoint.ID, &endpoint.ListenerID, &endpoint.Name, &endpoint.Alias, &endpoint.Enabled, &endpoint.OutboundID); err != nil {
 			return nil, err
 		}
 		endpoints = append(endpoints, endpoint)
@@ -1620,7 +1895,7 @@ func (s *Store) ListAudit(ctx context.Context, page, pageSize int) ([]AuditEvent
 	for rows.Next() {
 		var event AuditEvent
 		var createdAt int64
-		if err := rows.Scan(&event.ID, &event.OperatorID, &event.Email, &event.Action, &event.TargetType, &event.TargetID, &event.Summary, &createdAt); err != nil {
+		if err := rows.Scan(&event.ID, &event.OperatorID, &event.Username, &event.Action, &event.TargetType, &event.TargetID, &event.Summary, &createdAt); err != nil {
 			return nil, 0, fmt.Errorf("read audit event: %w", err)
 		}
 		event.CreatedAt = time.Unix(createdAt, 0).UTC().Format(time.RFC3339)
@@ -1636,7 +1911,10 @@ PRAGMA journal_mode = WAL;
 CREATE TABLE IF NOT EXISTS operators (
   id TEXT PRIMARY KEY, email TEXT NOT NULL UNIQUE, password_hash TEXT NOT NULL,
   totp_secret BLOB NOT NULL, role TEXT NOT NULL, enabled INTEGER NOT NULL,
-  created_at INTEGER NOT NULL, last_login_at INTEGER
+  created_at INTEGER NOT NULL, last_login_at INTEGER,
+  totp_enabled INTEGER NOT NULL DEFAULT 1,
+  must_change_password INTEGER NOT NULL DEFAULT 0,
+  pending_totp_secret BLOB
 );
 CREATE TABLE IF NOT EXISTS login_challenges (
   id_hash BLOB PRIMARY KEY, operator_id TEXT NOT NULL REFERENCES operators(id),
@@ -1684,7 +1962,7 @@ CREATE TABLE IF NOT EXISTS listeners (
   created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL
 );
 CREATE TABLE IF NOT EXISTS endpoints (
-  id TEXT PRIMARY KEY, listener_id TEXT NOT NULL REFERENCES listeners(id), name TEXT NOT NULL, credentials BLOB NOT NULL,
+  id TEXT PRIMARY KEY, listener_id TEXT NOT NULL REFERENCES listeners(id), name TEXT NOT NULL, alias TEXT NOT NULL DEFAULT '', credentials BLOB NOT NULL,
   enabled INTEGER NOT NULL, outbound_id TEXT NOT NULL DEFAULT '', created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL
 );
 -- Outbounds are global egress definitions shared by every node: a listener on
@@ -1735,6 +2013,12 @@ CREATE TABLE IF NOT EXISTS mihomo_routing_profiles (
 CREATE TABLE IF NOT EXISTS mihomo_client_configs (
   id TEXT PRIMARY KEY, name TEXT NOT NULL UNIQUE, proxy_group_ids TEXT NOT NULL,
   routing_profile_id TEXT NOT NULL REFERENCES mihomo_routing_profiles(id),
+  created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS mihomo_client_configs_v2 (
+  id TEXT PRIMARY KEY, name TEXT NOT NULL UNIQUE, endpoint_ids TEXT NOT NULL, strategy TEXT NOT NULL,
+  rule_preset TEXT NOT NULL, rules_json TEXT NOT NULL, default_action TEXT NOT NULL,
+  subscription_token_hash BLOB NOT NULL UNIQUE, subscription_token_encrypted BLOB NOT NULL,
   created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL
 );
 CREATE TABLE IF NOT EXISTS subscription_rules (
@@ -1803,6 +2087,15 @@ CREATE INDEX IF NOT EXISTS idx_cloudflare_records_binding ON cloudflare_records(
 	if err := s.addOperatorColumn(ctx, "last_login_at INTEGER"); err != nil {
 		return err
 	}
+	for _, column := range []string{
+		"totp_enabled INTEGER NOT NULL DEFAULT 1",
+		"must_change_password INTEGER NOT NULL DEFAULT 0",
+		"pending_totp_secret BLOB",
+	} {
+		if err := s.addOperatorColumn(ctx, column); err != nil {
+			return err
+		}
+	}
 	if err := s.addTaskColumn(ctx, "created_by TEXT REFERENCES operators(id)"); err != nil {
 		return err
 	}
@@ -1810,6 +2103,9 @@ CREATE INDEX IF NOT EXISTS idx_cloudflare_records_binding ON cloudflare_records(
 		return err
 	}
 	if err := s.addEndpointColumn(ctx, "outbound_id TEXT NOT NULL DEFAULT ''"); err != nil {
+		return err
+	}
+	if err := s.addEndpointColumn(ctx, "alias TEXT NOT NULL DEFAULT ''"); err != nil {
 		return err
 	}
 	if _, err := s.db.ExecContext(ctx, `UPDATE endpoints SET outbound_id = 'direct' WHERE outbound_id = ''`); err != nil {
@@ -1827,6 +2123,9 @@ CREATE INDEX IF NOT EXISTS idx_cloudflare_records_binding ON cloudflare_records(
 		return fmt.Errorf("create Mihomo subscription token index: %w", err)
 	}
 	if err := s.backfillMihomoClientSubscriptionTokens(ctx); err != nil {
+		return err
+	}
+	if err := s.migrateLegacyMihomoClientConfigs(ctx); err != nil {
 		return err
 	}
 	return nil

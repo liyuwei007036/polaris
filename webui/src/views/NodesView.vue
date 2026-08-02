@@ -24,6 +24,10 @@ const addressDialog = ref(false)
 const addressNode = ref(null)
 const clientAddress = ref('')
 const addressSaving = ref(false)
+const nameDialog = ref(false)
+const nameNode = ref(null)
+const nodeName = ref('')
+const nameSaving = ref(false)
 const rates = ref({})
 const refreshing = ref(false)
 const previousCounters = new Map()
@@ -153,6 +157,24 @@ function openClientAddress(node) {
   addressDialog.value = true
 }
 
+function openNodeName(node) {
+  nameNode.value = node
+  nodeName.value = node.name
+  nameDialog.value = true
+}
+
+async function saveNodeName() {
+  nameSaving.value = true
+  try {
+    await put(`/nodes/${nameNode.value.id}/name`, { name: nodeName.value.trim() })
+    ElMessage.success('服务器名称已保存')
+    nameDialog.value = false
+    await load()
+  } finally {
+    nameSaving.value = false
+  }
+}
+
 async function saveClientAddress() {
   addressSaving.value = true
   try {
@@ -234,8 +256,9 @@ onBeforeUnmount(() => {
             <template #default="{ row }">{{ metrics[row.id]?.connections?.length ?? '—' }}</template>
           </el-table-column>
           <el-table-column label="最后在线" width="125"><template #default="{ row }">{{ relativeTime(row.last_seen_at) }}</template></el-table-column>
-          <el-table-column label="操作" width="360" fixed="right">
+          <el-table-column label="操作" width="420" fixed="right">
             <template #default="{ row }">
+              <el-button v-if="canWrite" link :icon="Edit" @click="openNodeName(row)">修改名称</el-button>
               <el-button v-if="canWrite" link :icon="Edit" @click="openClientAddress(row)">连接地址</el-button>
               <el-button v-if="isAdmin" link :icon="Upload" @click="openInstall(row)">安装或升级</el-button>
               <el-button v-if="isAdmin" link type="danger" :icon="RemoveFilled" @click="revoke(row)">移除</el-button>
@@ -253,6 +276,18 @@ onBeforeUnmount(() => {
       <template #footer>
         <el-button @click="tokenDialog = false">完成</el-button>
         <el-button type="primary" :icon="CopyDocument" @click="copyToken">复制接入信息</el-button>
+      </template>
+    </el-dialog>
+
+    <el-dialog v-model="nameDialog" title="修改服务器名称" width="460px">
+      <el-form label-position="top">
+        <el-form-item label="服务器名称" required>
+          <el-input v-model="nodeName" maxlength="128" @keyup.enter="saveNodeName" />
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="nameDialog = false">取消</el-button>
+        <el-button type="primary" :loading="nameSaving" :disabled="!nodeName.trim()" @click="saveNodeName">保存</el-button>
       </template>
     </el-dialog>
 

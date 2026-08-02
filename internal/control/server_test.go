@@ -29,6 +29,128 @@ import (
 	"github.com/sb-control/sb-control/internal/wire"
 )
 
+func TestDefaultAdministratorForcesPasswordChangeAndAllowsOptionalTOTP(t *testing.T) {
+	store, err := control.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	operator, created, err := store.EnsureDefaultAdmin(t.Context())
+	if err != nil || !created {
+		t.Fatalf("ensure default administrator: created=%v operator=%#v err=%v", created, operator, err)
+	}
+	if operator.Username != control.DefaultAdminUsername || operator.TOTPEnabled || !operator.MustChangePassword {
+		t.Fatalf("unexpected default administrator: %#v", operator)
+	}
+
+	server, err := control.NewServer(store, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	httpServer := httptest.NewServer(server.Handler())
+	defer httpServer.Close()
+
+	response := request(t, http.MethodPost, httpServer.URL+"/api/v1/auth/login", map[string]string{
+		"username": control.DefaultAdminUsername,
+		"password": control.DefaultAdminPassword,
+	}, "", "")
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("default password login: got %d", response.StatusCode)
+	}
+	var loginResult struct {
+		RequiresTOTP       bool   `json:"requires_2fa"`
+		CSRF               string `json:"csrf_token"`
+		MustChangePassword bool   `json:"must_change_password"`
+	}
+	cookies := response.Cookies()
+	decodeBody(t, response, &loginResult)
+	if loginResult.RequiresTOTP || !loginResult.MustChangePassword || loginResult.CSRF == "" || len(cookies) != 1 {
+		t.Fatalf("unexpected first login result: %#v cookies=%d", loginResult, len(cookies))
+	}
+	session := cookies[0].Value
+
+	response = request(t, http.MethodGet, httpServer.URL+"/api/v1/nodes", nil, session, "")
+	if response.StatusCode != http.StatusPreconditionRequired {
+		t.Fatalf("management API before password change: got %d", response.StatusCode)
+	}
+	response.Body.Close()
+
+	newPassword := "Changed-Password-2026!"
+	response = request(t, http.MethodPost, httpServer.URL+"/api/v1/auth/password", map[string]string{
+		"current_password": control.DefaultAdminPassword,
+		"new_password":     newPassword,
+	}, session, loginResult.CSRF)
+	if response.StatusCode != http.StatusNoContent {
+		t.Fatalf("change initial password: got %d", response.StatusCode)
+	}
+	response.Body.Close()
+
+	response = request(t, http.MethodGet, httpServer.URL+"/api/v1/auth/me", nil, session, "")
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("read changed account: got %d", response.StatusCode)
+	}
+	var account struct {
+		Username           string `json:"username"`
+		TOTPEnabled        bool   `json:"totp_enabled"`
+		MustChangePassword bool   `json:"must_change_password"`
+		CSRF               string `json:"csrf_token"`
+	}
+	decodeBody(t, response, &account)
+	if account.Username != control.DefaultAdminUsername || account.TOTPEnabled || account.MustChangePassword || account.CSRF == "" {
+		t.Fatalf("unexpected account after password change: %#v", account)
+	}
+
+	response = request(t, http.MethodPost, httpServer.URL+"/api/v1/auth/2fa/setup", map[string]any{}, session, account.CSRF)
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("begin TOTP setup: got %d", response.StatusCode)
+	}
+	var setup struct {
+		Secret     string `json:"secret"`
+		OTPAuthURI string `json:"otpauth_uri"`
+	}
+	decodeBody(t, response, &setup)
+	if setup.Secret == "" || !strings.HasPrefix(setup.OTPAuthURI, "otpauth://totp/") || !strings.Contains(setup.OTPAuthURI, "issuer=sb-control") {
+		t.Fatalf("unexpected TOTP setup: %#v", setup)
+	}
+	response = request(t, http.MethodPost, httpServer.URL+"/api/v1/auth/2fa/enable", map[string]string{
+		"code": totp(setup.Secret, time.Now().UTC()),
+	}, session, account.CSRF)
+	if response.StatusCode != http.StatusNoContent {
+		t.Fatalf("confirm TOTP setup: got %d", response.StatusCode)
+	}
+	response.Body.Close()
+
+	response = request(t, http.MethodPost, httpServer.URL+"/api/v1/auth/logout", map[string]any{}, session, account.CSRF)
+	if response.StatusCode != http.StatusNoContent {
+		t.Fatalf("logout after TOTP setup: got %d", response.StatusCode)
+	}
+	response.Body.Close()
+
+	response = request(t, http.MethodPost, httpServer.URL+"/api/v1/auth/login", map[string]string{
+		"username": control.DefaultAdminUsername,
+		"password": newPassword,
+	}, "", "")
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("password login after TOTP setup: got %d", response.StatusCode)
+	}
+	var challenge struct {
+		RequiresTOTP bool   `json:"requires_2fa"`
+		ID           string `json:"challenge_id"`
+	}
+	decodeBody(t, response, &challenge)
+	if !challenge.RequiresTOTP || challenge.ID == "" {
+		t.Fatalf("TOTP challenge not required after setup: %#v", challenge)
+	}
+	response = request(t, http.MethodPost, httpServer.URL+"/api/v1/auth/mfa", map[string]string{
+		"challenge_id": challenge.ID,
+		"code":         totp(setup.Secret, time.Now().UTC()),
+	}, "", "")
+	if response.StatusCode != http.StatusOK || len(response.Cookies()) != 1 {
+		t.Fatalf("TOTP login: got %d cookies=%d", response.StatusCode, len(response.Cookies()))
+	}
+	response.Body.Close()
+}
+
 func TestSecureRegistrationLifecycle(t *testing.T) {
 	store, err := control.Open(t.TempDir())
 	if err != nil {
@@ -63,6 +185,9 @@ func TestSecureRegistrationLifecycle(t *testing.T) {
 		NodeID string `json:"node_id"`
 	}
 	decodeBody(t, response, &approved)
+	if err := store.SetNodeClientAddress(t.Context(), approved.NodeID, "config.example.com"); err != nil {
+		t.Fatal(err)
+	}
 	if approved.NodeID == "" {
 		t.Fatal("approval did not return a node ID")
 	}
@@ -235,6 +360,9 @@ func TestCompileTLSAndRealityListeners(t *testing.T) {
 		NodeID string `json:"node_id"`
 	}
 	decodeBody(t, response, &approved)
+	if err := store.SetNodeClientAddress(t.Context(), approved.NodeID, "config.example.com"); err != nil {
+		t.Fatal(err)
+	}
 	certificatePEM, privateKeyPEM := testCertificate(t)
 	certificate, err := store.CreateManagedCertificate(t.Context(), control.ManagedCertificateInput{Name: "test-cert", CertificatePEM: certificatePEM, PrivateKeyPEM: privateKeyPEM, Enabled: true})
 	if err != nil {
@@ -440,7 +568,7 @@ func TestTerminalTaskCanBeQueuedAgainForSameDesiredState(t *testing.T) {
 func login(t *testing.T, baseURL, secret string) (string, string) {
 	t.Helper()
 	response := request(t, http.MethodPost, baseURL+"/api/v1/auth/login", map[string]string{
-		"email": "admin@example.com", "password": "correct horse battery staple",
+		"username": "admin@example.com", "password": "correct horse battery staple",
 	}, "", "")
 	if response.StatusCode != http.StatusOK {
 		t.Fatalf("password login: got %d", response.StatusCode)

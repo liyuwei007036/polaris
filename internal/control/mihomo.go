@@ -88,16 +88,12 @@ func (s *Store) generateMihomoYAML(ctx context.Context, name, fallbackServer str
 		}
 		names := make([]string, 0, len(group.EndpointIDs))
 		for _, endpointID := range group.EndpointIDs {
-			alias := strings.TrimSpace(group.Aliases[endpointID])
-			proxyKey := endpointID + "\x00" + alias
+			proxyKey := endpointID
 			proxyName, exists := proxyNames[proxyKey]
 			if !exists {
 				proxy, err := s.mihomoProxy(ctx, endpointID, fallbackServer)
 				if err != nil {
 					return "", err
-				}
-				if alias != "" {
-					proxy["name"] = alias
 				}
 				proxyName = proxy["name"].(string)
 				if previousKey, used := usedProxyNames[proxyName]; used && previousKey != proxyKey {
@@ -181,10 +177,10 @@ func (s *Store) mihomoProxy(ctx context.Context, endpointID, fallbackServer stri
 	var spec string
 	var clientAddress string
 	var nodeName string
-	err := s.db.QueryRowContext(ctx, `SELECT e.id, e.listener_id, e.name, e.credentials, e.enabled, l.id, l.node_id, l.name, l.listen_address, l.port, l.backend_port, l.enabled, l.spec
+	err := s.db.QueryRowContext(ctx, `SELECT e.id, e.listener_id, e.name, e.alias, e.credentials, e.enabled, l.id, l.node_id, l.name, l.listen_address, l.port, l.backend_port, l.enabled, l.spec
 		, n.client_address, n.name FROM endpoints e JOIN listeners l ON l.id=e.listener_id JOIN nodes n ON n.id=l.node_id
 		WHERE e.id=? AND e.enabled=1 AND l.enabled=1 AND n.revoked_at IS NULL`, endpointID).
-		Scan(&endpoint.ID, &endpoint.ListenerID, &endpoint.Name, &encrypted, &endpoint.Enabled, &listener.ID, &listener.NodeID, &listener.Name, &listener.ListenAddr, &listener.Port, &listener.BackendPort, &listener.Enabled, &spec, &clientAddress, &nodeName)
+		Scan(&endpoint.ID, &endpoint.ListenerID, &endpoint.Name, &endpoint.Alias, &encrypted, &endpoint.Enabled, &listener.ID, &listener.NodeID, &listener.Name, &listener.ListenAddr, &listener.Port, &listener.BackendPort, &listener.Enabled, &spec, &clientAddress, &nodeName)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
 	}
@@ -208,7 +204,11 @@ func (s *Store) mihomoProxy(ctx context.Context, endpointID, fallbackServer stri
 	if server == "" {
 		return nil, fmt.Errorf("node for listener %s has no client connection address", listener.Name)
 	}
-	proxy := map[string]any{"name": nodeName + " · " + listener.Name + " · " + endpoint.Name, "server": server, "port": listener.Port}
+	displayName := strings.TrimSpace(endpoint.Alias)
+	if displayName == "" {
+		displayName = nodeName + " · " + listener.Name + " · " + endpoint.Name
+	}
+	proxy := map[string]any{"name": displayName, "server": server, "port": listener.Port}
 	switch listener.Spec.Protocol {
 	case "vless":
 		proxy["type"], proxy["uuid"] = "vless", endpoint.Credentials.UUID

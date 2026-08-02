@@ -10,9 +10,7 @@ import {
   List,
   Lock,
   Monitor,
-  MapLocation,
   Operation,
-  SetUp,
   Setting,
   SwitchButton,
   Tickets,
@@ -21,12 +19,11 @@ import {
 import { api, post, setCsrfToken } from './api'
 import { closeLiveEvents, liveStatus, subscribeLive } from './live'
 import LoginView from './views/LoginView.vue'
+import PasswordChangeView from './views/PasswordChangeView.vue'
 import DashboardView from './views/DashboardView.vue'
 import NodesView from './views/NodesView.vue'
 import InboundsView from './views/InboundsView.vue'
 import OutboundsView from './views/OutboundsView.vue'
-import MihomoProxyGroupsView from './views/MihomoProxyGroupsView.vue'
-import MihomoRoutingProfilesView from './views/MihomoRoutingProfilesView.vue'
 import SubscriptionsView from './views/SubscriptionsView.vue'
 import RoutesView from './views/RoutesView.vue'
 import ConnectionsView from './views/ConnectionsView.vue'
@@ -41,8 +38,10 @@ const viewAliases = { 'ingress-routes': 'inbounds' }
 const requestedView = location.hash.replace(/^#\/?/, '') || 'dashboard'
 const currentView = ref(viewAliases[requestedView] || requestedView)
 const appState = reactive({
-  email: '',
+  username: '',
   role: '',
+  totp_enabled: false,
+  must_change_password: false,
   nodes: [],
 })
 
@@ -58,8 +57,6 @@ const groups = [
     label: '连接配置',
     items: [
       { id: 'inbounds', label: '接入服务', icon: Aim },
-      { id: 'proxy-groups', label: '客户端节点组', icon: SetUp },
-      { id: 'routing-profiles', label: '客户端访问规则', icon: MapLocation },
       { id: 'subscriptions', label: '客户端配置', icon: Link },
       { id: 'routes', label: '服务器访问规则', icon: Operation },
       { id: 'outbounds', label: '上网出口', icon: Connection },
@@ -86,8 +83,6 @@ const views = {
   dashboard: DashboardView,
   nodes: NodesView,
   inbounds: InboundsView,
-  'proxy-groups': MihomoProxyGroupsView,
-  'routing-profiles': MihomoRoutingProfilesView,
   subscriptions: SubscriptionsView,
   routes: RoutesView,
   outbounds: OutboundsView,
@@ -126,9 +121,12 @@ async function checkSession() {
 
 function setAuthenticated(session) {
   setCsrfToken(session.csrf_token)
-  appState.email = session.email
+  appState.username = session.username
   appState.role = session.role
+  appState.totp_enabled = Boolean(session.totp_enabled)
+  appState.must_change_password = Boolean(session.must_change_password)
   authenticated.value = true
+  if (appState.must_change_password) return
   loadNodes().catch(() => {})
   stopAppLive?.()
   stopAppLive = subscribeLive((event) => {
@@ -139,8 +137,10 @@ function setAuthenticated(session) {
 function clearSession() {
   setCsrfToken('')
   authenticated.value = false
-  appState.email = ''
+  appState.username = ''
   appState.role = ''
+  appState.totp_enabled = false
+  appState.must_change_password = false
   appState.nodes = []
   stopAppLive?.()
   stopAppLive = undefined
@@ -196,6 +196,12 @@ onBeforeUnmount(() => {
 
   <LoginView v-else-if="!authenticated" @authenticated="setAuthenticated" />
 
+  <PasswordChangeView
+    v-else-if="appState.must_change_password"
+    :username="appState.username"
+    @changed="setAuthenticated"
+  />
+
   <el-container v-else class="app-layout">
     <el-aside width="232px" class="app-sidebar">
       <div class="app-brand">
@@ -230,7 +236,7 @@ onBeforeUnmount(() => {
       <div class="operator-panel">
         <span class="operator-avatar"><User /></span>
         <span class="operator-info">
-          <strong>{{ appState.email }}</strong>
+          <strong>{{ appState.username }}</strong>
           <small>{{ roleLabel }}</small>
         </span>
         <el-tooltip content="退出登录" placement="top">

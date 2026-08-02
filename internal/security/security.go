@@ -48,6 +48,19 @@ func HashPassword(password string) (string, error) {
 	if len(password) < 12 {
 		return "", errors.New("password must contain at least 12 characters")
 	}
+	return hashPassword(password)
+}
+
+// HashTemporaryPassword is reserved for a bootstrap credential that must be
+// replaced before the authenticated session can access any management API.
+func HashTemporaryPassword(password string) (string, error) {
+	if password == "" {
+		return "", errors.New("temporary password is empty")
+	}
+	return hashPassword(password)
+}
+
+func hashPassword(password string) (string, error) {
 	salt := make([]byte, 16)
 	if _, err := io.ReadFull(rand.Reader, salt); err != nil {
 		return "", fmt.Errorf("read password salt: %w", err)

@@ -109,7 +109,7 @@ onMounted(() => { loadTasks(); loadAudit() })
           </el-tab-pane>
           <el-tab-pane v-if="isAdmin" label="管理员修改记录" name="audit">
             <el-table v-loading="loading" :data="events">
-              <el-table-column label="操作人" prop="operator_email" min-width="180" />
+              <el-table-column label="操作人" prop="operator_username" min-width="180" />
               <el-table-column label="修改内容" min-width="210"><template #default="{ row }">{{ auditAction(row) }}</template></el-table-column>
               <el-table-column label="修改对象" min-width="260"><template #default="{ row }">{{ auditTarget(row) }}</template></el-table-column>
               <el-table-column label="时间" prop="created_at" width="190" />

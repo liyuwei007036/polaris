@@ -5,8 +5,9 @@ import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-const adminEmail = 'browser.e2e@example.test'
-const adminPassword = 'Browser-E2E-Password-2026!'
+const adminUsername = 'sb_admin'
+const initialPassword = '123456'
+const changedPassword = 'Browser-E2E-Password-2026!'
 
 export default async function globalSetup() {
   const projectRoot = resolve(fileURLToPath(new URL('../..', import.meta.url)))
@@ -16,13 +17,6 @@ export default async function globalSetup() {
   run(go, ['build', '-trimpath', '-o', executable, './cmd/sb-control'], { cwd: projectRoot })
 
   const dataDir = join(work, 'master-data')
-  const init = run(executable, ['master', 'init-admin', '--data-dir', dataDir, '--email', adminEmail, '--password-stdin'], {
-    cwd: projectRoot,
-    input: `${adminPassword}\n`,
-  })
-  const secret = init.trim().split(/\s+/).at(-1)
-  if (!secret) throw new Error('初始化管理员后没有得到两步验证密钥')
-
   const agentPort = await freePort()
   const browserPort = await freePort()
   const baseURL = `http://127.0.0.1:${browserPort}`
@@ -44,9 +38,9 @@ export default async function globalSetup() {
   }
 
   process.env.SB_CONTROL_E2E_BASE_URL = baseURL
-  process.env.SB_CONTROL_E2E_ADMIN_EMAIL = adminEmail
-  process.env.SB_CONTROL_E2E_ADMIN_PASSWORD = adminPassword
-  process.env.SB_CONTROL_E2E_TOTP_SECRET = secret
+  process.env.SB_CONTROL_E2E_ADMIN_USERNAME = adminUsername
+  process.env.SB_CONTROL_E2E_INITIAL_PASSWORD = initialPassword
+  process.env.SB_CONTROL_E2E_CHANGED_PASSWORD = changedPassword
 
   return async () => {
     master.kill('SIGKILL')

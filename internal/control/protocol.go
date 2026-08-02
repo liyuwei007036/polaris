@@ -3,6 +3,7 @@ package control
 import (
 	"crypto/rand"
 	"encoding/base64"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"net"
@@ -149,8 +150,8 @@ func ValidateProtocolSpec(spec ProtocolSpec) error {
 			return errors.New("transport is only supported by VLESS, VMess, Trojan, or HTTP listeners")
 		}
 	}
-	if (spec.Transport.Type == "ws" || spec.Transport.Type == "httpupgrade" || spec.Transport.Type == "grpc") && spec.Transport.Path == "" && spec.Transport.ServiceName == "" {
-		return errors.New("selected transport requires a path or service name")
+	if spec.Transport.Type == "grpc" && spec.Transport.ServiceName == "" {
+		return errors.New("gRPC transport requires a service name")
 	}
 	if spec.Protocol == "snell" && spec.Snell.Version != 0 && spec.Snell.Version != 5 && spec.Snell.Version != 6 {
 		return errors.New("Snell version must be 5 or 6")
@@ -281,4 +282,12 @@ func GenerateEndpointCredentials(protocol string) (EndpointCredentials, error) {
 		return EndpointCredentials{}, err
 	}
 	return credentials, nil
+}
+
+func GenerateRealityShortID() (string, error) {
+	value := make([]byte, 8)
+	if _, err := rand.Read(value); err != nil {
+		return "", fmt.Errorf("generate Reality short ID: %w", err)
+	}
+	return hex.EncodeToString(value), nil
 }

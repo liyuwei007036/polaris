@@ -96,6 +96,23 @@ func (s *Store) SetRealityKeyEnabled(ctx context.Context, keyID string, enabled 
 	return nil
 }
 
+func (s *Store) DeleteRealityKeyIfUnused(ctx context.Context, keyID string) error {
+	if keyID == "" {
+		return nil
+	}
+	var references int
+	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM listeners WHERE json_extract(spec, '$.reality.key_id') = ?`, keyID).Scan(&references); err != nil {
+		return fmt.Errorf("check Reality key references: %w", err)
+	}
+	if references != 0 {
+		return nil
+	}
+	if _, err := s.db.ExecContext(ctx, `DELETE FROM managed_reality_keys WHERE id = ?`, keyID); err != nil {
+		return fmt.Errorf("delete unused Reality key: %w", err)
+	}
+	return nil
+}
+
 func (s *Store) loadRealityPrivateKey(ctx context.Context, keyID string) (string, error) {
 	var encrypted []byte
 	var enabled bool

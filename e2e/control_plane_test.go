@@ -299,23 +299,11 @@ func TestControlPlaneProcessJourney(t *testing.T) {
 	}
 
 	endpointIDs := append([]string{quickListener.Endpoints[0].ID, quickListener.Endpoints[1].ID}, sharedEndpointIDs...)
-	var group struct {
-		ID string `json:"id"`
-	}
-	api.mustJSON(t, http.MethodPost, "/api/v1/mihomo/proxy-groups", map[string]any{
-		"name": "E2E 节点组", "strategy": "select", "endpoint_ids": endpointIDs, "aliases": map[string]string{},
-	}, true, http.StatusCreated, &group)
-	var profile struct {
-		ID string `json:"id"`
-	}
-	api.mustJSON(t, http.MethodPost, "/api/v1/mihomo/routing-profiles", map[string]any{
-		"name": "E2E 国内直连", "rule_preset": "china-direct", "default_action": "PROXY",
-	}, true, http.StatusCreated, &profile)
 	var clientConfig struct {
 		ID string `json:"id"`
 	}
 	api.mustJSON(t, http.MethodPost, "/api/v1/mihomo/client-configs", map[string]any{
-		"name": "E2E 客户端", "proxy_group_ids": []string{group.ID}, "routing_profile_id": profile.ID,
+		"name": "E2E 客户端", "endpoint_ids": endpointIDs, "strategy": "select", "rule_preset": "china-direct",
 	}, true, http.StatusCreated, &clientConfig)
 	var subscription struct {
 		Path string `json:"subscription_path"`
@@ -390,7 +378,7 @@ func (a *apiClient) login(t *testing.T, secret string) {
 	var challenge struct {
 		ID string `json:"challenge_id"`
 	}
-	a.mustJSON(t, http.MethodPost, "/api/v1/auth/login", map[string]string{"email": e2eAdminEmail, "password": e2eAdminPassword}, false, http.StatusOK, &challenge)
+	a.mustJSON(t, http.MethodPost, "/api/v1/auth/login", map[string]string{"username": e2eAdminEmail, "password": e2eAdminPassword}, false, http.StatusOK, &challenge)
 	var session struct {
 		CSRF string `json:"csrf_token"`
 		Role string `json:"role"`

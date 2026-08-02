@@ -1,7 +1,7 @@
 <script setup>
 import { computed, inject, onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { CopyDocument, Delete, Download, Edit, Refresh, RefreshRight } from '@element-plus/icons-vue'
+import { CopyDocument, Delete, Download, Edit, Plus, Refresh, RefreshRight } from '@element-plus/icons-vue'
 import { api, del, post, put } from '../api'
 import PageHeader from '../components/PageHeader.vue'
 import { protocolMap } from '../protocols'
@@ -10,22 +10,18 @@ const appState = inject('appState')
 const canWrite = inject('canWrite')
 const isAdmin = inject('isAdmin')
 const loadNodes = inject('loadNodes')
-const navigate = inject('navigate')
 const loading = ref(false)
 const saving = ref(false)
+const dialogVisible = ref(false)
+const editing = ref(null)
 const configs = ref([])
-const groups = ref([])
-const profiles = ref([])
 const listeners = ref([])
 const endpoints = ref([])
-const editVisible = ref(false)
-const editing = ref(null)
-const editForm = reactive({ name: '', proxy_group_ids: [], routing_profile_id: '' })
-const quick = reactive({ name: '', endpoint_ids: [], group_name: '', strategy: 'select', routing_profile_id: '' })
+const form = reactive({ name: '', endpoint_ids: [], strategy: 'select', rule_preset: 'china-direct', default_action: 'PROXY', raw_rules: '' })
 const supported = new Set(['vless', 'vmess', 'trojan', 'shadowsocks', 'hysteria2', 'socks', 'http'])
+const strategyNames = { select: '手动选择', 'url-test': '自动测速', fallback: '故障切换' }
+const presetNames = { 'china-direct': '国内直连，其余代理', 'proxy-all': '全部代理', 'direct-all': '全部直连', custom: '自定义规则' }
 
-const groupNames = computed(() => Object.fromEntries(groups.value.map((item) => [item.id, item.name])))
-const profileNames = computed(() => Object.fromEntries(profiles.value.map((item) => [item.id, item.name])))
 const clientNodes = computed(() => listeners.value
   .filter((listener) => listener.enabled && supported.has(listener.spec?.protocol))
   .flatMap((listener) => endpoints.value
@@ -34,95 +30,84 @@ const clientNodes = computed(() => listeners.value
       const node = appState.nodes.find((item) => item.id === listener.node_id)
       return {
         id: endpoint.id,
-        node_name: node?.name || listener.node_id,
-        listener_name: listener.name,
-        account_name: endpoint.name,
+        label: endpoint.alias || `${node?.name || listener.node_id} · ${listener.name} · ${endpoint.name}`,
+        detail: `${node?.name || listener.node_id} · ${listener.name} · ${endpoint.name}`,
         protocol: protocolMap[listener.spec?.protocol]?.label || listener.spec?.protocol,
         address: node?.client_address ? `${node.client_address}:${listener.port}` : '未填写连接地址',
         disabled: !node?.client_address,
       }
     })))
+const clientNodeNames = computed(() => Object.fromEntries(clientNodes.value.map((item) => [item.id, item.label])))
 
 async function load() {
   loading.value = true
   try {
     await loadNodes()
-    const [configResult, groupResult, profileResult, listenerResult] = await Promise.all([
-      api('/mihomo/client-configs'), api('/mihomo/proxy-groups'), api('/mihomo/routing-profiles'), api('/listeners'),
-    ])
+    const [configResult, listenerResult] = await Promise.all([api('/mihomo/client-configs'), api('/listeners')])
     configs.value = configResult.client_configs || []
-    groups.value = groupResult.proxy_groups || []
-    profiles.value = profileResult.routing_profiles || []
     listeners.value = listenerResult.listeners || []
-    const endpointResults = await Promise.all(listeners.value.map((listener) => api(`/listeners/${listener.id}/endpoints`).catch(() => ({ endpoints: [] }))))
-    endpoints.value = endpointResults.flatMap((result) => result.endpoints || [])
-    if (!quick.routing_profile_id && profiles.value.length) quick.routing_profile_id = profiles.value[0].id
-  } finally { loading.value = false }
+    const results = await Promise.all(listeners.value.map((listener) => api(`/listeners/${listener.id}/endpoints`).catch(() => ({ endpoints: [] }))))
+    endpoints.value = results.flatMap((result) => result.endpoints || [])
+  } finally {
+    loading.value = false
+  }
 }
 
-function subscriptionURL(config) { return config.subscription_path ? `${location.origin}${config.subscription_path}` : '' }
+function resetForm(config = null) {
+  editing.value = config
+  Object.assign(form, config ? {
+    name: config.name,
+    endpoint_ids: [...config.endpoint_ids],
+    strategy: config.strategy,
+    rule_preset: config.rule_preset,
+    default_action: config.default_action,
+    raw_rules: config.raw_rules || '',
+  } : { name: '', endpoint_ids: [], strategy: 'select', rule_preset: 'china-direct', default_action: 'PROXY', raw_rules: '' })
+  dialogVisible.value = true
+}
+
+async function save(downloadAfterCreate = false) {
+  saving.value = true
+  try {
+    const payload = {
+      name: form.name.trim(), endpoint_ids: form.endpoint_ids, strategy: form.strategy,
+      rule_preset: form.rule_preset, default_action: form.default_action, raw_rules: form.rule_preset === 'custom' ? form.raw_rules : '',
+    }
+    let saved
+    if (editing.value) saved = await put(`/mihomo/client-configs/${editing.value.id}`, payload)
+    else saved = await post('/mihomo/client-configs', payload)
+    ElMessage.success(editing.value ? '客户端配置已保存' : '客户端配置已创建')
+    dialogVisible.value = false
+    await load()
+    if (downloadAfterCreate) triggerDownload(saved)
+  } finally {
+    saving.value = false
+  }
+}
+
+function absoluteSubscription(config) {
+  return new URL(config.subscription_path, window.location.origin).toString()
+}
+
 function triggerDownload(config) {
-  const url = subscriptionURL(config)
-  if (!url) return
-  const link = document.createElement('a')
-  link.href = url
-  link.download = `${config.name || 'mihomo'}.yaml`
-  document.body.appendChild(link)
-  link.click()
-  link.remove()
+  const anchor = document.createElement('a')
+  anchor.href = absoluteSubscription(config)
+  anchor.download = `${config.name}.yaml`
+  document.body.appendChild(anchor)
+  anchor.click()
+  anchor.remove()
 }
 
 async function copySubscription(config) {
-  await navigator.clipboard.writeText(subscriptionURL(config))
-  ElMessage.success('客户端更新地址已复制')
+  await navigator.clipboard.writeText(absoluteSubscription(config))
+  ElMessage.success('更新地址已复制')
 }
 
 async function rotateSubscription(config) {
-  if (config.subscription_path) await ElMessageBox.confirm('生成新地址后，原地址会立即失效。是否继续？', '更换客户端更新地址', { type: 'warning' })
-  const result = await post(`/mihomo/client-configs/${config.id}/subscription/rotate`, {})
-  config.subscription_path = result.subscription_path
-  await copySubscription(config)
-}
-
-async function createAndDownload() {
-  if (!quick.name.trim() || !quick.endpoint_ids.length || !quick.routing_profile_id) return
-  saving.value = true
-  let group
-  try {
-    group = await post('/mihomo/proxy-groups', {
-      name: quick.group_name.trim() || `${quick.name.trim()}节点组`, strategy: quick.strategy,
-      endpoint_ids: quick.endpoint_ids, aliases: {},
-    })
-    const config = await post('/mihomo/client-configs', {
-      name: quick.name.trim(), proxy_group_ids: [group.id], routing_profile_id: quick.routing_profile_id,
-    })
-    const token = await post(`/mihomo/client-configs/${config.id}/subscription/rotate`, {})
-    config.subscription_path = token.subscription_path
-    configs.value.push(config)
-    groups.value.push(group)
-    triggerDownload(config)
-    Object.assign(quick, { name: '', endpoint_ids: [], group_name: '', strategy: 'select', routing_profile_id: profiles.value[0]?.id || '' })
-    ElMessage.success('客户端配置文件已生成并开始下载')
-  } catch (error) {
-    if (group && isAdmin.value) await del(`/mihomo/proxy-groups/${group.id}`).catch(() => {})
-    throw error
-  } finally { saving.value = false }
-}
-
-function openEdit(config) {
-  editing.value = config
-  Object.assign(editForm, { name: config.name, proxy_group_ids: [...config.proxy_group_ids], routing_profile_id: config.routing_profile_id })
-  editVisible.value = true
-}
-
-async function saveEdit() {
-  saving.value = true
-  try {
-    await put(`/mihomo/client-configs/${editing.value.id}`, editForm)
-    editVisible.value = false
-    ElMessage.success('客户端配置已更新，原更新地址仍可继续使用')
-    await load()
-  } finally { saving.value = false }
+  await ElMessageBox.confirm('更换后，旧更新地址会立即失效。', '更换更新地址', { type: 'warning' })
+  await post(`/mihomo/client-configs/${config.id}/subscription/rotate`, {})
+  ElMessage.success('更新地址已更换')
+  await load()
 }
 
 async function remove(config) {
@@ -137,81 +122,67 @@ onMounted(load)
 
 <template>
   <div class="page-shell">
-    <PageHeader title="客户端配置" description="选择客户端连接、节点组和访问规则，然后下载 Mihomo 配置文件">
+    <PageHeader title="客户端配置" description="直接选择接入用户和访问策略，生成可持续更新的 Mihomo 配置">
       <el-button :icon="Refresh" @click="load">刷新</el-button>
+      <el-button v-if="canWrite" type="primary" :icon="Plus" @click="resetForm()">新建客户端配置</el-button>
     </PageHeader>
-    <main v-loading="loading" class="page-content subscription-workspace">
-      <section class="build-flow">
-        <div class="flow-heading"><div><strong>生成客户端配置</strong><span>此操作只生成供客户端使用的文件，不会修改服务器配置。</span></div><span class="step-count">3 步完成</span></div>
-        <div class="flow-grid">
-          <div class="flow-step">
-            <span class="step-number">1</span>
-            <div class="step-copy"><strong>选择客户端连接</strong><span>可以选择不同服务器上的多个接入用户</span></div>
-            <el-select v-model="quick.endpoint_ids" multiple filterable collapse-tags :max-collapse-tags="3" placeholder="请选择一个或多个客户端连接" style="width: 100%">
-              <el-option v-for="node in clientNodes" :key="node.id" :value="node.id" :label="`${node.node_name} · ${node.listener_name} · ${node.account_name}`" :disabled="node.disabled"><span>{{ node.node_name }} · {{ node.listener_name }}</span><span class="option-meta">{{ node.protocol }} · {{ node.address }}</span></el-option>
-            </el-select>
-            <el-alert v-if="!clientNodes.length" title="暂无可用的客户端连接。请先创建接入服务和用户，并填写服务器的客户端连接地址。" type="warning" :closable="false" />
-          </div>
-          <div class="flow-step">
-            <span class="step-number">2</span>
-            <div class="step-copy"><strong>设置客户端节点组</strong><span>决定客户端如何选择可用连接</span></div>
-            <el-input v-model="quick.group_name" placeholder="节点组名称，留空时自动生成" />
-            <el-select v-model="quick.strategy" style="width: 100%"><el-option label="手动选择" value="select" /><el-option label="自动测速" value="url-test" /><el-option label="故障自动切换" value="fallback" /></el-select>
-          </div>
-          <div class="flow-step">
-            <span class="step-number">3</span>
-            <div class="step-copy"><strong>选择客户端访问规则</strong><span>决定不同网站直接访问、使用节点组或被阻止</span></div>
-            <el-input v-model="quick.name" placeholder="配置名称，例如：手机日常" />
-            <el-select v-model="quick.routing_profile_id" placeholder="请选择客户端访问规则" style="width: 100%"><el-option v-for="profile in profiles" :key="profile.id" :value="profile.id" :label="profile.name" /></el-select>
-            <el-button v-if="!profiles.length" link type="primary" @click="navigate('routing-profiles')">先创建访问规则</el-button>
-          </div>
-        </div>
-        <div class="flow-action"><span>下载后可直接导入 Mihomo 或 Clash Meta 客户端。</span><el-button v-if="canWrite" type="primary" :icon="Download" :loading="saving" :disabled="!quick.name.trim() || !quick.endpoint_ids.length || !quick.routing_profile_id" @click="createAndDownload">生成并下载配置</el-button></div>
-      </section>
-
-      <section class="saved-configs">
-        <div class="section-heading"><div><strong>已保存配置</strong><span>客户端通过更新地址获取最新连接信息和访问规则。</span></div></div>
-        <div class="table-panel">
-          <el-table :data="configs">
-            <el-table-column label="配置名称" min-width="180" prop="name" />
-            <el-table-column label="客户端节点组" min-width="220"><template #default="{ row }"><el-tag v-for="id in row.proxy_group_ids" :key="id" type="info" style="margin-right: 6px">{{ groupNames[id] || '节点组已失效' }}</el-tag></template></el-table-column>
-            <el-table-column label="客户端访问规则" min-width="180"><template #default="{ row }">{{ profileNames[row.routing_profile_id] || '访问规则已失效' }}</template></el-table-column>
-            <el-table-column label="更新地址" width="120"><template #default="{ row }"><el-tag :type="row.subscription_path ? 'success' : 'warning'">{{ row.subscription_path ? '可用' : '未生成' }}</el-tag></template></el-table-column>
-            <el-table-column label="操作" width="360" fixed="right"><template #default="{ row }"><el-button v-if="row.subscription_path" type="primary" link :icon="Download" @click="triggerDownload(row)">下载配置</el-button><el-button v-if="row.subscription_path" link :icon="CopyDocument" @click="copySubscription(row)">复制更新地址</el-button><el-button v-if="canWrite" link :icon="RefreshRight" @click="rotateSubscription(row)">{{ row.subscription_path ? '更换地址' : '生成地址' }}</el-button><el-button v-if="canWrite" link :icon="Edit" @click="openEdit(row)">编辑</el-button><el-button v-if="isAdmin" link type="danger" :icon="Delete" @click="remove(row)">删除</el-button></template></el-table-column>
-          </el-table>
-        </div>
-      </section>
+    <main v-loading="loading" class="page-content">
+      <el-alert title="客户端节点名称来自接入服务中的“客户端节点别名”。配置保存时会校验用户可用性、服务器连接地址和别名唯一性。" type="info" show-icon :closable="false" style="margin-bottom: 16px" />
+      <div class="table-panel">
+        <el-table :data="configs">
+          <el-table-column label="配置名称" min-width="180" prop="name" />
+          <el-table-column label="客户端节点" min-width="300">
+            <template #default="{ row }"><el-tag v-for="id in row.endpoint_ids" :key="id" type="info" class="node-tag">{{ clientNodeNames[id] || '节点已失效' }}</el-tag></template>
+          </el-table-column>
+          <el-table-column label="节点策略" width="130"><template #default="{ row }">{{ strategyNames[row.strategy] }}</template></el-table-column>
+          <el-table-column label="访问规则" min-width="170"><template #default="{ row }">{{ presetNames[row.rule_preset] }}</template></el-table-column>
+          <el-table-column label="操作" width="390" fixed="right">
+            <template #default="{ row }">
+              <el-button type="primary" link :icon="Download" @click="triggerDownload(row)">下载</el-button>
+              <el-button link :icon="CopyDocument" @click="copySubscription(row)">复制更新地址</el-button>
+              <el-button v-if="canWrite" link :icon="RefreshRight" @click="rotateSubscription(row)">更换地址</el-button>
+              <el-button v-if="canWrite" link :icon="Edit" @click="resetForm(row)">编辑</el-button>
+              <el-button v-if="isAdmin" link type="danger" :icon="Delete" @click="remove(row)">删除</el-button>
+            </template>
+          </el-table-column>
+        </el-table>
+      </div>
     </main>
 
-    <el-dialog v-model="editVisible" title="编辑客户端配置" width="min(620px, 94vw)">
-      <el-form label-position="top"><el-form-item label="配置名称" required><el-input v-model="editForm.name" /></el-form-item><el-form-item label="客户端节点组" required><el-select v-model="editForm.proxy_group_ids" multiple style="width: 100%"><el-option v-for="group in groups" :key="group.id" :value="group.id" :label="group.name" /></el-select></el-form-item><el-form-item label="客户端访问规则" required><el-select v-model="editForm.routing_profile_id" style="width: 100%"><el-option v-for="profile in profiles" :key="profile.id" :value="profile.id" :label="profile.name" /></el-select></el-form-item></el-form>
-      <template #footer><el-button @click="editVisible = false">取消</el-button><el-button type="primary" :loading="saving" :disabled="!editForm.name.trim() || !editForm.proxy_group_ids.length || !editForm.routing_profile_id" @click="saveEdit">保存</el-button></template>
+    <el-dialog v-model="dialogVisible" :title="editing ? '编辑客户端配置' : '新建客户端配置'" width="min(760px, 96vw)">
+      <el-form label-position="top">
+        <el-form-item label="配置名称" required><el-input v-model="form.name" maxlength="128" /></el-form-item>
+        <el-form-item label="接入用户与客户端节点" required>
+          <el-select v-model="form.endpoint_ids" multiple filterable style="width: 100%" placeholder="请选择一个或多个接入用户">
+            <el-option v-for="node in clientNodes" :key="node.id" :value="node.id" :label="node.label" :disabled="node.disabled">
+              <span>{{ node.label }}</span><span class="option-meta">{{ node.detail }} · {{ node.protocol }} · {{ node.address }}</span>
+            </el-option>
+          </el-select>
+        </el-form-item>
+        <el-form-item label="多个节点的使用方式" required>
+          <el-radio-group v-model="form.strategy"><el-radio value="select">手动选择</el-radio><el-radio value="url-test">自动测速</el-radio><el-radio value="fallback">故障切换</el-radio></el-radio-group>
+        </el-form-item>
+        <el-form-item label="访问规则" required>
+          <el-select v-model="form.rule_preset" style="width: 100%"><el-option v-for="(label, value) in presetNames" :key="value" :value="value" :label="label" /></el-select>
+        </el-form-item>
+        <template v-if="form.rule_preset === 'custom'">
+          <el-form-item label="自定义规则">
+            <el-input v-model="form.raw_rules" type="textarea" :rows="7" placeholder="DOMAIN-SUFFIX,example.com,PROXY&#10;IP-CIDR,10.0.0.0/8,DIRECT,no-resolve" />
+            <div class="form-hint">按顺序每行一条；不要填写 MATCH，系统会根据下方默认动作生成且只生成一条终结规则。</div>
+          </el-form-item>
+          <el-form-item label="没有命中规则时" required><el-radio-group v-model="form.default_action"><el-radio value="PROXY">使用代理</el-radio><el-radio value="DIRECT">直接访问</el-radio></el-radio-group></el-form-item>
+        </template>
+      </el-form>
+      <template #footer>
+        <el-button @click="dialogVisible = false">取消</el-button>
+        <el-button type="primary" :loading="saving" :disabled="!form.name.trim() || !form.endpoint_ids.length" @click="save(!editing)">{{ editing ? '保存' : '创建并下载' }}</el-button>
+      </template>
     </el-dialog>
   </div>
 </template>
 
 <style scoped>
-.subscription-workspace { display: grid; grid-template-columns: minmax(0, 1fr); gap: 28px; min-width: 0; }
-.build-flow, .saved-configs { min-width: 0; }
-.build-flow { padding: 22px; background: #fff; border: 1px solid var(--sb-border); border-radius: 9px; }
-.flow-heading, .section-heading, .flow-action { display: flex; align-items: center; justify-content: space-between; gap: 20px; }
-.flow-heading strong, .flow-heading span, .section-heading strong, .section-heading span { display: block; }
-.flow-heading > div > span, .section-heading span { margin-top: 4px; color: var(--sb-muted); font-size: 12px; }
-.step-count { color: var(--sb-accent); font-size: 12px; font-weight: 650; }
-.flow-grid { display: grid; grid-template-columns: 1.2fr .9fr 1fr; margin: 20px 0; border-top: 1px solid var(--sb-border); border-bottom: 1px solid var(--sb-border); }
-.flow-step { display: flex; flex-direction: column; gap: 12px; min-width: 0; padding: 20px; border-right: 1px solid var(--sb-border); }
-.flow-step:first-child { padding-left: 0; }
-.flow-step:last-child { padding-right: 0; border-right: 0; }
-.step-number { width: 26px; height: 26px; display: grid; place-items: center; color: #fff; background: var(--sb-accent); border-radius: 50%; font-size: 12px; font-weight: 700; }
-.step-copy strong, .step-copy span { display: block; }
-.step-copy span { margin-top: 4px; color: var(--sb-muted); font-size: 12px; }
-.flow-action { color: var(--sb-muted); font-size: 12px; }
-.option-meta { float: right; margin-left: 16px; color: var(--sb-muted); font-size: 12px; }
-.section-heading { margin-bottom: 12px; }
-@media (max-width: 980px) {
-  .flow-grid { grid-template-columns: 1fr; }
-  .flow-step, .flow-step:first-child, .flow-step:last-child { padding: 18px 0; border-right: 0; border-bottom: 1px solid var(--sb-border); }
-  .flow-step:last-child { border-bottom: 0; }
-}
-@media (max-width: 620px) { .flow-action { align-items: stretch; flex-direction: column; } }
+.node-tag { margin: 3px 6px 3px 0; }
+.option-meta { float: right; margin-left: 18px; color: var(--sb-muted); font-size: 12px; }
+.form-hint { margin-top: 6px; color: var(--sb-muted); font-size: 12px; }
 </style>
