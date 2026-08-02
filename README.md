@@ -16,7 +16,7 @@
 - 全局直连、SOCKS5、HTTP 出站管理。
 - 客户端订阅分享链接，以及可下载的 Mihomo YAML 与分流策略。
 - sing-box 配置自动应用，并从官方 GitHub Release 获取最新稳定版、校验摘要后签名安装或升级。
-- Nginx Stream SNI 端口复用配置发布。
+- 同一服务器出现兼容的 TCP 端口重复时，自动生成并发布基于连接域名的端口分配配置。
 - nftables 防火墙和 Fail2Ban 配置发布。
 - Cloudflare DNS 期望状态、发布确认、远端校验和漂移检测。
 - 主机累计流量、实时连接、Fail2Ban 状态、任务结果和审计日志。
@@ -47,10 +47,11 @@ agent 端口不是 HTTP、HTTPS 或 TLS 端口，不能放在会终止 TLS 的 H
 
 ## 技术栈与运行要求
 
-### 构建环境
+### 发布与运行环境
 
-- Go 1.24 或更高版本。
-- master 可运行在 Go 支持的平台上。
+- Go、Node.js 和 npm 只在 GitHub Actions 的发布任务中使用。
+- master 和 agent 安装服务器不需要 Go、Node.js、npm 或源码。
+- GitHub Release 当前提供 Linux `amd64` 和 `arm64` 成品包。
 - agent 的系统管理功能面向 Linux 和 systemd。
 
 ### 受控节点
@@ -61,168 +62,498 @@ agent 应以 `root` 身份运行。具体功能还依赖以下本机命令：
 | --- | --- |
 | sing-box 配置发布 | `sing-box`、`systemctl` |
 | sing-box 安装或升级 | `systemctl`，并允许访问 GitHub API 与官方 Release 下载地址 |
-| Nginx SNI 分流 | `nginx`、`nginx.service` |
+| 自动 TCP 端口分配 | 首次需要时由 agent 通过 `apt-get`、`dnf`、`yum` 或 `apk` 安装带 stream 功能的 Nginx |
 | 防火墙 | `nft` |
 | Fail2Ban | `fail2ban-client`、`fail2ban.service` |
 | 实时连接 | sing-box Clash API；由受管配置监听 `127.0.0.1:9090` |
 
 sing-box 安装任务目前只接受 `amd64` 和 `arm64`。master 自动查询官方最新稳定版，并使用官方资源摘要校验下载内容。
 
-## 快速开始
+## 安装概览
 
-### 1. 构建
+正式安装只使用 GitHub Release 已经编译完成的 Linux 二进制。安装 master 或 agent 时不在目标服务器上执行 `go build`、`npm ci` 或 `npm run build`。
 
-先构建前端（需要 Node.js 22 或更高版本）：
+一个发布包中的 `sb-control` 二进制同时包含 master、agent 和已经嵌入的 Web 控制台，不需要下载不同角色的程序。
 
-```powershell
-Set-Location .\webui
-npm ci
-npm run build
-Set-Location ..
+```text
+开发者推送 v* 标签
+        ↓
+GitHub Actions 构建 Web UI 和 Go 二进制
+        ↓
+GitHub Release 发布 AMD64 / ARM64 压缩包和 SHA-256
+        ↓
+master / agent 服务器下载对应压缩包并直接安装
 ```
 
-Windows PowerShell：
+完整部署顺序如下：
 
-```powershell
-go test ./...
-go build -o .\bin\sb-control.exe .\cmd\sb-control
-```
+1. 开发者推送版本标签，由 GitHub Actions 自动编译并创建 Release。
+2. master 服务器从 Release 下载与 CPU 架构匹配的成品包。
+3. 在控制服务器上直接安装并初始化 master。
+4. 为 master 配置 systemd 和 HTTPS 反向代理。
+5. 从 master 获取 Noise 公钥，并在控制台生成一次性注册令牌。
+6. 每台 agent 服务器从同一个 Release 下载对应架构的成品包。
+7. 安装、注册并启动 agent。
+8. 在控制台批准节点，确认 agent 在线及任务执行正常。
 
-Linux：
+master 与 agent 可以安装在同一台服务器上，但生产环境通常把 master 独立部署。下文命令以 Ubuntu/Debian 风格的 Linux 为例；其他 systemd 发行版只需要替换软件包管理命令。
+
+## 安装前规划
+
+部署前准备以下信息：
+
+| 名称 | 示例 | 说明 |
+| --- | --- | --- |
+| master 控制台域名 | `control.example.com` | 管理员通过 HTTPS 访问 |
+| master agent 地址 | `control.example.com:8443` | agent 建立 Noise TCP 连接时使用，不带 `http://` 或 `https://` |
+| master 数据目录 | `/var/lib/sb-control-master` | 数据库、主密钥和 Noise 私钥必须整体备份 |
+| agent 数据目录 | `/var/lib/sb-control-agent` | 保存节点私钥、发布签名公钥和任务幂等结果 |
+| 管理员邮箱 | `admin@example.com` | 首个管理员登录名 |
+
+master 服务器的网络要求：
+
+- 对 agent 开放 `8443/TCP`。
+- 生产控制台通过反向代理开放 `443/TCP`。
+- `8080/TCP` 建议只监听 `127.0.0.1`，不要直接暴露到公网。
+- master 需要访问 GitHub API，以查询官方 sing-box 最新稳定版和校验信息。
+
+agent 服务器的网络要求：
+
+- 能主动连接 master 的 `8443/TCP`。
+- 能通过 HTTPS 下载 master 批准的 sing-box 官方发布资源。
+- agent 控制连接不需要对公网开放新的入站端口；业务代理端口按后续 Listener 配置开放。
+
+如果使用 UFW，可按实际部署开放 master 端口：
 
 ```bash
-go test ./...
-go build -o ./bin/sb-control ./cmd/sb-control
+sudo ufw allow 8443/tcp
+sudo ufw allow 443/tcp
 ```
 
-### 2. 初始化管理员
+不要把 `8443` 配置成 HTTP/HTTPS 反向代理。它承载的是 Noise 加密原始 TCP；如需转发，只能使用不终止连接的四层 TCP 转发。
 
-master 不会创建默认账户或默认密码。密码至少需要 12 个字符。
+## GitHub 自动构建并发布
 
-Windows PowerShell：
-
-```powershell
-Read-Host -MaskInput "请输入管理员密码" |
-  .\bin\sb-control.exe master init-admin `
-    --data-dir .\data `
-    --email admin@example.com `
-    --password-stdin
-```
-
-Linux：
+仓库中的 `.github/workflows/release.yml` 负责全部编译工作。正式发布应推送 `v*` 标签：
 
 ```bash
-read -rsp "请输入管理员密码: " SB_CONTROL_PASSWORD
-printf '%s\n' "$SB_CONTROL_PASSWORD" |
-  ./bin/sb-control master init-admin \
-    --data-dir ./data \
+git tag v0.1.0
+git push origin v0.1.0
+```
+
+GitHub Actions 会自动：
+
+1. 安装前端依赖并构建 Web UI。
+2. 运行 Go 测试。
+3. 把 Web UI 嵌入 `sb-control` 二进制。
+4. 分别编译 Linux AMD64 和 ARM64。
+5. 生成 `.tar.gz` 与 SHA-256 校验文件。
+6. 创建或更新对应标签的 GitHub Release。
+
+发布完成后，Releases 页面应出现：
+
+```text
+sb-control_0.1.0_linux_amd64.tar.gz
+sb-control_0.1.0_linux_amd64.tar.gz.sha256
+sb-control_0.1.0_linux_arm64.tar.gz
+sb-control_0.1.0_linux_arm64.tar.gz.sha256
+```
+
+在 GitHub 的 `Actions` 页面手动运行 `Build release packages` 只生成 Actions Artifacts，不创建正式 Release。用于服务器安装时，推荐推送版本标签并从 Releases 页面下载。
+
+## 从 GitHub Release 下载安装包
+
+以下命令在 master 或 agent 的目标 Linux 服务器执行。它们只下载、校验和解压 GitHub 已经编译好的成品，不会在服务器上编译代码。
+
+### 自动识别 AMD64 或 ARM64
+
+```bash
+sudo apt-get update
+sudo apt-get install -y ca-certificates curl
+
+case "$(uname -m)" in
+  x86_64|amd64)
+    ARCH=amd64
+    ;;
+  aarch64|arm64)
+    ARCH=arm64
+    ;;
+  *)
+    echo "不支持的 CPU 架构：$(uname -m)" >&2
+    exit 1
+    ;;
+esac
+
+VERSION=0.1.0
+REPOSITORY=liyuwei007036/sb-control
+PACKAGE="sb-control_${VERSION}_linux_${ARCH}"
+
+curl -fLO "https://github.com/${REPOSITORY}/releases/download/v${VERSION}/${PACKAGE}.tar.gz"
+curl -fLO "https://github.com/${REPOSITORY}/releases/download/v${VERSION}/${PACKAGE}.tar.gz.sha256"
+sha256sum -c "${PACKAGE}.tar.gz.sha256"
+tar -xzf "${PACKAGE}.tar.gz"
+```
+
+把 `VERSION=0.1.0` 改为 Releases 页面中的实际版本。校验成功后，目录结构应类似：
+
+```text
+sb-control_0.1.0_linux_amd64/
+├── sb-control
+├── README.md
+└── sb-control-agent.service
+```
+
+`x86_64` 对应发布包中的 `amd64`，64 位 ARM 对应 `arm64`。当前发布流程不生成 32 位 ARMv7 包。
+
+## 安装 master
+
+以下步骤只在 master 控制服务器执行。
+
+### 1. 安装二进制和创建运行用户
+
+进入解压后的发布包目录，然后执行：
+
+```bash
+cd "${PACKAGE}"
+
+sudo install -m 0755 ./sb-control /usr/local/bin/sb-control
+if ! id sb-control >/dev/null 2>&1; then
+  sudo useradd \
+    --system \
+    --user-group \
+    --home-dir /var/lib/sb-control-master \
+    --shell /usr/sbin/nologin \
+    sb-control
+fi
+sudo install -d \
+  -o sb-control \
+  -g sb-control \
+  -m 0700 \
+  /var/lib/sb-control-master
+```
+
+如果发行版的 `nologin` 位于 `/sbin/nologin`，请相应修改 `useradd` 命令。master 不需要 root 权限；默认端口 `8080` 和 `8443` 都高于 1024。
+
+### 2. 初始化第一个管理员
+
+master 不创建默认账户或默认密码。密码至少需要 12 个字符：
+
+```bash
+read -rsp "请输入管理员密码: " SB_CONTROL_ADMIN_PASSWORD
+printf '\n'
+printf '%s\n' "$SB_CONTROL_ADMIN_PASSWORD" |
+  sudo -u sb-control /usr/local/bin/sb-control master init-admin \
+    --data-dir /var/lib/sb-control-master \
     --email admin@example.com \
     --password-stdin
-unset SB_CONTROL_PASSWORD
+unset SB_CONTROL_ADMIN_PASSWORD
 ```
 
-命令会输出一次 TOTP 密钥。立即将它保存到身份验证器中；之后无法再次查看原值，只能由管理员重置。
-
-### 3. 启动 master
-
-```powershell
-.\bin\sb-control.exe master serve `
-  --data-dir .\data `
-  --agent-listen :8443 `
-  --browser-listen :8080
-```
-
-生产环境建议只让反向代理访问浏览器端口，并由反向代理提供 HTTPS。默认会话 Cookie 带 `Secure` 属性。
-
-如果仅在可信内网或本机开发环境中直接使用明文 HTTP，必须显式添加：
-
-```powershell
-.\bin\sb-control.exe master serve `
-  --data-dir .\data `
-  --agent-listen :8443 `
-  --browser-listen :8080 `
-  --insecure-dev-cookies
-```
-
-否则浏览器不会通过 HTTP 回传会话 Cookie，表现为登录后仍未认证。`--insecure-dev-cookies` 不应在公网环境使用。
-
-启动后：
-
-- 控制台：`http://<master>:8080/`
-- 健康检查：`http://<master>:8080/api/v1/health`
-
-### 4. 查看 master 公钥
-
-所有 agent 都需要预先固定 master 的 Noise 公钥：
-
-```powershell
-.\bin\sb-control.exe master show-pubkey --data-dir .\data
-```
-
-该命令输出 Base64 编码的 32 字节 Curve25519 公钥。它不是 TLS 证书，也不是 Cloudflare 或 Reality 密钥。
-
-### 5. 注册节点
-
-在控制台的“节点”页面生成一次性注册凭据，然后在目标服务器执行：
+命令会输出一次 TOTP 密钥。立即把它添加到身份验证器中；该原始密钥不会再次显示。若以后需要重置指定账户的 MFA：
 
 ```bash
-sudo ./sb-control agent register \
-  --data-dir /var/lib/sb-control-agent \
-  --master master.example.com:8443 \
-  --master-pubkey '<MASTER_NOISE_PUBKEY>' \
-  --token '<ONE_TIME_TOKEN>' \
-  --node-name my-node
+sudo -u sb-control /usr/local/bin/sb-control master reset-mfa \
+  --data-dir /var/lib/sb-control-master \
+  --email admin@example.com
 ```
 
-注册完成后，回到控制台核对节点名称并批准。一次性凭据默认有效 15 分钟，最长可设置为 1 小时，且只能成功使用一次。
+### 3. 获取并保存 master Noise 公钥
 
-### 6. 长期运行 agent
+所有 agent 必须预先固定同一个 master 公钥：
 
 ```bash
-sudo ./sb-control agent run \
-  --data-dir /var/lib/sb-control-agent \
-  --master master.example.com:8443 \
-  --master-pubkey '<MASTER_NOISE_PUBKEY>' \
-  --sing-box-version 1.12.0
+sudo -u sb-control /usr/local/bin/sb-control master show-pubkey \
+  --data-dir /var/lib/sb-control-master
 ```
 
-可选参数：
+保存输出的 Base64 字符串，后续把它作为 `MASTER_NOISE_PUBKEY` 使用。它是 32 字节 Curve25519 公钥，不是 HTTPS 证书、Reality 公钥或 Cloudflare Token。
 
-| 参数 | 默认值 | 约束 |
-| --- | --- | --- |
-| `--heartbeat-interval` | `30s` | `5s` 到 `5m` |
-| `--connections-interval` | `2s` | `1s` 到 `30s` |
-| `--sing-box-version` | 空 | 节点当前 sing-box 版本标识 |
+不要删除或单独替换 `/var/lib/sb-control-master/master-noise.key.enc`。如果 master Noise 私钥改变，现有 agent 会因公钥固定校验失败而无法连接。
 
-`agent run` 会自动等待审批并在连接断开后重连。待审批时无需运行额外轮询命令。
-
-## systemd 部署
-
-仓库提供了 [deploy/sb-control-agent.service](deploy/sb-control-agent.service) 模板。
+### 4. 创建 master systemd 服务
 
 ```bash
+sudo tee /etc/systemd/system/sb-control-master.service >/dev/null <<'EOF'
+[Unit]
+Description=sb-control master
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=sb-control
+Group=sb-control
+UMask=0077
+ExecStart=/usr/local/bin/sb-control master serve --data-dir /var/lib/sb-control-master --agent-listen :8443 --browser-listen 127.0.0.1:8080
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+sudo systemctl daemon-reload
+sudo systemctl enable --now sb-control-master.service
+sudo systemctl status sb-control-master.service
+```
+
+查看实时日志：
+
+```bash
+sudo journalctl -u sb-control-master.service -f
+```
+
+### 5. 验证 master
+
+```bash
+curl -fsS http://127.0.0.1:8080/api/v1/health
+sudo ss -lntp | grep -E ':(8080|8443)\b'
+```
+
+健康检查应返回：
+
+```json
+{"status":"ok"}
+```
+
+如果 `8443` 没有监听，查看 `journalctl` 中是否存在端口占用或数据目录权限错误。
+
+### 6. 为控制台配置 HTTPS
+
+master 的浏览器端口本身是普通 HTTP。生产环境应让它只监听 `127.0.0.1:8080`，并由 Nginx、Caddy 或其他反向代理终止 HTTPS。
+
+Nginx 示例：
+
+```nginx
+server {
+    listen 443 ssl;
+    server_name control.example.com;
+
+    ssl_certificate /etc/letsencrypt/live/control.example.com/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/control.example.com/privkey.pem;
+
+    location / {
+        proxy_pass http://127.0.0.1:8080;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-Proto https;
+        proxy_buffering off;
+        proxy_read_timeout 3600s;
+    }
+}
+```
+
+默认登录 Cookie 带 `Secure` 属性，因此生产控制台必须通过 HTTPS 访问。只有可信内网或本机临时测试需要直接使用 HTTP 时，才把 master 启动参数改为：
+
+```text
+--browser-listen :8080 --insecure-dev-cookies
+```
+
+`--insecure-dev-cookies` 不应在公网使用。
+
+## 安装 agent
+
+以下步骤需要在每台受控 Linux 服务器上分别执行。agent 必须以 root 身份长期运行，因为它需要管理 sing-box、Nginx、nftables、Fail2Ban 和 systemd。
+
+### 1. 检查到 master 的连接
+
+将地址替换成实际 master 地址：
+
+```bash
+MASTER_ADDRESS=control.example.com:8443
+MASTER_HOST=${MASTER_ADDRESS%:*}
+MASTER_PORT=${MASTER_ADDRESS##*:}
+
+getent hosts "$MASTER_HOST"
+timeout 5 bash -c "</dev/tcp/${MASTER_HOST}/${MASTER_PORT}"
+```
+
+这里只检查 TCP 是否可达。`8443` 不是 HTTPS 服务，因此不要使用 `curl https://...:8443` 进行检测。
+
+### 2. 安装 agent 二进制
+
+按照“获取发布包”一节在 agent 服务器下载对应架构的包，然后执行：
+
+```bash
+cd "${PACKAGE}"
 sudo install -m 0755 ./sb-control /usr/local/bin/sb-control
-sudo install -m 0644 ./deploy/sb-control-agent.service /etc/systemd/system/sb-control-agent.service
-sudo editor /etc/systemd/system/sb-control-agent.service
+sudo install -d -o root -g root -m 0700 /var/lib/sb-control-agent
+```
+
+master 与 agent 使用同一个二进制；运行角色由后面的 `master` 或 `agent` 子命令决定。
+
+### 3. 在控制台生成一次性注册令牌
+
+1. 使用管理员邮箱、密码和 TOTP 登录控制台。
+2. 打开“服务器”页面。
+3. 点击“添加服务器”。
+4. 立即复制只显示一次的注册令牌。
+
+令牌默认有效 15 分钟，最长 1 小时，并且只能成功使用一次。令牌过期后重新生成即可，不要把令牌写进 systemd 服务文件。
+
+### 4. 注册 agent
+
+把以下占位值替换为真实值：
+
+```bash
+MASTER_ADDRESS='control.example.com:8443'
+MASTER_PUBKEY='<MASTER_NOISE_PUBKEY>'
+REGISTRATION_TOKEN='<ONE_TIME_TOKEN>'
+NODE_NAME='node-01'
+
+sudo /usr/local/bin/sb-control agent register \
+  --data-dir /var/lib/sb-control-agent \
+  --master "$MASTER_ADDRESS" \
+  --master-pubkey "$MASTER_PUBKEY" \
+  --token "$REGISTRATION_TOKEN" \
+  --node-name "$NODE_NAME"
+
+unset REGISTRATION_TOKEN
+```
+
+正常情况下会显示注册请求处于 `pending`。如果 master 已经批准了该节点公钥，则会直接显示 `approved`。
+
+注册命令会在 `/var/lib/sb-control-agent` 创建节点 Noise 私钥。不要在多台服务器之间复制同一个 agent 数据目录，否则这些服务器会共享身份。
+
+### 5. 在控制台批准节点
+
+回到“服务器”页面，在“等待确认的服务器”区域核对节点名称，然后点击“允许接入”。master 会把该 agent 的公钥固定到批准后的节点记录中。
+
+如果节点名称或来源不符合预期，不要批准；应让令牌过期，删除目标服务器上的 agent 数据目录后重新注册。删除数据目录会永久更换节点身份，只应在确定尚未投入使用时执行。
+
+### 6. 创建 agent systemd 服务
+
+重新填写 master 地址和公钥，然后创建服务：
+
+```bash
+MASTER_ADDRESS='control.example.com:8443'
+MASTER_PUBKEY='<MASTER_NOISE_PUBKEY>'
+
+sudo tee /etc/systemd/system/sb-control-agent.service >/dev/null <<EOF
+[Unit]
+Description=sb-control agent
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+UMask=0077
+ExecStart=/usr/local/bin/sb-control agent run --data-dir /var/lib/sb-control-agent --master ${MASTER_ADDRESS} --master-pubkey ${MASTER_PUBKEY}
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
 sudo systemctl daemon-reload
 sudo systemctl enable --now sb-control-agent.service
 sudo systemctl status sb-control-agent.service
 ```
 
-启用前必须替换模板中的：
+这里故意不传 `--sing-box-version`。agent 会优先执行本机 `sing-box version` 自动检测；未检测到版本时，master 才会为受支持的 Linux AMD64/ARM64 节点自动创建首次安装任务。
 
-- `MASTER_HOST:8443`
-- `MASTER_NOISE_PUBKEY`
-- `--sing-box-version` 的实际值
+仓库中的 `deploy/sb-control-agent.service` 是需要手工修改的模板。使用它时必须替换 `MASTER_HOST:8443` 和 `MASTER_NOISE_PUBKEY`，并删除示例中的固定 `--sing-box-version 1.12.0`，否则 master 会把该字符串当成节点已经安装的版本。
 
-首次执行受管 sing-box 配置时，如果系统没有 `sing-box.service`，agent 会创建并启用一个基本 systemd 单元；已有单元不会被覆盖。
+可选参数：
+
+| 参数 | 默认值 | 约束或用途 |
+| --- | --- | --- |
+| `--heartbeat-interval` | `30s` | 允许 `5s` 到 `5m` |
+| `--connections-interval` | `2s` | 允许 `1s` 到 `30s` |
+| `--sing-box-version` | 空 | 通常不要设置；只用于无法执行本机 sing-box 的特殊兼容环境 |
+
+### 7. 验证 agent 和 sing-box
+
+```bash
+sudo systemctl status sb-control-agent.service
+sudo journalctl -u sb-control-agent.service -n 100 --no-pager
+sudo ls -la /var/lib/sb-control-agent
+```
+
+随后在控制台确认：
+
+1. 节点显示在线。
+2. 操作系统和架构分别显示为 `linux`、`amd64` 或 `arm64`。
+3. “任务与审计”中没有持续失败的安装任务。
+4. `sing_box_version` 在安装完成后出现实际版本。
+
+节点首次上线且未检测到 sing-box 时，master 会查询官方最新稳定版、核对官方摘要、签署安装清单并下发任务。agent 会再次验证 HTTPS、SHA-256、签名和 CPU 架构，然后安装到 `/usr/local/bin/sing-box`。同一节点不会因重复心跳不断创建首次安装任务；失败后可在“服务器”页面手动点击“安装或升级”。
+
+如果系统没有 `sing-box.service`，首次安装会创建并启用基础 systemd 单元；已有单元不会被覆盖。
+
+### 8. 安装可选系统组件
+
+只使用 sing-box 时不必预先安装全部组件。启用相应管理功能前，再安装对应服务：
+
+| 控制台功能 | agent 服务器要求 |
+| --- | --- |
+| 自动 TCP 端口分配 | agent 会安装带 stream 功能的 Nginx，并自动加载 `/etc/nginx/stream-conf.d/*.conf`；已有自定义 `stream {}` 时需先在其中加入该目录 |
+| nftables 防火墙 | `nft` 命令可用 |
+| Fail2Ban | `fail2ban-client` 和 `fail2ban.service` 可用 |
+| 实时连接 | 受管 sing-box 配置中的 Clash API，默认仅监听 `127.0.0.1:9090` |
+
+## 升级 master 和 agent
+
+升级前先下载新版本对应架构的发布包并验证 SHA-256。
+
+升级 master：
+
+```bash
+sudo systemctl stop sb-control-master.service
+sudo cp -a /var/lib/sb-control-master "/var/lib/sb-control-master.backup-$(date +%Y%m%d-%H%M%S)"
+sudo install -m 0755 ./sb-control /usr/local/bin/sb-control
+sudo systemctl start sb-control-master.service
+curl -fsS http://127.0.0.1:8080/api/v1/health
+```
+
+升级 agent：
+
+```bash
+sudo install -m 0755 ./sb-control /usr/local/bin/sb-control
+sudo systemctl restart sb-control-agent.service
+sudo systemctl status sb-control-agent.service
+```
+
+这里升级的是 `sb-control` 自身。sing-box 的安装和升级由控制台中的“安装或升级”任务处理。
+
+## 安装故障排查
+
+### 控制台登录后仍显示未登录
+
+- 生产环境确认通过 HTTPS 访问。
+- 确认反向代理把请求转发到 `127.0.0.1:8080`。
+- 只有明文 HTTP 测试环境才使用 `--insecure-dev-cookies`。
+- 确认浏览器和 master 系统时间准确，否则 TOTP 可能失败。
+
+### agent 无法连接 master
+
+- `--master` 必须是 `主机:端口`，不能包含 URL scheme。
+- 确认 master 的 `8443/TCP` 已监听并通过防火墙。
+- 确认 agent 使用的公钥来自同一个 master 数据目录。
+- 不要把 agent 连接发送到 HTTP、HTTPS 或 TLS 终止代理。
+- 查看 `journalctl -u sb-control-agent.service` 中的 Noise 握手或连接错误。
+
+### agent 在线但任务提示权限不足
+
+- 确认 systemd unit 使用 `User=root`。
+- 确认 `/var/lib/sb-control-agent` 归 root 所有并且权限为 `0700`。
+- 根据任务类型确认 `systemctl`、`nft` 或 `fail2ban-client` 已安装；Nginx 会在首次需要自动 TCP 端口分配时安装，安装失败原因会记录在任务结果中。
+
+### sing-box 没有自动安装
+
+- 确认 agent 启动命令没有固定传入 `--sing-box-version`。
+- 确认节点报告的系统为 Linux，架构为 `amd64` 或 `arm64`。
+- 确认 master 能访问 GitHub API，agent 能访问官方 Release 下载地址。
+- 查看控制台“任务与审计”；首次自动安装失败后不会因每次心跳重复创建，需要手动点击“安装或升级”重试。
 
 ## Web 控制台使用流程
 
 推荐按以下顺序配置：
 
 1. 在“节点”中接入并批准服务器。
-2. 按需在“系统设置”中导入 TLS 证书或生成 Reality 密钥；在“服务器节点”中可直接安装官方最新稳定版 sing-box。
+2. 节点首次上线后会自动安装官方最新稳定版 sing-box；按需在“系统设置”中导入 TLS 证书或生成 Reality 密钥。
 3. 在“出口代理”中按需创建全局 SOCKS5 或 HTTP 出口；不配置时使用内置 `direct`。
 4. 在“入站协议”中创建入站并同时创建首个访问账户；保存后自动应用到对应节点。
 5. 在“流量路由”中按需配置直连、拒绝或指定出口规则；变更后自动应用。
@@ -321,7 +652,9 @@ agent 数据目录包含：
 - 浏览器通过经过认证的 Server-Sent Events 接收所有节点的连接快照。
 - 不可观测的数据保持为空，不会根据其他指标推算。
 
-## 测试
+## 开发者测试
+
+本节只用于修改项目源码后的开发验证，不属于 master 或 agent 安装步骤。安装服务器不需要执行这些命令，也不需要安装 Go、Node.js 或 npm。
 
 单元与进程内集成测试：
 
@@ -347,7 +680,7 @@ bash ./scripts_e2e.sh
 
 统一入口会依次运行两层测试：
 
-1. `go test -tags=e2e -count=1 -v ./e2e`：构建真实 `sb-control` 可执行文件，分别启动 master 和 agent 进程，通过真实 HTTP 与 Noise TCP 连接完成管理员 MFA、节点注册与审批、心跳、实时连接上报、任务下发与回传、自动应用配置、按用户选择出口、两个 VLESS 共用 TCP 443、Hysteria2 使用 UDP 443、Nginx 端口共享、防火墙、Fail2Ban、Mihomo YAML 下载、分页和注销闭环。
+1. `go test -tags=e2e -count=1 -v ./e2e`：构建真实 `sb-control` 可执行文件，分别启动 master 和 agent 进程，通过真实 HTTP 与 Noise TCP 连接完成管理员 MFA、节点注册与审批、心跳、实时连接上报、任务下发与回传、自动应用配置、按用户选择出口、两个 VLESS 自动使用 TCP 443、Hysteria2 使用 UDP 443、自动端口分配、防火墙、Fail2Ban、Mihomo YAML 下载、分页和注销闭环。
 2. `npm --prefix webui run test:e2e`：重新构建嵌入式前端，使用真实 Chrome 打开管理平台，完成登录、MFA、全部功能入口、全局服务器筛选、任务分页、接入服务多用户表单、Mihomo 配置入口和手机尺寸布局检查。
 
 进程级 E2E 使用真实 agent 任务执行器和真实临时文件替换。为了不修改测试宿主机的 `/etc` 与 `/usr/local`，测试启动的 agent 会设置 `SB_CONTROL_E2E_ROOT`，并以可记录调用的确定性命令替代 `sing-box` 和 `systemctl`。生产进程未设置该变量时仍使用标准系统路径。目标 Linux 服务器上的真实 systemd、Nginx、nftables、Fail2Ban 和公网客户端连通性属于部署验收，不能由安全的本地 E2E 替代。
@@ -363,6 +696,7 @@ bash ./scripts_e2e.sh
 
 ```text
 .
+├── .github/workflows/              # AMD64/ARM64 自动构建与 GitHub Release
 ├── cmd/sb-control/                 # CLI 入口，master / agent 两种角色
 ├── deploy/                         # systemd 服务模板
 ├── e2e/                            # 真实 master/agent 进程级黑盒测试
@@ -380,6 +714,7 @@ bash ./scripts_e2e.sh
 
 ```text
 sb-control master init-admin ...
+sb-control master reset-mfa ...
 sb-control master show-pubkey ...
 sb-control master serve ...
 sb-control agent register ...

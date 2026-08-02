@@ -24,7 +24,6 @@ import LoginView from './views/LoginView.vue'
 import DashboardView from './views/DashboardView.vue'
 import NodesView from './views/NodesView.vue'
 import InboundsView from './views/InboundsView.vue'
-import IngressRoutesView from './views/IngressRoutesView.vue'
 import OutboundsView from './views/OutboundsView.vue'
 import MihomoProxyGroupsView from './views/MihomoProxyGroupsView.vue'
 import MihomoRoutingProfilesView from './views/MihomoRoutingProfilesView.vue'
@@ -38,7 +37,9 @@ import SettingsView from './views/SettingsView.vue'
 
 const authenticated = ref(false)
 const checking = ref(true)
-const currentView = ref((location.hash.replace(/^#\/?/, '') || 'dashboard'))
+const viewAliases = { 'ingress-routes': 'inbounds' }
+const requestedView = location.hash.replace(/^#\/?/, '') || 'dashboard'
+const currentView = ref(viewAliases[requestedView] || requestedView)
 const appState = reactive({
   email: '',
   role: '',
@@ -57,7 +58,6 @@ const groups = [
     label: '连接配置',
     items: [
       { id: 'inbounds', label: '接入服务', icon: Aim },
-      { id: 'ingress-routes', label: '端口共享', icon: Operation },
       { id: 'proxy-groups', label: '客户端节点组', icon: SetUp },
       { id: 'routing-profiles', label: '客户端访问规则', icon: MapLocation },
       { id: 'subscriptions', label: '客户端配置', icon: Link },
@@ -86,7 +86,6 @@ const views = {
   dashboard: DashboardView,
   nodes: NodesView,
   inbounds: InboundsView,
-  'ingress-routes': IngressRoutesView,
   'proxy-groups': MihomoProxyGroupsView,
   'routing-profiles': MihomoRoutingProfilesView,
   subscriptions: SubscriptionsView,
@@ -162,8 +161,9 @@ function navigate(view) {
 }
 
 function onHashChange() {
-  const view = location.hash.replace(/^#\/?/, '') || 'dashboard'
-  currentView.value = views[view] ? view : 'dashboard'
+	const view = location.hash.replace(/^#\/?/, '') || 'dashboard'
+	const resolved = viewAliases[view] || view
+	currentView.value = views[resolved] ? resolved : 'dashboard'
 }
 
 function onUnauthorized() {

@@ -19,7 +19,7 @@ const taskKinds = {
   'singbox.upgrade': '升级连接服务',
   'firewall.apply': '更新访问限制',
   'fail2ban.apply': '更新自动封禁设置',
-  'nginx.apply_config': '更新端口共享配置',
+  'nginx.apply_config': '更新接入端口分配',
   'outbound.test': '检测上网出口',
 }
 const taskStatuses = {
@@ -30,7 +30,7 @@ const targetNames = {
   operator: '管理账户', certificate: '加密证书', reality_key: 'Reality 连接密钥', registration_token: '服务器接入信息',
   subscription: '客户端更新地址', node: '服务器', registration: '服务器接入申请', firewall_rule: '访问限制',
   singbox_release: '连接服务版本', listener: '接入服务', outbound: '上网出口', endpoint: '接入用户',
-  ingress_route: '端口共享设置', route_rule: '服务器访问规则', task: '系统操作', cloudflare: '域名解析设置',
+  ingress_route: '接入端口分配', route_rule: '服务器访问规则', task: '系统操作', cloudflare: '域名解析设置',
   cloudflare_record: '域名解析记录', fail2ban_jail: '自动封禁规则', mihomo_proxy_group: '客户端节点组',
   mihomo_routing_profile: '客户端访问规则', mihomo_client_config: '客户端配置',
 }

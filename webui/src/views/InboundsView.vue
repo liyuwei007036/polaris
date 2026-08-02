@@ -20,7 +20,6 @@ const outbounds = ref([])
 const certificates = ref([])
 const realityKeys = ref([])
 const endpointMap = ref({})
-const ingressRoutes = ref([])
 const formOpen = ref(false)
 const credentialOpen = ref(false)
 const editing = ref(null)
@@ -28,24 +27,21 @@ const credentialTarget = ref(null)
 
 const outboundNames = computed(() => Object.fromEntries(outbounds.value.map((item) => [item.id, item.name])))
 const nodeNames = computed(() => Object.fromEntries(appState.nodes.map((item) => [item.id, item.name])))
-const ingressMap = computed(() => Object.fromEntries(ingressRoutes.value.map((item) => [item.listener_id, item])))
 
 async function load() {
   loading.value = true
   try {
     await loadNodes()
-    const [listenerResult, outboundResult, certificateResult, realityResult, ingressResult] = await Promise.all([
+    const [listenerResult, outboundResult, certificateResult, realityResult] = await Promise.all([
       api('/listeners'),
       api('/outbounds').catch(() => ({ outbounds: [] })),
       api('/certificates').catch(() => ({ certificates: [] })),
       api('/reality-keys').catch(() => ({ reality_keys: [] })),
-	  api('/ingress-routes').catch(() => ({ ingress_routes: [] })),
     ])
     listeners.value = listenerResult.listeners || []
     outbounds.value = outboundResult.outbounds || []
     certificates.value = (certificateResult.certificates || []).filter((item) => item.enabled)
     realityKeys.value = (realityResult.reality_keys || []).filter((item) => item.enabled)
-	ingressRoutes.value = ingressResult.ingress_routes || []
     const pairs = await Promise.all(
       listeners.value.map(async (listener) => {
         const result = await api(`/listeners/${listener.id}/endpoints`).catch(() => ({ endpoints: [] }))
@@ -79,10 +75,8 @@ async function saveListener(payload) {
   try {
     if (editing.value) {
       await put(`/listeners/${editing.value.id}`, payload.listener)
-	  const route = ingressMap.value[editing.value.id]
-	  if (route && payload.ingress_route) await put(`/ingress-routes/${route.id}`, { ...payload.ingress_route, node_id: editing.value.node_id, listener_id: editing.value.id })
     } else {
-	  await post('/listeners/quick', { listener: payload.listener, accounts: payload.accounts, ingress_route: payload.ingress_route })
+	  await post('/listeners/quick', { listener: payload.listener, accounts: payload.accounts })
     }
     ElMessage.success(editing.value ? '接入服务已保存，正在自动应用' : '接入服务已创建，正在自动应用')
     formOpen.value = false
@@ -139,7 +133,7 @@ async function toggle(listener) {
 
 async function removeListener(listener) {
   await ElMessageBox.confirm(
-    `删除“${listener.name}”会同时删除其中的所有用户和端口共享设置，且无法恢复。`,
+    `删除“${listener.name}”会同时删除其中的所有用户，且无法恢复。`,
     '删除接入服务',
     { type: 'warning', confirmButtonText: '确认删除' },
   )
@@ -230,7 +224,7 @@ onMounted(load)
             </template>
           </el-table-column>
           <el-table-column label="端口" width="110">
-            <template #default="{ row }"><span class="mono">{{ row.port }}</span><el-tag v-if="ingressMap[row.id]" size="small" type="warning" style="margin-left: 6px">共享端口</el-tag></template>
+            <template #default="{ row }"><span class="mono">{{ row.port }}</span></template>
           </el-table-column>
           <el-table-column label="用户" width="90" align="center">
             <template #default="{ row }">{{ endpointMap[row.id]?.length || 0 }}</template>
@@ -254,7 +248,6 @@ onMounted(load)
     <ListenerFormDialog
       v-model="formOpen"
       :listener="editing"
-	  :ingress-route="editing ? ingressMap[editing.id] : null"
       :nodes="appState.nodes"
       :certificates="certificates"
       :reality-keys="realityKeys"

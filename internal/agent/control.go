@@ -5,7 +5,10 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"os"
+	"os/exec"
 	"runtime"
+	"strings"
 	"time"
 
 	"github.com/sb-control/sb-control/internal/wire"
@@ -155,6 +158,9 @@ func Register(conn *wire.Conn, token, nodeName string, capabilities map[string]s
 // multiplexed over the one Noise connection. It returns when ctx is
 // canceled or the connection fails (the caller reconnects with backoff).
 func RunSession(ctx context.Context, conn *wire.Conn, handler TaskHandler, heartbeatInterval, connectionsInterval time.Duration, singBoxVersion string) error {
+	if singBoxVersion == "" {
+		singBoxVersion = detectSingBoxVersion(ctx)
+	}
 	incoming := make(chan wireInboundMessage, 8)
 	readErr := make(chan error, 1)
 	go func() {
@@ -218,6 +224,9 @@ func RunSession(ctx context.Context, conn *wire.Conn, handler TaskHandler, heart
 			if handler != nil {
 				result = handler(ctx, Task{ID: task.ID, Kind: task.Kind, IdempotencyKey: task.IdempotencyKey, Payload: task.Payload, ExpectedHash: task.ExpectedHash})
 			}
+			if result.Status == "succeeded" && result.SingBoxVersion != "" {
+				singBoxVersion = result.SingBoxVersion
+			}
 			resBody, err := wire.Encode(wire.TaskResult{TaskID: task.ID, Status: result.Status, Summary: result.Summary, SingBoxVersion: result.SingBoxVersion})
 			if err != nil {
 				return err
@@ -235,6 +244,26 @@ func RunSession(ctx context.Context, conn *wire.Conn, handler TaskHandler, heart
 			}
 		}
 	}
+}
+
+func detectSingBoxVersion(ctx context.Context) string {
+	binaryPath := managedSystemPath("/usr/local/bin/sing-box")
+	if strings.TrimSpace(os.Getenv("SB_CONTROL_E2E_ROOT")) == "" {
+		if discovered, err := exec.LookPath("sing-box"); err == nil {
+			binaryPath = discovered
+		}
+	}
+	output, err := exec.CommandContext(ctx, binaryPath, "version").CombinedOutput()
+	if err != nil {
+		return ""
+	}
+	fields := strings.Fields(string(output))
+	for index, field := range fields {
+		if field == "version" && index+1 < len(fields) {
+			return fields[index+1]
+		}
+	}
+	return ""
 }
 
 type wireInboundMessage struct {

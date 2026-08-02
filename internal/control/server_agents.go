@@ -3,6 +3,7 @@ package control
 import (
 	"context"
 	"encoding/json"
+	"log"
 	"net"
 	"time"
 
@@ -229,6 +230,7 @@ func (s *Server) handleAgentMessage(ctx context.Context, node Node, msgType byte
 		if err := s.store.UpdateNodeIdentity(ctx, node.ID, st.AgentVersion, st.OS, st.Architecture, st.SingBoxVersion, string(capsJSON)); err != nil {
 			return false
 		}
+		s.maybeInstallSingBox(ctx, node.ID, st.OS, st.Architecture, st.SingBoxVersion)
 		if err := s.mergeNodeMetrics(ctx, node.ID, func(m *storedMetrics) {
 			m.CollectedAt = st.CollectedAt
 			if st.HasNodeTotals {
@@ -289,6 +291,57 @@ func (s *Server) handleAgentMessage(ctx context.Context, node Node, msgType byte
 		return false
 	}
 	return true
+}
+
+func (s *Server) maybeInstallSingBox(ctx context.Context, nodeID, operatingSystem, architecture, version string) {
+	if version != "" || operatingSystem != "linux" || (architecture != "amd64" && architecture != "arm64") {
+		return
+	}
+	s.autoInstallMu.Lock()
+	if s.autoInstallChecked == nil {
+		s.autoInstallChecked = make(map[string]bool)
+	}
+	if s.autoInstallChecked[nodeID] {
+		s.autoInstallMu.Unlock()
+		return
+	}
+	s.autoInstallChecked[nodeID] = true
+	s.autoInstallMu.Unlock()
+
+	go func() {
+		installContext, cancel := context.WithTimeout(ctx, 30*time.Second)
+		defer cancel()
+		if _, err := s.scheduleAutomaticSingBoxInstall(installContext, nodeID, architecture); err != nil {
+			log.Printf("automatic sing-box installation for node %s was not queued: %v", nodeID, err)
+		}
+	}()
+}
+
+func (s *Server) scheduleAutomaticSingBoxInstall(ctx context.Context, nodeID, architecture string) (*Task, error) {
+	attempted, err := s.store.HasSingBoxInstallAttempt(ctx, nodeID)
+	if err != nil || attempted {
+		return nil, err
+	}
+	resolver := s.latestSingBoxReleaseFn
+	if resolver == nil {
+		resolver = LatestOfficialSingBoxRelease
+	}
+	release, err := resolver(ctx, architecture)
+	if err != nil {
+		return nil, err
+	}
+	payload, err := s.store.SignedSingBoxReleasePayload(release)
+	if err != nil {
+		return nil, err
+	}
+	task, err := s.DispatchTask(ctx, Task{
+		NodeID: nodeID, Kind: "singbox.install", IdempotencyKey: "singbox-" + release.Version + "-" + release.SHA256,
+		Payload: payload, ExpectedHash: release.SHA256,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return &task, nil
 }
 
 // storedMetrics mirrors the JSON shape the dashboard/connections API already

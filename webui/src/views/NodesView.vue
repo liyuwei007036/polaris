@@ -52,12 +52,16 @@ function relativeTime(value) {
 
 function healthInfo(node) {
   if (!node.online) return ['离线', 'info']
-  const status = metrics.value[node.id]?.health?.status
+  const health = metrics.value[node.id]?.health
+  if (health?.status === 'degraded') {
+    if (health.sing_box_service === 'active' && !health.clash_api_available) return ['连接数据异常', 'warning']
+    if (!health.traffic_available) return ['流量统计不可用', 'warning']
+    return ['检测数据不完整', 'warning']
+  }
   return {
     healthy: ['正常', 'success'],
-    degraded: ['部分不可用', 'warning'],
     stopped: ['连接服务已停止', 'danger'],
-  }[status] || ['等待检测', 'info']
+  }[health?.status] || ['等待检测', 'info']
 }
 
 function updateRates(nodeID, report) {

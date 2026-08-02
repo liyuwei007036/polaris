@@ -24,10 +24,13 @@ test('管理员通过真实页面完成登录并检查全部核心工作区', as
   await expect(page.getByRole('heading', { name: '运行概览', exact: true })).toBeVisible()
   authenticated = true
 
+  await expect(page.getByRole('button', { name: '端口共享', exact: true })).toHaveCount(0)
+  await page.evaluate(() => { location.hash = '#/ingress-routes' })
+  await expect(page.getByRole('heading', { name: '接入服务', exact: true })).toBeVisible()
+
   const pages = [
     ['服务器', '服务器'],
     ['接入服务', '接入服务'],
-    ['端口共享', '端口共享'],
     ['客户端节点组', '客户端节点组'],
     ['客户端访问规则', '客户端访问规则'],
     ['客户端配置', '客户端配置'],
@@ -55,6 +58,7 @@ test('管理员通过真实页面完成登录并检查全部核心工作区', as
   await page.getByRole('button', { name: '新建接入服务', exact: true }).click()
   const dialog = page.getByRole('dialog', { name: '新建接入服务', exact: true })
   await expect(dialog).toBeVisible()
+  await expect(dialog.getByText('端口共享', { exact: true })).toHaveCount(0)
   await expect(dialog.getByText('每个用户都会获得独立连接信息，并可使用不同的上网出口。', { exact: true })).toBeVisible()
   await dialog.getByRole('button', { name: '添加用户', exact: true }).click()
   await expect(dialog.getByRole('textbox', { name: '用户名称' })).toHaveCount(2)

@@ -18,7 +18,6 @@ const props = defineProps({
   certificates: { type: Array, default: () => [] },
   realityKeys: { type: Array, default: () => [] },
   outbounds: { type: Array, default: () => [] },
-  ingressRoute: { type: Object, default: null },
   saving: { type: Boolean, default: false },
 })
 const emit = defineEmits(['update:modelValue', 'save'])
@@ -31,7 +30,7 @@ const visibleProtocols = computed(() => protocols.filter((item) => item.stable))
 const allowedSecurity = computed(() => definition.value.security.map((value) => securityOptions[value]))
 const showTLS = computed(() => model.value.security === 'tls')
 const showReality = computed(() => model.value.security === 'reality')
-const sharedPortEligible = computed(() => model.value.network === 'tcp' && (showTLS.value || showReality.value))
+const portManagedBySystem = computed(() => Boolean(props.listener && ['127.0.0.1', '::1'].includes(props.listener.listen_address) && props.listener.backend_port !== props.listener.port))
 const securityHelp = computed(() => ({
   none: definition.value.value === 'shadowsocks'
     ? 'Shadowsocks 已自带加密，无需另行配置证书。'
@@ -57,8 +56,6 @@ watch(
   async (open) => {
     if (!open) return
     model.value = createListenerModel(props.listener, props.nodes[0]?.id || '')
-    model.value.shared_port = Boolean(props.ingressRoute || model.value.shared_port)
-    model.value.ingress_sni = props.ingressRoute?.sni || (model.value.security === 'reality' ? model.value.reality_handshake_server : model.value.tls_server_name) || ''
     accounts.value = [{ name: '用户 1', outbound_id: 'direct' }]
     normalizeProtocol()
     await nextTick()
@@ -72,16 +69,6 @@ watch(
     normalizeProtocol()
   },
 )
-
-watch(sharedPortEligible, (eligible) => {
-  if (!eligible && !props.listener) model.value.shared_port = false
-})
-
-watch(() => model.value.shared_port, (enabled) => {
-  if (enabled && !model.value.ingress_sni) {
-    model.value.ingress_sni = model.value.security === 'reality' ? model.value.reality_handshake_server : model.value.tls_server_name
-  }
-})
 
 function normalizeProtocol() {
   const protocol = definition.value
@@ -125,13 +112,9 @@ async function save() {
 	  if (!names.length || names.some((name) => !name)) throw new Error('请至少添加一个已填写名称的用户')
 	  if (new Set(names).size !== names.length) throw new Error('同一接入服务中的用户名称不能重复')
 	}
-	if (model.value.shared_port && !model.value.ingress_sni.trim()) throw new Error('启用端口共享后，请填写客户端访问域名')
     emit('save', {
       listener: listenerPayload(model.value),
 	  accounts: props.listener ? [] : accounts.value.map((item) => ({ name: item.name.trim(), outbound_id: item.outbound_id || 'direct' })),
-	  ingress_route: model.value.shared_port ? {
-	    listen_address: '0.0.0.0', port: Number(model.value.port), sni: model.value.ingress_sni.trim(), enabled: true,
-	  } : null,
     })
   } catch (error) {
     if (error instanceof Error) ElMessage.error(error.message)
@@ -188,7 +171,7 @@ async function save() {
             </el-col>
             <el-col :span="8">
               <el-form-item label="服务端口" prop="port">
-                <el-input-number v-model="model.port" :min="1" :max="65535" :disabled="Boolean(listener && model.shared_port)" controls-position="right" style="width: 100%" />
+                <el-input-number v-model="model.port" :min="1" :max="65535" :disabled="portManagedBySystem" controls-position="right" style="width: 100%" />
               </el-form-item>
             </el-col>
             <el-col v-if="definition.networks" :span="12">
@@ -244,22 +227,6 @@ async function save() {
               </el-form-item>
             </el-col>
           </el-row>
-        </div>
-
-        <div v-if="sharedPortEligible && (!listener || model.shared_port)" class="form-section shared-port-section">
-          <div class="form-section__head">端口共享</div>
-          <el-switch v-model="model.shared_port" :disabled="Boolean(listener)" active-text="允许多个加密接入服务共用当前公网端口" />
-          <el-alert
-            v-if="model.shared_port"
-            title="客户端仍连接当前端口。系统会根据客户端访问域名，将连接转发到对应服务。内部端口会自动分配。"
-            type="info"
-            show-icon
-            :closable="false"
-            style="margin-top: 14px"
-          />
-          <el-form-item v-if="model.shared_port" label="客户端访问域名" style="margin-top: 14px">
-            <el-input v-model="model.ingress_sni" placeholder="例如 grpc.example.com；同一端口下不能重复" />
-          </el-form-item>
         </div>
 
         <el-collapse v-if="definition.transports">

@@ -110,10 +110,10 @@ func TestSharedPortInboundCreatesMultipleUsersAndNginxRoutes(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	create := func(name, sni string) struct {
-		Listener  control.Listener     `json:"listener"`
-		Endpoints []control.Endpoint   `json:"endpoints"`
-		Ingress   control.IngressRoute `json:"ingress_route"`
+	create := func(name, sni string, expectAutomaticRouting bool) struct {
+		Listener  control.Listener      `json:"listener"`
+		Endpoints []control.Endpoint    `json:"endpoints"`
+		Ingress   *control.IngressRoute `json:"ingress_route"`
 	} {
 		t.Helper()
 		response := request(t, http.MethodPost, httpServer.URL+"/api/v1/listeners/quick", map[string]any{
@@ -124,40 +124,150 @@ func TestSharedPortInboundCreatesMultipleUsersAndNginxRoutes(t *testing.T) {
 					"reality": map[string]any{"enabled": true, "handshake_server": sni, "handshake_port": 443, "key_id": realityKey.ID},
 				},
 			},
-			"accounts":      []map[string]any{{"name": "用户 A", "outbound_id": "direct"}, {"name": "用户 B", "outbound_id": outbound.ID}},
-			"ingress_route": map[string]any{"listen_address": "0.0.0.0", "port": 443, "sni": sni, "enabled": true},
+			"accounts": []map[string]any{{"name": "用户 A", "outbound_id": "direct"}, {"name": "用户 B", "outbound_id": outbound.ID}},
 		}, session, csrfToken)
 		if response.StatusCode != http.StatusCreated {
 			t.Fatalf("create shared listener: got %d", response.StatusCode)
 		}
-		if response.Header.Get("X-SB-Auto-Apply-Task") == "" || response.Header.Get("X-SB-Auto-Apply-Nginx-Task") == "" {
-			t.Fatal("shared listener automatic task headers missing")
+		if response.Header.Get("X-SB-Auto-Apply-Task") == "" {
+			t.Fatal("listener automatic task header missing")
+		}
+		if got := response.Header.Get("X-SB-Auto-Apply-Nginx-Task") != ""; got != expectAutomaticRouting {
+			t.Fatalf("automatic port task header present = %v, want %v", got, expectAutomaticRouting)
 		}
 		var created struct {
-			Listener  control.Listener     `json:"listener"`
-			Endpoints []control.Endpoint   `json:"endpoints"`
-			Ingress   control.IngressRoute `json:"ingress_route"`
+			Listener  control.Listener      `json:"listener"`
+			Endpoints []control.Endpoint    `json:"endpoints"`
+			Ingress   *control.IngressRoute `json:"ingress_route"`
 		}
 		decodeBody(t, response, &created)
 		return created
 	}
 
-	first := create("Reality A", "a.example.com")
-	second := create("Reality B", "b.example.com")
+	first := create("Reality A", "a.example.com", false)
+	second := create("Reality B", "b.example.com", true)
 	if len(first.Endpoints) != 2 || first.Endpoints[0].OutboundID != "direct" || first.Endpoints[1].OutboundID != outbound.ID {
 		t.Fatalf("generated accounts = %#v", first.Endpoints)
 	}
-	if first.Listener.Port != 443 || second.Listener.Port != 443 || first.Listener.BackendPort == second.Listener.BackendPort {
-		t.Fatalf("shared listener ports = %#v / %#v", first.Listener, second.Listener)
+	listeners, err := store.ListListeners(t.Context(), nodeID)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if first.Listener.ListenAddr != "127.0.0.1" || first.Ingress.Port != 443 || first.Ingress.BackendPort != first.Listener.BackendPort {
-		t.Fatalf("shared ingress = %#v / %#v", first.Listener, first.Ingress)
+	listenerByID := map[string]control.Listener{}
+	for _, listener := range listeners {
+		listenerByID[listener.ID] = listener
+	}
+	firstListener := listenerByID[first.Listener.ID]
+	secondListener := listenerByID[second.Listener.ID]
+	if firstListener.Port != 443 || secondListener.Port != 443 || firstListener.BackendPort == secondListener.BackendPort {
+		t.Fatalf("automatically routed listener ports = %#v / %#v", firstListener, secondListener)
+	}
+	if firstListener.ListenAddr != "127.0.0.1" || secondListener.ListenAddr != "127.0.0.1" || second.Ingress == nil {
+		t.Fatalf("automatically routed listeners = %#v / %#v, route %#v", firstListener, secondListener, second.Ingress)
+	}
+	routes, err := store.ListIngressRoutes(t.Context(), nodeID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(routes) != 2 {
+		t.Fatalf("automatic routes = %#v", routes)
+	}
+	routeByListener := map[string]control.IngressRoute{}
+	for _, route := range routes {
+		routeByListener[route.ListenerID] = route
+	}
+	if routeByListener[first.Listener.ID].BackendPort != firstListener.BackendPort || routeByListener[second.Listener.ID].BackendPort != secondListener.BackendPort {
+		t.Fatalf("automatic route backends = %#v", routes)
+	}
+	editedSecond := secondListener
+	editedSecond.Spec.TLS.ServerName = "vless-b-new.example.com"
+	editedSecond.Spec.Reality.HandshakeServer = "vless-b-new.example.com"
+	editResponse := request(t, http.MethodPut, httpServer.URL+"/api/v1/listeners/"+secondListener.ID, editedSecond, session, csrfToken)
+	if editResponse.StatusCode != http.StatusOK {
+		t.Fatalf("edit automatically routed listener: got %d", editResponse.StatusCode)
+	}
+	editResponse.Body.Close()
+	routes, err = store.ListIngressRoutes(t.Context(), nodeID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, route := range routes {
+		if route.ListenerID == secondListener.ID && route.SNI != "vless-b-new.example.com" {
+			t.Fatalf("automatic route name was not updated: %#v", route)
+		}
+	}
+	editedSecond.Port = 444
+	portEdit := request(t, http.MethodPut, httpServer.URL+"/api/v1/listeners/"+secondListener.ID, editedSecond, session, csrfToken)
+	if portEdit.StatusCode != http.StatusBadRequest {
+		t.Fatalf("managed port edit status = %d", portEdit.StatusCode)
+	}
+	var portEditError map[string]string
+	decodeBody(t, portEdit, &portEditError)
+	if !strings.Contains(portEditError["error"], "系统自动分配") {
+		t.Fatalf("managed port edit error = %#v", portEditError)
+	}
+
+	duplicateDomain := request(t, http.MethodPost, httpServer.URL+"/api/v1/listeners/quick", map[string]any{
+		"listener": map[string]any{
+			"node_id": nodeID, "name": "重复域名", "port": 443, "enabled": true,
+			"spec": map[string]any{
+				"protocol": "vless", "network": "tcp", "tls": map[string]any{"enabled": true, "server_name": "a.example.com"},
+				"reality": map[string]any{"enabled": true, "handshake_server": "a.example.com", "handshake_port": 443, "key_id": realityKey.ID},
+			},
+		},
+		"accounts": []map[string]any{{"name": "用户 C", "outbound_id": "direct"}},
+	}, session, csrfToken)
+	if duplicateDomain.StatusCode != http.StatusBadRequest {
+		t.Fatalf("duplicate domain status = %d", duplicateDomain.StatusCode)
+	}
+	var duplicateError map[string]string
+	decodeBody(t, duplicateDomain, &duplicateError)
+	if !strings.Contains(duplicateError["error"], "不同的连接域名") {
+		t.Fatalf("duplicate domain error = %#v", duplicateError)
+	}
+
+	plainTCP := request(t, http.MethodPost, httpServer.URL+"/api/v1/listeners/quick", map[string]any{
+		"listener": map[string]any{
+			"node_id": nodeID, "name": "无加密 TCP", "port": 443, "enabled": true,
+			"spec": map[string]any{"protocol": "vless", "network": "tcp", "tls": map[string]any{"enabled": false}},
+		},
+		"accounts": []map[string]any{{"name": "用户 D", "outbound_id": "direct"}},
+	}, session, csrfToken)
+	if plainTCP.StatusCode != http.StatusBadRequest {
+		t.Fatalf("plain TCP conflict status = %d", plainTCP.StatusCode)
+	}
+
+	udp := request(t, http.MethodPost, httpServer.URL+"/api/v1/listeners/quick", map[string]any{
+		"listener": map[string]any{
+			"node_id": nodeID, "name": "UDP 443", "port": 443, "enabled": true,
+			"spec": map[string]any{"protocol": "shadowsocks", "network": "udp"},
+		},
+		"accounts": []map[string]any{{"name": "UDP 用户", "outbound_id": "direct"}},
+	}, session, csrfToken)
+	if udp.StatusCode != http.StatusCreated || udp.Header.Get("X-SB-Auto-Apply-Nginx-Task") != "" {
+		t.Fatalf("TCP and UDP coexistence status = %d, automatic route task = %q", udp.StatusCode, udp.Header.Get("X-SB-Auto-Apply-Nginx-Task"))
+	}
+	udp.Body.Close()
+	secondUDP := request(t, http.MethodPost, httpServer.URL+"/api/v1/listeners/quick", map[string]any{
+		"listener": map[string]any{
+			"node_id": nodeID, "name": "重复 UDP 443", "port": 443, "enabled": true,
+			"spec": map[string]any{"protocol": "shadowsocks", "network": "udp"},
+		},
+		"accounts": []map[string]any{{"name": "UDP 用户 2", "outbound_id": "direct"}},
+	}, session, csrfToken)
+	if secondUDP.StatusCode != http.StatusBadRequest {
+		t.Fatalf("duplicate UDP status = %d", secondUDP.StatusCode)
+	}
+	var udpError map[string]string
+	decodeBody(t, secondUDP, &udpError)
+	if !strings.Contains(udpError["error"], "UDP") || !strings.Contains(udpError["error"], "其他端口") {
+		t.Fatalf("duplicate UDP error = %#v", udpError)
 	}
 	nginx, _, err := store.CompileNodeNginx(t.Context(), nodeID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, expected := range []string{"listen 0.0.0.0:443", "a.example.com", "b.example.com"} {
+	for _, expected := range []string{"listen 0.0.0.0:443", "a.example.com", "vless-b-new.example.com"} {
 		if !strings.Contains(nginx, expected) {
 			t.Fatalf("Nginx configuration missing %q:\n%s", expected, nginx)
 		}
@@ -178,11 +288,11 @@ func TestSharedPortInboundCreatesMultipleUsersAndNginxRoutes(t *testing.T) {
 		t.Fatalf("account rules are not first: %#v", configuration.Route.Rules)
 	}
 
-	response := request(t, http.MethodDelete, httpServer.URL+"/api/v1/ingress-routes/"+first.Ingress.ID, nil, session, csrfToken)
+	response := request(t, http.MethodDelete, httpServer.URL+"/api/v1/ingress-routes/"+routeByListener[first.Listener.ID].ID, nil, session, csrfToken)
 	if response.StatusCode != http.StatusNoContent {
 		t.Fatalf("delete first shared ingress route: got %d", response.StatusCode)
 	}
-	response = request(t, http.MethodDelete, httpServer.URL+"/api/v1/ingress-routes/"+second.Ingress.ID, nil, session, csrfToken)
+	response = request(t, http.MethodDelete, httpServer.URL+"/api/v1/ingress-routes/"+routeByListener[second.Listener.ID].ID, nil, session, csrfToken)
 	if response.StatusCode != http.StatusNoContent {
 		t.Fatalf("delete last shared ingress route: got %d", response.StatusCode)
 	}

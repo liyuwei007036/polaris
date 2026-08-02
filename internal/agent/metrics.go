@@ -82,10 +82,13 @@ func CollectMetrics() MetricReport {
 		report.Health.Status = "healthy"
 	case report.Health.SingBoxService == "inactive":
 		report.Health.Status = "stopped"
-		report.Health.Message = "sing-box service is not active"
+		report.Health.Message = "连接服务未运行"
+	case report.Health.SingBoxService == "active" && !report.Health.ClashAPIAvailable:
+		report.Health.Status = "degraded"
+		report.Health.Message = "连接数据接口异常"
 	default:
 		report.Health.Status = "degraded"
-		report.Health.Message = "one or more health signals are unavailable"
+		report.Health.Message = "部分运行数据暂时无法获取"
 	}
 	return report
 }

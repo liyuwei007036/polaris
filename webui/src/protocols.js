@@ -175,6 +175,7 @@ export function createListenerModel(existing, nodeID = '') {
     name: existing?.name || '',
     listen_address: existing?.listen_address || '0.0.0.0',
     port: existing?.port || 443,
+    original_port: existing?.port || 0,
     backend_port: existing?.backend_port || 0,
     enabled: existing?.enabled ?? true,
     outbound_id: existing?.outbound_id || '',
@@ -203,20 +204,19 @@ export function createListenerModel(existing, nodeID = '') {
     shadowtls_version: spec.shadowtls?.version || 3,
     shadowtls_handshake_server: spec.shadowtls?.handshake_server || '',
     shadowtls_handshake_port: spec.shadowtls?.handshake_port || 443,
-    shared_port: Boolean(existing && ['127.0.0.1', '::1'].includes(existing.listen_address) && existing.backend_port && existing.backend_port !== existing.port),
-    ingress_sni: '',
   }
 }
 
 export function listenerPayload(model) {
   const definition = protocolMap[model.protocol]
   const security = definition.security.includes(model.security) ? model.security : definition.security[0]
+  const automaticallyManaged = ['127.0.0.1', '::1'].includes(model.listen_address) && model.backend_port && model.backend_port !== model.original_port
   return {
     node_id: model.node_id,
     name: model.name,
-    listen_address: model.shared_port ? '127.0.0.1' : '0.0.0.0',
+    listen_address: model.listen_address || '0.0.0.0',
     port: Number(model.port),
-    backend_port: model.shared_port ? Number(model.backend_port || 0) : 0,
+    backend_port: automaticallyManaged ? Number(model.backend_port) : Number(model.port),
     enabled: Boolean(model.enabled),
     outbound_id: model.outbound_id || '',
     spec: {

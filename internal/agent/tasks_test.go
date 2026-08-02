@@ -18,6 +18,24 @@ import (
 	"testing"
 )
 
+func TestInitialSingBoxConfigIsValidJSON(t *testing.T) {
+	var configuration map[string]any
+	if err := json.Unmarshal([]byte(initialSingBoxConfig), &configuration); err != nil {
+		t.Fatalf("initial sing-box configuration is invalid JSON: %v", err)
+	}
+	if _, ok := configuration["outbounds"]; !ok {
+		t.Fatal("initial sing-box configuration has no outbound")
+	}
+	experimental, ok := configuration["experimental"].(map[string]any)
+	if !ok {
+		t.Fatal("initial sing-box configuration has no local connection API")
+	}
+	clashAPI, ok := experimental["clash_api"].(map[string]any)
+	if !ok || clashAPI["external_controller"] != "127.0.0.1:9090" {
+		t.Fatalf("unexpected local connection API configuration: %#v", experimental)
+	}
+}
+
 func TestOutboundHTTPProxyProbe(t *testing.T) {
 	proxyServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNoContent)

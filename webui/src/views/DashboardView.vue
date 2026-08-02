@@ -47,11 +47,16 @@ function relativeTime(value) {
 
 function healthInfo(node) {
   if (!node.online) return ['离线', 'info']
+  const health = metrics.value[node.id]?.health
+  if (health?.status === 'degraded') {
+    if (health.sing_box_service === 'active' && !health.clash_api_available) return ['连接数据异常', 'warning']
+    if (!health.traffic_available) return ['流量统计不可用', 'warning']
+    return ['检测数据不完整', 'warning']
+  }
   return {
     healthy: ['正常', 'success'],
-    degraded: ['部分不可用', 'warning'],
     stopped: ['连接服务已停止', 'danger'],
-  }[metrics.value[node.id]?.health?.status] || ['等待检测', 'info']
+  }[health?.status] || ['等待检测', 'info']
 }
 
 function updateRates(nodeID, report) {
@@ -89,7 +94,7 @@ function taskKind(kind) {
     'singbox.upgrade': '升级连接服务',
     'firewall.apply': '更新访问限制',
     'fail2ban.apply': '更新自动封禁设置',
-    'nginx.apply_config': '更新端口共享配置',
+    'nginx.apply_config': '更新接入端口分配',
     'outbound.test': '检测上网出口',
   }[kind] || '其他系统操作'
 }

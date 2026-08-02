@@ -27,13 +27,16 @@ const sessionCookieName = "sb_control_session"
 var dashboardFS embed.FS
 
 type Server struct {
-	store         *Store
-	noiseKeypair  wire.Keypair
-	secureCookies bool
-	controlMu     sync.Mutex
-	controls      map[string]*controlSession
-	connHub       *connectionsHub
-	liveHub       *liveHub
+	store                  *Store
+	noiseKeypair           wire.Keypair
+	secureCookies          bool
+	controlMu              sync.Mutex
+	controls               map[string]*controlSession
+	autoInstallMu          sync.Mutex
+	autoInstallChecked     map[string]bool
+	latestSingBoxReleaseFn func(context.Context, string) (SingBoxRelease, error)
+	connHub                *connectionsHub
+	liveHub                *liveHub
 }
 
 type controlSession struct {
@@ -48,7 +51,9 @@ func NewServer(store *Store, secureCookies bool) (*Server, error) {
 	}
 	return &Server{
 		store: store, noiseKeypair: keypair, secureCookies: secureCookies,
-		controls: make(map[string]*controlSession), connHub: newConnectionsHub(), liveHub: newLiveHub(),
+		controls: make(map[string]*controlSession), autoInstallChecked: make(map[string]bool),
+		latestSingBoxReleaseFn: LatestOfficialSingBoxRelease,
+		connHub:                newConnectionsHub(), liveHub: newLiveHub(),
 	}, nil
 }
 
@@ -1256,12 +1261,6 @@ func (s *Server) createListenerWithDefaultAccount(w http.ResponseWriter, r *http
 			Name       string `json:"name"`
 			OutboundID string `json:"outbound_id"`
 		} `json:"accounts"`
-		Ingress *struct {
-			ListenAddress string `json:"listen_address"`
-			Port          uint16 `json:"port"`
-			SNI           string `json:"sni"`
-			Enabled       bool   `json:"enabled"`
-		} `json:"ingress_route"`
 	}
 	if !decodeJSON(w, r, &input) {
 		return
@@ -1275,25 +1274,11 @@ func (s *Server) createListenerWithDefaultAccount(w http.ResponseWriter, r *http
 			OutboundID string `json:"outbound_id"`
 		}{Name: "默认账号", OutboundID: input.DefaultOutboundID})
 	}
-	if input.Ingress != nil {
-		if input.Ingress.ListenAddress == "" {
-			input.Ingress.ListenAddress = "0.0.0.0"
-		}
-		if input.Ingress.Port == 0 {
-			input.Ingress.Port = input.Listener.Port
-		}
-		input.Listener.Port = input.Ingress.Port
-		input.Listener.ListenAddr = "127.0.0.1"
-		if input.Listener.BackendPort == 0 || input.Listener.BackendPort == input.Listener.Port {
-			backendPort, err := s.store.NextListenerBackendPort(r.Context(), input.Listener.NodeID, input.Listener.Spec.Network)
-			if err != nil {
-				writeError(w, err)
-				return
-			}
-			input.Listener.BackendPort = backendPort
-		}
-	}
-	created, err := s.store.CreateListener(r.Context(), input.Listener)
+	// Public and internal bind addresses are system-managed. Users only choose
+	// the public service port; sharing is enabled automatically when needed.
+	input.Listener.ListenAddr = "0.0.0.0"
+	input.Listener.BackendPort = 0
+	created, ingressRoute, portRoutingChanged, err := s.store.CreateListenerWithAutomaticPortRouting(r.Context(), input.Listener)
 	if err != nil {
 		writeError(w, err)
 		return
@@ -1322,20 +1307,6 @@ func (s *Server) createListenerWithDefaultAccount(w http.ResponseWriter, r *http
 		}
 		endpoints = append(endpoints, endpoint)
 	}
-	var ingressRoute *IngressRoute
-	if input.Ingress != nil {
-		route, err := s.store.CreateIngressRoute(r.Context(), IngressRoute{
-			NodeID: created.NodeID, ListenerID: created.ID,
-			ListenAddress: input.Ingress.ListenAddress, Port: input.Ingress.Port,
-			SNI: input.Ingress.SNI, Enabled: input.Ingress.Enabled,
-		})
-		if err != nil {
-			_ = s.store.DeleteListener(r.Context(), created.ID)
-			writeError(w, err)
-			return
-		}
-		ingressRoute = &route
-	}
 	if err := s.store.AppendAudit(r.Context(), operator.ID, "listener.created", "listener", created.ID, "listener and generated accounts created"); err != nil {
 		writeError(w, err)
 		return
@@ -1347,7 +1318,7 @@ func (s *Server) createListenerWithDefaultAccount(w http.ResponseWriter, r *http
 		return
 	}
 	setAutoApplyTaskHeader(w, task)
-	if ingressRoute != nil {
+	if portRoutingChanged {
 		nginxTask, err := s.dispatchNodeNginx(r.Context(), created.NodeID, operator.ID)
 		if err != nil {
 			writeError(w, err)
@@ -1373,10 +1344,21 @@ func (s *Server) updateListener(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	listener.ID = r.PathValue("id")
+	automaticRoute, err := s.store.prepareAutomaticRouteUpdate(r.Context(), listener)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
 	updated, err := s.store.UpdateListener(r.Context(), listener)
 	if err != nil {
 		writeError(w, err)
 		return
+	}
+	if automaticRoute != nil {
+		if _, err := s.store.UpdateIngressRoute(r.Context(), *automaticRoute); err != nil {
+			writeError(w, err)
+			return
+		}
 	}
 	if err := s.store.AppendAudit(r.Context(), operator.ID, "listener.updated", "listener", updated.ID, "listener definition updated"); err != nil {
 		writeError(w, err)
@@ -2233,6 +2215,7 @@ func writeJSON(w http.ResponseWriter, status int, body any) {
 func writeError(w http.ResponseWriter, err error) {
 	status := http.StatusBadRequest
 	message := "invalid request"
+	var visibleError *userFacingError
 	switch {
 	case errors.Is(err, ErrInvalidCredentials), errors.Is(err, ErrUnauthorized):
 		status, message = http.StatusUnauthorized, "authentication failed"
@@ -2242,6 +2225,8 @@ func writeError(w http.ResponseWriter, err error) {
 		status, message = http.StatusNotFound, "not found"
 	case errors.Is(err, ErrConflict):
 		status, message = http.StatusConflict, "conflicting state"
+	case errors.As(err, &visibleError):
+		message = visibleError.Error()
 	}
 	writeJSON(w, status, map[string]string{"error": message})
 }

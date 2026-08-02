@@ -29,6 +29,7 @@ import (
 
 var managedSingBoxConfig = managedSystemPath("/etc/sing-box/config.json")
 var managedNginxConfig = managedSystemPath("/etc/nginx/stream-conf.d/sb-control.conf")
+var managedNginxModuleConfig = managedSystemPath("/etc/nginx/modules-enabled/99-sb-control-stream.conf")
 
 var outboundProbeURL = "https://www.gstatic.com/generate_204"
 
@@ -403,6 +404,9 @@ func applyNginxConfig(ctx context.Context, task Task) TaskResult {
 	if !strings.EqualFold(hex.EncodeToString(digest[:]), task.ExpectedHash) {
 		return TaskResult{Status: "failed", Summary: "Nginx configuration SHA-256 does not match task hash"}
 	}
+	if err := ensureNginxReady(ctx, payload.Configuration != ""); err != nil {
+		return TaskResult{Status: "failed", Summary: "prepare automatic TCP port routing: " + err.Error()}
+	}
 	if current, err := os.ReadFile(managedNginxConfig); err == nil {
 		currentDigest := sha256.Sum256(current)
 		if strings.EqualFold(hex.EncodeToString(currentDigest[:]), task.ExpectedHash) && nginxServiceActive(ctx) {
@@ -444,9 +448,16 @@ func applyNginxConfig(ctx context.Context, task Task) TaskResult {
 	var applyErr string
 	if testOutput, testErr := exec.CommandContext(ctx, "nginx", "-t").CombinedOutput(); testErr != nil {
 		applyErr = commandSummary("nginx -t", testOutput, testErr)
-	} else if reloadOutput, reloadErr := exec.CommandContext(ctx, "systemctl", "reload", "nginx.service").CombinedOutput(); reloadErr != nil {
-		applyErr = commandSummary("systemctl reload nginx.service", reloadOutput, reloadErr)
+	} else if nginxServiceActive(ctx) {
+		if reloadOutput, reloadErr := exec.CommandContext(ctx, "systemctl", "reload", "nginx.service").CombinedOutput(); reloadErr != nil {
+			applyErr = commandSummary("systemctl reload nginx.service", reloadOutput, reloadErr)
+		}
+	} else if startOutput, startErr := exec.CommandContext(ctx, "systemctl", "enable", "--now", "nginx.service").CombinedOutput(); startErr != nil {
+		applyErr = commandSummary("systemctl enable --now nginx.service", startOutput, startErr)
 	} else {
+		return TaskResult{Status: "succeeded", Summary: "Nginx configuration validated and reloaded"}
+	}
+	if applyErr == "" {
 		return TaskResult{Status: "succeeded", Summary: "Nginx configuration validated and reloaded"}
 	}
 	if backup, err := os.ReadFile(backupPath); err == nil {
@@ -458,6 +469,73 @@ func applyNginxConfig(ctx context.Context, task Task) TaskResult {
 		}
 	}
 	return TaskResult{Status: "failed", Summary: "Nginx configuration failed and automatic rollback did not complete: " + applyErr}
+}
+
+func ensureNginxReady(ctx context.Context, needed bool) error {
+	if strings.TrimSpace(os.Getenv("SB_CONTROL_E2E_ROOT")) != "" {
+		return nil
+	}
+	if _, err := exec.LookPath("nginx"); err != nil {
+		if !needed {
+			return nil
+		}
+		var commands [][]string
+		switch {
+		case commandExists("apt-get"):
+			commands = [][]string{{"apt-get", "update"}, {"apt-get", "install", "-y", "nginx", "libnginx-mod-stream"}}
+		case commandExists("dnf"):
+			commands = [][]string{{"dnf", "install", "-y", "nginx", "nginx-mod-stream"}}
+		case commandExists("yum"):
+			commands = [][]string{{"yum", "install", "-y", "nginx", "nginx-mod-stream"}}
+		case commandExists("apk"):
+			commands = [][]string{{"apk", "add", "nginx", "nginx-mod-stream"}}
+		default:
+			return errors.New("未找到 Nginx，也未识别到受支持的软件包管理器；请先安装带 stream 模块的 Nginx")
+		}
+		for _, arguments := range commands {
+			output, commandErr := exec.CommandContext(ctx, arguments[0], arguments[1:]...).CombinedOutput()
+			if commandErr != nil {
+				return errors.New(commandSummary(strings.Join(arguments, " "), output, commandErr))
+			}
+		}
+	}
+	if !needed {
+		return nil
+	}
+	fullConfig, fullConfigErr := exec.CommandContext(ctx, "nginx", "-T").CombinedOutput()
+	if fullConfigErr == nil && strings.Contains(string(fullConfig), "/etc/nginx/stream-conf.d/*.conf") {
+		return nil
+	}
+	if fullConfigErr == nil && strings.Contains(string(fullConfig), "stream {") {
+		return errors.New("现有 Nginx 已配置其他 stream 入口；请在该入口中加入 /etc/nginx/stream-conf.d/*.conf 后重试")
+	}
+	mainConfig, err := os.ReadFile("/etc/nginx/nginx.conf")
+	if err != nil {
+		return errors.New("读取 Nginx 主配置失败: " + err.Error())
+	}
+	if strings.Contains(string(mainConfig), "/etc/nginx/stream-conf.d/*.conf") {
+		return nil
+	}
+	if !strings.Contains(string(mainConfig), "/etc/nginx/modules-enabled/*.conf") {
+		return errors.New("现有 Nginx 主配置未加载 modules-enabled，无法安全加入自动端口分配配置")
+	}
+	versionOutput, err := exec.CommandContext(ctx, "nginx", "-V").CombinedOutput()
+	if err != nil || !strings.Contains(string(versionOutput), "--with-stream") {
+		return errors.New("当前 Nginx 未提供 stream 功能，无法按连接域名自动分配 TCP 端口")
+	}
+	if err := os.MkdirAll(filepath.Dir(managedNginxModuleConfig), 0o755); err != nil {
+		return errors.New("创建 Nginx 模块配置目录失败: " + err.Error() + permissionHint(err))
+	}
+	include := []byte("stream {\n    include /etc/nginx/stream-conf.d/*.conf;\n}\n")
+	if err := os.WriteFile(managedNginxModuleConfig, include, 0o644); err != nil {
+		return errors.New("写入 Nginx 自动端口配置入口失败: " + err.Error() + permissionHint(err))
+	}
+	return nil
+}
+
+func commandExists(name string) bool {
+	_, err := exec.LookPath(name)
+	return err == nil
 }
 
 func applySingBoxConfig(ctx context.Context, task Task) TaskResult {
@@ -536,6 +614,19 @@ func applySingBoxConfig(ctx context.Context, task Task) TaskResult {
 
 var managedSingBoxUnit = managedSystemPath("/etc/systemd/system/sing-box.service")
 
+const initialSingBoxConfig = `{
+  "log": { "level": "info" },
+  "inbounds": [],
+  "outbounds": [
+    { "type": "direct", "tag": "direct" }
+  ],
+  "route": { "final": "direct" },
+  "experimental": {
+    "clash_api": { "external_controller": "127.0.0.1:9090" }
+  }
+}
+`
+
 const singBoxUnitContents = `[Unit]
 Description=sing-box service (managed by sb-control)
 After=network.target
@@ -560,6 +651,16 @@ WantedBy=multi-user.target
 // service definition. An existing unit (e.g. from the official package) is
 // left untouched.
 func ensureSingBoxService(ctx context.Context) error {
+	if _, err := os.Stat(managedSingBoxConfig); errors.Is(err, os.ErrNotExist) {
+		if err := os.MkdirAll(filepath.Dir(managedSingBoxConfig), 0o750); err != nil {
+			return errors.New("create sing-box configuration directory: " + err.Error() + permissionHint(err))
+		}
+		if err := os.WriteFile(managedSingBoxConfig, []byte(initialSingBoxConfig), 0o640); err != nil {
+			return errors.New("write initial sing-box configuration: " + err.Error() + permissionHint(err))
+		}
+	} else if err != nil {
+		return errors.New("read sing-box configuration: " + err.Error() + permissionHint(err))
+	}
 	if exec.CommandContext(ctx, "systemctl", "cat", "sing-box.service").Run() == nil {
 		return nil
 	}

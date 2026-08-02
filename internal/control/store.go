@@ -933,6 +933,14 @@ func (s *Store) CreateTask(ctx context.Context, task Task) (Task, error) {
 	return task, nil
 }
 
+func (s *Store) HasSingBoxInstallAttempt(ctx context.Context, nodeID string) (bool, error) {
+	var count int
+	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM tasks WHERE node_id = ? AND kind = 'singbox.install'`, nodeID).Scan(&count); err != nil {
+		return false, fmt.Errorf("check sing-box installation history: %w", err)
+	}
+	return count > 0, nil
+}
+
 func (s *Store) NextListenerBackendPort(ctx context.Context, nodeID, network string) (uint16, error) {
 	if nodeID == "" || (network != "tcp" && network != "udp") {
 		return 0, errors.New("listener node and network are required")

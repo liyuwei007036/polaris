@@ -229,23 +229,26 @@ func TestControlPlaneProcessJourney(t *testing.T) {
 		var shared quickListenerResponse
 		headers := api.mustJSON(t, http.MethodPost, "/api/v1/listeners/quick", map[string]any{
 			"listener": map[string]any{
-				"node_id": approval.NodeID, "name": fmt.Sprintf("E2E 共享端口 VLESS %d", index+1), "listen_address": "0.0.0.0", "port": 443, "enabled": true,
+				"node_id": approval.NodeID, "name": fmt.Sprintf("E2E 自动端口 VLESS %d", index+1), "listen_address": "0.0.0.0", "port": 443, "enabled": true,
 				"spec": map[string]any{
 					"protocol": "vless", "network": "tcp",
 					"tls": map[string]any{"enabled": true, "server_name": serverName, "certificate_id": certificate.ID},
 				},
 			},
-			"accounts":      []map[string]any{{"name": fmt.Sprintf("E2E 共享用户 %d", index+1), "outbound_id": "direct"}},
-			"ingress_route": map[string]any{"listen_address": "0.0.0.0", "port": 443, "sni": serverName, "enabled": true},
+			"accounts": []map[string]any{{"name": fmt.Sprintf("E2E 接入用户 %d", index+1), "outbound_id": "direct"}},
 		}, true, http.StatusCreated, &shared)
 		waitForSuccessfulTaskHeader(t, api, headers, "X-SB-Auto-Apply-Task")
-		waitForSuccessfulTaskHeader(t, api, headers, "X-SB-Auto-Apply-Nginx-Task")
+		if index > 0 {
+			waitForSuccessfulTaskHeader(t, api, headers, "X-SB-Auto-Apply-Nginx-Task")
+		} else if headers.Get("X-SB-Auto-Apply-Nginx-Task") != "" {
+			t.Fatal("the first listener unexpectedly enabled automatic TCP port routing")
+		}
 		sharedEndpointIDs = append(sharedEndpointIDs, shared.Endpoints[0].ID)
 	}
 	nginxConfiguration := readFile(t, filepath.Join(managedRoot, "etc", "nginx", "stream-conf.d", "sb-control.conf"))
 	for _, serverName := range []string{"vless-a.e2e.test", "vless-b.e2e.test"} {
 		if !strings.Contains(nginxConfiguration, serverName) {
-			t.Fatalf("Nginx shared-port configuration is missing %s:\n%s", serverName, nginxConfiguration)
+			t.Fatalf("Nginx automatic port configuration is missing %s:\n%s", serverName, nginxConfiguration)
 		}
 	}
 
