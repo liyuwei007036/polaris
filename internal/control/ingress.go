@@ -54,7 +54,7 @@ func (s *Store) CreateListenerWithAutomaticPortRouting(ctx context.Context, list
 	}
 	var conflict string
 	if err := tx.QueryRowContext(ctx, `SELECT id FROM listeners WHERE node_id = ? AND name = ?`, listener.NodeID, listener.Name).Scan(&conflict); err == nil {
-		return Listener{}, nil, false, ErrConflict
+		return Listener{}, nil, false, fmt.Errorf("%w: %w", ErrConflict, userErrorf("该服务器已存在名为“%s”的接入服务，请修改服务名称", listener.Name))
 	} else if !errors.Is(err, sql.ErrNoRows) {
 		return Listener{}, nil, false, fmt.Errorf("check listener name conflict: %w", err)
 	}

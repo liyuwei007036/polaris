@@ -1,10 +1,18 @@
 import { createHmac } from 'node:crypto'
 import { test, expect } from '@playwright/test'
 
-test('管理员通过真实页面完成登录并检查全部核心工作区', async ({ page }) => {
+test('浏览器页面回归：真实登录，核心工作区 API 使用路由替身', async ({ page }) => {
   const consoleErrors = []
   const httpErrors = []
   let authenticated = false
+  await page.addInitScript(() => {
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: undefined })
+    document.execCommand = (command) => {
+      if (command !== 'copy') return false
+      window.__copiedText = document.activeElement?.value || ''
+      return true
+    }
+  })
   page.on('console', (message) => {
     if (message.type() === 'error' && !message.text().startsWith('Failed to load resource:')) consoleErrors.push(message.text())
   })
@@ -87,15 +95,24 @@ test('管理员通过真实页面完成登录并检查全部核心工作区', as
   await expect(dialog.getByText('Reality 密钥和 Short ID 会在创建接入服务时自动生成，无需手动配置。', { exact: true })).toHaveCount(0)
   await expect(dialog.getByRole('button', { name: '添加用户', exact: true })).toBeVisible()
   await expect(dialog.getByRole('textbox', { name: '用户名称' })).toHaveCount(1)
+  await expect(dialog.getByRole('textbox', { name: '用户名称' })).toHaveValue(/^user_[0-9a-f]{8}$/)
   await expect(dialog.getByRole('textbox', { name: '客户端节点别名' })).toHaveCount(1)
+  await dialog.getByRole('button', { name: '高级设置：连接传输方式' }).click()
+  const transportField = dialog.locator('.el-form-item').filter({ hasText: '传输方式' })
+  await expect(transportField.locator('.el-select')).toBeVisible()
+  await transportField.locator('.el-select').click()
+  await page.getByRole('option', { name: 'WebSocket', exact: true }).click()
+  await expect(dialog.getByRole('textbox', { name: '请求路径' })).toHaveValue(/^\/[0-9a-f]{24}$/)
   await dialog.getByRole('button', { name: '取消', exact: true }).click()
   await expect(dialog).toBeHidden()
 
   let savedListener
   let updatedAccount
   let createdAccount
+  let quickListenerPayload
   let savedClientConfig
   let proxyGroupSequence = 0
+  let rejectFirstProxyGroup = true
   const savedProxyGroups = []
   const listener = {
     id: 'listener-1', node_id: 'node-1', name: 'WebSocket 接入', listen_address: '0.0.0.0',
@@ -105,6 +122,7 @@ test('管理员通过真实页面完成登录并检查全部核心工作区', as
       transport: { type: 'ws', path: '', host: '', service_name: '' },
     },
   }
+  // This section verifies browser interaction contracts, not a live Agent.
   await page.route('**/api/v1/**', async (route) => {
     const request = route.request()
     const path = new URL(request.url()).pathname
@@ -114,7 +132,7 @@ test('管理员通过真实页面完成登录并检查全部核心工作区', as
     if (request.method() === 'GET' && path === '/api/v1/outbounds') return route.fulfill({ json: { outbounds: [] } })
     if (request.method() === 'GET' && path === '/api/v1/certificates') return route.fulfill({ json: { certificates: [] } })
     if (request.method() === 'GET' && path === '/api/v1/mihomo/proxy-groups') return route.fulfill({ json: { proxy_groups: savedProxyGroups } })
-    if (request.method() === 'GET' && path === '/api/v1/mihomo/client-configs') return route.fulfill({ json: { client_configs: [] } })
+    if (request.method() === 'GET' && path === '/api/v1/mihomo/client-configs') return route.fulfill({ json: { client_configs: savedClientConfig ? [savedClientConfig] : [] } })
     if (request.method() === 'GET' && path === '/api/v1/listeners/listener-1/endpoints') {
       return route.fulfill({ json: { endpoints: [{ id: 'endpoint-1', listener_id: 'listener-1', name: '默认账号', alias: '测试节点 01', enabled: true, outbound_id: 'direct' }] } })
     }
@@ -126,26 +144,46 @@ test('管理员通过真实页面完成登录并检查全部核心工作区', as
       updatedAccount = request.postDataJSON()
       return route.fulfill({ json: { id: 'endpoint-1', ...updatedAccount } })
     }
+    if (request.method() === 'POST' && path === '/api/v1/listeners/quick') {
+      quickListenerPayload = request.postDataJSON()
+      return route.fulfill({ status: 400, json: { error: '测试校验错误：请检查接入服务参数' } })
+    }
     if (request.method() === 'POST' && path === '/api/v1/listeners/listener-1/endpoints/quick') {
       createdAccount = request.postDataJSON()
       return route.fulfill({ status: 201, json: { id: 'endpoint-2', listener_id: 'listener-1', enabled: true, ...createdAccount } })
     }
     if (request.method() === 'POST' && path === '/api/v1/mihomo/proxy-groups') {
       const payload = request.postDataJSON()
+      if (rejectFirstProxyGroup) {
+        rejectFirstProxyGroup = false
+        return route.fulfill({ status: 400, json: { error: '测试代理分组校验错误' } })
+      }
       proxyGroupSequence += 1
       const group = { id: `group-${proxyGroupSequence}`, ...payload }
       savedProxyGroups.push(group)
       return route.fulfill({ status: 201, json: group })
     }
     if (request.method() === 'POST' && path === '/api/v1/mihomo/client-configs') {
-      savedClientConfig = request.postDataJSON()
-      return route.fulfill({ status: 201, json: { id: 'client-1', subscription_path: '/api/v1/mihomo/subscriptions/test-token', ...savedClientConfig } })
+      savedClientConfig = { id: 'client-1', subscription_path: '/api/v1/mihomo/subscriptions/test-token', ...request.postDataJSON() }
+      return route.fulfill({ status: 201, json: savedClientConfig })
     }
     return route.continue()
   })
   await page.getByRole('button', { name: '服务器', exact: true }).click()
   await page.getByRole('button', { name: '接入服务', exact: true }).click()
   await expect(page.getByRole('button', { name: '添加用户', exact: true })).toHaveCount(0)
+
+  await page.getByRole('button', { name: '新建接入服务', exact: true }).click()
+  const createDialog = page.getByRole('dialog', { name: '新建接入服务', exact: true })
+  await createDialog.getByRole('textbox', { name: '客户端节点别名' }).fill('测试节点 01')
+  await createDialog.getByRole('button', { name: '创建并应用', exact: true }).click()
+  await expect(page.getByText('测试校验错误：请检查接入服务参数', { exact: true })).toBeVisible()
+  await expect(createDialog).toBeVisible()
+  expect(quickListenerPayload.accounts).toHaveLength(1)
+  expect(quickListenerPayload.accounts[0].name).toMatch(/^user_[0-9a-f]{8}$/)
+  expect(quickListenerPayload.accounts[0]).toMatchObject({ alias: '测试节点 01', enabled: true, outbound_id: 'direct' })
+  await createDialog.getByRole('button', { name: '取消', exact: true }).click()
+
   await page.getByRole('button', { name: '修改', exact: true }).click()
   const editDialog = page.getByRole('dialog', { name: '修改接入服务', exact: true })
   const accountNames = editDialog.getByRole('textbox', { name: '用户名称' })
@@ -174,6 +212,9 @@ test('管理员通过真实页面完成登录并检查全部核心工作区', as
   await page.locator('.el-select-dropdown:visible .el-select-dropdown__item').filter({ hasText: '测试节点 01' }).click()
   await page.keyboard.press('Escape')
   await groupDialog.getByRole('button', { name: '保存', exact: true }).click()
+  await expect(page.getByText('测试代理分组校验错误', { exact: true })).toBeVisible()
+  await expect(groupDialog).toBeVisible()
+  await groupDialog.getByRole('button', { name: '保存', exact: true }).click()
   await expect(groupDialog).toBeHidden()
   expect(savedProxyGroups[0].members).toEqual([{ kind: 'endpoint', id: 'endpoint-1' }])
 
@@ -186,6 +227,14 @@ test('管理员通过真实页面完成登录并检查全部核心工作区', as
   await groupDialog.getByRole('button', { name: '保存', exact: true }).click()
   await expect(groupDialog).toBeHidden()
   expect(savedProxyGroups[1].members).toEqual([{ kind: 'group', id: savedProxyGroups[0].id }])
+
+  const baseGroupRow = page.locator('.el-table__body-wrapper tbody tr').first()
+  await baseGroupRow.getByRole('button', { name: '编辑', exact: true }).click()
+  const editGroupDialog = page.getByRole('dialog', { name: '编辑代理分组', exact: true })
+  await expect(editGroupDialog).toBeVisible()
+  await expect(editGroupDialog.getByRole('textbox', { name: '分组名称' })).toHaveValue('基础节点')
+  await expect(editGroupDialog.locator('.el-select__selected-item').filter({ hasText: '测试节点 01' })).toBeVisible()
+  await editGroupDialog.getByRole('button', { name: '取消', exact: true }).click()
 
   await page.getByRole('button', { name: '客户端配置', exact: true }).click()
   await expect(page.getByRole('button', { name: '新建客户端配置', exact: true })).toBeVisible()
@@ -226,11 +275,25 @@ test('管理员通过真实页面完成登录并检查全部核心工作区', as
   })
   expect(savedClientConfig).not.toHaveProperty('groups')
   expect(savedClientConfig).not.toHaveProperty('rule_preset')
+
+  const clientConfigRow = page.getByRole('row').filter({ hasText: '组合分组配置' })
+  await clientConfigRow.getByRole('button', { name: '复制更新地址', exact: true }).click()
+  await expect(page.getByText('更新地址已复制', { exact: true })).toBeVisible()
+  await expect.poll(() => page.evaluate(() => window.__copiedText)).toBe(`${process.env.SB_CONTROL_E2E_BASE_URL}/api/v1/mihomo/subscriptions/test-token`)
+  await clientConfigRow.getByRole('button', { name: '编辑', exact: true }).click()
+  const editClientDialog = page.getByRole('dialog', { name: '编辑客户端配置', exact: true })
+  await expect(editClientDialog).toBeVisible()
+  await expect(editClientDialog.getByRole('textbox', { name: '配置名称' })).toHaveValue('组合分组配置')
+  await expect(editClientDialog.getByLabel('规则匹配值').first()).toHaveValue('example.com')
+  await expect(editClientDialog.locator('.rule-table tbody tr')).toHaveCount(2)
+  await editClientDialog.getByRole('button', { name: '取消', exact: true }).click()
   await page.setViewportSize({ width: 390, height: 844 })
   await expect.poll(async () => await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true)
 
   expect(consoleErrors).toEqual([])
-  expect(httpErrors).toEqual([])
+  expect(httpErrors).toHaveLength(2)
+  expect(httpErrors.some((entry) => /400 .*\/api\/v1\/listeners\/quick$/.test(entry))).toBe(true)
+  expect(httpErrors.some((entry) => /400 .*\/api\/v1\/mihomo\/proxy-groups$/.test(entry))).toBe(true)
 })
 
 function totp(secret, stepOffset = 0) {

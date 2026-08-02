@@ -100,7 +100,7 @@ func TestInboundMutationCreatesAutomaticApplyTask(t *testing.T) {
 		Endpoints []control.Endpoint `json:"endpoints"`
 	}
 	decodeBody(t, response, &created)
-	if len(created.Endpoints) != 1 || created.Endpoints[0].Name != "默认账号" {
+	if len(created.Endpoints) != 1 || !strings.HasPrefix(created.Endpoints[0].Name, "user_") || len(created.Endpoints[0].Name) != len("user_")+8 {
 		t.Fatalf("default generated account = %#v", created.Endpoints)
 	}
 }

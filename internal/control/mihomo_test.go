@@ -191,22 +191,22 @@ func TestStoredMihomoConfigReferencesNestedGroupsRulesAndAliases(t *testing.T) {
 		t.Fatal(err)
 	}
 	groupA.Members = []control.MihomoGroupMember{{Kind: "group", ID: groupB.ID}}
-	if _, err := store.UpdateMihomoProxyGroup(t.Context(), groupA); err == nil || !strings.Contains(err.Error(), "circular") {
+	if _, err := store.UpdateMihomoProxyGroup(t.Context(), groupA); err == nil || !strings.Contains(err.Error(), "循环引用") {
 		t.Fatalf("proxy group accepted a circular reference: %v", err)
 	}
 	if _, err := store.CreateMihomoProxyGroup(t.Context(), control.MihomoProxyGroup{
 		Name: "未知分组", Strategy: "select", Members: []control.MihomoGroupMember{{Kind: "group", ID: "missing"}},
-	}); err == nil || !strings.Contains(err.Error(), "unknown group") {
+	}); err == nil || !strings.Contains(err.Error(), "已不存在") {
 		t.Fatalf("proxy group accepted an unknown group: %v", err)
 	}
 	if _, err := store.CreateMihomoProxyGroup(t.Context(), control.MihomoProxyGroup{
 		Name: "洛杉矶 01", Strategy: "select", Members: []control.MihomoGroupMember{{Kind: "endpoint", ID: endpointIDs[0]}},
-	}); err == nil || !strings.Contains(err.Error(), "conflicts") {
+	}); err == nil || !strings.Contains(err.Error(), "冲突") {
 		t.Fatalf("proxy group accepted a node/group name conflict: %v", err)
 	}
 	if _, err := store.CreateMihomoProxyGroup(t.Context(), control.MihomoProxyGroup{
 		Name: "direct", Strategy: "select", Members: []control.MihomoGroupMember{{Kind: "endpoint", ID: endpointIDs[0]}},
-	}); err == nil || !strings.Contains(err.Error(), "reserved") {
+	}); err == nil || !strings.Contains(err.Error(), "保留名称") {
 		t.Fatalf("proxy group accepted a reserved name: %v", err)
 	}
 

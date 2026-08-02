@@ -37,11 +37,11 @@ const (
 	e2eAdminPassword = "E2E-Admin-Password-2026!"
 )
 
-// TestControlPlaneProcessJourney runs the compiled product as two independent
-// processes. It deliberately crosses the browser HTTP boundary and the
-// Noise-encrypted master/agent boundary instead of calling Store or Server
-// methods directly.
-func TestControlPlaneProcessJourney(t *testing.T) {
+// TestControlPlaneProcessJourneyWithRealAgent runs the compiled Master and
+// Agent as independent product processes. Host integrations such as sing-box
+// and systemctl are deterministic stubs; the HTTP and Noise control planes are
+// real sockets between the two product processes.
+func TestControlPlaneProcessJourneyWithRealAgent(t *testing.T) {
 	root := repositoryRoot(t)
 	work := t.TempDir()
 	binaryPath := buildProgram(t, root, "./cmd/sb-control", filepath.Join(work, executableName("sb-control-e2e")))
@@ -133,6 +133,10 @@ func TestControlPlaneProcessJourney(t *testing.T) {
 		"agent", "serve", "--data-dir", agentData,
 		"--master", masterAddress, "--master-pubkey", masterPublicKey,
 		"--heartbeat-interval", "5s", "--connections-interval", "1s")
+	if master.command.Process == nil || agentProcess.command.Process == nil || master.command.Process.Pid == agentProcess.command.Process.Pid {
+		t.Fatal("Master and Agent were not started as distinct product processes")
+	}
+	t.Logf("real product processes started: master_pid=%d agent_pid=%d; host command dependencies use stubs", master.command.Process.Pid, agentProcess.command.Process.Pid)
 	t.Cleanup(func() { agentProcess.stop(t) })
 	waitFor(t, 20*time.Second, "approved agent to report online", func() bool {
 		var result struct {

@@ -70,11 +70,14 @@ async function saveListener(payload) {
       await put(`/listeners/${editing.value.id}`, payload.listener)
       await syncAccounts(editing.value.id, payload.accounts)
     } else {
-      await post('/listeners/quick', { listener: payload.listener, accounts: payload.accounts })
+      const accounts = payload.accounts.map(({ name, alias, enabled, outbound_id }) => ({ name, alias, enabled, outbound_id }))
+      await post('/listeners/quick', { listener: payload.listener, accounts })
     }
     ElMessage.success(editing.value ? '接入服务已保存，正在自动应用' : '接入服务已创建，正在自动应用')
     formOpen.value = false
     await load()
+  } catch (error) {
+    ElMessage.error(error instanceof Error ? error.message : '接入服务保存失败，请检查填写内容后重试')
   } finally {
     saving.value = false
   }

@@ -55,7 +55,7 @@ func TestNodeRenameAutomaticRealityAndEndpointAliasFlow(t *testing.T) {
 				},
 			},
 		},
-		"accounts": []map[string]any{{"name": "alice", "alias": "新加坡专线 01", "outbound_id": "direct"}},
+		"accounts": []map[string]any{{"id": "", "name": "alice", "alias": "新加坡专线 01", "enabled": true, "outbound_id": "direct"}},
 	}, session, csrfToken)
 	if response.StatusCode != http.StatusCreated {
 		t.Fatalf("create automatic Reality listener: got %d", response.StatusCode)
@@ -73,6 +73,24 @@ func TestNodeRenameAutomaticRealityAndEndpointAliasFlow(t *testing.T) {
 	}
 	if len(created.Endpoints) != 1 || created.Endpoints[0].Alias != "新加坡专线 01" {
 		t.Fatalf("endpoint alias was not stored: %#v", created.Endpoints)
+	}
+	groupInput := map[string]any{
+		"name": "新加坡节点", "strategy": "select",
+		"members": []map[string]any{{"kind": "endpoint", "id": created.Endpoints[0].ID}},
+	}
+	response = request(t, http.MethodPost, httpServer.URL+"/api/v1/mihomo/proxy-groups", groupInput, session, csrfToken)
+	if response.StatusCode != http.StatusCreated {
+		t.Fatalf("create proxy group through API: got %d", response.StatusCode)
+	}
+	response.Body.Close()
+	response = request(t, http.MethodPost, httpServer.URL+"/api/v1/mihomo/proxy-groups", groupInput, session, csrfToken)
+	if response.StatusCode != http.StatusConflict {
+		t.Fatalf("duplicate proxy group status = %d", response.StatusCode)
+	}
+	var groupError map[string]string
+	decodeBody(t, response, &groupError)
+	if !strings.Contains(groupError["error"], "新加坡节点") || !strings.Contains(groupError["error"], "已存在") {
+		t.Fatalf("duplicate proxy group error = %#v", groupError)
 	}
 	if _, _, err := store.CompileNodeConfig(t.Context(), nodeID); err != nil {
 		t.Fatalf("compile automatically generated Reality listener: %v", err)

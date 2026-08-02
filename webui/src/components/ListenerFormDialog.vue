@@ -50,6 +50,21 @@ const rules = computed(() => ({
   reality_handshake_server: showReality.value ? [{ required: true, message: '请输入 Reality 目标网站', trigger: 'blur' }] : [],
 }))
 
+function randomHex(byteLength) {
+  const bytes = new Uint8Array(byteLength)
+  crypto.getRandomValues(bytes)
+  return Array.from(bytes, (value) => value.toString(16).padStart(2, '0')).join('')
+}
+
+function randomAccountName() {
+  return `user_${randomHex(4)}`
+}
+
+function setTransportType(type) {
+  model.value.transport_type = type
+  if (type === 'ws' && !model.value.transport_path) model.value.transport_path = `/${randomHex(12)}`
+}
+
 watch(
   () => props.modelValue,
   async (open) => {
@@ -63,7 +78,7 @@ watch(
           enabled: endpoint.enabled,
           outbound_id: endpoint.outbound_id || 'direct',
         }))
-      : [{ id: '', name: '默认账号', alias: '', enabled: true, outbound_id: 'direct' }]
+      : [{ id: '', name: randomAccountName(), alias: '', enabled: true, outbound_id: 'direct' }]
     normalizeProtocol()
     await nextTick()
     formRef.value?.clearValidate()
@@ -95,7 +110,7 @@ function close() {
 }
 
 function addAccount() {
-  accounts.value.push({ id: '', name: `用户 ${accounts.value.length + 1}`, alias: '', enabled: true, outbound_id: 'direct' })
+  accounts.value.push({ id: '', name: randomAccountName(), alias: '', enabled: true, outbound_id: 'direct' })
 }
 
 function removeAccount(index) {
@@ -238,7 +253,7 @@ async function save() {
           <el-row :gutter="16">
             <el-col :span="10">
               <el-form-item label="传输方式">
-                <el-select v-model="model.transport_type" style="width: 100%">
+                <el-select :model-value="model.transport_type" style="width: 100%" @update:model-value="setTransportType">
                   <el-option v-for="option in transportOptions" :key="option.value" :label="option.label" :value="option.value" />
                 </el-select>
               </el-form-item>
@@ -256,6 +271,7 @@ async function save() {
             <el-col v-if="model.transport_type === 'grpc'" :span="14">
               <el-form-item label="gRPC 服务名称">
                 <el-input v-model="model.transport_service_name" placeholder="grpc-service" />
+                <div class="form-hint">标识这条 gRPC 传输通道；客户端必须填写完全相同的值。它不是域名，也不会创建系统服务。</div>
               </el-form-item>
             </el-col>
           </el-row>
@@ -308,6 +324,7 @@ async function save() {
 .account-list { border-top: 1px solid var(--sb-border); }
 .account-row { display: grid; grid-template-columns: 32px minmax(140px, 1fr) minmax(160px, 1fr) minmax(190px, 1.2fr) 62px 38px; gap: 10px; align-items: center; padding: 10px 0; border-bottom: 1px solid var(--sb-border); }
 .account-index { color: var(--sb-muted); text-align: center; font-variant-numeric: tabular-nums; }
+.form-hint { margin-top: 6px; color: var(--sb-muted); font-size: 12px; }
 .dialog-footer { display: flex; justify-content: flex-end; gap: 8px; }
 @media (max-width: 680px) {
   .listener-dialog-body :deep(.el-col) { max-width: 100%; flex: 0 0 100%; }

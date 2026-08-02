@@ -15,16 +15,19 @@ func normalizeMihomoProxyGroupMembers(group *MihomoProxyGroup) error {
 	if group.ID == "" || len(group.ID) > 128 || strings.ContainsAny(group.ID, "\r\n,") {
 		return errors.New("proxy group ID is required and must be at most 128 characters")
 	}
-	if err := validateMihomoName(group.Name); err != nil {
-		return err
+	if group.Name == "" || len(group.Name) > 128 {
+		return userErrorf("代理分组名称不能为空，且不能超过 128 个字符")
+	}
+	if strings.ContainsAny(group.Name, "\r\n,") {
+		return userErrorf("代理分组名称不能包含换行或逗号")
 	}
 	if isReservedMihomoClientName(group.Name) {
-		return fmt.Errorf("proxy group name %q is reserved by Mihomo", group.Name)
+		return userErrorf("代理分组名称“%s”是 Mihomo 保留名称，请使用其他名称", group.Name)
 	}
 	switch group.Strategy {
 	case "select", "url-test", "fallback":
 	default:
-		return errors.New("unsupported Mihomo proxy group strategy")
+		return userErrorf("代理分组策略无效，请重新选择")
 	}
 	if len(group.Members) == 0 && len(group.EndpointIDs) != 0 {
 		for _, endpointID := range group.EndpointIDs {
@@ -32,7 +35,7 @@ func normalizeMihomoProxyGroupMembers(group *MihomoProxyGroup) error {
 		}
 	}
 	if len(group.Members) == 0 {
-		return errors.New("proxy group requires at least one node or group")
+		return userErrorf("代理分组至少需要一个客户端节点或其他分组")
 	}
 	seen := map[string]bool{}
 	endpointIDs := []string{}
@@ -41,14 +44,14 @@ func normalizeMihomoProxyGroupMembers(group *MihomoProxyGroup) error {
 		member.Kind = strings.ToLower(strings.TrimSpace(member.Kind))
 		member.ID = strings.TrimSpace(member.ID)
 		if (member.Kind != "endpoint" && member.Kind != "group") || member.ID == "" {
-			return errors.New("proxy group contains an invalid member")
+			return userErrorf("代理分组包含无效成员，请重新选择")
 		}
 		if member.Kind == "group" && member.ID == group.ID {
-			return errors.New("proxy group cannot contain itself")
+			return userErrorf("代理分组不能引用自身")
 		}
 		key := member.Kind + ":" + member.ID
 		if seen[key] {
-			return errors.New("proxy group contains duplicate members")
+			return userErrorf("代理分组不能包含重复成员")
 		}
 		seen[key] = true
 		if member.Kind == "endpoint" {
@@ -76,12 +79,12 @@ func (s *Store) validateMihomoProxyGroupGraph(ctx context.Context, candidate Mih
 		switch member.Kind {
 		case "group":
 			if _, exists := byID[member.ID]; !exists {
-				return fmt.Errorf("proxy group %q references an unknown group", candidate.Name)
+				return userErrorf("代理分组“%s”引用的其他分组已不存在，请重新选择", candidate.Name)
 			}
 		case "endpoint":
 			if _, err := s.mihomoProxy(ctx, member.ID, ""); err != nil {
 				if errors.Is(err, ErrNotFound) {
-					return fmt.Errorf("access account %s is unavailable: %w", member.ID, ErrNotFound)
+					return fmt.Errorf("%w: %w", ErrNotFound, userErrorf("所选客户端节点已不可用，请刷新后重新选择"))
 				}
 				return err
 			}
@@ -91,7 +94,7 @@ func (s *Store) validateMihomoProxyGroupGraph(ctx context.Context, candidate Mih
 	var visit func(string) error
 	visit = func(groupID string) error {
 		if state[groupID] == 1 {
-			return errors.New("proxy groups contain a circular reference")
+			return userErrorf("代理分组之间不能循环引用")
 		}
 		if state[groupID] == 2 {
 			return nil
@@ -100,7 +103,7 @@ func (s *Store) validateMihomoProxyGroupGraph(ctx context.Context, candidate Mih
 		for _, member := range byID[groupID].Members {
 			if member.Kind == "group" {
 				if _, exists := byID[member.ID]; !exists {
-					return fmt.Errorf("proxy group %q references an unknown group", byID[groupID].Name)
+					return userErrorf("代理分组“%s”引用的其他分组已不存在，请重新选择", byID[groupID].Name)
 				}
 				if err := visit(member.ID); err != nil {
 					return err
@@ -149,14 +152,14 @@ func (s *Store) validateMihomoProxyGroupGraph(ctx context.Context, candidate Mih
 				return errors.New("generated Mihomo node name is invalid")
 			}
 			if isReservedMihomoClientName(name) {
-				return fmt.Errorf("client node alias %q is reserved by Mihomo", name)
+				return userErrorf("客户端节点别名“%s”是 Mihomo 保留名称，请先修改该别名", name)
 			}
 			upperName := strings.ToUpper(name)
 			if previousID, exists := endpointNames[upperName]; exists && previousID != member.ID {
-				return fmt.Errorf("client node alias %q is used by more than one selected account", name)
+				return userErrorf("客户端节点别名“%s”被多个用户重复使用，请先修改别名", name)
 			}
 			if _, exists := groupNames[upperName]; exists {
-				return fmt.Errorf("client node alias %q conflicts with a proxy group name", name)
+				return userErrorf("客户端节点别名“%s”与代理分组名称冲突，请修改其中一个名称", name)
 			}
 			endpointNames[upperName] = member.ID
 			endpointIDs[member.ID] = true
@@ -306,7 +309,7 @@ func (s *Store) CreateMihomoProxyGroup(ctx context.Context, group MihomoProxyGro
 		group.ID, group.Name, group.Strategy, endpoints, aliases, members, now, now)
 	if err != nil {
 		if strings.Contains(strings.ToLower(err.Error()), "unique") {
-			return MihomoProxyGroup{}, ErrConflict
+			return MihomoProxyGroup{}, fmt.Errorf("%w: %w", ErrConflict, userErrorf("代理分组名称“%s”已存在，请使用其他名称", group.Name))
 		}
 		return MihomoProxyGroup{}, fmt.Errorf("create Mihomo proxy group: %w", err)
 	}
@@ -402,7 +405,7 @@ func (s *Store) UpdateMihomoProxyGroup(ctx context.Context, group MihomoProxyGro
 	if _, err := tx.ExecContext(ctx, `UPDATE mihomo_proxy_groups SET name = ?, strategy = ?, endpoint_ids = ?, aliases_json = ?, members_json = ?, updated_at = ? WHERE id = ?`,
 		group.Name, group.Strategy, endpoints, aliases, members, now, group.ID); err != nil {
 		if strings.Contains(strings.ToLower(err.Error()), "unique") {
-			return MihomoProxyGroup{}, ErrConflict
+			return MihomoProxyGroup{}, fmt.Errorf("%w: %w", ErrConflict, userErrorf("代理分组名称“%s”已存在，请使用其他名称", group.Name))
 		}
 		return MihomoProxyGroup{}, fmt.Errorf("update Mihomo proxy group: %w", err)
 	}

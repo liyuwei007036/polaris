@@ -1469,13 +1469,13 @@ func (s *Store) CreateEndpoint(ctx context.Context, endpoint Endpoint, credentia
 	}
 	var duplicate string
 	if err := s.db.QueryRowContext(ctx, `SELECT id FROM endpoints WHERE listener_id = ? AND name = ?`, endpoint.ListenerID, endpoint.Name).Scan(&duplicate); err == nil {
-		return Endpoint{}, ErrConflict
+		return Endpoint{}, fmt.Errorf("%w: %w", ErrConflict, userErrorf("当前接入服务已存在名为“%s”的用户，请修改用户名称", endpoint.Name))
 	} else if !errors.Is(err, sql.ErrNoRows) {
 		return Endpoint{}, fmt.Errorf("check endpoint name conflict: %w", err)
 	}
 	if endpoint.Alias != "" {
 		if err := s.db.QueryRowContext(ctx, `SELECT id FROM endpoints WHERE alias = ?`, endpoint.Alias).Scan(&duplicate); err == nil {
-			return Endpoint{}, ErrConflict
+			return Endpoint{}, fmt.Errorf("%w: %w", ErrConflict, userErrorf("客户端节点别名“%s”已被使用，请填写其他别名", endpoint.Alias))
 		} else if !errors.Is(err, sql.ErrNoRows) {
 			return Endpoint{}, fmt.Errorf("check endpoint alias conflict: %w", err)
 		}

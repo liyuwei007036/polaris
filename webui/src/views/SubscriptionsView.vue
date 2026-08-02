@@ -64,7 +64,12 @@ function resetForm(config = null) {
     name: config.name,
     proxy_group_ids: [...(config.proxy_group_ids || [])],
     rule_mode: config.rule_mode || 'table',
-    rules: structuredClone(config.rules || []),
+    rules: (config.rules || []).map((rule) => ({
+      type: rule.type,
+      value: rule.value || '',
+      action: rule.action,
+      no_resolve: Boolean(rule.no_resolve),
+    })),
     raw_rules: config.raw_rules || '',
   } : { name: '', proxy_group_ids: [], rule_mode: 'table', rules: [], raw_rules: '' })
   dialogVisible.value = true
@@ -125,9 +130,30 @@ function triggerDownload(config) {
   anchor.remove()
 }
 
+async function writeClipboard(text) {
+  if (navigator.clipboard?.writeText) {
+    await navigator.clipboard.writeText(text)
+    return
+  }
+  const textarea = document.createElement('textarea')
+  textarea.value = text
+  textarea.readOnly = true
+  textarea.style.position = 'fixed'
+  textarea.style.opacity = '0'
+  document.body.appendChild(textarea)
+  textarea.select()
+  const copied = document.execCommand('copy')
+  textarea.remove()
+  if (!copied) throw new Error('浏览器不支持自动复制')
+}
+
 async function copySubscription(config) {
-  await navigator.clipboard.writeText(absoluteSubscription(config))
-  ElMessage.success('更新地址已复制')
+  try {
+    await writeClipboard(absoluteSubscription(config))
+    ElMessage.success('更新地址已复制')
+  } catch {
+    ElMessage.error('自动复制失败，请使用 HTTPS 访问后重试')
+  }
 }
 
 async function rotateSubscription(config) {

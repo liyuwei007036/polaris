@@ -59,7 +59,7 @@ function resetForm(group = null) {
   Object.assign(form, group ? {
     name: group.name,
     strategy: group.strategy,
-    members: structuredClone(group.members || []),
+    members: (group.members || []).map((member) => ({ kind: member.kind, id: member.id })),
   } : { name: '', strategy: 'select', members: [] })
   dialogVisible.value = true
 }
@@ -92,6 +92,8 @@ async function save() {
     ElMessage.success(editing.value ? '代理分组已保存' : '代理分组已创建')
     dialogVisible.value = false
     await load()
+  } catch (error) {
+    ElMessage.error(error instanceof Error ? error.message : '代理分组保存失败，请检查填写内容后重试')
   } finally {
     saving.value = false
   }

@@ -1392,8 +1392,10 @@ func (s *Server) createListenerWithDefaultAccount(w http.ResponseWriter, r *http
 		Listener          Listener `json:"listener"`
 		DefaultOutboundID string   `json:"default_outbound_id"`
 		Accounts          []struct {
+			ID         string `json:"id"`
 			Name       string `json:"name"`
 			Alias      string `json:"alias"`
+			Enabled    *bool  `json:"enabled"`
 			OutboundID string `json:"outbound_id"`
 		} `json:"accounts"`
 	}
@@ -1410,11 +1412,24 @@ func (s *Server) createListenerWithDefaultAccount(w http.ResponseWriter, r *http
 		if input.DefaultOutboundID == "" {
 			input.DefaultOutboundID = "direct"
 		}
+		generatedAccountID, err := newID()
+		if err != nil {
+			writeError(w, err)
+			return
+		}
 		input.Accounts = append(input.Accounts, struct {
+			ID         string `json:"id"`
 			Name       string `json:"name"`
 			Alias      string `json:"alias"`
+			Enabled    *bool  `json:"enabled"`
 			OutboundID string `json:"outbound_id"`
-		}{Name: "默认账号", Alias: input.Listener.Name + " · 默认节点", OutboundID: input.DefaultOutboundID})
+		}{Name: "user_" + generatedAccountID[:8], Alias: input.Listener.Name + " · 默认节点", OutboundID: input.DefaultOutboundID})
+	}
+	for _, account := range input.Accounts {
+		if strings.TrimSpace(account.ID) != "" {
+			writeError(w, userErrorf("新建接入服务的用户不能包含已有用户 ID"))
+			return
+		}
 	}
 	// Public and internal bind addresses are system-managed. Users only choose
 	// the public service port; sharing is enabled automatically when needed.
@@ -1436,11 +1451,15 @@ func (s *Server) createListenerWithDefaultAccount(w http.ResponseWriter, r *http
 			writeError(w, err)
 			return
 		}
+		enabled := true
+		if account.Enabled != nil {
+			enabled = *account.Enabled
+		}
 		endpoint, err := s.store.CreateEndpoint(r.Context(), Endpoint{
 			ListenerID: created.ID,
 			Name:       strings.TrimSpace(account.Name),
 			Alias:      strings.TrimSpace(account.Alias),
-			Enabled:    true,
+			Enabled:    enabled,
 			OutboundID: account.OutboundID,
 		}, credentials)
 		if err != nil {
@@ -2437,7 +2456,12 @@ func writeError(w http.ResponseWriter, err error) {
 	case errors.Is(err, ErrNotFound):
 		status, message = http.StatusNotFound, "not found"
 	case errors.Is(err, ErrConflict):
-		status, message = http.StatusConflict, "conflicting state"
+		status = http.StatusConflict
+		if errors.As(err, &visibleError) {
+			message = visibleError.Error()
+		} else {
+			message = "conflicting state"
+		}
 	case errors.As(err, &visibleError):
 		message = visibleError.Error()
 	}
