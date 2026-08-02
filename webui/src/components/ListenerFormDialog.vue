@@ -318,7 +318,8 @@ async function save() {
 .protocol-select { margin-bottom: 14px; }
 .protocol-select label { display: block; margin-bottom: 8px; color: var(--sb-text); font-size: 13px; font-weight: 550; }
 .option-meta { float: right; max-width: 520px; margin-left: 20px; overflow: hidden; color: var(--sb-muted); font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
-.listener-dialog-body { max-height: min(72vh, 760px); padding-right: 4px; overflow-y: auto; }
+.listener-dialog-body { max-width: 100%; max-height: min(72vh, 760px); padding-right: 4px; overflow-x: hidden; overflow-y: auto; scrollbar-width: none; }
+.listener-dialog-body::-webkit-scrollbar { display: none; }
 .account-section-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 20px; margin-bottom: 14px; }
 .account-section-head span { color: var(--sb-muted); font-size: 12px; }
 .account-list { border-top: 1px solid var(--sb-border); }

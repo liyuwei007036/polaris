@@ -48,6 +48,7 @@ type MihomoRule struct {
 type MihomoClientConfig struct {
 	ID               string              `json:"id"`
 	Name             string              `json:"name"`
+	Enabled          bool                `json:"enabled"`
 	ProxyGroupIDs    []string            `json:"proxy_group_ids"`
 	Groups           []MihomoClientGroup `json:"groups,omitempty"`
 	RuleMode         string              `json:"rule_mode,omitempty"`

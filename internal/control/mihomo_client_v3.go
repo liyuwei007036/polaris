@@ -298,7 +298,7 @@ func scanMihomoClientConfig(scanner interface{ Scan(...any) error }, masterKey [
 	var groupsJSON, rulesJSON string
 	var encryptedToken []byte
 	var created, updated int64
-	if err := scanner.Scan(&config.ID, &config.Name, &groupsJSON, &config.RuleMode, &rulesJSON, &encryptedToken, &created, &updated); err != nil {
+	if err := scanner.Scan(&config.ID, &config.Name, &groupsJSON, &config.RuleMode, &rulesJSON, &encryptedToken, &config.Enabled, &created, &updated); err != nil {
 		return MihomoClientConfig{}, err
 	}
 	if err := json.Unmarshal([]byte(groupsJSON), &config.ProxyGroupIDs); err != nil {
@@ -339,9 +339,10 @@ func (s *Store) CreateMihomoClientConfig(ctx context.Context, config MihomoClien
 		return MihomoClientConfig{}, err
 	}
 	now := nowUnix()
+	config.Enabled = true
 	_, err = s.db.ExecContext(ctx, `INSERT INTO mihomo_client_configs_v3
-		(id, name, groups_json, rule_mode, rules_json, subscription_token_hash, subscription_token_encrypted, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`, config.ID, config.Name, groupsJSON, config.RuleMode, rulesJSON, security.TokenHash(token), encrypted, now, now)
+		(id, name, groups_json, rule_mode, rules_json, subscription_token_hash, subscription_token_encrypted, enabled, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, config.ID, config.Name, groupsJSON, config.RuleMode, rulesJSON, security.TokenHash(token), encrypted, config.Enabled, now, now)
 	if err != nil {
 		if strings.Contains(strings.ToLower(err.Error()), "unique") {
 			return MihomoClientConfig{}, ErrConflict
@@ -379,7 +380,7 @@ func (s *Store) UpdateMihomoClientConfig(ctx context.Context, config MihomoClien
 }
 
 func (s *Store) mihomoClientConfigByID(ctx context.Context, id string) (MihomoClientConfig, error) {
-	row := s.db.QueryRowContext(ctx, `SELECT id, name, groups_json, rule_mode, rules_json, subscription_token_encrypted, created_at, updated_at FROM mihomo_client_configs_v3 WHERE id = ?`, id)
+	row := s.db.QueryRowContext(ctx, `SELECT id, name, groups_json, rule_mode, rules_json, subscription_token_encrypted, enabled, created_at, updated_at FROM mihomo_client_configs_v3 WHERE id = ?`, id)
 	config, err := scanMihomoClientConfig(row, s.masterKey)
 	if errors.Is(err, sql.ErrNoRows) {
 		return MihomoClientConfig{}, ErrNotFound
@@ -388,7 +389,7 @@ func (s *Store) mihomoClientConfigByID(ctx context.Context, id string) (MihomoCl
 }
 
 func (s *Store) ListMihomoClientConfigs(ctx context.Context) ([]MihomoClientConfig, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT id, name, groups_json, rule_mode, rules_json, subscription_token_encrypted, created_at, updated_at FROM mihomo_client_configs_v3 ORDER BY name, id`)
+	rows, err := s.db.QueryContext(ctx, `SELECT id, name, groups_json, rule_mode, rules_json, subscription_token_encrypted, enabled, created_at, updated_at FROM mihomo_client_configs_v3 ORDER BY name, id`)
 	if err != nil {
 		return nil, err
 	}
@@ -402,6 +403,17 @@ func (s *Store) ListMihomoClientConfigs(ctx context.Context) ([]MihomoClientConf
 		configs = append(configs, config)
 	}
 	return configs, rows.Err()
+}
+
+func (s *Store) SetMihomoClientConfigEnabled(ctx context.Context, configID string, enabled bool) error {
+	result, err := s.db.ExecContext(ctx, `UPDATE mihomo_client_configs_v3 SET enabled = ?, updated_at = ? WHERE id = ?`, enabled, nowUnix(), configID)
+	if err != nil {
+		return fmt.Errorf("set Mihomo client config state: %w", err)
+	}
+	if changed, _ := result.RowsAffected(); changed != 1 {
+		return ErrNotFound
+	}
+	return nil
 }
 
 func (s *Store) RotateMihomoClientSubscription(ctx context.Context, configID string) (string, error) {
@@ -425,7 +437,7 @@ func (s *Store) RotateMihomoClientSubscription(ctx context.Context, configID str
 
 func (s *Store) MihomoClientConfigIDByToken(ctx context.Context, token string) (string, error) {
 	var id string
-	err := s.db.QueryRowContext(ctx, `SELECT id FROM mihomo_client_configs_v3 WHERE subscription_token_hash = ?`, security.TokenHash(token)).Scan(&id)
+	err := s.db.QueryRowContext(ctx, `SELECT id FROM mihomo_client_configs_v3 WHERE subscription_token_hash = ? AND enabled = 1`, security.TokenHash(token)).Scan(&id)
 	if errors.Is(err, sql.ErrNoRows) {
 		return "", ErrNotFound
 	}

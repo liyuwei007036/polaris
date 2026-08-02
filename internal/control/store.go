@@ -2043,6 +2043,7 @@ CREATE TABLE IF NOT EXISTS mihomo_client_configs_v3 (
   id TEXT PRIMARY KEY, name TEXT NOT NULL UNIQUE, groups_json TEXT NOT NULL,
   rule_mode TEXT NOT NULL, rules_json TEXT NOT NULL,
   subscription_token_hash BLOB NOT NULL UNIQUE, subscription_token_encrypted BLOB NOT NULL,
+  enabled INTEGER NOT NULL DEFAULT 1,
   created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL
 );
 CREATE TABLE IF NOT EXISTS subscription_rules (
@@ -2158,6 +2159,9 @@ CREATE INDEX IF NOT EXISTS idx_cloudflare_records_binding ON cloudflare_records(
 	if err := s.migrateMihomoClientConfigsV2(ctx); err != nil {
 		return err
 	}
+	if err := s.addMihomoClientConfigV3Column(ctx, "enabled INTEGER NOT NULL DEFAULT 1"); err != nil {
+		return err
+	}
 	if err := s.migrateEmbeddedMihomoClientGroups(ctx); err != nil {
 		return err
 	}
@@ -2256,6 +2260,14 @@ func (s *Store) addMihomoClientConfigColumn(ctx context.Context, definition stri
 		return nil
 	}
 	return fmt.Errorf("migrate Mihomo client configs table: %w", err)
+}
+
+func (s *Store) addMihomoClientConfigV3Column(ctx context.Context, definition string) error {
+	_, err := s.db.ExecContext(ctx, "ALTER TABLE mihomo_client_configs_v3 ADD COLUMN "+definition)
+	if err == nil || strings.Contains(err.Error(), "duplicate column name") {
+		return nil
+	}
+	return fmt.Errorf("migrate Mihomo v3 client configs table: %w", err)
 }
 
 func loadOrCreateMasterKey(dataDir string) ([]byte, error) {

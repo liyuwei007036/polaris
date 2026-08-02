@@ -143,11 +143,34 @@ func TestStoredMihomoConfigReferencesNestedGroupsRulesAndAliases(t *testing.T) {
 	if response.StatusCode != http.StatusOK {
 		t.Fatalf("Mihomo subscription returned %d", response.StatusCode)
 	}
+	if contentType := response.Header.Get("Content-Type"); contentType != "application/yaml; charset=utf-8" {
+		t.Fatalf("unexpected subscription content type %q", contentType)
+	}
+	if disposition := response.Header.Get("Content-Disposition"); !strings.Contains(disposition, `filename*=UTF-8''%E6%89%8B%E6%9C%BA%E9%85%8D%E7%BD%AE.yaml`) {
+		t.Fatalf("subscription filename is not UTF-8 encoded: %q", disposition)
+	}
 	body, err := io.ReadAll(response.Body)
 	response.Body.Close()
 	if err != nil || !strings.Contains(string(body), `"name":"洛杉矶 01"`) {
 		t.Fatalf("subscription content does not contain alias: %v\n%s", err, body)
 	}
+	response = request(t, http.MethodPost, httpServer.URL+"/api/v1/mihomo/client-configs/"+config.ID+"/enabled", map[string]bool{"enabled": false}, session, csrfToken)
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("disable Mihomo client config: got %d", response.StatusCode)
+	}
+	response = request(t, http.MethodGet, httpServer.URL+config.SubscriptionPath, nil, "", "")
+	if response.StatusCode != http.StatusNotFound {
+		t.Fatalf("disabled Mihomo subscription remained available: got %d", response.StatusCode)
+	}
+	response = request(t, http.MethodPost, httpServer.URL+"/api/v1/mihomo/client-configs/"+config.ID+"/enabled", map[string]bool{"enabled": true}, session, csrfToken)
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("enable Mihomo client config: got %d", response.StatusCode)
+	}
+	response = request(t, http.MethodGet, httpServer.URL+config.SubscriptionPath, nil, "", "")
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("re-enabled Mihomo subscription returned %d", response.StatusCode)
+	}
+	response.Body.Close()
 	response = request(t, http.MethodPost, httpServer.URL+"/api/v1/mihomo/client-configs/"+config.ID+"/subscription/rotate", map[string]any{}, session, csrfToken)
 	if response.StatusCode != http.StatusOK {
 		t.Fatalf("rotate Mihomo subscription: got %d", response.StatusCode)

@@ -3,6 +3,7 @@ package control
 import (
 	"fmt"
 	"net/http"
+	"net/url"
 	"strings"
 )
 
@@ -234,6 +235,31 @@ func (s *Server) deleteMihomoClientConfig(w http.ResponseWriter, r *http.Request
 	w.WriteHeader(http.StatusNoContent)
 }
 
+func (s *Server) setMihomoClientConfigEnabled(w http.ResponseWriter, r *http.Request) {
+	operator, err := s.writer(r)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	var input struct {
+		Enabled bool `json:"enabled"`
+	}
+	if !decodeJSON(w, r, &input) {
+		return
+	}
+	id := r.PathValue("id")
+	if err := s.store.SetMihomoClientConfigEnabled(r.Context(), id, input.Enabled); err != nil {
+		writeError(w, err)
+		return
+	}
+	action := "disabled"
+	if input.Enabled {
+		action = "enabled"
+	}
+	_ = s.store.AppendAudit(r.Context(), operator.ID, "mihomo.client_config."+action, "mihomo_client_config", id, "Mihomo client config "+action)
+	writeJSON(w, http.StatusOK, map[string]bool{"enabled": input.Enabled})
+}
+
 func (s *Server) rotateMihomoClientSubscription(w http.ResponseWriter, r *http.Request) {
 	operator, err := s.writer(r)
 	if err != nil {
@@ -275,7 +301,8 @@ func (s *Server) mihomoClientSubscription(w http.ResponseWriter, r *http.Request
 		filename = "mihomo"
 	}
 	w.Header().Set("Content-Type", "application/yaml; charset=utf-8")
-	w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s.yaml"`, filename))
+	utf8Filename := url.PathEscape(name + ".yaml")
+	w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s.yaml"; filename*=UTF-8''%s`, filename, utf8Filename))
 	w.Header().Set("Profile-Update-Interval", "24")
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write([]byte(yaml))

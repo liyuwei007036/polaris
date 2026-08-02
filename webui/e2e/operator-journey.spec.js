@@ -97,6 +97,10 @@ test('浏览器页面回归：真实登录，核心工作区 API 使用路由替
   await expect(dialog.getByRole('textbox', { name: '用户名称' })).toHaveCount(1)
   await expect(dialog.getByRole('textbox', { name: '用户名称' })).toHaveValue(/^user_[0-9a-f]{8}$/)
   await expect(dialog.getByRole('textbox', { name: '客户端节点别名' })).toHaveCount(1)
+  await page.locator('.el-overlay').filter({ has: dialog }).click({ position: { x: 5, y: 5 } })
+  await expect(dialog).toBeVisible()
+  await page.keyboard.press('Escape')
+  await expect(dialog).toBeVisible()
   await dialog.getByRole('button', { name: '高级设置：连接传输方式' }).click()
   const transportField = dialog.locator('.el-form-item').filter({ hasText: '传输方式' })
   await expect(transportField.locator('.el-select')).toBeVisible()
@@ -164,8 +168,12 @@ test('浏览器页面回归：真实登录，核心工作区 API 使用路由替
       return route.fulfill({ status: 201, json: group })
     }
     if (request.method() === 'POST' && path === '/api/v1/mihomo/client-configs') {
-      savedClientConfig = { id: 'client-1', subscription_path: '/api/v1/mihomo/subscriptions/test-token', ...request.postDataJSON() }
+      savedClientConfig = { id: 'client-1', subscription_path: '/api/v1/mihomo/subscriptions/test-token', ...request.postDataJSON(), enabled: true }
       return route.fulfill({ status: 201, json: savedClientConfig })
+    }
+    if (request.method() === 'POST' && path === '/api/v1/mihomo/client-configs/client-1/enabled') {
+      savedClientConfig.enabled = request.postDataJSON().enabled
+      return route.fulfill({ json: { enabled: savedClientConfig.enabled } })
     }
     return route.continue()
   })
@@ -277,6 +285,16 @@ test('浏览器页面回归：真实登录，核心工作区 API 使用路由替
   expect(savedClientConfig).not.toHaveProperty('rule_preset')
 
   const clientConfigRow = page.getByRole('row').filter({ hasText: '组合分组配置' })
+  await expect(clientConfigRow.getByRole('button', { name: '下载', exact: true })).toHaveCount(0)
+  const clientConfigSwitch = clientConfigRow.getByRole('switch')
+  const clientConfigSwitchControl = clientConfigRow.locator('.el-switch')
+  await expect(clientConfigSwitch).toBeChecked()
+  await clientConfigSwitchControl.click()
+  await expect(page.getByText('客户端配置已停用', { exact: true })).toBeVisible()
+  expect(savedClientConfig.enabled).toBe(false)
+  await clientConfigSwitchControl.click()
+  await expect(page.getByText('客户端配置已启用', { exact: true })).toBeVisible()
+  expect(savedClientConfig.enabled).toBe(true)
   await clientConfigRow.getByRole('button', { name: '复制更新地址', exact: true }).click()
   await expect(page.getByText('更新地址已复制', { exact: true })).toBeVisible()
   await expect.poll(() => page.evaluate(() => window.__copiedText)).toBe(`${process.env.SB_CONTROL_E2E_BASE_URL}/api/v1/mihomo/subscriptions/test-token`)
@@ -286,9 +304,13 @@ test('浏览器页面回归：真实登录，核心工作区 API 使用路由替
   await expect(editClientDialog.getByRole('textbox', { name: '配置名称' })).toHaveValue('组合分组配置')
   await expect(editClientDialog.getByLabel('规则匹配值').first()).toHaveValue('example.com')
   await expect(editClientDialog.locator('.rule-table tbody tr')).toHaveCount(2)
-  await editClientDialog.getByRole('button', { name: '取消', exact: true }).click()
   await page.setViewportSize({ width: 390, height: 844 })
+  await expect.poll(() => editClientDialog.evaluate((element) => element.scrollWidth <= element.clientWidth)).toBe(true)
+  await expect.poll(() => editClientDialog.locator('.el-dialog__body').evaluate((element) => element.scrollWidth <= element.clientWidth)).toBe(true)
+  await editClientDialog.getByRole('button', { name: '取消', exact: true }).click()
   await expect.poll(async () => await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true)
+  await expect.poll(async () => await page.evaluate(() => document.documentElement.scrollHeight <= innerHeight)).toBe(true)
+  await expect.poll(async () => await page.evaluate(() => getComputedStyle(document.querySelector('.page-content')).scrollbarWidth)).toBe('none')
 
   expect(consoleErrors).toEqual([])
   expect(httpErrors).toHaveLength(2)

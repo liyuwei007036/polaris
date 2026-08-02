@@ -28,7 +28,8 @@ button, input, textarea, select { font: inherit; }
 .page-header__title { margin: 0; font-size: 18px; font-weight: 680; line-height: 1.25; color: #101828; letter-spacing: -.15px; }
 .page-header__description { margin: 3px 0 0; color: var(--sb-muted); font-size: 12px; }
 .page-header__actions { margin-left: auto; display: flex; gap: 10px; align-items: center; }
-.page-content { flex: 1; min-height: 0; overflow: auto; padding: 20px 24px 30px; }
+.page-content { flex: 1; min-height: 0; overflow: auto; padding: 20px 24px 30px; scrollbar-width: none; }
+.page-content::-webkit-scrollbar { display: none; }
 .page-content--tight { padding-top: 16px; }
 .toolbar { display: flex; gap: 10px; align-items: center; margin-bottom: 16px; }
 .toolbar__spacer { flex: 1; }
@@ -87,7 +88,11 @@ button, input, textarea, select { font: inherit; }
 .login-form__back { margin-top: 10px; text-align: center; }
 
 .el-dialog__header { padding-bottom: 14px; border-bottom: 1px solid var(--sb-border); }
-.el-dialog__body { padding-top: 18px; }
+.el-overlay { overflow: hidden; }
+.el-dialog { max-height: calc(100dvh - 24px); display: flex; flex-direction: column; overflow: hidden; }
+.el-dialog__header, .el-dialog__footer { flex: none; }
+.el-dialog__body { min-width: 0; min-height: 0; padding-top: 18px; overflow-x: hidden; overflow-y: auto; scrollbar-width: none; }
+.el-dialog__body::-webkit-scrollbar { display: none; }
 .el-button { font-weight: 550; }
 .el-button--primary { --el-button-hover-bg-color: #1849a9; --el-button-hover-border-color: #1849a9; }
 .el-input__wrapper, .el-select__wrapper { box-shadow: 0 0 0 1px #d0d5dd inset; }

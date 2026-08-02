@@ -145,6 +145,7 @@ func (s *Server) registerBrowserRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/v1/mihomo/client-configs", s.listMihomoClientConfigs)
 	mux.HandleFunc("POST /api/v1/mihomo/client-configs", s.createMihomoClientConfig)
 	mux.HandleFunc("PUT /api/v1/mihomo/client-configs/{id}", s.updateMihomoClientConfig)
+	mux.HandleFunc("POST /api/v1/mihomo/client-configs/{id}/enabled", s.setMihomoClientConfigEnabled)
 	mux.HandleFunc("DELETE /api/v1/mihomo/client-configs/{id}", s.deleteMihomoClientConfig)
 	mux.HandleFunc("POST /api/v1/mihomo/client-configs/{id}/subscription/rotate", s.rotateMihomoClientSubscription)
 	mux.HandleFunc("GET /api/v1/mihomo/subscriptions/{token}", s.mihomoClientSubscription)

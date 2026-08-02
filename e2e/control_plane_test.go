@@ -336,6 +336,9 @@ func TestControlPlaneProcessJourneyWithRealAgent(t *testing.T) {
 	if status != http.StatusOK || !strings.Contains(responseHeader.Get("Content-Type"), "application/yaml") {
 		t.Fatalf("Mihomo subscription returned status=%d content-type=%q", status, responseHeader.Get("Content-Type"))
 	}
+	if disposition := responseHeader.Get("Content-Disposition"); !strings.Contains(disposition, `filename*=UTF-8''E2E%20%E5%AE%A2%E6%88%B7%E7%AB%AF.yaml`) {
+		t.Fatalf("Mihomo subscription filename is not UTF-8 encoded: %q", disposition)
+	}
 	for _, expected := range []string{"proxies:", `"server":"e2e.example.test"`, "proxy-groups:", `"name":"全部节点"`, "rules:", "GEOSITE,CN,DIRECT", "https://dns.alidns.com/dns-query"} {
 		if !strings.Contains(string(yaml), expected) {
 			t.Fatalf("Mihomo subscription is missing %q:\n%s", expected, yaml)
