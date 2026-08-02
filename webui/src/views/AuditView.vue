@@ -31,7 +31,7 @@ const targetNames = {
   subscription: '客户端更新地址', node: '服务器', registration: '服务器接入申请', firewall_rule: '访问限制',
   singbox_release: '连接服务版本', listener: '接入服务', outbound: '上网出口', endpoint: '接入用户',
   ingress_route: '接入端口分配', route_rule: '服务器访问规则', task: '系统操作', cloudflare: '域名解析设置',
-  cloudflare_record: '域名解析记录', fail2ban_jail: '自动封禁规则', mihomo_proxy_group: '客户端节点组',
+  cloudflare_record: '域名解析记录', fail2ban_jail: '自动封禁规则', mihomo_proxy_group: '代理分组',
   mihomo_routing_profile: '客户端访问规则', mihomo_client_config: '客户端配置',
 }
 const actionNames = {

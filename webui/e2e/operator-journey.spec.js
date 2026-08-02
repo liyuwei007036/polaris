@@ -57,6 +57,7 @@ test('管理员通过真实页面完成登录并检查全部核心工作区', as
   const pages = [
     ['服务器', '服务器'],
     ['接入服务', '接入服务'],
+    ['代理分组', '代理分组'],
     ['客户端配置', '客户端配置'],
     ['服务器访问规则', '服务器访问规则'],
     ['上网出口', '上网出口'],
@@ -93,6 +94,9 @@ test('管理员通过真实页面完成登录并检查全部核心工作区', as
   let savedListener
   let updatedAccount
   let createdAccount
+  let savedClientConfig
+  let proxyGroupSequence = 0
+  const savedProxyGroups = []
   const listener = {
     id: 'listener-1', node_id: 'node-1', name: 'WebSocket 接入', listen_address: '0.0.0.0',
     port: 18444, backend_port: 18444, enabled: true, outbound_id: '',
@@ -109,6 +113,7 @@ test('管理员通过真实页面完成登录并检查全部核心工作区', as
     if (request.method() === 'GET' && path === '/api/v1/listeners') return route.fulfill({ json: { listeners: [listener] } })
     if (request.method() === 'GET' && path === '/api/v1/outbounds') return route.fulfill({ json: { outbounds: [] } })
     if (request.method() === 'GET' && path === '/api/v1/certificates') return route.fulfill({ json: { certificates: [] } })
+    if (request.method() === 'GET' && path === '/api/v1/mihomo/proxy-groups') return route.fulfill({ json: { proxy_groups: savedProxyGroups } })
     if (request.method() === 'GET' && path === '/api/v1/mihomo/client-configs') return route.fulfill({ json: { client_configs: [] } })
     if (request.method() === 'GET' && path === '/api/v1/listeners/listener-1/endpoints') {
       return route.fulfill({ json: { endpoints: [{ id: 'endpoint-1', listener_id: 'listener-1', name: '默认账号', alias: '测试节点 01', enabled: true, outbound_id: 'direct' }] } })
@@ -124,6 +129,17 @@ test('管理员通过真实页面完成登录并检查全部核心工作区', as
     if (request.method() === 'POST' && path === '/api/v1/listeners/listener-1/endpoints/quick') {
       createdAccount = request.postDataJSON()
       return route.fulfill({ status: 201, json: { id: 'endpoint-2', listener_id: 'listener-1', enabled: true, ...createdAccount } })
+    }
+    if (request.method() === 'POST' && path === '/api/v1/mihomo/proxy-groups') {
+      const payload = request.postDataJSON()
+      proxyGroupSequence += 1
+      const group = { id: `group-${proxyGroupSequence}`, ...payload }
+      savedProxyGroups.push(group)
+      return route.fulfill({ status: 201, json: group })
+    }
+    if (request.method() === 'POST' && path === '/api/v1/mihomo/client-configs') {
+      savedClientConfig = request.postDataJSON()
+      return route.fulfill({ status: 201, json: { id: 'client-1', subscription_path: '/api/v1/mihomo/subscriptions/test-token', ...savedClientConfig } })
     }
     return route.continue()
   })
@@ -150,8 +166,66 @@ test('管理员通过真实页面完成登录并检查全部核心工作区', as
   expect(updatedAccount).toMatchObject({ name: '修改后的用户', alias: '测试节点 01', enabled: true, outbound_id: 'direct' })
   expect(createdAccount).toEqual({ name: '新增用户', alias: '测试节点 02', outbound_id: 'direct' })
 
+  await page.getByRole('button', { name: '代理分组', exact: true }).click()
+  await page.getByRole('button', { name: '新建代理分组', exact: true }).click()
+  let groupDialog = page.getByRole('dialog', { name: '新建代理分组', exact: true })
+  await groupDialog.getByRole('textbox', { name: '分组名称' }).fill('基础节点')
+  await groupDialog.locator('.el-form-item').last().locator('.el-select').click()
+  await page.locator('.el-select-dropdown:visible .el-select-dropdown__item').filter({ hasText: '测试节点 01' }).click()
+  await page.keyboard.press('Escape')
+  await groupDialog.getByRole('button', { name: '保存', exact: true }).click()
+  await expect(groupDialog).toBeHidden()
+  expect(savedProxyGroups[0].members).toEqual([{ kind: 'endpoint', id: 'endpoint-1' }])
+
+  await page.getByRole('button', { name: '新建代理分组', exact: true }).click()
+  groupDialog = page.getByRole('dialog', { name: '新建代理分组', exact: true })
+  await groupDialog.getByRole('textbox', { name: '分组名称' }).fill('组合策略')
+  await groupDialog.locator('.el-form-item').last().locator('.el-select').click()
+  await page.getByRole('option', { name: '基础节点', exact: true }).click()
+  await page.keyboard.press('Escape')
+  await groupDialog.getByRole('button', { name: '保存', exact: true }).click()
+  await expect(groupDialog).toBeHidden()
+  expect(savedProxyGroups[1].members).toEqual([{ kind: 'group', id: savedProxyGroups[0].id }])
+
   await page.getByRole('button', { name: '客户端配置', exact: true }).click()
   await expect(page.getByRole('button', { name: '新建客户端配置', exact: true })).toBeVisible()
+  await expect(page.getByRole('button', { name: '管理代理分组', exact: true })).toHaveCount(0)
+  await page.getByRole('button', { name: '新建客户端配置', exact: true }).click()
+  const clientDialog = page.getByRole('dialog', { name: '新建客户端配置', exact: true })
+  await expect(clientDialog.getByRole('button', { name: '添加代理分组', exact: true })).toHaveCount(0)
+  await expect(clientDialog.getByText('国内直连，其余代理', { exact: true })).toHaveCount(0)
+  await expect(clientDialog.getByRole('button', { name: '创建并下载', exact: true })).toHaveCount(0)
+  await expect(clientDialog.getByLabel('规则配置模式')).toBeVisible()
+  await clientDialog.getByRole('textbox', { name: '配置名称' }).fill('组合分组配置')
+  await clientDialog.locator('.el-form-item').nth(1).locator('.el-select').click()
+  await page.getByRole('option', { name: '组合策略 · 手动选择', exact: true }).click()
+  await page.keyboard.press('Escape')
+  await clientDialog.getByRole('button', { name: '添加访问规则', exact: true }).click()
+  await clientDialog.getByLabel('规则匹配值').fill('example.com')
+  await clientDialog.locator('.rule-table tbody tr').nth(0).locator('td').nth(2).locator('.el-select').click()
+  await page.getByRole('option', { name: '组合策略', exact: true }).click()
+  await clientDialog.getByRole('button', { name: '添加访问规则', exact: true }).click()
+  await clientDialog.locator('.rule-table tbody tr').nth(1).locator('td').nth(0).locator('.el-select').click()
+  await page.getByRole('option', { name: 'MATCH', exact: true }).click()
+  await clientDialog.locator('.rule-table tbody tr').nth(1).locator('td').nth(2).locator('.el-select').click()
+  await page.getByRole('option', { name: 'DIRECT', exact: true }).click()
+  await expect(clientDialog.getByRole('radio', { name: '表格配置', exact: true })).toBeChecked()
+  await clientDialog.locator('.el-radio-button').filter({ hasText: '高级纯文本' }).click()
+  await expect(clientDialog.getByLabel('高级规则文本')).toBeVisible()
+  await clientDialog.locator('.el-radio-button').filter({ hasText: '表格配置' }).click()
+  await clientDialog.getByRole('button', { name: '保存', exact: true }).click()
+  await expect(clientDialog).toBeHidden()
+  expect(savedClientConfig).toMatchObject({
+    name: '组合分组配置',
+    proxy_group_ids: [savedProxyGroups[1].id],
+    rule_mode: 'table',
+    rules: [
+      { type: 'DOMAIN-SUFFIX', value: 'example.com', action: '组合策略', no_resolve: false },
+      { type: 'MATCH', value: '', action: 'DIRECT', no_resolve: false },
+    ],
+  })
+  expect(savedClientConfig).not.toHaveProperty('groups')
+  expect(savedClientConfig).not.toHaveProperty('rule_preset')
   await page.setViewportSize({ width: 390, height: 844 })
   await expect.poll(async () => await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true)
 

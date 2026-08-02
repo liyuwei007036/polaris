@@ -13,13 +13,14 @@ import (
 )
 
 type MihomoProxyGroup struct {
-	ID          string            `json:"id"`
-	Name        string            `json:"name"`
-	Strategy    string            `json:"strategy"`
-	EndpointIDs []string          `json:"endpoint_ids"`
-	Aliases     map[string]string `json:"aliases,omitempty"`
-	CreatedAt   string            `json:"created_at,omitempty"`
-	UpdatedAt   string            `json:"updated_at,omitempty"`
+	ID          string              `json:"id"`
+	Name        string              `json:"name"`
+	Strategy    string              `json:"strategy"`
+	Members     []MihomoGroupMember `json:"members"`
+	EndpointIDs []string            `json:"endpoint_ids,omitempty"`
+	Aliases     map[string]string   `json:"aliases,omitempty"`
+	CreatedAt   string              `json:"created_at,omitempty"`
+	UpdatedAt   string              `json:"updated_at,omitempty"`
 }
 
 type MihomoRoutingProfile struct {
@@ -45,21 +46,36 @@ type MihomoRule struct {
 }
 
 type MihomoClientConfig struct {
-	ID               string       `json:"id"`
-	Name             string       `json:"name"`
-	EndpointIDs      []string     `json:"endpoint_ids"`
-	Strategy         string       `json:"strategy"`
-	RulePreset       string       `json:"rule_preset"`
-	Rules            []MihomoRule `json:"rules,omitempty"`
-	RawRules         string       `json:"raw_rules,omitempty"`
-	DefaultAction    string       `json:"default_action"`
-	CreatedAt        string       `json:"created_at,omitempty"`
-	UpdatedAt        string       `json:"updated_at,omitempty"`
-	SubscriptionPath string       `json:"subscription_path,omitempty"`
-	// Legacy fields are retained only while existing rows are migrated to the
-	// self-contained client configuration table.
-	ProxyGroupIDs    []string `json:"proxy_group_ids,omitempty"`
-	RoutingProfileID string   `json:"routing_profile_id,omitempty"`
+	ID               string              `json:"id"`
+	Name             string              `json:"name"`
+	ProxyGroupIDs    []string            `json:"proxy_group_ids"`
+	Groups           []MihomoClientGroup `json:"groups,omitempty"`
+	RuleMode         string              `json:"rule_mode,omitempty"`
+	EndpointIDs      []string            `json:"endpoint_ids,omitempty"`
+	Strategy         string              `json:"strategy,omitempty"`
+	RulePreset       string              `json:"rule_preset,omitempty"`
+	Rules            []MihomoRule        `json:"rules,omitempty"`
+	RawRules         string              `json:"raw_rules,omitempty"`
+	DefaultAction    string              `json:"default_action,omitempty"`
+	CreatedAt        string              `json:"created_at,omitempty"`
+	UpdatedAt        string              `json:"updated_at,omitempty"`
+	SubscriptionPath string              `json:"subscription_path,omitempty"`
+	// Legacy fields are retained only while existing rows are migrated.
+	RoutingProfileID string `json:"routing_profile_id,omitempty"`
+}
+
+// MihomoClientGroup is self-contained in one client configuration. Members
+// may be access endpoints or other groups in the same configuration.
+type MihomoClientGroup struct {
+	ID       string              `json:"id"`
+	Name     string              `json:"name"`
+	Strategy string              `json:"strategy"`
+	Members  []MihomoGroupMember `json:"members"`
+}
+
+type MihomoGroupMember struct {
+	Kind string `json:"kind"`
+	ID   string `json:"id"`
 }
 
 type mihomoRoutingRules struct {
@@ -411,7 +427,7 @@ func unixTimeString(value int64) string {
 	return time.Unix(value, 0).UTC().Format(time.RFC3339)
 }
 
-func (s *Store) CreateMihomoProxyGroup(ctx context.Context, group MihomoProxyGroup) (MihomoProxyGroup, error) {
+func (s *Store) legacyCreateMihomoProxyGroup(ctx context.Context, group MihomoProxyGroup) (MihomoProxyGroup, error) {
 	if err := normalizeMihomoProxyGroup(&group); err != nil {
 		return MihomoProxyGroup{}, err
 	}
@@ -440,7 +456,7 @@ func (s *Store) CreateMihomoProxyGroup(ctx context.Context, group MihomoProxyGro
 	return group, nil
 }
 
-func (s *Store) UpdateMihomoProxyGroup(ctx context.Context, group MihomoProxyGroup) (MihomoProxyGroup, error) {
+func (s *Store) legacyUpdateMihomoProxyGroup(ctx context.Context, group MihomoProxyGroup) (MihomoProxyGroup, error) {
 	if group.ID == "" {
 		return MihomoProxyGroup{}, errors.New("proxy group ID is required")
 	}
@@ -475,7 +491,7 @@ func (s *Store) UpdateMihomoProxyGroup(ctx context.Context, group MihomoProxyGro
 	return group, nil
 }
 
-func (s *Store) ListMihomoProxyGroups(ctx context.Context) ([]MihomoProxyGroup, error) {
+func (s *Store) legacyListMihomoProxyGroups(ctx context.Context) ([]MihomoProxyGroup, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT id, name, strategy, endpoint_ids, aliases_json, created_at, updated_at FROM mihomo_proxy_groups ORDER BY name, id`)
 	if err != nil {
 		return nil, fmt.Errorf("list Mihomo proxy groups: %w", err)
@@ -502,7 +518,7 @@ func (s *Store) ListMihomoProxyGroups(ctx context.Context) ([]MihomoProxyGroup, 
 	return groups, rows.Err()
 }
 
-func (s *Store) DeleteMihomoProxyGroup(ctx context.Context, id string) error {
+func (s *Store) legacyDeleteMihomoProxyGroup(ctx context.Context, id string) error {
 	configs, err := s.ListMihomoClientConfigs(ctx)
 	if err != nil {
 		return err

@@ -1393,10 +1393,27 @@ func (s *Store) SetListenerEnabled(ctx context.Context, listenerID string, enabl
 
 func (s *Store) DeleteListener(ctx context.Context, listenerID string) error {
 	var references int
-	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM mihomo_client_configs_v2 c, json_each(c.endpoint_ids) e WHERE e.value IN (SELECT id FROM endpoints WHERE listener_id = ?)`, listenerID).Scan(&references); err != nil {
+	rows, err := s.db.QueryContext(ctx, `SELECT id FROM endpoints WHERE listener_id = ?`, listenerID)
+	if err != nil {
 		return fmt.Errorf("check listener client config references: %w", err)
 	}
-	if references != 0 {
+	endpointIDs := map[string]bool{}
+	for rows.Next() {
+		var endpointID string
+		if err := rows.Scan(&endpointID); err != nil {
+			rows.Close()
+			return fmt.Errorf("check listener client config references: %w", err)
+		}
+		endpointIDs[endpointID] = true
+	}
+	if err := rows.Close(); err != nil {
+		return fmt.Errorf("check listener client config references: %w", err)
+	}
+	referenced, err := s.clientConfigReferencesAnyEndpoint(ctx, endpointIDs)
+	if err != nil {
+		return fmt.Errorf("check listener client config references: %w", err)
+	}
+	if referenced {
 		return ErrConflict
 	}
 	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM subscriptions s, json_each(s.endpoint_ids) e WHERE s.kind = 'client' AND e.value IN (SELECT id FROM endpoints WHERE listener_id = ?)`, listenerID).Scan(&references); err != nil {
@@ -1558,10 +1575,11 @@ func (s *Store) SetEndpointEnabled(ctx context.Context, endpointID string, enabl
 
 func (s *Store) DeleteEndpoint(ctx context.Context, endpointID string) error {
 	var references int
-	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM mihomo_client_configs_v2 c, json_each(c.endpoint_ids) e WHERE e.value = ?`, endpointID).Scan(&references); err != nil {
+	referenced, err := s.clientConfigReferencesAnyEndpoint(ctx, map[string]bool{endpointID: true})
+	if err != nil {
 		return fmt.Errorf("check client config references: %w", err)
 	}
-	if references != 0 {
+	if referenced {
 		return ErrConflict
 	}
 	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM subscriptions s, json_each(s.endpoint_ids) e WHERE s.kind = 'client' AND e.value = ?`, endpointID).Scan(&references); err != nil {
@@ -2004,7 +2022,7 @@ CREATE TABLE IF NOT EXISTS subscriptions (
 );
 CREATE TABLE IF NOT EXISTS mihomo_proxy_groups (
   id TEXT PRIMARY KEY, name TEXT NOT NULL UNIQUE, strategy TEXT NOT NULL, endpoint_ids TEXT NOT NULL,
-  created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL
+  members_json TEXT NOT NULL DEFAULT '[]', created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL
 );
 CREATE TABLE IF NOT EXISTS mihomo_routing_profiles (
   id TEXT PRIMARY KEY, name TEXT NOT NULL UNIQUE, rule_preset TEXT NOT NULL, rules_json TEXT NOT NULL,
@@ -2018,6 +2036,12 @@ CREATE TABLE IF NOT EXISTS mihomo_client_configs (
 CREATE TABLE IF NOT EXISTS mihomo_client_configs_v2 (
   id TEXT PRIMARY KEY, name TEXT NOT NULL UNIQUE, endpoint_ids TEXT NOT NULL, strategy TEXT NOT NULL,
   rule_preset TEXT NOT NULL, rules_json TEXT NOT NULL, default_action TEXT NOT NULL,
+  subscription_token_hash BLOB NOT NULL UNIQUE, subscription_token_encrypted BLOB NOT NULL,
+  created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS mihomo_client_configs_v3 (
+  id TEXT PRIMARY KEY, name TEXT NOT NULL UNIQUE, groups_json TEXT NOT NULL,
+  rule_mode TEXT NOT NULL, rules_json TEXT NOT NULL,
   subscription_token_hash BLOB NOT NULL UNIQUE, subscription_token_encrypted BLOB NOT NULL,
   created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL
 );
@@ -2114,6 +2138,9 @@ CREATE INDEX IF NOT EXISTS idx_cloudflare_records_binding ON cloudflare_records(
 	if err := s.addMihomoProxyGroupColumn(ctx, "aliases_json TEXT NOT NULL DEFAULT '{}'"); err != nil {
 		return err
 	}
+	if err := s.addMihomoProxyGroupColumn(ctx, "members_json TEXT NOT NULL DEFAULT '[]'"); err != nil {
+		return err
+	}
 	for _, column := range []string{"subscription_token_hash BLOB", "subscription_token_encrypted BLOB"} {
 		if err := s.addMihomoClientConfigColumn(ctx, column); err != nil {
 			return err
@@ -2126,6 +2153,12 @@ CREATE INDEX IF NOT EXISTS idx_cloudflare_records_binding ON cloudflare_records(
 		return err
 	}
 	if err := s.migrateLegacyMihomoClientConfigs(ctx); err != nil {
+		return err
+	}
+	if err := s.migrateMihomoClientConfigsV2(ctx); err != nil {
+		return err
+	}
+	if err := s.migrateEmbeddedMihomoClientGroups(ctx); err != nil {
 		return err
 	}
 	return nil

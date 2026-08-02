@@ -1,53 +1,58 @@
 <script setup>
 import { computed, inject, onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { CopyDocument, Delete, Download, Edit, Plus, Refresh, RefreshRight } from '@element-plus/icons-vue'
+import { ArrowDown, ArrowUp, CopyDocument, Delete, Download, Edit, Plus, Refresh, RefreshRight } from '@element-plus/icons-vue'
 import { api, del, post, put } from '../api'
 import PageHeader from '../components/PageHeader.vue'
-import { protocolMap } from '../protocols'
 
-const appState = inject('appState')
 const canWrite = inject('canWrite')
 const isAdmin = inject('isAdmin')
-const loadNodes = inject('loadNodes')
 const loading = ref(false)
 const saving = ref(false)
 const dialogVisible = ref(false)
 const editing = ref(null)
 const configs = ref([])
-const listeners = ref([])
-const endpoints = ref([])
-const form = reactive({ name: '', endpoint_ids: [], strategy: 'select', rule_preset: 'china-direct', default_action: 'PROXY', raw_rules: '' })
-const supported = new Set(['vless', 'vmess', 'trojan', 'shadowsocks', 'hysteria2', 'socks', 'http'])
+const proxyGroups = ref([])
+const form = reactive({ name: '', proxy_group_ids: [], rule_mode: 'table', rules: [], raw_rules: '' })
 const strategyNames = { select: '手动选择', 'url-test': '自动测速', fallback: '故障切换' }
-const presetNames = { 'china-direct': '国内直连，其余代理', 'proxy-all': '全部代理', 'direct-all': '全部直连', custom: '自定义规则' }
+const ruleTypes = [
+  'DOMAIN', 'DOMAIN-SUFFIX', 'DOMAIN-KEYWORD', 'DOMAIN-WILDCARD', 'DOMAIN-REGEX', 'GEOSITE',
+  'IP-CIDR', 'IP-CIDR6', 'IP-SUFFIX', 'IP-ASN', 'GEOIP', 'SRC-GEOIP', 'SRC-IP-ASN',
+  'SRC-IP-CIDR', 'SRC-IP-SUFFIX', 'DST-PORT', 'SRC-PORT', 'IN-PORT', 'IN-TYPE',
+  'IN-USER', 'IN-NAME', 'REMATCH-NAME', 'PROCESS-NAME', 'PROCESS-NAME-WILDCARD',
+  'PROCESS-NAME-REGEX', 'PROCESS-PATH', 'PROCESS-PATH-WILDCARD', 'PROCESS-PATH-REGEX',
+  'UID', 'NETWORK', 'DSCP', 'AND', 'OR', 'NOT', 'MATCH',
+]
+const noResolveTypes = new Set(['IP-CIDR', 'IP-CIDR6', 'IP-SUFFIX', 'IP-ASN', 'GEOIP'])
+const groupByID = computed(() => Object.fromEntries(proxyGroups.value.map((group) => [group.id, group])))
+const ruleActions = computed(() => [...resolveGroups(form.proxy_group_ids).map((group) => group.name), 'DIRECT', 'REJECT'])
+const formValid = computed(() => {
+  if (!form.name.trim() || !form.proxy_group_ids.length) return false
+  if (form.rule_mode === 'text') return Boolean(form.raw_rules.trim())
+  return Boolean(form.rules.length && form.rules.at(-1)?.type === 'MATCH' && form.rules.every((rule) => rule.action && (rule.type === 'MATCH' || rule.value.trim())))
+})
 
-const clientNodes = computed(() => listeners.value
-  .filter((listener) => listener.enabled && supported.has(listener.spec?.protocol))
-  .flatMap((listener) => endpoints.value
-    .filter((endpoint) => endpoint.listener_id === listener.id && endpoint.enabled)
-    .map((endpoint) => {
-      const node = appState.nodes.find((item) => item.id === listener.node_id)
-      return {
-        id: endpoint.id,
-        label: endpoint.alias || `${node?.name || listener.node_id} · ${listener.name} · ${endpoint.name}`,
-        detail: `${node?.name || listener.node_id} · ${listener.name} · ${endpoint.name}`,
-        protocol: protocolMap[listener.spec?.protocol]?.label || listener.spec?.protocol,
-        address: node?.client_address ? `${node.client_address}:${listener.port}` : '未填写连接地址',
-        disabled: !node?.client_address,
-      }
-    })))
-const clientNodeNames = computed(() => Object.fromEntries(clientNodes.value.map((item) => [item.id, item.label])))
+function resolveGroups(ids) {
+  const result = []
+  const seen = new Set()
+  function visit(id) {
+    if (seen.has(id)) return
+    seen.add(id)
+    const group = groupByID.value[id]
+    if (!group) return
+    for (const member of group.members || []) if (member.kind === 'group') visit(member.id)
+    result.push(group)
+  }
+  for (const id of ids || []) visit(id)
+  return result
+}
 
 async function load() {
   loading.value = true
   try {
-    await loadNodes()
-    const [configResult, listenerResult] = await Promise.all([api('/mihomo/client-configs'), api('/listeners')])
+    const [configResult, groupResult] = await Promise.all([api('/mihomo/client-configs'), api('/mihomo/proxy-groups')])
     configs.value = configResult.client_configs || []
-    listeners.value = listenerResult.listeners || []
-    const results = await Promise.all(listeners.value.map((listener) => api(`/listeners/${listener.id}/endpoints`).catch(() => ({ endpoints: [] }))))
-    endpoints.value = results.flatMap((result) => result.endpoints || [])
+    proxyGroups.value = groupResult.proxy_groups || []
   } finally {
     loading.value = false
   }
@@ -57,29 +62,51 @@ function resetForm(config = null) {
   editing.value = config
   Object.assign(form, config ? {
     name: config.name,
-    endpoint_ids: [...config.endpoint_ids],
-    strategy: config.strategy,
-    rule_preset: config.rule_preset,
-    default_action: config.default_action,
+    proxy_group_ids: [...(config.proxy_group_ids || [])],
+    rule_mode: config.rule_mode || 'table',
+    rules: structuredClone(config.rules || []),
     raw_rules: config.raw_rules || '',
-  } : { name: '', endpoint_ids: [], strategy: 'select', rule_preset: 'china-direct', default_action: 'PROXY', raw_rules: '' })
+  } : { name: '', proxy_group_ids: [], rule_mode: 'table', rules: [], raw_rules: '' })
   dialogVisible.value = true
 }
 
-async function save(downloadAfterCreate = false) {
+function addRule() {
+  form.rules.push({ type: 'DOMAIN-SUFFIX', value: '', action: '', no_resolve: false })
+}
+
+function setRuleType(rule, type) {
+  rule.type = type
+  if (type === 'MATCH') rule.value = ''
+  if (!noResolveTypes.has(type)) rule.no_resolve = false
+}
+
+function moveRule(index, offset) {
+  const target = index + offset
+  if (target < 0 || target >= form.rules.length) return
+  const [rule] = form.rules.splice(index, 1)
+  form.rules.splice(target, 0, rule)
+}
+
+async function save() {
   saving.value = true
   try {
     const payload = {
-      name: form.name.trim(), endpoint_ids: form.endpoint_ids, strategy: form.strategy,
-      rule_preset: form.rule_preset, default_action: form.default_action, raw_rules: form.rule_preset === 'custom' ? form.raw_rules : '',
+      name: form.name.trim(),
+      proxy_group_ids: [...form.proxy_group_ids],
+      rule_mode: form.rule_mode,
+      rules: form.rule_mode === 'table' ? form.rules.map((rule) => ({
+        type: rule.type,
+        value: rule.type === 'MATCH' ? '' : rule.value.trim(),
+        action: rule.action,
+        no_resolve: Boolean(rule.no_resolve),
+      })) : [],
+      raw_rules: form.rule_mode === 'text' ? form.raw_rules : '',
     }
-    let saved
-    if (editing.value) saved = await put(`/mihomo/client-configs/${editing.value.id}`, payload)
-    else saved = await post('/mihomo/client-configs', payload)
+    if (editing.value) await put(`/mihomo/client-configs/${editing.value.id}`, payload)
+    else await post('/mihomo/client-configs', payload)
     ElMessage.success(editing.value ? '客户端配置已保存' : '客户端配置已创建')
     dialogVisible.value = false
     await load()
-    if (downloadAfterCreate) triggerDownload(saved)
   } finally {
     saving.value = false
   }
@@ -122,20 +149,24 @@ onMounted(load)
 
 <template>
   <div class="page-shell">
-    <PageHeader title="客户端配置" description="直接选择接入用户和访问策略，生成可持续更新的 Mihomo 配置">
+    <PageHeader title="客户端配置" description="引用已有代理分组并配置客户端分流规则，生成可持续更新的 Mihomo 配置">
       <el-button :icon="Refresh" @click="load">刷新</el-button>
       <el-button v-if="canWrite" type="primary" :icon="Plus" @click="resetForm()">新建客户端配置</el-button>
     </PageHeader>
     <main v-loading="loading" class="page-content">
-      <el-alert title="客户端节点名称来自接入服务中的“客户端节点别名”。配置保存时会校验用户可用性、服务器连接地址和别名唯一性。" type="info" show-icon :closable="false" style="margin-bottom: 16px" />
       <div class="table-panel">
         <el-table :data="configs">
           <el-table-column label="配置名称" min-width="180" prop="name" />
-          <el-table-column label="客户端节点" min-width="300">
-            <template #default="{ row }"><el-tag v-for="id in row.endpoint_ids" :key="id" type="info" class="node-tag">{{ clientNodeNames[id] || '节点已失效' }}</el-tag></template>
+          <el-table-column label="引用代理分组" min-width="300">
+            <template #default="{ row }">
+              <el-tag v-for="id in row.proxy_group_ids" :key="id" type="info" class="group-tag">
+                {{ groupByID[id]?.name || '分组已失效' }}<template v-if="groupByID[id]"> · {{ strategyNames[groupByID[id].strategy] }}</template>
+              </el-tag>
+            </template>
           </el-table-column>
-          <el-table-column label="节点策略" width="130"><template #default="{ row }">{{ strategyNames[row.strategy] }}</template></el-table-column>
-          <el-table-column label="访问规则" min-width="170"><template #default="{ row }">{{ presetNames[row.rule_preset] }}</template></el-table-column>
+          <el-table-column label="分流规则" min-width="170">
+            <template #default="{ row }">{{ row.rule_mode === 'text' ? '高级文本' : '表格配置' }} · {{ row.rules?.length || 0 }} 条</template>
+          </el-table-column>
           <el-table-column label="操作" width="390" fixed="right">
             <template #default="{ row }">
               <el-button type="primary" link :icon="Download" @click="triggerDownload(row)">下载</el-button>
@@ -149,40 +180,72 @@ onMounted(load)
       </div>
     </main>
 
-    <el-dialog v-model="dialogVisible" :title="editing ? '编辑客户端配置' : '新建客户端配置'" width="min(760px, 96vw)">
+    <el-dialog v-model="dialogVisible" :title="editing ? '编辑客户端配置' : '新建客户端配置'" width="min(980px, 96vw)">
       <el-form label-position="top">
         <el-form-item label="配置名称" required><el-input v-model="form.name" maxlength="128" /></el-form-item>
-        <el-form-item label="接入用户与客户端节点" required>
-          <el-select v-model="form.endpoint_ids" multiple filterable style="width: 100%" placeholder="请选择一个或多个接入用户">
-            <el-option v-for="node in clientNodes" :key="node.id" :value="node.id" :label="node.label" :disabled="node.disabled">
-              <span>{{ node.label }}</span><span class="option-meta">{{ node.detail }} · {{ node.protocol }} · {{ node.address }}</span>
-            </el-option>
+        <el-form-item label="引用代理分组" required>
+          <el-select v-model="form.proxy_group_ids" multiple filterable style="width: 100%" placeholder="选择一个或多个已有代理分组">
+            <el-option v-for="group in proxyGroups" :key="group.id" :label="`${group.name} · ${strategyNames[group.strategy]}`" :value="group.id" />
           </el-select>
         </el-form-item>
-        <el-form-item label="多个节点的使用方式" required>
-          <el-radio-group v-model="form.strategy"><el-radio value="select">手动选择</el-radio><el-radio value="url-test">自动测速</el-radio><el-radio value="fallback">故障切换</el-radio></el-radio-group>
-        </el-form-item>
-        <el-form-item label="访问规则" required>
-          <el-select v-model="form.rule_preset" style="width: 100%"><el-option v-for="(label, value) in presetNames" :key="value" :value="value" :label="label" /></el-select>
-        </el-form-item>
-        <template v-if="form.rule_preset === 'custom'">
-          <el-form-item label="自定义规则">
-            <el-input v-model="form.raw_rules" type="textarea" :rows="7" placeholder="DOMAIN-SUFFIX,example.com,PROXY&#10;IP-CIDR,10.0.0.0/8,DIRECT,no-resolve" />
-            <div class="form-hint">按顺序每行一条；不要填写 MATCH，系统会根据下方默认动作生成且只生成一条终结规则。</div>
-          </el-form-item>
-          <el-form-item label="没有命中规则时" required><el-radio-group v-model="form.default_action"><el-radio value="PROXY">使用代理</el-radio><el-radio value="DIRECT">直接访问</el-radio></el-radio-group></el-form-item>
-        </template>
+
+        <section class="rules-section">
+          <div class="section-heading">
+            <div><h3>访问规则</h3><span>规则按从上到下的顺序执行</span></div>
+            <el-radio-group v-model="form.rule_mode" aria-label="规则配置模式">
+              <el-radio-button value="table">表格配置</el-radio-button>
+              <el-radio-button value="text">高级纯文本</el-radio-button>
+            </el-radio-group>
+          </div>
+          <template v-if="form.rule_mode === 'table'">
+            <div class="rule-table-wrap">
+              <table class="rule-table">
+                <thead><tr><th>类型</th><th>匹配值</th><th>动作</th><th>no-resolve</th><th>顺序</th></tr></thead>
+                <tbody>
+                  <tr v-for="(rule, index) in form.rules" :key="index">
+                    <td><el-select :model-value="rule.type" aria-label="规则类型" filterable @update:model-value="setRuleType(rule, $event)"><el-option v-for="type in ruleTypes" :key="type" :label="type" :value="type" /></el-select></td>
+                    <td><el-input v-model="rule.value" aria-label="规则匹配值" :disabled="rule.type === 'MATCH'" /></td>
+                    <td><el-select v-model="rule.action" aria-label="规则动作" filterable><el-option v-for="action in ruleActions" :key="action" :label="action" :value="action" /></el-select></td>
+                    <td class="check-cell"><el-checkbox v-model="rule.no_resolve" aria-label="no-resolve" :disabled="!noResolveTypes.has(rule.type)" /></td>
+                    <td class="rule-actions">
+                      <el-tooltip content="上移"><el-button :icon="ArrowUp" text aria-label="上移规则" :disabled="index === 0" @click="moveRule(index, -1)" /></el-tooltip>
+                      <el-tooltip content="下移"><el-button :icon="ArrowDown" text aria-label="下移规则" :disabled="index === form.rules.length - 1" @click="moveRule(index, 1)" /></el-tooltip>
+                      <el-tooltip content="删除"><el-button :icon="Delete" text type="danger" aria-label="删除规则" @click="form.rules.splice(index, 1)" /></el-tooltip>
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+            <el-button :icon="Plus" class="add-rule" @click="addRule">添加访问规则</el-button>
+          </template>
+          <el-input v-else v-model="form.raw_rules" type="textarea" :rows="10" aria-label="高级规则文本" placeholder="DOMAIN-SUFFIX,example.com,代理组&#10;MATCH,DIRECT" />
+        </section>
       </el-form>
       <template #footer>
         <el-button @click="dialogVisible = false">取消</el-button>
-        <el-button type="primary" :loading="saving" :disabled="!form.name.trim() || !form.endpoint_ids.length" @click="save(!editing)">{{ editing ? '保存' : '创建并下载' }}</el-button>
+        <el-button type="primary" :loading="saving" :disabled="!formValid" @click="save">保存</el-button>
       </template>
     </el-dialog>
   </div>
 </template>
 
 <style scoped>
-.node-tag { margin: 3px 6px 3px 0; }
-.option-meta { float: right; margin-left: 18px; color: var(--sb-muted); font-size: 12px; }
-.form-hint { margin-top: 6px; color: var(--sb-muted); font-size: 12px; }
+.group-tag { margin: 3px 6px 3px 0; }
+.rules-section { padding-top: 20px; border-top: 1px solid var(--el-border-color-lighter); }
+.section-heading { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 14px; }
+.section-heading h3 { margin: 0 0 3px; font-size: 16px; }
+.section-heading span { color: var(--sb-muted); font-size: 12px; }
+.rule-table-wrap { overflow-x: auto; }
+.rule-table { width: 100%; min-width: 800px; border-collapse: collapse; table-layout: fixed; }
+.rule-table th { padding: 0 8px 8px; color: var(--sb-muted); font-size: 12px; font-weight: 500; text-align: left; }
+.rule-table th:nth-child(1) { width: 21%; }
+.rule-table th:nth-child(2) { width: 27%; }
+.rule-table th:nth-child(3) { width: 22%; }
+.rule-table th:nth-child(4) { width: 12%; text-align: center; }
+.rule-table th:nth-child(5) { width: 18%; }
+.rule-table td { padding: 5px 8px; border-top: 1px solid var(--el-border-color-lighter); }
+.check-cell { text-align: center; }
+.rule-actions { white-space: nowrap; }
+.add-rule { margin-top: 12px; }
+@media (max-width: 640px) { .section-heading { align-items: flex-start; flex-direction: column; } }
 </style>

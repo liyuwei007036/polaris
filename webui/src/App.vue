@@ -12,6 +12,7 @@ import {
   Monitor,
   Operation,
   Setting,
+  Share,
   SwitchButton,
   Tickets,
   User,
@@ -25,6 +26,7 @@ import NodesView from './views/NodesView.vue'
 import InboundsView from './views/InboundsView.vue'
 import OutboundsView from './views/OutboundsView.vue'
 import SubscriptionsView from './views/SubscriptionsView.vue'
+import ProxyGroupsView from './views/ProxyGroupsView.vue'
 import RoutesView from './views/RoutesView.vue'
 import ConnectionsView from './views/ConnectionsView.vue'
 import SecurityView from './views/SecurityView.vue'
@@ -57,6 +59,7 @@ const groups = [
     label: '连接配置',
     items: [
       { id: 'inbounds', label: '接入服务', icon: Aim },
+      { id: 'proxy-groups', label: '代理分组', icon: Share },
       { id: 'subscriptions', label: '客户端配置', icon: Link },
       { id: 'routes', label: '服务器访问规则', icon: Operation },
       { id: 'outbounds', label: '上网出口', icon: Connection },
@@ -83,6 +86,7 @@ const views = {
   dashboard: DashboardView,
   nodes: NodesView,
   inbounds: InboundsView,
+  'proxy-groups': ProxyGroupsView,
   subscriptions: SubscriptionsView,
   routes: RoutesView,
   outbounds: OutboundsView,

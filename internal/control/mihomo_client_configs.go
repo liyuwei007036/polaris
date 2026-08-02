@@ -59,28 +59,16 @@ func (s *Store) upgradeLegacyMihomoClientInput(ctx context.Context, config *Miho
 func (s *Store) ensureMihomoClientEndpoints(ctx context.Context, endpointIDs []string) error {
 	usedNames := map[string]string{}
 	for _, endpointID := range endpointIDs {
-		var alias, endpointName, listenerName, nodeName, clientAddress, protocol string
-		err := s.db.QueryRowContext(ctx, `SELECT e.alias, e.name, l.name, n.name, n.client_address, l.protocol
-			FROM endpoints e JOIN listeners l ON l.id = e.listener_id JOIN nodes n ON n.id = l.node_id
-			WHERE e.id = ? AND e.enabled = 1 AND l.enabled = 1 AND n.revoked_at IS NULL`, endpointID).
-			Scan(&alias, &endpointName, &listenerName, &nodeName, &clientAddress, &protocol)
-		if errors.Is(err, sql.ErrNoRows) {
+		proxy, err := s.mihomoProxy(ctx, endpointID, "")
+		if errors.Is(err, ErrNotFound) {
 			return fmt.Errorf("access account %s is unavailable: %w", endpointID, ErrNotFound)
 		}
 		if err != nil {
 			return err
 		}
-		if strings.TrimSpace(clientAddress) == "" {
-			return fmt.Errorf("node %s has no client connection address", nodeName)
-		}
-		switch protocol {
-		case "vless", "vmess", "trojan", "shadowsocks", "hysteria2", "socks", "http":
-		default:
-			return fmt.Errorf("protocol %s is not supported by Mihomo YAML export", protocol)
-		}
-		displayName := strings.TrimSpace(alias)
-		if displayName == "" {
-			displayName = nodeName + " · " + listenerName + " · " + endpointName
+		displayName, ok := proxy["name"].(string)
+		if !ok || strings.TrimSpace(displayName) == "" {
+			return errors.New("generated Mihomo node name is invalid")
 		}
 		if previous, exists := usedNames[displayName]; exists && previous != endpointID {
 			return fmt.Errorf("client node alias %q is used by more than one selected account", displayName)
@@ -98,7 +86,7 @@ func encodeMihomoClientRules(config MihomoClientConfig) (string, error) {
 	return string(encoded), nil
 }
 
-func scanMihomoClientConfig(scanner interface{ Scan(...any) error }, masterKey []byte) (MihomoClientConfig, error) {
+func scanLegacyMihomoClientConfig(scanner interface{ Scan(...any) error }, masterKey []byte) (MihomoClientConfig, error) {
 	var config MihomoClientConfig
 	var endpointJSON, rulesJSON string
 	var encryptedToken []byte
@@ -123,9 +111,9 @@ func scanMihomoClientConfig(scanner interface{ Scan(...any) error }, masterKey [
 	return config, nil
 }
 
-func (s *Store) CreateMihomoClientConfig(ctx context.Context, config MihomoClientConfig) (MihomoClientConfig, error) {
-	if err := s.upgradeLegacyMihomoClientInput(ctx, &config); err != nil {
-		return MihomoClientConfig{}, err
+func (s *Store) legacyCreateMihomoClientConfigV2(ctx context.Context, config MihomoClientConfig) (MihomoClientConfig, error) {
+	if len(config.ProxyGroupIDs) != 0 || config.RoutingProfileID != "" {
+		return MihomoClientConfig{}, errors.New("legacy proxy groups and routing profiles are no longer supported; select access accounts directly")
 	}
 	if err := normalizeMihomoClientConfig(&config); err != nil {
 		return MihomoClientConfig{}, err
@@ -165,9 +153,12 @@ func (s *Store) CreateMihomoClientConfig(ctx context.Context, config MihomoClien
 	return config, nil
 }
 
-func (s *Store) UpdateMihomoClientConfig(ctx context.Context, config MihomoClientConfig) (MihomoClientConfig, error) {
+func (s *Store) legacyUpdateMihomoClientConfigV2(ctx context.Context, config MihomoClientConfig) (MihomoClientConfig, error) {
 	if config.ID == "" {
 		return MihomoClientConfig{}, errors.New("client config ID is required")
+	}
+	if len(config.ProxyGroupIDs) != 0 || config.RoutingProfileID != "" {
+		return MihomoClientConfig{}, errors.New("legacy proxy groups and routing profiles are no longer supported; select access accounts directly")
 	}
 	if err := normalizeMihomoClientConfig(&config); err != nil {
 		return MihomoClientConfig{}, err
@@ -192,19 +183,19 @@ func (s *Store) UpdateMihomoClientConfig(ctx context.Context, config MihomoClien
 	if changed, _ := result.RowsAffected(); changed != 1 {
 		return MihomoClientConfig{}, ErrNotFound
 	}
-	return s.mihomoClientConfigByID(ctx, config.ID)
+	return s.legacyMihomoClientConfigV2ByID(ctx, config.ID)
 }
 
-func (s *Store) mihomoClientConfigByID(ctx context.Context, id string) (MihomoClientConfig, error) {
+func (s *Store) legacyMihomoClientConfigV2ByID(ctx context.Context, id string) (MihomoClientConfig, error) {
 	row := s.db.QueryRowContext(ctx, `SELECT id, name, endpoint_ids, strategy, rule_preset, rules_json, default_action, subscription_token_encrypted, created_at, updated_at FROM mihomo_client_configs_v2 WHERE id = ?`, id)
-	config, err := scanMihomoClientConfig(row, s.masterKey)
+	config, err := scanLegacyMihomoClientConfig(row, s.masterKey)
 	if errors.Is(err, sql.ErrNoRows) {
 		return MihomoClientConfig{}, ErrNotFound
 	}
 	return config, err
 }
 
-func (s *Store) ListMihomoClientConfigs(ctx context.Context) ([]MihomoClientConfig, error) {
+func (s *Store) legacyListMihomoClientConfigsV2(ctx context.Context) ([]MihomoClientConfig, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT id, name, endpoint_ids, strategy, rule_preset, rules_json, default_action, subscription_token_encrypted, created_at, updated_at FROM mihomo_client_configs_v2 ORDER BY name, id`)
 	if err != nil {
 		return nil, err
@@ -212,7 +203,7 @@ func (s *Store) ListMihomoClientConfigs(ctx context.Context) ([]MihomoClientConf
 	defer rows.Close()
 	configs := []MihomoClientConfig{}
 	for rows.Next() {
-		config, err := scanMihomoClientConfig(rows, s.masterKey)
+		config, err := scanLegacyMihomoClientConfig(rows, s.masterKey)
 		if err != nil {
 			return nil, err
 		}
@@ -221,7 +212,7 @@ func (s *Store) ListMihomoClientConfigs(ctx context.Context) ([]MihomoClientConf
 	return configs, rows.Err()
 }
 
-func (s *Store) RotateMihomoClientSubscription(ctx context.Context, configID string) (string, error) {
+func (s *Store) legacyRotateMihomoClientSubscriptionV2(ctx context.Context, configID string) (string, error) {
 	token, err := security.RandomToken(32)
 	if err != nil {
 		return "", err
@@ -240,7 +231,7 @@ func (s *Store) RotateMihomoClientSubscription(ctx context.Context, configID str
 	return "/api/v1/mihomo/subscriptions/" + token, nil
 }
 
-func (s *Store) MihomoClientConfigIDByToken(ctx context.Context, token string) (string, error) {
+func (s *Store) legacyMihomoClientConfigV2IDByToken(ctx context.Context, token string) (string, error) {
 	var id string
 	err := s.db.QueryRowContext(ctx, `SELECT id FROM mihomo_client_configs_v2 WHERE subscription_token_hash = ?`, security.TokenHash(token)).Scan(&id)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -249,7 +240,7 @@ func (s *Store) MihomoClientConfigIDByToken(ctx context.Context, token string) (
 	return id, err
 }
 
-func (s *Store) DeleteMihomoClientConfig(ctx context.Context, id string) error {
+func (s *Store) legacyDeleteMihomoClientConfigV2(ctx context.Context, id string) error {
 	result, err := s.db.ExecContext(ctx, `DELETE FROM mihomo_client_configs_v2 WHERE id = ?`, id)
 	if err != nil {
 		return err
@@ -260,8 +251,8 @@ func (s *Store) DeleteMihomoClientConfig(ctx context.Context, id string) error {
 	return nil
 }
 
-func (s *Store) GenerateStoredMihomoYAML(ctx context.Context, configID string) (string, string, error) {
-	config, err := s.mihomoClientConfigByID(ctx, configID)
+func (s *Store) legacyGenerateStoredMihomoYAMLV2(ctx context.Context, configID string) (string, string, error) {
+	config, err := s.legacyMihomoClientConfigV2ByID(ctx, configID)
 	if err != nil {
 		return "", "", err
 	}

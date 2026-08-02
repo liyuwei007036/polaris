@@ -299,11 +299,30 @@ func TestControlPlaneProcessJourney(t *testing.T) {
 	}
 
 	endpointIDs := append([]string{quickListener.Endpoints[0].ID, quickListener.Endpoints[1].ID}, sharedEndpointIDs...)
+	var proxyGroup struct {
+		ID string `json:"id"`
+	}
+	api.mustJSON(t, http.MethodPost, "/api/v1/mihomo/proxy-groups", map[string]any{
+		"name": "全部节点", "strategy": "select",
+		"members": func() []map[string]string {
+			members := make([]map[string]string, 0, len(endpointIDs))
+			for _, endpointID := range endpointIDs {
+				members = append(members, map[string]string{"kind": "endpoint", "id": endpointID})
+			}
+			return members
+		}(),
+	}, true, http.StatusCreated, &proxyGroup)
 	var clientConfig struct {
 		ID string `json:"id"`
 	}
 	api.mustJSON(t, http.MethodPost, "/api/v1/mihomo/client-configs", map[string]any{
-		"name": "E2E 客户端", "endpoint_ids": endpointIDs, "strategy": "select", "rule_preset": "china-direct",
+		"name": "E2E 客户端", "proxy_group_ids": []string{proxyGroup.ID},
+		"rule_mode": "table",
+		"rules": []map[string]any{
+			{"type": "GEOSITE", "value": "CN", "action": "DIRECT"},
+			{"type": "GEOIP", "value": "CN", "action": "DIRECT", "no_resolve": true},
+			{"type": "MATCH", "action": "全部节点"},
+		},
 	}, true, http.StatusCreated, &clientConfig)
 	var subscription struct {
 		Path string `json:"subscription_path"`
@@ -313,7 +332,7 @@ func TestControlPlaneProcessJourney(t *testing.T) {
 	if status != http.StatusOK || !strings.Contains(responseHeader.Get("Content-Type"), "application/yaml") {
 		t.Fatalf("Mihomo subscription returned status=%d content-type=%q", status, responseHeader.Get("Content-Type"))
 	}
-	for _, expected := range []string{"proxies:", `"server":"e2e.example.test"`, "proxy-groups:", "rules:", "GEOSITE,CN,DIRECT"} {
+	for _, expected := range []string{"proxies:", `"server":"e2e.example.test"`, "proxy-groups:", `"name":"全部节点"`, "rules:", "GEOSITE,CN,DIRECT", "https://dns.alidns.com/dns-query"} {
 		if !strings.Contains(string(yaml), expected) {
 			t.Fatalf("Mihomo subscription is missing %q:\n%s", expected, yaml)
 		}

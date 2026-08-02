@@ -2,6 +2,7 @@ package control_test
 
 import (
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -12,9 +13,10 @@ import (
 	"testing"
 
 	"github.com/sb-control/sb-control/internal/control"
+	gopkgyaml "gopkg.in/yaml.v3"
 )
 
-func TestStoredMihomoConfigOwnsNodesStrategyRulesAndAliases(t *testing.T) {
+func TestStoredMihomoConfigReferencesNestedGroupsRulesAndAliases(t *testing.T) {
 	store, err := control.Open(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
@@ -32,9 +34,10 @@ func TestStoredMihomoConfigOwnsNodesStrategyRulesAndAliases(t *testing.T) {
 	defer httpServer.Close()
 	session, csrfToken := login(t, httpServer.URL, secret)
 
-	var endpointIDs []string
+	var endpointIDs, nodeIDs []string
 	for index, name := range []string{"美国节点", "日本节点"} {
 		nodeID := approveTestNode(t, server, httpServer.URL, session, csrfToken, name)
+		nodeIDs = append(nodeIDs, nodeID)
 		if err := store.SetNodeClientAddress(t.Context(), nodeID, []string{"us.example.com", "jp.example.com"}[index]); err != nil {
 			t.Fatal(err)
 		}
@@ -53,8 +56,32 @@ func TestStoredMihomoConfigOwnsNodesStrategyRulesAndAliases(t *testing.T) {
 		endpointIDs = append(endpointIDs, endpoint.ID)
 	}
 
+	usGroup, err := store.CreateMihomoProxyGroup(t.Context(), control.MihomoProxyGroup{
+		Name: "美国节点", Strategy: "url-test", Members: []control.MihomoGroupMember{{Kind: "endpoint", ID: endpointIDs[0]}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	jpGroup, err := store.CreateMihomoProxyGroup(t.Context(), control.MihomoProxyGroup{
+		Name: "日本节点", Strategy: "select", Members: []control.MihomoGroupMember{{Kind: "endpoint", ID: endpointIDs[1]}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	allGroup, err := store.CreateMihomoProxyGroup(t.Context(), control.MihomoProxyGroup{
+		Name: "自动选择", Strategy: "fallback", Members: []control.MihomoGroupMember{{Kind: "group", ID: usGroup.ID}, {Kind: "group", ID: jpGroup.ID}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
 	config, err := store.CreateMihomoClientConfig(t.Context(), control.MihomoClientConfig{
-		Name: "手机配置", EndpointIDs: endpointIDs, Strategy: "fallback", RulePreset: "china-direct",
+		Name:          "手机配置",
+		ProxyGroupIDs: []string{allGroup.ID},
+		RuleMode:      "table",
+		Rules: []control.MihomoRule{
+			{Type: "DOMAIN-SUFFIX", Value: "example.com", Action: "自动选择"},
+			{Type: "MATCH", Action: "DIRECT"},
+		},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -69,10 +96,48 @@ func TestStoredMihomoConfigOwnsNodesStrategyRulesAndAliases(t *testing.T) {
 	if config.SubscriptionPath == "" {
 		t.Fatal("new Mihomo client config did not receive a subscription path")
 	}
-	for _, expected := range []string{`"name":"节点选择"`, `"type":"fallback"`, `"name":"PROXY"`, `"name":"洛杉矶 01"`, `"name":"东京 01"`, `"server":"us.example.com"`, `"server":"jp.example.com"`, "GEOSITE,CN,DIRECT"} {
+	for _, expected := range []string{`"name":"美国节点"`, `"type":"url-test"`, `"name":"日本节点"`, `"name":"自动选择"`, `"proxies":["美国节点","日本节点"]`, `"name":"洛杉矶 01"`, `"name":"东京 01"`, `"server":"us.example.com"`, `"server":"jp.example.com"`, "DOMAIN-SUFFIX,example.com,自动选择", "MATCH,DIRECT", "https://223.5.5.5/dns-query", "https://dns.alidns.com/dns-query", "https://doh.pub/dns-query"} {
 		if !strings.Contains(yaml, expected) {
 			t.Fatalf("stored YAML does not contain %q:\n%s", expected, yaml)
 		}
+	}
+	var generated struct {
+		DNS struct {
+			DefaultNameserver     []string `yaml:"default-nameserver"`
+			Nameserver            []string `yaml:"nameserver"`
+			ProxyServerNameserver []string `yaml:"proxy-server-nameserver"`
+		} `yaml:"dns"`
+	}
+	if err := gopkgyaml.Unmarshal([]byte(yaml), &generated); err != nil {
+		t.Fatalf("generated YAML cannot be parsed: %v\n%s", err, yaml)
+	}
+	for _, resolver := range append(append(generated.DNS.DefaultNameserver, generated.DNS.Nameserver...), generated.DNS.ProxyServerNameserver...) {
+		if !strings.HasPrefix(resolver, "https://") || !strings.Contains(resolver, "/dns-query") {
+			t.Fatalf("non-DoH resolver %q in generated YAML", resolver)
+		}
+	}
+
+	config.RuleMode = "text"
+	config.Rules = nil
+	config.RawRules = "# 按顺序分流\nDOMAIN-SUFFIX,example.org,自动选择\nMATCH,REJECT"
+	updated, err := store.UpdateMihomoClientConfig(t.Context(), config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.RuleMode != "text" || len(updated.Rules) != 2 || !strings.Contains(updated.RawRules, "# 按顺序分流") {
+		t.Fatalf("advanced rules were not preserved: %#v", updated)
+	}
+	_, yaml, err = store.GenerateStoredMihomoYAML(t.Context(), config.ID)
+	if err != nil || !strings.Contains(yaml, "DOMAIN-SUFFIX,example.org,自动选择") || !strings.Contains(yaml, "MATCH,REJECT") {
+		t.Fatalf("advanced rules were not generated: %v\n%s", err, yaml)
+	}
+	allGroup.Name = "自动选择 2"
+	if _, err := store.UpdateMihomoProxyGroup(t.Context(), allGroup); err != nil {
+		t.Fatal(err)
+	}
+	_, yaml, err = store.GenerateStoredMihomoYAML(t.Context(), config.ID)
+	if err != nil || !strings.Contains(yaml, "DOMAIN-SUFFIX,example.org,自动选择 2") {
+		t.Fatalf("renamed group was not synchronized to client rules: %v\n%s", err, yaml)
 	}
 	response := request(t, http.MethodGet, httpServer.URL+config.SubscriptionPath, nil, "", "")
 	if response.StatusCode != http.StatusOK {
@@ -108,11 +173,86 @@ func TestStoredMihomoConfigOwnsNodesStrategyRulesAndAliases(t *testing.T) {
 		}
 	}
 	if _, err := store.CreateMihomoClientConfig(t.Context(), control.MihomoClientConfig{
-		Name: "非法终结规则", EndpointIDs: endpointIDs, Strategy: "select", RulePreset: "custom",
-		DefaultAction: "DIRECT", RawRules: "DOMAIN-SUFFIX,example.com,PROXY\nMATCH,DIRECT",
+		Name: "缺少终结规则", RuleMode: "text", ProxyGroupIDs: []string{allGroup.ID},
+		RawRules: "DOMAIN-SUFFIX,example.com,自动选择 2",
 	}); err == nil || !strings.Contains(err.Error(), "MATCH") {
-		t.Fatalf("custom client config accepted an explicit terminal MATCH: %v", err)
+		t.Fatalf("client config accepted rules without terminal MATCH: %v", err)
 	}
+	groupA, err := store.CreateMihomoProxyGroup(t.Context(), control.MihomoProxyGroup{
+		Name: "分组 A", Strategy: "select", Members: []control.MihomoGroupMember{{Kind: "endpoint", ID: endpointIDs[0]}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	groupB, err := store.CreateMihomoProxyGroup(t.Context(), control.MihomoProxyGroup{
+		Name: "分组 B", Strategy: "select", Members: []control.MihomoGroupMember{{Kind: "group", ID: groupA.ID}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	groupA.Members = []control.MihomoGroupMember{{Kind: "group", ID: groupB.ID}}
+	if _, err := store.UpdateMihomoProxyGroup(t.Context(), groupA); err == nil || !strings.Contains(err.Error(), "circular") {
+		t.Fatalf("proxy group accepted a circular reference: %v", err)
+	}
+	if _, err := store.CreateMihomoProxyGroup(t.Context(), control.MihomoProxyGroup{
+		Name: "未知分组", Strategy: "select", Members: []control.MihomoGroupMember{{Kind: "group", ID: "missing"}},
+	}); err == nil || !strings.Contains(err.Error(), "unknown group") {
+		t.Fatalf("proxy group accepted an unknown group: %v", err)
+	}
+	if _, err := store.CreateMihomoProxyGroup(t.Context(), control.MihomoProxyGroup{
+		Name: "洛杉矶 01", Strategy: "select", Members: []control.MihomoGroupMember{{Kind: "endpoint", ID: endpointIDs[0]}},
+	}); err == nil || !strings.Contains(err.Error(), "conflicts") {
+		t.Fatalf("proxy group accepted a node/group name conflict: %v", err)
+	}
+	if _, err := store.CreateMihomoProxyGroup(t.Context(), control.MihomoProxyGroup{
+		Name: "direct", Strategy: "select", Members: []control.MihomoGroupMember{{Kind: "endpoint", ID: endpointIDs[0]}},
+	}); err == nil || !strings.Contains(err.Error(), "reserved") {
+		t.Fatalf("proxy group accepted a reserved name: %v", err)
+	}
+
+	unsupportedListener, err := store.CreateListener(t.Context(), control.Listener{
+		NodeID: nodeIDs[0], Name: "HTTPUpgrade 接入", ListenAddr: "0.0.0.0", Port: 2080, Enabled: true,
+		Spec: control.ProtocolSpec{Protocol: "vless", Network: "tcp", Transport: control.TransportOptions{Type: "httpupgrade", Path: "/proxy"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	credentials, err := control.GenerateEndpointCredentials("vless")
+	if err != nil {
+		t.Fatal(err)
+	}
+	unsupportedEndpoint, err := store.CreateEndpoint(t.Context(), control.Endpoint{
+		ListenerID: unsupportedListener.ID, Name: "HTTPUpgrade 用户", Alias: "HTTPUpgrade 节点", Enabled: true,
+	}, credentials)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.CreateMihomoProxyGroup(t.Context(), control.MihomoProxyGroup{
+		Name: "不兼容传输", Strategy: "select", Members: []control.MihomoGroupMember{{Kind: "endpoint", ID: unsupportedEndpoint.ID}},
+	}); err == nil || !strings.Contains(err.Error(), "transport httpupgrade") {
+		t.Fatalf("proxy group accepted a transport that cannot be exported: %v", err)
+	}
+	if _, err := store.CreateMihomoClientConfig(t.Context(), control.MihomoClientConfig{
+		Name: "旧式组合", Groups: []control.MihomoClientGroup{{ID: "legacy-group"}}, RoutingProfileID: "legacy-profile",
+	}); err == nil || !strings.Contains(err.Error(), "no longer supported") {
+		t.Fatalf("client config accepted embedded proxy groups: %v", err)
+	}
+	if err := store.DeleteMihomoProxyGroup(t.Context(), allGroup.ID); !errors.Is(err, control.ErrConflict) {
+		t.Fatalf("deleted a group referenced by a client config: %v", err)
+	}
+	if err := store.DeleteMihomoProxyGroup(t.Context(), usGroup.ID); !errors.Is(err, control.ErrConflict) {
+		t.Fatalf("deleted a group referenced by another group: %v", err)
+	}
+	configs, err := store.ListMihomoClientConfigs(t.Context())
+	if err != nil || len(configs) != 1 {
+		t.Fatalf("invalid client configurations were persisted: %#v, %v", configs, err)
+	}
+
+	response = request(t, http.MethodGet, httpServer.URL+"/api/v1/mihomo/proxy-groups", nil, session, csrfToken)
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("proxy group API is unavailable: got %d", response.StatusCode)
+	}
+	response.Body.Close()
 }
 
 func TestEndpointOutboundCompilesAuthenticatedUserRoutes(t *testing.T) {
