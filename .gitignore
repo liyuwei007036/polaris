@@ -5,3 +5,7 @@ data/
 *.pem
 *.key
 .idea
+webui/node_modules/
+artifacts/
+webui/playwright-report/
+webui/test-results/

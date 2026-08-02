@@ -9,13 +9,13 @@ import (
 // Message types carried in a Conn frame's header byte. All bodies are
 // gob-encoded (Go's native binary serialization — not JSON, not text).
 const (
-	MsgRegister     byte = iota + 1 // agent -> master, pre-approval
-	MsgRegisterAck                  // master -> agent, pre-approval or post-handshake status
-	MsgStatus                       // agent -> master, heartbeat-cadence status/metrics
-	MsgTask                         // master -> agent
-	MsgTaskResult                   // agent -> master
-	MsgConnections                  // agent -> master, fast-cadence real-time push
-	MsgKeepalive                    // either direction
+	MsgRegister    byte = iota + 1 // agent -> master, pre-approval
+	MsgRegisterAck                 // master -> agent, pre-approval or post-handshake status
+	MsgStatus                      // agent -> master, heartbeat-cadence status/metrics
+	MsgTask                        // master -> agent
+	MsgTaskResult                  // agent -> master
+	MsgConnections                 // agent -> master, fast-cadence real-time push
+	MsgKeepalive                   // either direction
 )
 
 // RegisterRequest is sent by an agent whose public key the master does not
@@ -77,6 +77,11 @@ type Status struct {
 	NodeReceivedBytes uint64
 	NodeSentBytes     uint64
 	HasNodeTotals     bool
+	HealthStatus      string
+	HealthMessage     string
+	SingBoxService    string
+	ClashAPIAvailable bool
+	TrafficAvailable  bool
 	Fail2BanAvailable bool
 	Fail2BanJails     []Fail2BanJailStatus
 }

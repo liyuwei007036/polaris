@@ -373,6 +373,54 @@ func TestApprovedAgentSessionUpdatesNodeStatus(t *testing.T) {
 	}
 }
 
+func TestTerminalTaskCanBeQueuedAgainForSameDesiredState(t *testing.T) {
+	store, err := control.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	secret, err := store.CreateInitialAdmin(t.Context(), "admin@example.com", "correct horse battery staple")
+	if err != nil {
+		t.Fatal(err)
+	}
+	server, err := control.NewServer(store, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	httpServer := httptest.NewServer(server.Handler())
+	defer httpServer.Close()
+	session, csrfToken := login(t, httpServer.URL, secret)
+	nodeID := approveTestNode(t, server, httpServer.URL, session, csrfToken, "task-reapply-node")
+
+	newTask := func() control.Task {
+		return control.Task{
+			NodeID: nodeID, Kind: "singbox.apply_config", IdempotencyKey: "configuration-same-hash",
+			Payload: `{}`, ExpectedHash: "same-hash",
+		}
+	}
+	first, err := store.CreateTask(t.Context(), newTask())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.CompleteTask(t.Context(), first.ID, nodeID, "succeeded", "applied"); err != nil {
+		t.Fatal(err)
+	}
+	second, err := store.CreateTask(t.Context(), newTask())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second.ID == first.ID || second.Status != "queued" {
+		t.Fatalf("terminal task was reused instead of requeued: first=%#v second=%#v", first, second)
+	}
+	duplicate, err := store.CreateTask(t.Context(), newTask())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if duplicate.ID != second.ID {
+		t.Fatalf("active retry was not deduplicated: second=%#v duplicate=%#v", second, duplicate)
+	}
+}
+
 func login(t *testing.T, baseURL, secret string) (string, string) {
 	t.Helper()
 	response := request(t, http.MethodPost, baseURL+"/api/v1/auth/login", map[string]string{

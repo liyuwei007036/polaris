@@ -181,7 +181,30 @@ func (s *Server) runAgentSession(ctx context.Context, conn *wire.Conn, node Node
 }
 
 func (s *Server) sendTask(conn *wire.Conn, nodeID string, task Task) bool {
-	body, err := wire.Encode(wire.Task{ID: task.ID, Kind: task.Kind, IdempotencyKey: task.IdempotencyKey, Payload: task.Payload, ExpectedHash: task.ExpectedHash})
+	payload := task.Payload
+	if task.Kind == "outbound.test" {
+		var reference struct {
+			OutboundID string `json:"outbound_id"`
+		}
+		if json.Unmarshal([]byte(task.Payload), &reference) != nil {
+			return false
+		}
+		outbound, err := s.store.outboundForTest(context.Background(), reference.OutboundID)
+		if err != nil {
+			_ = s.store.CompleteTask(context.Background(), task.ID, nodeID, "failed", err.Error())
+			s.liveHub.publish(liveEvent{Kind: "task", NodeID: nodeID, TaskID: task.ID})
+			return true
+		}
+		encoded, err := json.Marshal(map[string]any{
+			"type": outbound.Type, "server": outbound.Server, "server_port": outbound.ServerPort,
+			"username": outbound.Username, "password": outbound.Password,
+		})
+		if err != nil {
+			return false
+		}
+		payload = string(encoded)
+	}
+	body, err := wire.Encode(wire.Task{ID: task.ID, Kind: task.Kind, IdempotencyKey: task.IdempotencyKey, Payload: payload, ExpectedHash: task.ExpectedHash})
 	if err != nil {
 		return false
 	}
@@ -211,12 +234,17 @@ func (s *Server) handleAgentMessage(ctx context.Context, node Node, msgType byte
 			if st.HasNodeTotals {
 				m.Node = map[string]uint64{"received_bytes": st.NodeReceivedBytes, "sent_bytes": st.NodeSentBytes}
 			}
+			m.Health = &storedHealth{
+				Status: st.HealthStatus, Message: st.HealthMessage, SingBoxService: st.SingBoxService,
+				ClashAPIAvailable: st.ClashAPIAvailable, TrafficAvailable: st.TrafficAvailable,
+			}
 			if st.Fail2BanAvailable || len(st.Fail2BanJails) > 0 {
 				m.Fail2Ban = &storedFail2Ban{Available: st.Fail2BanAvailable, Jails: convertFail2BanJails(st.Fail2BanJails)}
 			}
 		}); err != nil {
 			return false
 		}
+		s.liveHub.publish(liveEvent{Kind: "node", NodeID: node.ID})
 	case wire.MsgTaskResult:
 		var res wire.TaskResult
 		if err := wire.Decode(body, &res); err != nil {
@@ -229,6 +257,7 @@ func (s *Server) handleAgentMessage(ctx context.Context, node Node, msgType byte
 		if err := s.store.CompleteTask(ctx, task.ID, node.ID, res.Status, res.Summary); err != nil {
 			return false
 		}
+		s.liveHub.publish(liveEvent{Kind: "task", NodeID: node.ID, TaskID: task.ID})
 		if res.Status == "succeeded" && res.SingBoxVersion != "" {
 			if err := s.store.SetNodeSingBoxVersion(ctx, node.ID, res.SingBoxVersion); err != nil {
 				return false
@@ -253,6 +282,7 @@ func (s *Server) handleAgentMessage(ctx context.Context, node Node, msgType byte
 		}); err != nil {
 			return false
 		}
+		s.liveHub.publish(liveEvent{Kind: "connections", NodeID: node.ID})
 	case wire.MsgKeepalive:
 		// no-op
 	default:
@@ -267,10 +297,19 @@ func (s *Server) handleAgentMessage(ctx context.Context, node Node, msgType byte
 // merged with whatever was already stored so a Status update doesn't erase
 // the last-known connections and vice versa.
 type storedMetrics struct {
-	CollectedAt string              `json:"collected_at"`
-	Node        map[string]uint64   `json:"node,omitempty"`
-	Connections []storedConnection  `json:"connections,omitempty"`
-	Fail2Ban    *storedFail2Ban     `json:"fail2ban,omitempty"`
+	CollectedAt string             `json:"collected_at"`
+	Node        map[string]uint64  `json:"node,omitempty"`
+	Connections []storedConnection `json:"connections,omitempty"`
+	Fail2Ban    *storedFail2Ban    `json:"fail2ban,omitempty"`
+	Health      *storedHealth      `json:"health,omitempty"`
+}
+
+type storedHealth struct {
+	Status            string `json:"status"`
+	Message           string `json:"message,omitempty"`
+	SingBoxService    string `json:"sing_box_service"`
+	ClashAPIAvailable bool   `json:"clash_api_available"`
+	TrafficAvailable  bool   `json:"traffic_available"`
 }
 
 type storedConnection struct {

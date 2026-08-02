@@ -8,14 +8,21 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"os/exec"
 	"strconv"
 	"strings"
 	"time"
 )
 
 // clashAPIBase is the loopback-only sing-box Clash API published by compiled
-// configurations. It is never reachable from outside the node.
-const clashAPIBase = "http://127.0.0.1:9090"
+// configurations. It is never reachable from outside the node. The E2E suite
+// redirects only its spawned agent to a deterministic local test endpoint.
+var clashAPIBase = func() string {
+	if value := strings.TrimRight(strings.TrimSpace(os.Getenv("SB_CONTROL_E2E_CLASH_API_URL")), "/"); value != "" {
+		return value
+	}
+	return "http://127.0.0.1:9090"
+}()
 
 // CollectMetrics reports only counters that the agent can read directly. The
 // /proc/net/dev values are host interface totals, not per-listener values.
@@ -28,12 +35,15 @@ func CollectMetrics() MetricReport {
 			"endpoint":   {CumulativeTraffic: false, InstantRate: false, ConnectionCount: false, Source: "sing-box API not configured", Precision: "unavailable"},
 			"connection": {CumulativeTraffic: false, InstantRate: false, ConnectionCount: false, Source: "sing-box API not configured", Precision: "unavailable"},
 		},
+		Health: NodeHealth{Status: "degraded", SingBoxService: "unavailable"},
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
+	report.Health.SingBoxService = collectSingBoxServiceHealth(ctx)
 	if connections, err := collectConnections(ctx); err == nil {
 		report.Connections = connections
 		report.Capabilities["connection"] = MetricCapability{CumulativeTraffic: true, InstantRate: false, ConnectionCount: true, Source: "sing-box clash_api " + clashAPIBase, Precision: "per_connection"}
+		report.Health.ClashAPIAvailable = true
 	}
 	report.Fail2Ban = CollectFail2BanStatus(ctx)
 	file, err := os.Open("/proc/net/dev")
@@ -66,7 +76,32 @@ func CollectMetrics() MetricReport {
 	}
 	report.Node = map[string]uint64{"received_bytes": received, "sent_bytes": sent}
 	report.Capabilities["node"] = MetricCapability{CumulativeTraffic: true, InstantRate: false, ConnectionCount: false, Source: "/proc/net/dev non-loopback aggregate", Precision: "host_total"}
+	report.Health.TrafficAvailable = true
+	switch {
+	case report.Health.SingBoxService == "active" && report.Health.ClashAPIAvailable:
+		report.Health.Status = "healthy"
+	case report.Health.SingBoxService == "inactive":
+		report.Health.Status = "stopped"
+		report.Health.Message = "sing-box service is not active"
+	default:
+		report.Health.Status = "degraded"
+		report.Health.Message = "one or more health signals are unavailable"
+	}
 	return report
+}
+
+func collectSingBoxServiceHealth(ctx context.Context) string {
+	if _, err := exec.LookPath("systemctl"); err != nil {
+		return "unavailable"
+	}
+	output, err := exec.CommandContext(ctx, "systemctl", "is-active", "sing-box").Output()
+	if err != nil {
+		return "inactive"
+	}
+	if strings.TrimSpace(string(output)) == "active" {
+		return "active"
+	}
+	return "inactive"
 }
 
 // CollectConnections independently polls the local Clash API for the current
@@ -120,14 +155,14 @@ func collectConnections(ctx context.Context) ([]ConnectionInfo, error) {
 			break
 		}
 		info := ConnectionInfo{
-			ID:       connection.ID,
-			Inbound:  connection.Metadata.Type,
-			Network:  connection.Metadata.Network,
-			Host:     connection.Metadata.Host,
-			Upload:   connection.Upload,
-			Download: connection.Download,
+			ID:        connection.ID,
+			Inbound:   connection.Metadata.Type,
+			Network:   connection.Metadata.Network,
+			Host:      connection.Metadata.Host,
+			Upload:    connection.Upload,
+			Download:  connection.Download,
 			StartedAt: connection.Start,
-			Rule:     connection.Rule,
+			Rule:      connection.Rule,
 		}
 		if connection.Metadata.SourceIP != "" {
 			info.Source = connection.Metadata.SourceIP + ":" + connection.Metadata.SourcePort

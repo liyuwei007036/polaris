@@ -219,7 +219,7 @@ func (s *Server) deleteCloudflareRecord(w http.ResponseWriter, r *http.Request) 
 	if record.RemoteID != "" {
 		if r.URL.Query().Get("confirm") != "true" {
 			writeJSON(w, http.StatusConflict, map[string]any{
-				"error": "record exists at Cloudflare; repeat the request with ?confirm=true to delete it upstream and locally",
+				"error":  "record exists at Cloudflare; repeat the request with ?confirm=true to delete it upstream and locally",
 				"record": record,
 			})
 			return

@@ -74,6 +74,37 @@ func runMaster(args []string) error {
 		fmt.Println("Administrator created. Add this TOTP secret to an authenticator now; it is displayed only once:")
 		fmt.Println(secret)
 		return nil
+	case "reset-mfa":
+		flags := flag.NewFlagSet("master reset-mfa", flag.ContinueOnError)
+		dataDir := flags.String("data-dir", "./data", "master data directory")
+		email := flags.String("email", "", "operator email")
+		if err := flags.Parse(args[1:]); err != nil {
+			return err
+		}
+		if *email == "" {
+			return errors.New("--email is required")
+		}
+		store, err := control.Open(*dataDir)
+		if err != nil {
+			return err
+		}
+		defer store.Close()
+		operators, err := store.ListOperators(context.Background())
+		if err != nil {
+			return err
+		}
+		for _, operator := range operators {
+			if strings.EqualFold(operator.Email, *email) {
+				secret, err := store.ResetOperatorTOTP(context.Background(), operator.ID)
+				if err != nil {
+					return err
+				}
+				fmt.Println("MFA reset. Add this TOTP secret to an authenticator now; it is displayed only once:")
+				fmt.Println(secret)
+				return nil
+			}
+		}
+		return errors.New("operator not found")
 	case "show-pubkey":
 		flags := flag.NewFlagSet("master show-pubkey", flag.ContinueOnError)
 		dataDir := flags.String("data-dir", "./data", "master data directory")
@@ -343,5 +374,5 @@ func warnIfNotRoot() {
 }
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: sb-control master <init-admin|serve|show-pubkey> ... | sb-control agent <register|run> ...")
+	fmt.Fprintln(os.Stderr, "usage: sb-control master <init-admin|reset-mfa|serve|show-pubkey> ... | sb-control agent <register|run> ...")
 }

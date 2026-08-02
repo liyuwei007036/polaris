@@ -12,6 +12,8 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
+	"io"
+	"net/http"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -32,6 +34,7 @@ type SingBoxRelease struct {
 	SHA256       string `json:"sha256"`
 	Enabled      bool   `json:"enabled"`
 	CreatedAt    string `json:"created_at,omitempty"`
+	Archive      string `json:"archive,omitempty"`
 }
 
 type releaseManifest struct {
@@ -39,6 +42,7 @@ type releaseManifest struct {
 	Architecture string `json:"architecture"`
 	URL          string `json:"url"`
 	SHA256       string `json:"sha256"`
+	Archive      string `json:"archive,omitempty"`
 }
 
 type signedReleasePayload struct {
@@ -183,7 +187,7 @@ func (s *Store) SignedSingBoxReleasePayload(release SingBoxRelease) (string, err
 	if err := validateSingBoxRelease(release); err != nil {
 		return "", err
 	}
-	manifest, err := json.Marshal(releaseManifest{Version: release.Version, Architecture: release.Architecture, URL: release.URL, SHA256: strings.ToLower(release.SHA256)})
+	manifest, err := json.Marshal(releaseManifest{Version: release.Version, Architecture: release.Architecture, URL: release.URL, SHA256: strings.ToLower(release.SHA256), Archive: release.Archive})
 	if err != nil {
 		return "", err
 	}
@@ -193,6 +197,56 @@ func (s *Store) SignedSingBoxReleasePayload(release SingBoxRelease) (string, err
 		return "", err
 	}
 	return string(payload), nil
+}
+
+func LatestOfficialSingBoxRelease(ctx context.Context, architecture string) (SingBoxRelease, error) {
+	if architecture != "amd64" && architecture != "arm64" {
+		return SingBoxRelease{}, errors.New("sing-box release architecture must be amd64 or arm64")
+	}
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://api.github.com/repos/SagerNet/sing-box/releases/latest", nil)
+	if err != nil {
+		return SingBoxRelease{}, err
+	}
+	request.Header.Set("Accept", "application/vnd.github+json")
+	request.Header.Set("User-Agent", "sb-control")
+	response, err := (&http.Client{Timeout: 20 * time.Second}).Do(request)
+	if err != nil {
+		return SingBoxRelease{}, fmt.Errorf("fetch official sing-box release: %w", err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		return SingBoxRelease{}, fmt.Errorf("official sing-box release API returned HTTP %d", response.StatusCode)
+	}
+	var document struct {
+		TagName    string `json:"tag_name"`
+		Draft      bool   `json:"draft"`
+		Prerelease bool   `json:"prerelease"`
+		Assets     []struct {
+			Name   string `json:"name"`
+			URL    string `json:"browser_download_url"`
+			Digest string `json:"digest"`
+		} `json:"assets"`
+	}
+	decoder := json.NewDecoder(io.LimitReader(response.Body, 4*1024*1024))
+	if err := decoder.Decode(&document); err != nil {
+		return SingBoxRelease{}, fmt.Errorf("decode official sing-box release: %w", err)
+	}
+	if document.Draft || document.Prerelease || document.TagName == "" {
+		return SingBoxRelease{}, errors.New("official latest sing-box release is not stable")
+	}
+	version := strings.TrimPrefix(document.TagName, "v")
+	name := fmt.Sprintf("sing-box-%s-linux-%s.tar.gz", version, architecture)
+	for _, asset := range document.Assets {
+		if asset.Name != name || !strings.HasPrefix(asset.Digest, "sha256:") {
+			continue
+		}
+		release := SingBoxRelease{Version: version, Architecture: architecture, URL: asset.URL, SHA256: strings.TrimPrefix(asset.Digest, "sha256:"), Enabled: true, Archive: "tar.gz"}
+		if err := validateSingBoxRelease(release); err != nil {
+			return SingBoxRelease{}, err
+		}
+		return release, nil
+	}
+	return SingBoxRelease{}, fmt.Errorf("official release %s has no verified %s Linux archive", version, architecture)
 }
 
 func (s *Store) ReleaseSigningPublicKeyPEM() ([]byte, error) {

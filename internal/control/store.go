@@ -80,16 +80,17 @@ type RegistrationInput struct {
 }
 
 type Node struct {
-	ID           string `json:"id"`
-	Name         string `json:"name"`
-	AgentVersion string `json:"agent_version"`
-	OS           string `json:"os"`
-	Architecture string `json:"architecture"`
-	SingBox      string `json:"sing_box_version"`
-	Capabilities string `json:"capabilities"`
-	Online       bool   `json:"online"`
-	LastSeenAt   string `json:"last_seen_at,omitempty"`
-	PublicKey    []byte `json:"-"`
+	ID            string `json:"id"`
+	Name          string `json:"name"`
+	ClientAddress string `json:"client_address"`
+	AgentVersion  string `json:"agent_version"`
+	OS            string `json:"os"`
+	Architecture  string `json:"architecture"`
+	SingBox       string `json:"sing_box_version"`
+	Capabilities  string `json:"capabilities"`
+	Online        bool   `json:"online"`
+	LastSeenAt    string `json:"last_seen_at,omitempty"`
+	PublicKey     []byte `json:"-"`
 }
 
 type AgentStatus struct {
@@ -153,6 +154,7 @@ type Endpoint struct {
 	ListenerID string `json:"listener_id"`
 	Name       string `json:"name"`
 	Enabled    bool   `json:"enabled"`
+	OutboundID string `json:"outbound_id,omitempty"`
 }
 
 func Open(dataDir string) (*Store, error) {
@@ -762,7 +764,7 @@ func (s *Store) NodeMetrics(ctx context.Context, nodeID string) (json.RawMessage
 }
 
 func (s *Store) ListNodes(ctx context.Context) ([]Node, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT id, name, agent_version, os, architecture, sing_box_version,
+	rows, err := s.db.QueryContext(ctx, `SELECT id, name, client_address, agent_version, os, architecture, sing_box_version,
 		COALESCE(capabilities, ''), last_seen_at FROM nodes WHERE revoked_at IS NULL ORDER BY name, id`)
 	if err != nil {
 		return nil, fmt.Errorf("list nodes: %w", err)
@@ -773,7 +775,7 @@ func (s *Store) ListNodes(ctx context.Context) ([]Node, error) {
 	for rows.Next() {
 		var node Node
 		var lastSeen sql.NullInt64
-		if err := rows.Scan(&node.ID, &node.Name, &node.AgentVersion, &node.OS, &node.Architecture, &node.SingBox, &node.Capabilities, &lastSeen); err != nil {
+		if err := rows.Scan(&node.ID, &node.Name, &node.ClientAddress, &node.AgentVersion, &node.OS, &node.Architecture, &node.SingBox, &node.Capabilities, &lastSeen); err != nil {
 			return nil, fmt.Errorf("read node: %w", err)
 		}
 		if lastSeen.Valid {
@@ -791,9 +793,9 @@ func (s *Store) ListNodes(ctx context.Context) ([]Node, error) {
 func (s *Store) GetNode(ctx context.Context, nodeID string) (Node, error) {
 	var node Node
 	var lastSeen sql.NullInt64
-	err := s.db.QueryRowContext(ctx, `SELECT id, name, agent_version, os, architecture, sing_box_version,
+	err := s.db.QueryRowContext(ctx, `SELECT id, name, client_address, agent_version, os, architecture, sing_box_version,
 		COALESCE(capabilities, ''), last_seen_at FROM nodes WHERE id = ? AND revoked_at IS NULL`, nodeID).
-		Scan(&node.ID, &node.Name, &node.AgentVersion, &node.OS, &node.Architecture, &node.SingBox, &node.Capabilities, &lastSeen)
+		Scan(&node.ID, &node.Name, &node.ClientAddress, &node.AgentVersion, &node.OS, &node.Architecture, &node.SingBox, &node.Capabilities, &lastSeen)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Node{}, ErrNotFound
 	}
@@ -805,6 +807,25 @@ func (s *Store) GetNode(ctx context.Context, nodeID string) (Node, error) {
 		node.LastSeenAt = time.Unix(lastSeen.Int64, 0).UTC().Format(time.RFC3339)
 	}
 	return node, nil
+}
+
+func (s *Store) SetNodeClientAddress(ctx context.Context, nodeID, address string) error {
+	address = strings.TrimSpace(address)
+	if address == "" || len(address) > 253 || strings.ContainsAny(address, "\r\n,/:") {
+		return errors.New("client address must be a hostname or IP address without scheme or port")
+	}
+	result, err := s.db.ExecContext(ctx, `UPDATE nodes SET client_address = ? WHERE id = ? AND revoked_at IS NULL`, address, nodeID)
+	if err != nil {
+		return fmt.Errorf("update node client address: %w", err)
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("read node client address update result: %w", err)
+	}
+	if affected == 0 {
+		return ErrNotFound
+	}
+	return nil
 }
 
 func (s *Store) SetNodeSingBoxVersion(ctx context.Context, nodeID, version string) error {
@@ -854,7 +875,7 @@ func (s *Store) CreateTask(ctx context.Context, task Task) (Task, error) {
 	if len(task.Payload) > 4*1024*1024 || len(task.ResultSummary) > 8*1024 {
 		return Task{}, errors.New("task payload or result exceeds allowed size")
 	}
-	if task.Kind != "singbox.apply_config" && task.Kind != "singbox.install" && task.Kind != "singbox.upgrade" && task.Kind != "nginx.apply_config" && task.Kind != "firewall.apply" && task.Kind != "fail2ban.apply" {
+	if task.Kind != "singbox.apply_config" && task.Kind != "singbox.install" && task.Kind != "singbox.upgrade" && task.Kind != "nginx.apply_config" && task.Kind != "firewall.apply" && task.Kind != "fail2ban.apply" && task.Kind != "outbound.test" {
 		return Task{}, errors.New("unsupported task kind")
 	}
 	if task.OperatorID != "" {
@@ -873,27 +894,27 @@ func (s *Store) CreateTask(ctx context.Context, task Task) (Task, error) {
 		}
 		return Task{}, fmt.Errorf("check task node: %w", err)
 	}
+	baseIdempotencyKey := task.IdempotencyKey
 	var existing Task
 	err := s.db.QueryRowContext(ctx, `SELECT id, node_id, COALESCE(created_by, ''), kind, idempotency_key, payload, expected_hash, status, COALESCE(result_summary, ''), created_at,
-		COALESCE(started_at, 0), COALESCE(finished_at, 0) FROM tasks WHERE node_id = ? AND idempotency_key = ?`, task.NodeID, task.IdempotencyKey).
+		COALESCE(started_at, 0), COALESCE(finished_at, 0) FROM tasks
+		WHERE node_id = ? AND (idempotency_key = ? OR idempotency_key LIKE ?)
+		ORDER BY CASE WHEN status IN ('queued', 'dispatched') THEN 0 ELSE 1 END, created_at DESC, id DESC LIMIT 1`, task.NodeID, baseIdempotencyKey, baseIdempotencyKey+"-retry-%").
 		Scan(&existing.ID, &existing.NodeID, &existing.OperatorID, &existing.Kind, &existing.IdempotencyKey, &existing.Payload, &existing.ExpectedHash, &existing.Status, &existing.ResultSummary,
 			new(int64), new(int64), new(int64))
-	if err == nil && existing.Status != "failed" && existing.Status != "rolled_back" {
+	if err == nil && existing.Status != "succeeded" && existing.Status != "failed" && existing.Status != "rolled_back" {
 		return existing, nil
 	}
 	if err == nil {
-		// A prior attempt with identical content failed. The idempotency key
-		// never changes for identical content, so without this the same
-		// failed task would be handed back forever and a retry (e.g. after
-		// fixing an environment issue) would silently do nothing. This must
-		// get a brand new ID rather than reuse the old row: the agent keeps
-		// its own local, task-ID-keyed record of completed tasks (see
-		// completed() in task_executor.go) specifically to avoid re-running
-		// a task it already executed, so reusing the ID would make the
-		// agent just replay the old failed result without retrying at all.
-		if _, delErr := s.db.ExecContext(ctx, `DELETE FROM tasks WHERE id = ?`, existing.ID); delErr != nil {
-			return Task{}, fmt.Errorf("clear failed task before retry: %w", delErr)
+		// A terminal task proves only that this desired state was applied at
+		// that point in time. The node may since have moved to another state,
+		// so returning the historical task would make A -> B -> A stop at B.
+		// Keep the old task for audit history and create a uniquely keyed retry.
+		retryID, retryErr := newID()
+		if retryErr != nil {
+			return Task{}, retryErr
 		}
+		task.IdempotencyKey = baseIdempotencyKey + "-retry-" + retryID
 	} else if !errors.Is(err, sql.ErrNoRows) {
 		return Task{}, fmt.Errorf("lookup idempotent task: %w", err)
 	}
@@ -910,6 +931,35 @@ func (s *Store) CreateTask(ctx context.Context, task Task) (Task, error) {
 		return Task{}, fmt.Errorf("create task: %w", err)
 	}
 	return task, nil
+}
+
+func (s *Store) NextListenerBackendPort(ctx context.Context, nodeID, network string) (uint16, error) {
+	if nodeID == "" || (network != "tcp" && network != "udp") {
+		return 0, errors.New("listener node and network are required")
+	}
+	rows, err := s.db.QueryContext(ctx, `SELECT backend_port FROM listeners WHERE node_id = ? AND network = ?
+		UNION SELECT port FROM ingress_routes WHERE node_id = ?`, nodeID, network, nodeID)
+	if err != nil {
+		return 0, fmt.Errorf("list occupied listener ports: %w", err)
+	}
+	defer rows.Close()
+	occupied := map[uint16]bool{}
+	for rows.Next() {
+		var port uint16
+		if err := rows.Scan(&port); err != nil {
+			return 0, fmt.Errorf("read occupied listener port: %w", err)
+		}
+		occupied[port] = true
+	}
+	if err := rows.Err(); err != nil {
+		return 0, err
+	}
+	for port := uint16(20000); port < 40000; port++ {
+		if !occupied[port] {
+			return port, nil
+		}
+	}
+	return 0, errors.New("no internal listener port is available")
 }
 
 func (s *Store) CreateListener(ctx context.Context, listener Listener) (Listener, error) {
@@ -934,7 +984,7 @@ func (s *Store) CreateListener(ctx context.Context, listener Listener) (Listener
 	}
 	var conflict string
 	if listener.Enabled {
-		err := s.db.QueryRowContext(ctx, `SELECT id FROM listeners WHERE node_id = ? AND listen_address = ? AND network = ? AND port = ? AND enabled = 1`, listener.NodeID, listener.ListenAddr, listener.Spec.Network, listener.Port).Scan(&conflict)
+		err := s.db.QueryRowContext(ctx, `SELECT id FROM listeners WHERE node_id = ? AND network = ? AND backend_port = ? AND enabled = 1`, listener.NodeID, listener.Spec.Network, listener.BackendPort).Scan(&conflict)
 		if err == nil {
 			return Listener{}, ErrConflict
 		}
@@ -1001,7 +1051,7 @@ func (s *Store) UpdateListener(ctx context.Context, listener Listener) (Listener
 	}
 	var conflict string
 	if listener.Enabled {
-		err = s.db.QueryRowContext(ctx, `SELECT id FROM listeners WHERE node_id = ? AND listen_address = ? AND network = ? AND port = ? AND enabled = 1 AND id <> ?`, listener.NodeID, listener.ListenAddr, listener.Spec.Network, listener.Port, listener.ID).Scan(&conflict)
+		err = s.db.QueryRowContext(ctx, `SELECT id FROM listeners WHERE node_id = ? AND network = ? AND backend_port = ? AND enabled = 1 AND id <> ?`, listener.NodeID, listener.Spec.Network, listener.BackendPort, listener.ID).Scan(&conflict)
 		if err == nil {
 			return Listener{}, ErrConflict
 		}
@@ -1061,16 +1111,16 @@ func (s *Store) ListListeners(ctx context.Context, nodeID string) ([]Listener, e
 
 func (s *Store) SetListenerEnabled(ctx context.Context, listenerID string, enabled bool) error {
 	if enabled {
-		var nodeID, address, network string
-		var port uint16
-		if err := s.db.QueryRowContext(ctx, `SELECT node_id, listen_address, network, port FROM listeners WHERE id = ?`, listenerID).Scan(&nodeID, &address, &network, &port); err != nil {
+		var nodeID, network string
+		var backendPort uint16
+		if err := s.db.QueryRowContext(ctx, `SELECT node_id, network, backend_port FROM listeners WHERE id = ?`, listenerID).Scan(&nodeID, &network, &backendPort); err != nil {
 			if errors.Is(err, sql.ErrNoRows) {
 				return ErrNotFound
 			}
 			return err
 		}
 		var other string
-		err := s.db.QueryRowContext(ctx, `SELECT id FROM listeners WHERE node_id = ? AND listen_address = ? AND network = ? AND port = ? AND enabled = 1 AND id <> ?`, nodeID, address, network, port, listenerID).Scan(&other)
+		err := s.db.QueryRowContext(ctx, `SELECT id FROM listeners WHERE node_id = ? AND network = ? AND backend_port = ? AND enabled = 1 AND id <> ?`, nodeID, network, backendPort, listenerID).Scan(&other)
 		if err == nil {
 			return ErrConflict
 		}
@@ -1130,6 +1180,9 @@ func (s *Store) CreateEndpoint(ctx context.Context, endpoint Endpoint, credentia
 	if err := ValidateEndpointCredentials(listenerSpec.Protocol, credentials); err != nil {
 		return Endpoint{}, err
 	}
+	if err := s.ensureEndpointOutboundExists(ctx, endpoint.OutboundID); err != nil {
+		return Endpoint{}, err
+	}
 	var duplicate string
 	if err := s.db.QueryRowContext(ctx, `SELECT id FROM endpoints WHERE listener_id = ? AND name = ?`, endpoint.ListenerID, endpoint.Name).Scan(&duplicate); err == nil {
 		return Endpoint{}, ErrConflict
@@ -1148,7 +1201,7 @@ func (s *Store) CreateEndpoint(ctx context.Context, endpoint Endpoint, credentia
 	if err != nil {
 		return Endpoint{}, err
 	}
-	_, err = s.db.ExecContext(ctx, `INSERT INTO endpoints (id, listener_id, name, credentials, enabled, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)`, endpoint.ID, endpoint.ListenerID, endpoint.Name, encrypted, endpoint.Enabled, nowUnix(), nowUnix())
+	_, err = s.db.ExecContext(ctx, `INSERT INTO endpoints (id, listener_id, name, credentials, enabled, outbound_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`, endpoint.ID, endpoint.ListenerID, endpoint.Name, encrypted, endpoint.Enabled, endpoint.OutboundID, nowUnix(), nowUnix())
 	if err != nil {
 		return Endpoint{}, fmt.Errorf("create endpoint: %w", err)
 	}
@@ -1170,6 +1223,9 @@ func (s *Store) UpdateEndpoint(ctx context.Context, endpoint Endpoint, credentia
 	if existingListener != endpoint.ListenerID {
 		return Endpoint{}, ErrForbidden
 	}
+	if err := s.ensureEndpointOutboundExists(ctx, endpoint.OutboundID); err != nil {
+		return Endpoint{}, err
+	}
 	var duplicate string
 	err = s.db.QueryRowContext(ctx, `SELECT id FROM endpoints WHERE listener_id = ? AND name = ? AND id <> ?`, endpoint.ListenerID, endpoint.Name, endpoint.ID).Scan(&duplicate)
 	if err == nil {
@@ -1179,7 +1235,7 @@ func (s *Store) UpdateEndpoint(ctx context.Context, endpoint Endpoint, credentia
 		return Endpoint{}, fmt.Errorf("check endpoint name conflict: %w", err)
 	}
 	if credentials == nil {
-		_, err = s.db.ExecContext(ctx, `UPDATE endpoints SET name = ?, enabled = ?, updated_at = ? WHERE id = ?`, endpoint.Name, endpoint.Enabled, nowUnix(), endpoint.ID)
+		_, err = s.db.ExecContext(ctx, `UPDATE endpoints SET name = ?, enabled = ?, outbound_id = ?, updated_at = ? WHERE id = ?`, endpoint.Name, endpoint.Enabled, endpoint.OutboundID, nowUnix(), endpoint.ID)
 	} else {
 		if err := ValidateEndpointCredentials(protocol, *credentials); err != nil {
 			return Endpoint{}, err
@@ -1192,7 +1248,7 @@ func (s *Store) UpdateEndpoint(ctx context.Context, endpoint Endpoint, credentia
 		if err != nil {
 			return Endpoint{}, err
 		}
-		_, err = s.db.ExecContext(ctx, `UPDATE endpoints SET name = ?, credentials = ?, enabled = ?, updated_at = ? WHERE id = ?`, endpoint.Name, encrypted, endpoint.Enabled, nowUnix(), endpoint.ID)
+		_, err = s.db.ExecContext(ctx, `UPDATE endpoints SET name = ?, credentials = ?, enabled = ?, outbound_id = ?, updated_at = ? WHERE id = ?`, endpoint.Name, encrypted, endpoint.Enabled, endpoint.OutboundID, nowUnix(), endpoint.ID)
 	}
 	if err != nil {
 		return Endpoint{}, fmt.Errorf("update endpoint: %w", err)
@@ -1231,7 +1287,7 @@ func (s *Store) DeleteEndpoint(ctx context.Context, endpointID string) error {
 }
 
 func (s *Store) ListEndpoints(ctx context.Context, listenerID string) ([]Endpoint, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT id, listener_id, name, enabled FROM endpoints WHERE listener_id = ? ORDER BY name, id`, listenerID)
+	rows, err := s.db.QueryContext(ctx, `SELECT id, listener_id, name, enabled, outbound_id FROM endpoints WHERE listener_id = ? ORDER BY name, id`, listenerID)
 	if err != nil {
 		return nil, err
 	}
@@ -1239,7 +1295,7 @@ func (s *Store) ListEndpoints(ctx context.Context, listenerID string) ([]Endpoin
 	var endpoints []Endpoint
 	for rows.Next() {
 		var endpoint Endpoint
-		if err := rows.Scan(&endpoint.ID, &endpoint.ListenerID, &endpoint.Name, &endpoint.Enabled); err != nil {
+		if err := rows.Scan(&endpoint.ID, &endpoint.ListenerID, &endpoint.Name, &endpoint.Enabled, &endpoint.OutboundID); err != nil {
 			return nil, err
 		}
 		endpoints = append(endpoints, endpoint)
@@ -1250,6 +1306,11 @@ func (s *Store) ListEndpoints(ctx context.Context, listenerID string) ([]Endpoin
 func (s *Store) CreateRouteRule(ctx context.Context, rule RouteRule) (RouteRule, error) {
 	if err := ValidateRouteRule(rule); err != nil {
 		return RouteRule{}, err
+	}
+	if rule.Action == "outbound" {
+		if err := s.ensureEnabledOutboundExists(ctx, rule.OutboundTag); err != nil {
+			return RouteRule{}, err
+		}
 	}
 	var exists int
 	if err := s.db.QueryRowContext(ctx, `SELECT 1 FROM nodes WHERE id = ? AND revoked_at IS NULL`, rule.NodeID).Scan(&exists); err != nil {
@@ -1307,6 +1368,11 @@ func (s *Store) UpdateRouteRule(ctx context.Context, rule RouteRule) (RouteRule,
 	}
 	if err := ValidateRouteRule(rule); err != nil {
 		return RouteRule{}, err
+	}
+	if rule.Action == "outbound" {
+		if err := s.ensureEnabledOutboundExists(ctx, rule.OutboundTag); err != nil {
+			return RouteRule{}, err
+		}
 	}
 	var currentNodeID string
 	err := s.db.QueryRowContext(ctx, `SELECT node_id FROM route_rules WHERE id = ?`, rule.ID).Scan(&currentNodeID)
@@ -1404,25 +1470,30 @@ func (s *Store) PendingTasks(ctx context.Context, nodeID string) ([]Task, error)
 	return tasks, rows.Err()
 }
 
-func (s *Store) ListTasks(ctx context.Context, nodeID, status string) ([]Task, error) {
-	query := `SELECT id, node_id, COALESCE(created_by, ''), kind, idempotency_key, payload, expected_hash, status, COALESCE(result_summary, ''), created_at,
-		COALESCE(started_at, 0), COALESCE(finished_at, 0) FROM tasks WHERE 1 = 1`
+func (s *Store) ListTasks(ctx context.Context, nodeID, status string, page, pageSize int) ([]Task, int, error) {
+	where := ` WHERE 1 = 1`
 	arguments := []any{}
 	if nodeID != "" {
-		query += " AND node_id = ?"
+		where += " AND node_id = ?"
 		arguments = append(arguments, nodeID)
 	}
 	if status != "" {
 		if status != "queued" && status != "dispatched" && status != "succeeded" && status != "failed" && status != "rolled_back" {
-			return nil, errors.New("task status filter is invalid")
+			return nil, 0, errors.New("task status filter is invalid")
 		}
-		query += " AND status = ?"
+		where += " AND status = ?"
 		arguments = append(arguments, status)
 	}
-	query += " ORDER BY created_at DESC, id DESC"
+	var total int
+	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM tasks`+where, arguments...).Scan(&total); err != nil {
+		return nil, 0, fmt.Errorf("count tasks: %w", err)
+	}
+	query := `SELECT id, node_id, COALESCE(created_by, ''), kind, idempotency_key, payload, expected_hash, status, COALESCE(result_summary, ''), created_at,
+		COALESCE(started_at, 0), COALESCE(finished_at, 0) FROM tasks` + where + ` ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?`
+	arguments = append(arguments, pageSize, (page-1)*pageSize)
 	rows, err := s.db.QueryContext(ctx, query, arguments...)
 	if err != nil {
-		return nil, fmt.Errorf("list tasks: %w", err)
+		return nil, 0, fmt.Errorf("list tasks: %w", err)
 	}
 	defer rows.Close()
 	var tasks []Task
@@ -1430,7 +1501,7 @@ func (s *Store) ListTasks(ctx context.Context, nodeID, status string) ([]Task, e
 		var task Task
 		var createdAt, startedAt, finishedAt int64
 		if err := rows.Scan(&task.ID, &task.NodeID, &task.OperatorID, &task.Kind, &task.IdempotencyKey, &task.Payload, &task.ExpectedHash, &task.Status, &task.ResultSummary, &createdAt, &startedAt, &finishedAt); err != nil {
-			return nil, fmt.Errorf("read task: %w", err)
+			return nil, 0, fmt.Errorf("read task: %w", err)
 		}
 		task.CreatedAt = time.Unix(createdAt, 0).UTC().Format(time.RFC3339)
 		if startedAt != 0 {
@@ -1442,7 +1513,7 @@ func (s *Store) ListTasks(ctx context.Context, nodeID, status string) ([]Task, e
 		task.Payload = ""
 		tasks = append(tasks, task)
 	}
-	return tasks, rows.Err()
+	return tasks, total, rows.Err()
 }
 
 func (s *Store) TaskByID(ctx context.Context, taskID string) (Task, error) {
@@ -1511,14 +1582,15 @@ func (s *Store) AppendAudit(ctx context.Context, operatorID, action, targetType,
 	return nil
 }
 
-func (s *Store) ListAudit(ctx context.Context, limit int) ([]AuditEvent, error) {
-	if limit <= 0 || limit > 500 {
-		limit = 100
+func (s *Store) ListAudit(ctx context.Context, page, pageSize int) ([]AuditEvent, int, error) {
+	var total int
+	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM audit_events`).Scan(&total); err != nil {
+		return nil, 0, fmt.Errorf("count audit events: %w", err)
 	}
 	rows, err := s.db.QueryContext(ctx, `SELECT a.id, a.operator_id, o.email, a.action, a.target_type, a.target_id, a.summary, a.created_at
-		FROM audit_events a JOIN operators o ON o.id = a.operator_id ORDER BY a.created_at DESC, a.id DESC LIMIT ?`, limit)
+		FROM audit_events a JOIN operators o ON o.id = a.operator_id ORDER BY a.created_at DESC, a.id DESC LIMIT ? OFFSET ?`, pageSize, (page-1)*pageSize)
 	if err != nil {
-		return nil, fmt.Errorf("list audit events: %w", err)
+		return nil, 0, fmt.Errorf("list audit events: %w", err)
 	}
 	defer rows.Close()
 	var events []AuditEvent
@@ -1526,12 +1598,12 @@ func (s *Store) ListAudit(ctx context.Context, limit int) ([]AuditEvent, error) 
 		var event AuditEvent
 		var createdAt int64
 		if err := rows.Scan(&event.ID, &event.OperatorID, &event.Email, &event.Action, &event.TargetType, &event.TargetID, &event.Summary, &createdAt); err != nil {
-			return nil, fmt.Errorf("read audit event: %w", err)
+			return nil, 0, fmt.Errorf("read audit event: %w", err)
 		}
 		event.CreatedAt = time.Unix(createdAt, 0).UTC().Format(time.RFC3339)
 		events = append(events, event)
 	}
-	return events, rows.Err()
+	return events, total, rows.Err()
 }
 
 func (s *Store) migrate(ctx context.Context) error {
@@ -1567,6 +1639,7 @@ CREATE TABLE IF NOT EXISTS registrations (
 );
 CREATE TABLE IF NOT EXISTS nodes (
   id TEXT PRIMARY KEY, name TEXT NOT NULL, public_key BLOB NOT NULL UNIQUE,
+  client_address TEXT NOT NULL DEFAULT '',
   agent_version TEXT NOT NULL DEFAULT '', os TEXT NOT NULL DEFAULT '', architecture TEXT NOT NULL DEFAULT '',
   sing_box_version TEXT NOT NULL DEFAULT '', capabilities TEXT, last_seen_at INTEGER,
   revoked_at INTEGER, created_at INTEGER NOT NULL
@@ -1589,7 +1662,7 @@ CREATE TABLE IF NOT EXISTS listeners (
 );
 CREATE TABLE IF NOT EXISTS endpoints (
   id TEXT PRIMARY KEY, listener_id TEXT NOT NULL REFERENCES listeners(id), name TEXT NOT NULL, credentials BLOB NOT NULL,
-  enabled INTEGER NOT NULL, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL
+  enabled INTEGER NOT NULL, outbound_id TEXT NOT NULL DEFAULT '', created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL
 );
 -- Outbounds are global egress definitions shared by every node: a listener on
 -- any node may route through the same upstream proxy without redefining it.
@@ -1628,6 +1701,19 @@ CREATE TABLE IF NOT EXISTS subscriptions (
   enabled INTEGER NOT NULL, last_status TEXT NOT NULL, last_error TEXT, last_processed_at INTEGER,
   generated_version INTEGER NOT NULL, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL
 );
+CREATE TABLE IF NOT EXISTS mihomo_proxy_groups (
+  id TEXT PRIMARY KEY, name TEXT NOT NULL UNIQUE, strategy TEXT NOT NULL, endpoint_ids TEXT NOT NULL,
+  created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS mihomo_routing_profiles (
+  id TEXT PRIMARY KEY, name TEXT NOT NULL UNIQUE, rule_preset TEXT NOT NULL, rules_json TEXT NOT NULL,
+  created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS mihomo_client_configs (
+  id TEXT PRIMARY KEY, name TEXT NOT NULL UNIQUE, proxy_group_ids TEXT NOT NULL,
+  routing_profile_id TEXT NOT NULL REFERENCES mihomo_routing_profiles(id),
+  created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL
+);
 CREATE TABLE IF NOT EXISTS subscription_rules (
   id TEXT PRIMARY KEY, subscription_id TEXT NOT NULL REFERENCES subscriptions(id), rule_json TEXT NOT NULL,
   created_at INTEGER NOT NULL
@@ -1663,6 +1749,7 @@ CREATE INDEX IF NOT EXISTS idx_sessions_expiry ON sessions(expires_at);
 CREATE INDEX IF NOT EXISTS idx_registrations_public_key ON registrations(public_key);
 CREATE INDEX IF NOT EXISTS idx_tasks_node_status ON tasks(node_id, status, created_at);
 CREATE INDEX IF NOT EXISTS idx_listeners_port ON listeners(node_id, listen_address, network, port, enabled);
+CREATE INDEX IF NOT EXISTS idx_listeners_backend_port ON listeners(node_id, network, backend_port, enabled);
 CREATE INDEX IF NOT EXISTS idx_endpoints_listener ON endpoints(listener_id, enabled);
 CREATE INDEX IF NOT EXISTS idx_outbounds_enabled ON outbounds(enabled);
 CREATE INDEX IF NOT EXISTS idx_route_rules_node_priority ON route_rules(node_id, priority, id);
@@ -1671,6 +1758,7 @@ CREATE INDEX IF NOT EXISTS idx_singbox_releases_version_architecture ON singbox_
 CREATE INDEX IF NOT EXISTS idx_managed_certificates_name ON managed_certificates(name, enabled);
 CREATE INDEX IF NOT EXISTS idx_managed_reality_keys_name ON managed_reality_keys(name, enabled);
 CREATE INDEX IF NOT EXISTS idx_subscriptions_kind_enabled ON subscriptions(kind, enabled);
+CREATE INDEX IF NOT EXISTS idx_mihomo_client_routing_profile ON mihomo_client_configs(routing_profile_id);
 CREATE INDEX IF NOT EXISTS idx_subscription_rules_subscription ON subscription_rules(subscription_id);
 CREATE INDEX IF NOT EXISTS idx_node_metrics_updated ON node_metrics(updated_at);
 CREATE INDEX IF NOT EXISTS idx_firewall_rules_node ON firewall_rules(node_id, enabled, expires_at);
@@ -1681,6 +1769,7 @@ CREATE INDEX IF NOT EXISTS idx_cloudflare_records_binding ON cloudflare_records(
 		return fmt.Errorf("migrate database: %w", err)
 	}
 	for _, column := range []string{
+		"client_address TEXT NOT NULL DEFAULT ''",
 		"agent_version TEXT NOT NULL DEFAULT ''", "os TEXT NOT NULL DEFAULT ''", "architecture TEXT NOT NULL DEFAULT ''",
 		"sing_box_version TEXT NOT NULL DEFAULT ''", "capabilities TEXT", "last_seen_at INTEGER",
 	} {
@@ -1696,6 +1785,64 @@ CREATE INDEX IF NOT EXISTS idx_cloudflare_records_binding ON cloudflare_records(
 	}
 	if err := s.addListenerColumn(ctx, "outbound_id TEXT NOT NULL DEFAULT ''"); err != nil {
 		return err
+	}
+	if err := s.addEndpointColumn(ctx, "outbound_id TEXT NOT NULL DEFAULT ''"); err != nil {
+		return err
+	}
+	if _, err := s.db.ExecContext(ctx, `UPDATE endpoints SET outbound_id = 'direct' WHERE outbound_id = ''`); err != nil {
+		return fmt.Errorf("migrate endpoint outbound defaults: %w", err)
+	}
+	if err := s.addMihomoProxyGroupColumn(ctx, "aliases_json TEXT NOT NULL DEFAULT '{}'"); err != nil {
+		return err
+	}
+	for _, column := range []string{"subscription_token_hash BLOB", "subscription_token_encrypted BLOB"} {
+		if err := s.addMihomoClientConfigColumn(ctx, column); err != nil {
+			return err
+		}
+	}
+	if _, err := s.db.ExecContext(ctx, `CREATE UNIQUE INDEX IF NOT EXISTS idx_mihomo_client_subscription_token_hash ON mihomo_client_configs(subscription_token_hash)`); err != nil {
+		return fmt.Errorf("create Mihomo subscription token index: %w", err)
+	}
+	if err := s.backfillMihomoClientSubscriptionTokens(ctx); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (s *Store) backfillMihomoClientSubscriptionTokens(ctx context.Context) error {
+	rows, err := s.db.QueryContext(ctx, `SELECT id FROM mihomo_client_configs WHERE subscription_token_hash IS NULL OR subscription_token_encrypted IS NULL`)
+	if err != nil {
+		return fmt.Errorf("list Mihomo configs without subscription links: %w", err)
+	}
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			rows.Close()
+			return err
+		}
+		ids = append(ids, id)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return err
+	}
+	if err := rows.Close(); err != nil {
+		return err
+	}
+	for _, id := range ids {
+		token, err := security.RandomToken(32)
+		if err != nil {
+			return err
+		}
+		encrypted, err := security.Encrypt(s.masterKey, []byte(token))
+		if err != nil {
+			return err
+		}
+		if _, err := s.db.ExecContext(ctx, `UPDATE mihomo_client_configs SET subscription_token_hash = ?, subscription_token_encrypted = ?, updated_at = ? WHERE id = ?`,
+			security.TokenHash(token), encrypted, nowUnix(), id); err != nil {
+			return fmt.Errorf("backfill Mihomo subscription link: %w", err)
+		}
 	}
 	return nil
 }
@@ -1724,12 +1871,36 @@ func (s *Store) addTaskColumn(ctx context.Context, definition string) error {
 	return fmt.Errorf("migrate tasks table: %w", err)
 }
 
+func (s *Store) addEndpointColumn(ctx context.Context, definition string) error {
+	_, err := s.db.ExecContext(ctx, "ALTER TABLE endpoints ADD COLUMN "+definition)
+	if err == nil || strings.Contains(err.Error(), "duplicate column name") {
+		return nil
+	}
+	return fmt.Errorf("migrate endpoints table: %w", err)
+}
+
 func (s *Store) addListenerColumn(ctx context.Context, definition string) error {
 	_, err := s.db.ExecContext(ctx, "ALTER TABLE listeners ADD COLUMN "+definition)
 	if err == nil || strings.Contains(err.Error(), "duplicate column name") {
 		return nil
 	}
 	return fmt.Errorf("migrate listeners table: %w", err)
+}
+
+func (s *Store) addMihomoProxyGroupColumn(ctx context.Context, definition string) error {
+	_, err := s.db.ExecContext(ctx, "ALTER TABLE mihomo_proxy_groups ADD COLUMN "+definition)
+	if err == nil || strings.Contains(err.Error(), "duplicate column name") {
+		return nil
+	}
+	return fmt.Errorf("migrate Mihomo proxy groups table: %w", err)
+}
+
+func (s *Store) addMihomoClientConfigColumn(ctx context.Context, definition string) error {
+	_, err := s.db.ExecContext(ctx, "ALTER TABLE mihomo_client_configs ADD COLUMN "+definition)
+	if err == nil || strings.Contains(err.Error(), "duplicate column name") {
+		return nil
+	}
+	return fmt.Errorf("migrate Mihomo client configs table: %w", err)
 }
 
 func loadOrCreateMasterKey(dataDir string) ([]byte, error) {

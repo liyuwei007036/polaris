@@ -26,9 +26,6 @@ type IngressRoute struct {
 // CompileNginxStream produces an isolated stream block. The system Nginx
 // configuration must include /etc/nginx/stream-conf.d/*.conf inside stream {}.
 func CompileNginxStream(routes []IngressRoute) (string, string, error) {
-	if len(routes) == 0 {
-		return "", "", errors.New("at least one ingress route is required")
-	}
 	type routeKey struct {
 		address string
 		port    uint16

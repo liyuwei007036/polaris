@@ -1,6 +1,8 @@
 package control
 
 import (
+	"crypto/rand"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"net"
@@ -117,6 +119,9 @@ func ValidateProtocolSpec(spec ProtocolSpec) error {
 	if !validNetwork {
 		return fmt.Errorf("protocol %s does not support %s", spec.Protocol, spec.Network)
 	}
+	if ProtocolRequiresTLS(spec.Protocol) && !spec.TLS.Enabled {
+		return fmt.Errorf("protocol %s requires TLS", spec.Protocol)
+	}
 	if spec.Reality.Enabled && spec.Protocol != "vless" {
 		return errors.New("Reality is only supported by VLESS listeners: Reality disguises a real TCP TLS handshake, and other protocols use their own handshake (e.g. Hysteria2 runs over QUIC), so the two cannot be combined")
 	}
@@ -153,10 +158,28 @@ func ValidateProtocolSpec(spec ProtocolSpec) error {
 	if spec.Protocol == "shadowtls" && spec.ShadowTLS.Version != 0 && spec.ShadowTLS.Version != 2 && spec.ShadowTLS.Version != 3 {
 		return errors.New("ShadowTLS version must be 2 or 3")
 	}
+	if spec.Protocol == "shadowtls" && (spec.ShadowTLS.HandshakeServer == "" || spec.ShadowTLS.HandshakePort == 0) {
+		return errors.New("ShadowTLS requires a handshake server and port")
+	}
+	if spec.Protocol == "hysteria" && (spec.Hysteria.UpMbps == 0 || spec.Hysteria.DownMbps == 0) {
+		return errors.New("Hysteria requires upload and download bandwidth")
+	}
+	if spec.Protocol == "tuic" && spec.TUIC.CongestionControl != "" && spec.TUIC.CongestionControl != "cubic" && spec.TUIC.CongestionControl != "new_reno" && spec.TUIC.CongestionControl != "bbr" {
+		return errors.New("TUIC congestion control must be cubic, new_reno, or bbr")
+	}
 	return nil
 }
 
 func ProtocolSupportsEndpoints(protocol string) bool { return protocolDefinitions[protocol].endpoints }
+
+func ProtocolRequiresTLS(protocol string) bool {
+	switch protocol {
+	case "naive", "hysteria", "tuic", "hysteria2", "anytls":
+		return true
+	default:
+		return false
+	}
+}
 
 func ValidateListenerAddress(address string, port uint16) error {
 	if port == 0 {
@@ -197,4 +220,65 @@ func ValidateEndpointCredentials(protocol string, credentials EndpointCredential
 		return errors.New("endpoint username contains a line break")
 	}
 	return nil
+}
+
+func GenerateEndpointCredentials(protocol string) (EndpointCredentials, error) {
+	randomBytes := func(size int) ([]byte, error) {
+		value := make([]byte, size)
+		if _, err := rand.Read(value); err != nil {
+			return nil, err
+		}
+		return value, nil
+	}
+	randomPassword := func(size int) (string, error) {
+		value, err := randomBytes(size)
+		if err != nil {
+			return "", err
+		}
+		return base64.RawURLEncoding.EncodeToString(value), nil
+	}
+	randomUUID := func() (string, error) {
+		value, err := randomBytes(16)
+		if err != nil {
+			return "", err
+		}
+		value[6] = (value[6] & 0x0f) | 0x40
+		value[8] = (value[8] & 0x3f) | 0x80
+		return fmt.Sprintf("%08x-%04x-%04x-%04x-%012x",
+			value[0:4], value[4:6], value[6:8], value[8:10], value[10:16]), nil
+	}
+
+	var credentials EndpointCredentials
+	var err error
+	switch protocol {
+	case "vless", "vmess":
+		credentials.UUID, err = randomUUID()
+	case "tuic":
+		credentials.UUID, err = randomUUID()
+		if err == nil {
+			credentials.Password, err = randomPassword(24)
+		}
+	case "socks", "http", "naive":
+		credentials.Username = "proxy"
+		credentials.Password, err = randomPassword(24)
+	case "shadowsocks":
+		credentials.Method = "2022-blake3-aes-256-gcm"
+		value, readErr := randomBytes(32)
+		if readErr != nil {
+			err = readErr
+		} else {
+			credentials.Password = base64.StdEncoding.EncodeToString(value)
+		}
+	case "snell":
+		credentials.PSK, err = randomPassword(24)
+	default:
+		credentials.Password, err = randomPassword(24)
+	}
+	if err != nil {
+		return EndpointCredentials{}, err
+	}
+	if err := ValidateEndpointCredentials(protocol, credentials); err != nil {
+		return EndpointCredentials{}, err
+	}
+	return credentials, nil
 }

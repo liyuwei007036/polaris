@@ -3,13 +3,17 @@ package control
 import (
 	"context"
 	"crypto/sha256"
-	_ "embed"
+	"database/sql"
+	"embed"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"mime"
 	"net/http"
+	"path"
+	"strings"
 	"sync"
 	"time"
 
@@ -19,8 +23,8 @@ import (
 
 const sessionCookieName = "sb_control_session"
 
-//go:embed web/index.html
-var dashboardHTML []byte
+//go:embed web/dist
+var dashboardFS embed.FS
 
 type Server struct {
 	store         *Store
@@ -29,6 +33,7 @@ type Server struct {
 	controlMu     sync.Mutex
 	controls      map[string]*controlSession
 	connHub       *connectionsHub
+	liveHub       *liveHub
 }
 
 type controlSession struct {
@@ -41,7 +46,10 @@ func NewServer(store *Store, secureCookies bool) (*Server, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Server{store: store, noiseKeypair: keypair, secureCookies: secureCookies, controls: make(map[string]*controlSession), connHub: newConnectionsHub()}, nil
+	return &Server{
+		store: store, noiseKeypair: keypair, secureCookies: secureCookies,
+		controls: make(map[string]*controlSession), connHub: newConnectionsHub(), liveHub: newLiveHub(),
+	}, nil
 }
 
 // NoisePublicKey returns the master's static public key, base64-encoded, for
@@ -88,6 +96,7 @@ func (s *Server) registerBrowserRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/v1/reality-keys/{id}/enabled", s.setRealityKeyEnabled)
 	mux.HandleFunc("POST /api/v1/nodes/registration-tokens", s.createRegistrationToken)
 	mux.HandleFunc("GET /api/v1/nodes", s.listNodes)
+	mux.HandleFunc("PUT /api/v1/nodes/{id}/client-address", s.setNodeClientAddress)
 	mux.HandleFunc("GET /api/v1/nodes/{id}/metrics", s.nodeMetrics)
 	mux.HandleFunc("GET /api/v1/nodes/{id}/firewall/rules", s.listFirewallRules)
 	mux.HandleFunc("POST /api/v1/nodes/{id}/firewall/rules", s.createFirewallRule)
@@ -102,6 +111,7 @@ func (s *Server) registerBrowserRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("DELETE /api/v1/fail2ban/jails/{id}", s.deleteFail2BanJail)
 	mux.HandleFunc("GET /api/v1/nodes/{id}/connections", s.nodeConnections)
 	mux.HandleFunc("GET /api/v1/events/connections", s.browserConnectionsStream)
+	mux.HandleFunc("GET /api/v1/events/live", s.browserLiveStream)
 	mux.HandleFunc("GET /api/v1/cloudflare/settings", s.cloudflareSettings)
 	mux.HandleFunc("PUT /api/v1/cloudflare/settings", s.setCloudflareSettings)
 	mux.HandleFunc("GET /api/v1/cloudflare/records", s.listCloudflareRecords)
@@ -111,23 +121,39 @@ func (s *Server) registerBrowserRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/v1/cloudflare/records/{id}/publish", s.publishCloudflareRecord)
 	mux.HandleFunc("POST /api/v1/cloudflare/sync", s.syncCloudflareRecords)
 	mux.HandleFunc("GET /api/v1/tasks", s.listTasks)
+	mux.HandleFunc("GET /api/v1/tasks/{id}", s.getTask)
 	mux.HandleFunc("GET /api/v1/audit-events", s.listAuditEvents)
 	mux.HandleFunc("GET /api/v1/subscriptions", s.listSubscriptions)
 	mux.HandleFunc("POST /api/v1/subscriptions", s.createSubscription)
 	mux.HandleFunc("PUT /api/v1/subscriptions/{id}", s.updateSubscription)
-	mux.HandleFunc("POST /api/v1/subscriptions/{id}/refresh", s.refreshUpstreamSubscription)
 	mux.HandleFunc("POST /api/v1/subscriptions/{id}/token/rotate", s.rotateClientSubscriptionToken)
 	mux.HandleFunc("POST /api/v1/subscriptions/{id}/enabled", s.setSubscriptionEnabled)
 	mux.HandleFunc("DELETE /api/v1/subscriptions/{id}", s.deleteSubscription)
 	mux.HandleFunc("GET /api/v1/subscriptions/access/{token}", s.clientSubscriptionContent)
+	mux.HandleFunc("GET /api/v1/mihomo/proxy-groups", s.listMihomoProxyGroups)
+	mux.HandleFunc("POST /api/v1/mihomo/proxy-groups", s.createMihomoProxyGroup)
+	mux.HandleFunc("PUT /api/v1/mihomo/proxy-groups/{id}", s.updateMihomoProxyGroup)
+	mux.HandleFunc("DELETE /api/v1/mihomo/proxy-groups/{id}", s.deleteMihomoProxyGroup)
+	mux.HandleFunc("GET /api/v1/mihomo/routing-profiles", s.listMihomoRoutingProfiles)
+	mux.HandleFunc("POST /api/v1/mihomo/routing-profiles", s.createMihomoRoutingProfile)
+	mux.HandleFunc("PUT /api/v1/mihomo/routing-profiles/{id}", s.updateMihomoRoutingProfile)
+	mux.HandleFunc("DELETE /api/v1/mihomo/routing-profiles/{id}", s.deleteMihomoRoutingProfile)
+	mux.HandleFunc("GET /api/v1/mihomo/client-configs", s.listMihomoClientConfigs)
+	mux.HandleFunc("POST /api/v1/mihomo/client-configs", s.createMihomoClientConfig)
+	mux.HandleFunc("PUT /api/v1/mihomo/client-configs/{id}", s.updateMihomoClientConfig)
+	mux.HandleFunc("DELETE /api/v1/mihomo/client-configs/{id}", s.deleteMihomoClientConfig)
+	mux.HandleFunc("POST /api/v1/mihomo/client-configs/{id}/subscription/rotate", s.rotateMihomoClientSubscription)
+	mux.HandleFunc("GET /api/v1/mihomo/subscriptions/{token}", s.mihomoClientSubscription)
 	mux.HandleFunc("POST /api/v1/nodes/{id}/configurations/publish", s.publishNodeConfiguration)
 	mux.HandleFunc("POST /api/v1/nodes/{id}/nginx/publish", s.publishNodeNginx)
 	mux.HandleFunc("GET /api/v1/sing-box/releases", s.listSingBoxReleases)
+	mux.HandleFunc("GET /api/v1/sing-box/latest", s.latestSingBoxRelease)
 	mux.HandleFunc("POST /api/v1/sing-box/releases", s.createSingBoxRelease)
 	mux.HandleFunc("POST /api/v1/nodes/{id}/sing-box/install", s.installSingBox)
 	mux.HandleFunc("GET /api/v1/protocols", s.listProtocols)
 	mux.HandleFunc("GET /api/v1/listeners", s.listListeners)
 	mux.HandleFunc("POST /api/v1/listeners", s.createListener)
+	mux.HandleFunc("POST /api/v1/listeners/quick", s.createListenerWithDefaultAccount)
 	mux.HandleFunc("PUT /api/v1/listeners/{id}", s.updateListener)
 	mux.HandleFunc("POST /api/v1/listeners/{id}/enabled", s.setListenerEnabled)
 	mux.HandleFunc("DELETE /api/v1/listeners/{id}", s.deleteListener)
@@ -135,9 +161,11 @@ func (s *Server) registerBrowserRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/v1/outbounds", s.createOutbound)
 	mux.HandleFunc("PUT /api/v1/outbounds/{id}", s.updateOutbound)
 	mux.HandleFunc("POST /api/v1/outbounds/{id}/enabled", s.setOutboundEnabled)
+	mux.HandleFunc("POST /api/v1/outbounds/{id}/test", s.testOutbound)
 	mux.HandleFunc("DELETE /api/v1/outbounds/{id}", s.deleteOutbound)
 	mux.HandleFunc("GET /api/v1/listeners/{id}/endpoints", s.listEndpoints)
 	mux.HandleFunc("POST /api/v1/listeners/{id}/endpoints", s.createEndpoint)
+	mux.HandleFunc("POST /api/v1/listeners/{id}/endpoints/quick", s.createGeneratedEndpoint)
 	mux.HandleFunc("PUT /api/v1/endpoints/{id}", s.updateEndpoint)
 	mux.HandleFunc("POST /api/v1/endpoints/{id}/enabled", s.setEndpointEnabled)
 	mux.HandleFunc("DELETE /api/v1/endpoints/{id}", s.deleteEndpoint)
@@ -157,10 +185,30 @@ func (s *Server) registerBrowserRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/v1/nodes/{id}/revoke", s.revokeNode)
 }
 
-func (s *Server) dashboard(w http.ResponseWriter, _ *http.Request) {
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	w.Header().Set("Content-Security-Policy", "default-src 'self'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; base-uri 'none'; frame-ancestors 'none'")
-	_, _ = w.Write(dashboardHTML)
+func (s *Server) dashboard(w http.ResponseWriter, r *http.Request) {
+	asset := strings.TrimPrefix(path.Clean(r.URL.Path), "/")
+	if asset == "." || asset == "" {
+		asset = "index.html"
+	}
+	content, err := dashboardFS.ReadFile("web/dist/" + asset)
+	if err != nil {
+		asset = "index.html"
+		content, err = dashboardFS.ReadFile("web/dist/index.html")
+	}
+	if err != nil {
+		http.Error(w, "web console unavailable", http.StatusInternalServerError)
+		return
+	}
+	contentType := mime.TypeByExtension(path.Ext(asset))
+	if asset == "index.html" {
+		contentType = "text/html; charset=utf-8"
+	}
+	if contentType != "" {
+		w.Header().Set("Content-Type", contentType)
+	}
+	w.Header().Set("Content-Security-Policy", "default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self'; img-src 'self' data:; base-uri 'none'; frame-ancestors 'none'")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	_, _ = w.Write(content)
 }
 
 func (s *Server) health(w http.ResponseWriter, _ *http.Request) {
@@ -403,6 +451,11 @@ func (s *Server) replaceManagedCertificate(w http.ResponseWriter, r *http.Reques
 	if !decodeJSON(w, r, &input) {
 		return
 	}
+	nodeIDs, err := s.store.CertificateNodeIDs(r.Context(), r.PathValue("id"))
+	if err != nil {
+		writeError(w, err)
+		return
+	}
 	certificate, err := s.store.ReplaceManagedCertificate(r.Context(), r.PathValue("id"), input)
 	if err != nil {
 		writeError(w, err)
@@ -412,6 +465,12 @@ func (s *Server) replaceManagedCertificate(w http.ResponseWriter, r *http.Reques
 		writeError(w, err)
 		return
 	}
+	tasks, err := s.dispatchNodeConfigurations(r.Context(), nodeIDs, operator.ID)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	setAutoApplyTaskHeaders(w, tasks)
 	writeJSON(w, http.StatusOK, certificate)
 }
 
@@ -536,17 +595,145 @@ func (s *Server) DispatchTask(ctx context.Context, task Task) (Task, error) {
 	return created, nil
 }
 
+func (s *Server) dispatchNodeConfiguration(ctx context.Context, nodeID, operatorID string) (Task, error) {
+	configuration, hash, err := s.store.CompileNodeConfig(ctx, nodeID)
+	if err != nil {
+		return Task{}, err
+	}
+	payload, err := json.Marshal(map[string]string{"configuration": configuration})
+	if err != nil {
+		return Task{}, err
+	}
+	return s.DispatchTask(ctx, Task{
+		NodeID: nodeID, OperatorID: operatorID, Kind: "singbox.apply_config",
+		IdempotencyKey: "configuration-" + hash, Payload: string(payload), ExpectedHash: hash,
+	})
+}
+
+func setAutoApplyTaskHeader(w http.ResponseWriter, task Task) {
+	w.Header().Set("X-SB-Auto-Apply-Task", task.ID)
+}
+
+func (s *Server) dispatchNodeConfigurations(ctx context.Context, nodeIDs []string, operatorID string) ([]Task, error) {
+	tasks := make([]Task, 0, len(nodeIDs))
+	for _, nodeID := range nodeIDs {
+		task, err := s.dispatchNodeConfiguration(ctx, nodeID, operatorID)
+		if err != nil {
+			return tasks, err
+		}
+		tasks = append(tasks, task)
+	}
+	return tasks, nil
+}
+
+func setAutoApplyTaskHeaders(w http.ResponseWriter, tasks []Task) {
+	ids := make([]string, 0, len(tasks))
+	for _, task := range tasks {
+		ids = append(ids, task.ID)
+	}
+	if len(ids) > 0 {
+		w.Header().Set("X-SB-Auto-Apply-Task", strings.Join(ids, ","))
+	}
+}
+
+func (s *Server) dispatchNodeNginx(ctx context.Context, nodeID, operatorID string) (Task, error) {
+	configuration, hash, err := s.store.CompileNodeNginx(ctx, nodeID)
+	if err != nil {
+		return Task{}, err
+	}
+	payload, err := json.Marshal(map[string]string{"configuration": configuration})
+	if err != nil {
+		return Task{}, err
+	}
+	return s.DispatchTask(ctx, Task{
+		NodeID: nodeID, OperatorID: operatorID, Kind: "nginx.apply_config",
+		IdempotencyKey: "nginx-" + hash, Payload: string(payload), ExpectedHash: hash,
+	})
+}
+
+func setAutoApplyNginxTaskHeader(w http.ResponseWriter, task Task) {
+	w.Header().Set("X-SB-Auto-Apply-Nginx-Task", task.ID)
+}
+
+func (s *Server) listenerNodeID(ctx context.Context, listenerID string) (string, error) {
+	var nodeID string
+	err := s.store.db.QueryRowContext(ctx, `SELECT node_id FROM listeners WHERE id = ?`, listenerID).Scan(&nodeID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", ErrNotFound
+	}
+	return nodeID, err
+}
+
+func (s *Server) endpointNodeID(ctx context.Context, endpointID string) (string, error) {
+	var nodeID string
+	err := s.store.db.QueryRowContext(ctx, `SELECT l.node_id FROM endpoints e JOIN listeners l ON l.id = e.listener_id WHERE e.id = ?`, endpointID).Scan(&nodeID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", ErrNotFound
+	}
+	return nodeID, err
+}
+
+func (s *Server) routeRuleNodeID(ctx context.Context, ruleID string) (string, error) {
+	var nodeID string
+	err := s.store.db.QueryRowContext(ctx, `SELECT node_id FROM route_rules WHERE id = ?`, ruleID).Scan(&nodeID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", ErrNotFound
+	}
+	return nodeID, err
+}
+
+func (s *Server) ingressRouteNodeID(ctx context.Context, routeID string) (string, error) {
+	var nodeID string
+	err := s.store.db.QueryRowContext(ctx, `SELECT node_id FROM ingress_routes WHERE id = ?`, routeID).Scan(&nodeID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", ErrNotFound
+	}
+	return nodeID, err
+}
+
+func (s *Server) listenerHasIngressRoute(ctx context.Context, listenerID string) (bool, error) {
+	var count int
+	if err := s.store.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM ingress_routes WHERE listener_id = ?`, listenerID).Scan(&count); err != nil {
+		return false, err
+	}
+	return count > 0, nil
+}
+
 func (s *Server) listTasks(w http.ResponseWriter, r *http.Request) {
 	if _, err := s.operator(r, false); err != nil {
 		writeError(w, err)
 		return
 	}
-	tasks, err := s.store.ListTasks(r.Context(), r.URL.Query().Get("node_id"), r.URL.Query().Get("status"))
+	page, err := security.ParsePositiveInt(r.URL.Query().Get("page"), 1, 1_000_000)
 	if err != nil {
 		writeError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"tasks": tasks})
+	pageSize, err := security.ParsePositiveInt(r.URL.Query().Get("page_size"), 20, 100)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	tasks, total, err := s.store.ListTasks(r.Context(), r.URL.Query().Get("node_id"), r.URL.Query().Get("status"), page, pageSize)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"tasks": tasks, "total": total, "page": page, "page_size": pageSize})
+}
+
+func (s *Server) getTask(w http.ResponseWriter, r *http.Request) {
+	if _, err := s.operator(r, false); err != nil {
+		writeError(w, err)
+		return
+	}
+	task, err := s.store.TaskByID(r.Context(), r.PathValue("id"))
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	task.Payload = ""
+	writeJSON(w, http.StatusOK, task)
 }
 
 func (s *Server) listAuditEvents(w http.ResponseWriter, r *http.Request) {
@@ -554,17 +741,22 @@ func (s *Server) listAuditEvents(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
-	limit, err := security.ParsePositiveInt(r.URL.Query().Get("limit"), 100, 500)
+	page, err := security.ParsePositiveInt(r.URL.Query().Get("page"), 1, 1_000_000)
 	if err != nil {
 		writeError(w, err)
 		return
 	}
-	events, err := s.store.ListAudit(r.Context(), limit)
+	pageSize, err := security.ParsePositiveInt(r.URL.Query().Get("page_size"), 20, 100)
 	if err != nil {
 		writeError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"audit_events": events})
+	events, total, err := s.store.ListAudit(r.Context(), page, pageSize)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"audit_events": events, "total": total, "page": page, "page_size": pageSize})
 }
 
 func (s *Server) listSubscriptions(w http.ResponseWriter, r *http.Request) {
@@ -604,24 +796,6 @@ func (s *Server) createSubscription(w http.ResponseWriter, r *http.Request) {
 		response["access_token"] = token
 	}
 	writeJSON(w, http.StatusCreated, response)
-}
-
-func (s *Server) refreshUpstreamSubscription(w http.ResponseWriter, r *http.Request) {
-	operator, err := s.writer(r)
-	if err != nil {
-		writeError(w, err)
-		return
-	}
-	subscription, err := s.store.RefreshUpstreamSubscription(r.Context(), r.PathValue("id"))
-	if err != nil {
-		writeError(w, err)
-		return
-	}
-	if err := s.store.AppendAudit(r.Context(), operator.ID, "subscription.refreshed", "subscription", subscription.ID, "upstream subscription refreshed; content omitted"); err != nil {
-		writeError(w, err)
-		return
-	}
-	writeJSON(w, http.StatusOK, subscription)
 }
 
 func (s *Server) updateSubscription(w http.ResponseWriter, r *http.Request) {
@@ -726,6 +900,35 @@ func (s *Server) listNodes(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"nodes": nodes})
+}
+
+func (s *Server) setNodeClientAddress(w http.ResponseWriter, r *http.Request) {
+	operator, err := s.writer(r)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	var input struct {
+		Address string `json:"address"`
+	}
+	if !decodeJSON(w, r, &input) {
+		return
+	}
+	nodeID := r.PathValue("id")
+	if err := s.store.SetNodeClientAddress(r.Context(), nodeID, input.Address); err != nil {
+		writeError(w, err)
+		return
+	}
+	if err := s.store.AppendAudit(r.Context(), operator.ID, "node.client_address_updated", "node", nodeID, "client connection address updated"); err != nil {
+		writeError(w, err)
+		return
+	}
+	node, err := s.store.GetNode(r.Context(), nodeID)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, node)
 }
 
 func (s *Server) nodeMetrics(w http.ResponseWriter, r *http.Request) {
@@ -855,17 +1058,7 @@ func (s *Server) publishNodeConfiguration(w http.ResponseWriter, r *http.Request
 		return
 	}
 	nodeID := r.PathValue("id")
-	configuration, hash, err := s.store.CompileNodeConfig(r.Context(), nodeID)
-	if err != nil {
-		writeError(w, err)
-		return
-	}
-	payload, err := json.Marshal(map[string]string{"configuration": configuration})
-	if err != nil {
-		writeError(w, err)
-		return
-	}
-	task, err := s.DispatchTask(r.Context(), Task{NodeID: nodeID, OperatorID: operator.ID, Kind: "singbox.apply_config", IdempotencyKey: "configuration-" + hash, Payload: string(payload), ExpectedHash: hash})
+	task, err := s.dispatchNodeConfiguration(r.Context(), nodeID, operator.ID)
 	if err != nil {
 		writeError(w, err)
 		return
@@ -884,17 +1077,7 @@ func (s *Server) publishNodeNginx(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	nodeID := r.PathValue("id")
-	configuration, hash, err := s.store.CompileNodeNginx(r.Context(), nodeID)
-	if err != nil {
-		writeError(w, err)
-		return
-	}
-	payload, err := json.Marshal(map[string]string{"configuration": configuration})
-	if err != nil {
-		writeError(w, err)
-		return
-	}
-	task, err := s.DispatchTask(r.Context(), Task{NodeID: nodeID, OperatorID: operator.ID, Kind: "nginx.apply_config", IdempotencyKey: "nginx-" + hash, Payload: string(payload), ExpectedHash: hash})
+	task, err := s.dispatchNodeNginx(r.Context(), nodeID, operator.ID)
 	if err != nil {
 		writeError(w, err)
 		return
@@ -941,6 +1124,19 @@ func (s *Server) createSingBoxRelease(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, created)
 }
 
+func (s *Server) latestSingBoxRelease(w http.ResponseWriter, r *http.Request) {
+	if _, err := s.operator(r, false); err != nil {
+		writeError(w, err)
+		return
+	}
+	release, err := LatestOfficialSingBoxRelease(r.Context(), r.URL.Query().Get("architecture"))
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, release)
+}
+
 func (s *Server) installSingBox(w http.ResponseWriter, r *http.Request) {
 	operator, err := s.admin(r)
 	if err != nil {
@@ -963,7 +1159,12 @@ func (s *Server) installSingBox(w http.ResponseWriter, r *http.Request) {
 		writeError(w, errors.New("node architecture is unavailable; wait for a successful agent heartbeat"))
 		return
 	}
-	release, err := s.store.FindSingBoxRelease(r.Context(), input.Version, node.Architecture)
+	var release SingBoxRelease
+	if strings.TrimSpace(input.Version) == "" {
+		release, err = LatestOfficialSingBoxRelease(r.Context(), node.Architecture)
+	} else {
+		release, err = s.store.FindSingBoxRelease(r.Context(), input.Version, node.Architecture)
+	}
 	if err != nil {
 		writeError(w, err)
 		return
@@ -1032,7 +1233,133 @@ func (s *Server) createListener(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
+	task, err := s.dispatchNodeConfiguration(r.Context(), created.NodeID, operator.ID)
+	if err != nil {
+		_ = s.store.DeleteListener(r.Context(), created.ID)
+		writeError(w, err)
+		return
+	}
+	setAutoApplyTaskHeader(w, task)
 	writeJSON(w, http.StatusCreated, created)
+}
+
+func (s *Server) createListenerWithDefaultAccount(w http.ResponseWriter, r *http.Request) {
+	operator, err := s.writer(r)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	var input struct {
+		Listener          Listener `json:"listener"`
+		DefaultOutboundID string   `json:"default_outbound_id"`
+		Accounts          []struct {
+			Name       string `json:"name"`
+			OutboundID string `json:"outbound_id"`
+		} `json:"accounts"`
+		Ingress *struct {
+			ListenAddress string `json:"listen_address"`
+			Port          uint16 `json:"port"`
+			SNI           string `json:"sni"`
+			Enabled       bool   `json:"enabled"`
+		} `json:"ingress_route"`
+	}
+	if !decodeJSON(w, r, &input) {
+		return
+	}
+	if len(input.Accounts) == 0 {
+		if input.DefaultOutboundID == "" {
+			input.DefaultOutboundID = "direct"
+		}
+		input.Accounts = append(input.Accounts, struct {
+			Name       string `json:"name"`
+			OutboundID string `json:"outbound_id"`
+		}{Name: "默认账号", OutboundID: input.DefaultOutboundID})
+	}
+	if input.Ingress != nil {
+		if input.Ingress.ListenAddress == "" {
+			input.Ingress.ListenAddress = "0.0.0.0"
+		}
+		if input.Ingress.Port == 0 {
+			input.Ingress.Port = input.Listener.Port
+		}
+		input.Listener.Port = input.Ingress.Port
+		input.Listener.ListenAddr = "127.0.0.1"
+		if input.Listener.BackendPort == 0 || input.Listener.BackendPort == input.Listener.Port {
+			backendPort, err := s.store.NextListenerBackendPort(r.Context(), input.Listener.NodeID, input.Listener.Spec.Network)
+			if err != nil {
+				writeError(w, err)
+				return
+			}
+			input.Listener.BackendPort = backendPort
+		}
+	}
+	created, err := s.store.CreateListener(r.Context(), input.Listener)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	endpoints := make([]Endpoint, 0, len(input.Accounts))
+	for _, account := range input.Accounts {
+		if account.OutboundID == "" {
+			account.OutboundID = "direct"
+		}
+		credentials, err := GenerateEndpointCredentials(created.Spec.Protocol)
+		if err != nil {
+			_ = s.store.DeleteListener(r.Context(), created.ID)
+			writeError(w, err)
+			return
+		}
+		endpoint, err := s.store.CreateEndpoint(r.Context(), Endpoint{
+			ListenerID: created.ID,
+			Name:       strings.TrimSpace(account.Name),
+			Enabled:    true,
+			OutboundID: account.OutboundID,
+		}, credentials)
+		if err != nil {
+			_ = s.store.DeleteListener(r.Context(), created.ID)
+			writeError(w, err)
+			return
+		}
+		endpoints = append(endpoints, endpoint)
+	}
+	var ingressRoute *IngressRoute
+	if input.Ingress != nil {
+		route, err := s.store.CreateIngressRoute(r.Context(), IngressRoute{
+			NodeID: created.NodeID, ListenerID: created.ID,
+			ListenAddress: input.Ingress.ListenAddress, Port: input.Ingress.Port,
+			SNI: input.Ingress.SNI, Enabled: input.Ingress.Enabled,
+		})
+		if err != nil {
+			_ = s.store.DeleteListener(r.Context(), created.ID)
+			writeError(w, err)
+			return
+		}
+		ingressRoute = &route
+	}
+	if err := s.store.AppendAudit(r.Context(), operator.ID, "listener.created", "listener", created.ID, "listener and generated accounts created"); err != nil {
+		writeError(w, err)
+		return
+	}
+	task, err := s.dispatchNodeConfiguration(r.Context(), created.NodeID, operator.ID)
+	if err != nil {
+		_ = s.store.DeleteListener(r.Context(), created.ID)
+		writeError(w, err)
+		return
+	}
+	setAutoApplyTaskHeader(w, task)
+	if ingressRoute != nil {
+		nginxTask, err := s.dispatchNodeNginx(r.Context(), created.NodeID, operator.ID)
+		if err != nil {
+			writeError(w, err)
+			return
+		}
+		setAutoApplyNginxTaskHeader(w, nginxTask)
+	}
+	response := map[string]any{"listener": created, "endpoints": endpoints, "ingress_route": ingressRoute}
+	if len(endpoints) > 0 {
+		response["endpoint"] = endpoints[0]
+	}
+	writeJSON(w, http.StatusCreated, response)
 }
 
 func (s *Server) updateListener(w http.ResponseWriter, r *http.Request) {
@@ -1055,6 +1382,25 @@ func (s *Server) updateListener(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
+	task, err := s.dispatchNodeConfiguration(r.Context(), updated.NodeID, operator.ID)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	setAutoApplyTaskHeader(w, task)
+	hasIngress, err := s.listenerHasIngressRoute(r.Context(), updated.ID)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	if hasIngress {
+		nginxTask, err := s.dispatchNodeNginx(r.Context(), updated.NodeID, operator.ID)
+		if err != nil {
+			writeError(w, err)
+			return
+		}
+		setAutoApplyNginxTaskHeader(w, nginxTask)
+	}
 	writeJSON(w, http.StatusOK, updated)
 }
 
@@ -1070,19 +1416,59 @@ func (s *Server) setListenerEnabled(w http.ResponseWriter, r *http.Request) {
 	if !decodeJSON(w, r, &input) {
 		return
 	}
+	nodeID, err := s.listenerNodeID(r.Context(), r.PathValue("id"))
+	if err != nil {
+		writeError(w, err)
+		return
+	}
 	if err := s.store.SetListenerEnabled(r.Context(), r.PathValue("id"), input.Enabled); err != nil {
 		writeError(w, err)
 		return
 	}
+	hasIngress, err := s.listenerHasIngressRoute(r.Context(), r.PathValue("id"))
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	if hasIngress {
+		if _, err := s.store.db.ExecContext(r.Context(), `UPDATE ingress_routes SET enabled = ?, updated_at = ? WHERE listener_id = ?`, input.Enabled, nowUnix(), r.PathValue("id")); err != nil {
+			writeError(w, err)
+			return
+		}
+	}
 	if err := s.store.AppendAudit(r.Context(), operator.ID, "listener.state_changed", "listener", r.PathValue("id"), "listener enabled state changed"); err != nil {
 		writeError(w, err)
 		return
+	}
+	task, err := s.dispatchNodeConfiguration(r.Context(), nodeID, operator.ID)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	setAutoApplyTaskHeader(w, task)
+	if hasIngress {
+		nginxTask, err := s.dispatchNodeNginx(r.Context(), nodeID, operator.ID)
+		if err != nil {
+			writeError(w, err)
+			return
+		}
+		setAutoApplyNginxTaskHeader(w, nginxTask)
 	}
 	w.WriteHeader(http.StatusNoContent)
 }
 
 func (s *Server) deleteListener(w http.ResponseWriter, r *http.Request) {
 	operator, err := s.admin(r)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	nodeID, err := s.listenerNodeID(r.Context(), r.PathValue("id"))
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	hasIngress, err := s.listenerHasIngressRoute(r.Context(), r.PathValue("id"))
 	if err != nil {
 		writeError(w, err)
 		return
@@ -1094,6 +1480,20 @@ func (s *Server) deleteListener(w http.ResponseWriter, r *http.Request) {
 	if err := s.store.AppendAudit(r.Context(), operator.ID, "listener.deleted", "listener", r.PathValue("id"), "listener and endpoints deleted"); err != nil {
 		writeError(w, err)
 		return
+	}
+	task, err := s.dispatchNodeConfiguration(r.Context(), nodeID, operator.ID)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	setAutoApplyTaskHeader(w, task)
+	if hasIngress {
+		nginxTask, err := s.dispatchNodeNginx(r.Context(), nodeID, operator.ID)
+		if err != nil {
+			writeError(w, err)
+			return
+		}
+		setAutoApplyNginxTaskHeader(w, nginxTask)
 	}
 	w.WriteHeader(http.StatusNoContent)
 }
@@ -1144,6 +1544,11 @@ func (s *Server) updateOutbound(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	outbound.ID = r.PathValue("id")
+	nodeIDs, err := s.store.OutboundNodeIDs(r.Context(), outbound.ID)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
 	updated, err := s.store.UpdateOutbound(r.Context(), outbound)
 	if err != nil {
 		writeError(w, err)
@@ -1153,6 +1558,12 @@ func (s *Server) updateOutbound(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
+	tasks, err := s.dispatchNodeConfigurations(r.Context(), nodeIDs, operator.ID)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	setAutoApplyTaskHeaders(w, tasks)
 	writeJSON(w, http.StatusOK, updated)
 }
 
@@ -1168,6 +1579,11 @@ func (s *Server) setOutboundEnabled(w http.ResponseWriter, r *http.Request) {
 	if !decodeJSON(w, r, &input) {
 		return
 	}
+	nodeIDs, err := s.store.OutboundNodeIDs(r.Context(), r.PathValue("id"))
+	if err != nil {
+		writeError(w, err)
+		return
+	}
 	if err := s.store.SetOutboundEnabled(r.Context(), r.PathValue("id"), input.Enabled); err != nil {
 		writeError(w, err)
 		return
@@ -1176,11 +1592,22 @@ func (s *Server) setOutboundEnabled(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
+	tasks, err := s.dispatchNodeConfigurations(r.Context(), nodeIDs, operator.ID)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	setAutoApplyTaskHeaders(w, tasks)
 	w.WriteHeader(http.StatusNoContent)
 }
 
 func (s *Server) deleteOutbound(w http.ResponseWriter, r *http.Request) {
 	operator, err := s.admin(r)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	nodeIDs, err := s.store.OutboundNodeIDs(r.Context(), r.PathValue("id"))
 	if err != nil {
 		writeError(w, err)
 		return
@@ -1193,6 +1620,12 @@ func (s *Server) deleteOutbound(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
+	tasks, err := s.dispatchNodeConfigurations(r.Context(), nodeIDs, operator.ID)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	setAutoApplyTaskHeaders(w, tasks)
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -1218,12 +1651,13 @@ func (s *Server) createEndpoint(w http.ResponseWriter, r *http.Request) {
 	var input struct {
 		Name        string              `json:"name"`
 		Enabled     bool                `json:"enabled"`
+		OutboundID  string              `json:"outbound_id"`
 		Credentials EndpointCredentials `json:"credentials"`
 	}
 	if !decodeJSON(w, r, &input) {
 		return
 	}
-	endpoint, err := s.store.CreateEndpoint(r.Context(), Endpoint{ListenerID: r.PathValue("id"), Name: input.Name, Enabled: input.Enabled}, input.Credentials)
+	endpoint, err := s.store.CreateEndpoint(r.Context(), Endpoint{ListenerID: r.PathValue("id"), Name: input.Name, Enabled: input.Enabled, OutboundID: input.OutboundID}, input.Credentials)
 	if err != nil {
 		writeError(w, err)
 		return
@@ -1232,6 +1666,75 @@ func (s *Server) createEndpoint(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
+	nodeID, err := s.listenerNodeID(r.Context(), endpoint.ListenerID)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	task, err := s.dispatchNodeConfiguration(r.Context(), nodeID, operator.ID)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	setAutoApplyTaskHeader(w, task)
+	writeJSON(w, http.StatusCreated, endpoint)
+}
+
+func (s *Server) createGeneratedEndpoint(w http.ResponseWriter, r *http.Request) {
+	operator, err := s.writer(r)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	var input struct {
+		Name       string `json:"name"`
+		OutboundID string `json:"outbound_id"`
+	}
+	if !decodeJSON(w, r, &input) {
+		return
+	}
+	if input.OutboundID == "" {
+		input.OutboundID = "direct"
+	}
+	var protocol string
+	if err := s.store.db.QueryRowContext(r.Context(), `SELECT protocol FROM listeners WHERE id = ?`, r.PathValue("id")).Scan(&protocol); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			writeError(w, ErrNotFound)
+		} else {
+			writeError(w, err)
+		}
+		return
+	}
+	credentials, err := GenerateEndpointCredentials(protocol)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	endpoint, err := s.store.CreateEndpoint(r.Context(), Endpoint{
+		ListenerID: r.PathValue("id"),
+		Name:       input.Name,
+		Enabled:    true,
+		OutboundID: input.OutboundID,
+	}, credentials)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	if err := s.store.AppendAudit(r.Context(), operator.ID, "endpoint.created", "endpoint", endpoint.ID, "generated endpoint credentials created"); err != nil {
+		writeError(w, err)
+		return
+	}
+	nodeID, err := s.listenerNodeID(r.Context(), endpoint.ListenerID)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	task, err := s.dispatchNodeConfiguration(r.Context(), nodeID, operator.ID)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	setAutoApplyTaskHeader(w, task)
 	writeJSON(w, http.StatusCreated, endpoint)
 }
 
@@ -1245,12 +1748,13 @@ func (s *Server) updateEndpoint(w http.ResponseWriter, r *http.Request) {
 		ListenerID  string               `json:"listener_id"`
 		Name        string               `json:"name"`
 		Enabled     bool                 `json:"enabled"`
+		OutboundID  string               `json:"outbound_id"`
 		Credentials *EndpointCredentials `json:"credentials"`
 	}
 	if !decodeJSON(w, r, &input) {
 		return
 	}
-	updated, err := s.store.UpdateEndpoint(r.Context(), Endpoint{ID: r.PathValue("id"), ListenerID: input.ListenerID, Name: input.Name, Enabled: input.Enabled}, input.Credentials)
+	updated, err := s.store.UpdateEndpoint(r.Context(), Endpoint{ID: r.PathValue("id"), ListenerID: input.ListenerID, Name: input.Name, Enabled: input.Enabled, OutboundID: input.OutboundID}, input.Credentials)
 	if err != nil {
 		writeError(w, err)
 		return
@@ -1259,6 +1763,17 @@ func (s *Server) updateEndpoint(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
+	nodeID, err := s.listenerNodeID(r.Context(), updated.ListenerID)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	task, err := s.dispatchNodeConfiguration(r.Context(), nodeID, operator.ID)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	setAutoApplyTaskHeader(w, task)
 	writeJSON(w, http.StatusOK, updated)
 }
 
@@ -1274,6 +1789,11 @@ func (s *Server) setEndpointEnabled(w http.ResponseWriter, r *http.Request) {
 	if !decodeJSON(w, r, &input) {
 		return
 	}
+	nodeID, err := s.endpointNodeID(r.Context(), r.PathValue("id"))
+	if err != nil {
+		writeError(w, err)
+		return
+	}
 	if err := s.store.SetEndpointEnabled(r.Context(), r.PathValue("id"), input.Enabled); err != nil {
 		writeError(w, err)
 		return
@@ -1282,11 +1802,22 @@ func (s *Server) setEndpointEnabled(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
+	task, err := s.dispatchNodeConfiguration(r.Context(), nodeID, operator.ID)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	setAutoApplyTaskHeader(w, task)
 	w.WriteHeader(http.StatusNoContent)
 }
 
 func (s *Server) deleteEndpoint(w http.ResponseWriter, r *http.Request) {
 	operator, err := s.writer(r)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	nodeID, err := s.endpointNodeID(r.Context(), r.PathValue("id"))
 	if err != nil {
 		writeError(w, err)
 		return
@@ -1299,6 +1830,12 @@ func (s *Server) deleteEndpoint(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
+	task, err := s.dispatchNodeConfiguration(r.Context(), nodeID, operator.ID)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	setAutoApplyTaskHeader(w, task)
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -1334,6 +1871,13 @@ func (s *Server) createIngressRoute(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
+	task, err := s.dispatchNodeNginx(r.Context(), created.NodeID, operator.ID)
+	if err != nil {
+		_ = s.store.DeleteIngressRoute(r.Context(), created.ID)
+		writeError(w, err)
+		return
+	}
+	setAutoApplyNginxTaskHeader(w, task)
 	writeJSON(w, http.StatusCreated, created)
 }
 
@@ -1357,11 +1901,22 @@ func (s *Server) updateIngressRoute(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
+	task, err := s.dispatchNodeNginx(r.Context(), updated.NodeID, operator.ID)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	setAutoApplyNginxTaskHeader(w, task)
 	writeJSON(w, http.StatusOK, updated)
 }
 
 func (s *Server) deleteIngressRoute(w http.ResponseWriter, r *http.Request) {
 	operator, err := s.writer(r)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	nodeID, err := s.ingressRouteNodeID(r.Context(), r.PathValue("id"))
 	if err != nil {
 		writeError(w, err)
 		return
@@ -1374,6 +1929,12 @@ func (s *Server) deleteIngressRoute(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
+	task, err := s.dispatchNodeNginx(r.Context(), nodeID, operator.ID)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	setAutoApplyNginxTaskHeader(w, task)
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -1410,6 +1971,12 @@ func (s *Server) createRouteRule(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
+	task, err := s.dispatchNodeConfiguration(r.Context(), created.NodeID, operator.ID)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	setAutoApplyTaskHeader(w, task)
 	writeJSON(w, http.StatusCreated, created)
 }
 
@@ -1446,6 +2013,12 @@ func (s *Server) updateRouteRule(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
+	task, err := s.dispatchNodeConfiguration(r.Context(), updated.NodeID, operator.ID)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	setAutoApplyTaskHeader(w, task)
 	writeJSON(w, http.StatusOK, updated)
 }
 
@@ -1461,6 +2034,11 @@ func (s *Server) setRouteRuleEnabled(w http.ResponseWriter, r *http.Request) {
 	if !decodeJSON(w, r, &input) {
 		return
 	}
+	nodeID, err := s.routeRuleNodeID(r.Context(), r.PathValue("id"))
+	if err != nil {
+		writeError(w, err)
+		return
+	}
 	if err := s.store.SetRouteRuleEnabled(r.Context(), r.PathValue("id"), input.Enabled); err != nil {
 		writeError(w, err)
 		return
@@ -1469,6 +2047,12 @@ func (s *Server) setRouteRuleEnabled(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
+	task, err := s.dispatchNodeConfiguration(r.Context(), nodeID, operator.ID)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	setAutoApplyTaskHeader(w, task)
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -1484,6 +2068,11 @@ func (s *Server) setRouteRulePriority(w http.ResponseWriter, r *http.Request) {
 	if !decodeJSON(w, r, &input) {
 		return
 	}
+	nodeID, err := s.routeRuleNodeID(r.Context(), r.PathValue("id"))
+	if err != nil {
+		writeError(w, err)
+		return
+	}
 	if err := s.store.SetRouteRulePriority(r.Context(), r.PathValue("id"), input.Priority); err != nil {
 		writeError(w, err)
 		return
@@ -1492,11 +2081,22 @@ func (s *Server) setRouteRulePriority(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
+	task, err := s.dispatchNodeConfiguration(r.Context(), nodeID, operator.ID)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	setAutoApplyTaskHeader(w, task)
 	w.WriteHeader(http.StatusNoContent)
 }
 
 func (s *Server) deleteRouteRule(w http.ResponseWriter, r *http.Request) {
 	operator, err := s.writer(r)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	nodeID, err := s.routeRuleNodeID(r.Context(), r.PathValue("id"))
 	if err != nil {
 		writeError(w, err)
 		return
@@ -1509,6 +2109,12 @@ func (s *Server) deleteRouteRule(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
+	task, err := s.dispatchNodeConfiguration(r.Context(), nodeID, operator.ID)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	setAutoApplyTaskHeader(w, task)
 	w.WriteHeader(http.StatusNoContent)
 }
 

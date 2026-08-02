@@ -148,9 +148,6 @@ func (s *Store) CompileNodeNginx(ctx context.Context, nodeID string) (string, st
 			active = append(active, route)
 		}
 	}
-	if len(active) == 0 {
-		return "", "", errors.New("node has no enabled ingress routes")
-	}
 	return CompileNginxStream(active)
 }
 
@@ -180,6 +177,9 @@ func validateIngressListener(listener Listener, route IngressRoute) error {
 	}
 	if !listener.Spec.TLS.Enabled {
 		return errors.New("ingress route requires a TLS or Reality listener")
+	}
+	if route.Port != listener.Port {
+		return errors.New("ingress route public port must match the listener service port")
 	}
 	if route.Port == listener.BackendPort {
 		return errors.New("ingress route public port must differ from listener backend port")

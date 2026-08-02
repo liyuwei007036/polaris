@@ -95,6 +95,15 @@ func (s *Store) ReplaceManagedCertificate(ctx context.Context, certificateID str
 	if err := validateCertificateInput(input); err != nil {
 		return ManagedCertificate{}, err
 	}
+	if !input.Enabled {
+		nodeIDs, err := s.CertificateNodeIDs(ctx, certificateID)
+		if err != nil {
+			return ManagedCertificate{}, err
+		}
+		if len(nodeIDs) > 0 {
+			return ManagedCertificate{}, ErrConflict
+		}
+	}
 	certificate, err := security.Encrypt(s.masterKey, []byte(input.CertificatePEM))
 	if err != nil {
 		return ManagedCertificate{}, err
@@ -115,6 +124,23 @@ func (s *Store) ReplaceManagedCertificate(ctx context.Context, certificateID str
 		return ManagedCertificate{}, ErrNotFound
 	}
 	return s.managedCertificate(ctx, certificateID)
+}
+
+func (s *Store) CertificateNodeIDs(ctx context.Context, certificateID string) ([]string, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT DISTINCT node_id FROM listeners WHERE json_extract(spec, '$.tls.certificate_id') = ? ORDER BY node_id`, certificateID)
+	if err != nil {
+		return nil, fmt.Errorf("list certificate nodes: %w", err)
+	}
+	defer rows.Close()
+	var nodeIDs []string
+	for rows.Next() {
+		var nodeID string
+		if err := rows.Scan(&nodeID); err != nil {
+			return nil, fmt.Errorf("read certificate node: %w", err)
+		}
+		nodeIDs = append(nodeIDs, nodeID)
+	}
+	return nodeIDs, rows.Err()
 }
 
 func (s *Store) DeleteManagedCertificate(ctx context.Context, certificateID string) error {

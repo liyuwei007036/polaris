@@ -7,9 +7,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
-	"net"
-	"net/http"
 	"net/url"
 	"strconv"
 	"strings"
@@ -18,13 +15,10 @@ import (
 	"github.com/sb-control/sb-control/internal/security"
 )
 
-const maxSubscriptionBytes = 10 * 1024 * 1024
-
 type SubscriptionKind string
 
 const (
-	UpstreamSubscription SubscriptionKind = "upstream"
-	ClientSubscription   SubscriptionKind = "client"
+	ClientSubscription SubscriptionKind = "client"
 )
 
 type Subscription struct {
@@ -43,83 +37,45 @@ type Subscription struct {
 
 type SubscriptionInput struct {
 	Kind        SubscriptionKind `json:"kind"`
-	NodeID      string           `json:"node_id,omitempty"`
 	Name        string           `json:"name"`
-	URL         string           `json:"url,omitempty"`
-	Format      string           `json:"format,omitempty"`
 	EndpointIDs []string         `json:"endpoint_ids,omitempty"`
 	Enabled     bool             `json:"enabled"`
 }
 
 func ValidateSubscription(subscription Subscription) error {
-	if subscription.Kind != UpstreamSubscription && subscription.Kind != ClientSubscription {
-		return errors.New("subscription kind must be upstream or client")
+	if subscription.Kind != ClientSubscription {
+		return errors.New("only client subscriptions are supported")
 	}
 	if subscription.Name == "" || len(subscription.Name) > 128 {
 		return errors.New("subscription name up to 128 characters is required")
 	}
-	if subscription.Kind == ClientSubscription {
-		if len(subscription.EndpointIDs) == 0 {
-			return errors.New("client subscription requires at least one endpoint")
-		}
-		return nil
-	}
-	parsed, err := url.Parse(subscription.URL)
-	if err != nil {
-		return errors.New("subscription URL is invalid")
-	}
-	if parsed.Scheme != "https" && parsed.Scheme != "http" {
-		return errors.New("upstream subscription URL must use HTTP or HTTPS")
-	}
-	if parsed.Hostname() == "" || parsed.User != nil {
-		return errors.New("upstream subscription URL host is invalid")
+	if len(subscription.EndpointIDs) == 0 {
+		return errors.New("client subscription requires at least one endpoint")
 	}
 	return nil
 }
 
 func (s *Store) CreateSubscription(ctx context.Context, input SubscriptionInput) (Subscription, string, error) {
-	subscription := Subscription{Kind: input.Kind, NodeID: input.NodeID, Name: input.Name, URL: input.URL, Format: input.Format, EndpointIDs: input.EndpointIDs, Enabled: input.Enabled}
+	subscription := Subscription{Kind: input.Kind, Name: input.Name, EndpointIDs: input.EndpointIDs, Enabled: input.Enabled}
 	if err := ValidateSubscription(subscription); err != nil {
 		return Subscription{}, "", err
 	}
-	if input.Kind == UpstreamSubscription {
-		if input.NodeID == "" || input.Format != "route_rules_v1" {
-			return Subscription{}, "", errors.New("upstream subscription requires a node and route_rules_v1 format")
-		}
-		var node int
-		if err := s.db.QueryRowContext(ctx, `SELECT 1 FROM nodes WHERE id = ? AND revoked_at IS NULL`, input.NodeID).Scan(&node); err != nil {
-			if errors.Is(err, sql.ErrNoRows) {
-				return Subscription{}, "", ErrNotFound
-			}
-			return Subscription{}, "", err
-		}
-	} else if err := s.validateSubscriptionEndpoints(ctx, input.EndpointIDs); err != nil {
+	if err := s.validateSubscriptionEndpoints(ctx, input.EndpointIDs); err != nil {
 		return Subscription{}, "", err
 	}
 	identifier, err := newID()
 	if err != nil {
 		return Subscription{}, "", err
 	}
-	var encryptedURL []byte
-	if input.Kind == UpstreamSubscription {
-		encryptedURL, err = security.Encrypt(s.masterKey, []byte(input.URL))
-		if err != nil {
-			return Subscription{}, "", err
-		}
-	}
 	endpointIDs, _ := json.Marshal(input.EndpointIDs)
-	var token string
-	var tokenHash []byte
-	if input.Kind == ClientSubscription {
-		token, err = security.RandomToken(32)
-		if err != nil {
-			return Subscription{}, "", err
-		}
-		tokenHash = security.TokenHash(token)
+	token, err := security.RandomToken(32)
+	if err != nil {
+		return Subscription{}, "", err
 	}
+	tokenHash := security.TokenHash(token)
 	createdAt := nowUnix()
 	_, err = s.db.ExecContext(ctx, `INSERT INTO subscriptions (id, kind, node_id, name, url_encrypted, format, endpoint_ids, token_hash, enabled, last_status, last_error, last_processed_at, generated_version, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'never', NULL, NULL, 0, ?, ?)`, identifier, input.Kind, nullableString(input.NodeID), input.Name, encryptedURL, input.Format, string(endpointIDs), tokenHash, input.Enabled, createdAt, createdAt)
+		VALUES (?, ?, NULL, ?, NULL, '', ?, ?, ?, 'never', NULL, NULL, 0, ?, ?)`, identifier, input.Kind, input.Name, string(endpointIDs), tokenHash, input.Enabled, createdAt, createdAt)
 	if err != nil {
 		return Subscription{}, "", fmt.Errorf("create subscription: %w", err)
 	}
@@ -129,7 +85,7 @@ func (s *Store) CreateSubscription(ctx context.Context, input SubscriptionInput)
 }
 
 func (s *Store) ListSubscriptions(ctx context.Context) ([]Subscription, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT id, kind, COALESCE(node_id, ''), name, format, endpoint_ids, enabled, last_status, COALESCE(last_error, ''), COALESCE(last_processed_at, 0) FROM subscriptions ORDER BY kind, name, id`)
+	rows, err := s.db.QueryContext(ctx, `SELECT id, kind, COALESCE(node_id, ''), name, format, endpoint_ids, enabled, last_status, COALESCE(last_error, ''), COALESCE(last_processed_at, 0) FROM subscriptions WHERE kind = 'client' ORDER BY name, id`)
 	if err != nil {
 		return nil, fmt.Errorf("list subscriptions: %w", err)
 	}
@@ -198,33 +154,18 @@ func (s *Store) UpdateSubscription(ctx context.Context, subscriptionID string, i
 	if kind != input.Kind {
 		return Subscription{}, errors.New("subscription kind cannot be changed")
 	}
-	probe := Subscription{Kind: input.Kind, NodeID: input.NodeID, Name: input.Name, URL: input.URL, Format: input.Format, EndpointIDs: input.EndpointIDs, Enabled: input.Enabled}
+	if kind != ClientSubscription {
+		return Subscription{}, errors.New("only client subscriptions are supported")
+	}
+	probe := Subscription{Kind: input.Kind, Name: input.Name, EndpointIDs: input.EndpointIDs, Enabled: input.Enabled}
 	if err := ValidateSubscription(probe); err != nil {
 		return Subscription{}, err
 	}
-	if kind == UpstreamSubscription {
-		if input.NodeID == "" || input.Format != "route_rules_v1" {
-			return Subscription{}, errors.New("upstream subscription requires a node and route_rules_v1 format")
-		}
-		var node int
-		if err := s.db.QueryRowContext(ctx, `SELECT 1 FROM nodes WHERE id=? AND revoked_at IS NULL`, input.NodeID).Scan(&node); errors.Is(err, sql.ErrNoRows) {
-			return Subscription{}, ErrNotFound
-		} else if err != nil {
-			return Subscription{}, err
-		}
-	} else if err := s.validateSubscriptionEndpoints(ctx, input.EndpointIDs); err != nil {
+	if err := s.validateSubscriptionEndpoints(ctx, input.EndpointIDs); err != nil {
 		return Subscription{}, err
 	}
-	var encryptedURL []byte
-	var err error
-	if kind == UpstreamSubscription {
-		encryptedURL, err = security.Encrypt(s.masterKey, []byte(input.URL))
-		if err != nil {
-			return Subscription{}, err
-		}
-	}
 	endpoints, _ := json.Marshal(input.EndpointIDs)
-	_, err = s.db.ExecContext(ctx, `UPDATE subscriptions SET node_id=?, name=?, url_encrypted=?, format=?, endpoint_ids=?, enabled=?, generated_version=generated_version+1, updated_at=? WHERE id=?`, nullableString(input.NodeID), input.Name, encryptedURL, input.Format, string(endpoints), input.Enabled, nowUnix(), subscriptionID)
+	_, err := s.db.ExecContext(ctx, `UPDATE subscriptions SET node_id=NULL, name=?, url_encrypted=NULL, format='', endpoint_ids=?, enabled=?, generated_version=generated_version+1, updated_at=? WHERE id=?`, input.Name, string(endpoints), input.Enabled, nowUnix(), subscriptionID)
 	if err != nil {
 		return Subscription{}, fmt.Errorf("update subscription: %w", err)
 	}
@@ -278,80 +219,6 @@ func (s *Store) validateSubscriptionEndpoints(ctx context.Context, endpointIDs [
 	return nil
 }
 
-func (s *Store) RefreshUpstreamSubscription(ctx context.Context, subscriptionID string) (Subscription, error) {
-	var subscription Subscription
-	var encryptedURL []byte
-	var endpointIDs string
-	err := s.db.QueryRowContext(ctx, `SELECT id, kind, COALESCE(node_id, ''), name, url_encrypted, format, endpoint_ids, enabled FROM subscriptions WHERE id = ?`, subscriptionID).
-		Scan(&subscription.ID, &subscription.Kind, &subscription.NodeID, &subscription.Name, &encryptedURL, &subscription.Format, &endpointIDs, &subscription.Enabled)
-	if errors.Is(err, sql.ErrNoRows) {
-		return Subscription{}, ErrNotFound
-	}
-	if err != nil {
-		return Subscription{}, fmt.Errorf("load upstream subscription: %w", err)
-	}
-	if subscription.Kind != UpstreamSubscription || !subscription.Enabled {
-		return Subscription{}, errors.New("upstream subscription is disabled or has the wrong kind")
-	}
-	urlValue, err := security.Decrypt(s.masterKey, encryptedURL)
-	if err != nil {
-		return Subscription{}, fmt.Errorf("decrypt upstream subscription URL: %w", err)
-	}
-	content, fetchErr := FetchUpstreamSubscription(ctx, string(urlValue))
-	if fetchErr != nil {
-		_ = s.updateUpstreamSubscriptionStatus(ctx, subscriptionID, "failed", fetchErr.Error())
-		return Subscription{}, fetchErr
-	}
-	var document struct {
-		Version int         `json:"version"`
-		Rules   []RouteRule `json:"rules"`
-	}
-	decoder := json.NewDecoder(strings.NewReader(string(content)))
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(&document); err != nil || document.Version != 1 {
-		_ = s.updateUpstreamSubscriptionStatus(ctx, subscriptionID, "failed", "unsupported route_rules_v1 document")
-		return Subscription{}, errors.New("upstream subscription must be a route_rules_v1 document with version 1")
-	}
-	for index := range document.Rules {
-		document.Rules[index].NodeID = subscription.NodeID
-		document.Rules[index].ID = "upstream-" + subscriptionID + "-" + fmt.Sprint(index)
-		if err := ValidateRouteRule(document.Rules[index]); err != nil {
-			_ = s.updateUpstreamSubscriptionStatus(ctx, subscriptionID, "failed", err.Error())
-			return Subscription{}, fmt.Errorf("validate upstream rule %d: %w", index, err)
-		}
-	}
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return Subscription{}, fmt.Errorf("start upstream refresh: %w", err)
-	}
-	defer tx.Rollback()
-	if _, err := tx.ExecContext(ctx, `DELETE FROM subscription_rules WHERE subscription_id = ?`, subscriptionID); err != nil {
-		return Subscription{}, fmt.Errorf("clear prior upstream rules: %w", err)
-	}
-	for _, rule := range document.Rules {
-		encoded, _ := json.Marshal(rule)
-		identifier, err := newID()
-		if err != nil {
-			return Subscription{}, err
-		}
-		if _, err := tx.ExecContext(ctx, `INSERT INTO subscription_rules (id, subscription_id, rule_json, created_at) VALUES (?, ?, ?, ?)`, identifier, subscriptionID, string(encoded), nowUnix()); err != nil {
-			return Subscription{}, fmt.Errorf("store upstream rule: %w", err)
-		}
-	}
-	if _, err := tx.ExecContext(ctx, `UPDATE subscriptions SET last_status = 'succeeded', last_error = NULL, last_processed_at = ?, generated_version = generated_version + 1, updated_at = ? WHERE id = ?`, nowUnix(), nowUnix(), subscriptionID); err != nil {
-		return Subscription{}, fmt.Errorf("record upstream refresh: %w", err)
-	}
-	if err := tx.Commit(); err != nil {
-		return Subscription{}, fmt.Errorf("commit upstream refresh: %w", err)
-	}
-	return s.subscriptionByID(ctx, subscriptionID)
-}
-
-func (s *Store) updateUpstreamSubscriptionStatus(ctx context.Context, subscriptionID, status, summary string) error {
-	_, err := s.db.ExecContext(ctx, `UPDATE subscriptions SET last_status = ?, last_error = ?, last_processed_at = ?, updated_at = ? WHERE id = ?`, status, summary, nowUnix(), nowUnix(), subscriptionID)
-	return err
-}
-
 func (s *Store) subscriptionByID(ctx context.Context, subscriptionID string) (Subscription, error) {
 	items, err := s.ListSubscriptions(ctx)
 	if err != nil {
@@ -366,27 +233,7 @@ func (s *Store) subscriptionByID(ctx context.Context, subscriptionID string) (Su
 }
 
 func (s *Store) ListEffectiveRouteRules(ctx context.Context, nodeID string) ([]RouteRule, error) {
-	rules, err := s.ListRouteRules(ctx, nodeID)
-	if err != nil {
-		return nil, err
-	}
-	rows, err := s.db.QueryContext(ctx, `SELECT r.rule_json FROM subscription_rules r JOIN subscriptions s ON s.id = r.subscription_id WHERE s.kind = 'upstream' AND s.enabled = 1 AND s.node_id = ?`, nodeID)
-	if err != nil {
-		return nil, fmt.Errorf("list upstream rules: %w", err)
-	}
-	defer rows.Close()
-	for rows.Next() {
-		var raw string
-		if err := rows.Scan(&raw); err != nil {
-			return nil, err
-		}
-		var rule RouteRule
-		if err := json.Unmarshal([]byte(raw), &rule); err != nil {
-			return nil, fmt.Errorf("decode upstream rule: %w", err)
-		}
-		rules = append(rules, rule)
-	}
-	return rules, rows.Err()
+	return s.ListRouteRules(ctx, nodeID)
 }
 
 func (s *Store) GenerateClientSubscription(ctx context.Context, token string) (string, error) {
@@ -496,75 +343,4 @@ func (s *Store) realityPublicKey(ctx context.Context, keyID string) (string, err
 		return "", ErrNotFound
 	}
 	return public, err
-}
-
-// FetchUpstreamSubscription resolves every target before dialing and rejects
-// loopback, private, link-local, multicast and unspecified addresses.
-func FetchUpstreamSubscription(ctx context.Context, rawURL string) ([]byte, error) {
-	subscription := Subscription{Kind: UpstreamSubscription, Name: "fetch", URL: rawURL}
-	if err := ValidateSubscription(subscription); err != nil {
-		return nil, err
-	}
-	dialer := &net.Dialer{Timeout: 10 * time.Second}
-	transport := &http.Transport{DialContext: func(ctx context.Context, network, address string) (net.Conn, error) {
-		host, port, err := net.SplitHostPort(address)
-		if err != nil {
-			return nil, err
-		}
-		addresses, err := net.DefaultResolver.LookupIPAddr(ctx, host)
-		if err != nil {
-			return nil, err
-		}
-		if len(addresses) == 0 {
-			return nil, errors.New("subscription host has no address")
-		}
-		for _, candidate := range addresses {
-			if !isPublicAddress(candidate.IP) {
-				return nil, fmt.Errorf("subscription host resolves to disallowed address %s", candidate.IP)
-			}
-		}
-		return dialer.DialContext(ctx, network, net.JoinHostPort(addresses[0].IP.String(), port))
-	}}
-	client := &http.Client{Transport: transport, Timeout: 20 * time.Second, CheckRedirect: func(request *http.Request, via []*http.Request) error {
-		if len(via) >= 3 {
-			return errors.New("subscription redirect limit exceeded")
-		}
-		if request.URL.Scheme != "https" && request.URL.Scheme != "http" {
-			return errors.New("subscription redirect protocol is not allowed")
-		}
-		return nil
-	}}
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
-	if err != nil {
-		return nil, err
-	}
-	response, err := client.Do(request)
-	if err != nil {
-		return nil, fmt.Errorf("fetch upstream subscription: %w", err)
-	}
-	defer response.Body.Close()
-	if response.StatusCode < 200 || response.StatusCode >= 300 {
-		return nil, fmt.Errorf("upstream subscription returned HTTP %d", response.StatusCode)
-	}
-	if response.ContentLength > maxSubscriptionBytes {
-		return nil, errors.New("upstream subscription response is too large")
-	}
-	content, err := io.ReadAll(io.LimitReader(response.Body, maxSubscriptionBytes+1))
-	if err != nil {
-		return nil, err
-	}
-	if len(content) > maxSubscriptionBytes {
-		return nil, errors.New("upstream subscription response is too large")
-	}
-	return content, nil
-}
-
-func isPublicAddress(address net.IP) bool {
-	if address == nil || address.IsLoopback() || address.IsPrivate() || address.IsLinkLocalUnicast() || address.IsLinkLocalMulticast() || address.IsMulticast() || address.IsUnspecified() {
-		return false
-	}
-	if address.To4() != nil && strings.HasPrefix(address.String(), "100.64.") {
-		return false
-	}
-	return true
 }

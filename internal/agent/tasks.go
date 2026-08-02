@@ -1,6 +1,8 @@
 package agent
 
 import (
+	"archive/tar"
+	"compress/gzip"
 	"context"
 	"crypto/ed25519"
 	"crypto/sha256"
@@ -12,17 +14,35 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"time"
+
+	"golang.org/x/net/proxy"
 )
 
-const managedSingBoxConfig = "/etc/sing-box/config.json"
-const managedNginxConfig = "/etc/nginx/stream-conf.d/sb-control.conf"
+var managedSingBoxConfig = managedSystemPath("/etc/sing-box/config.json")
+var managedNginxConfig = managedSystemPath("/etc/nginx/stream-conf.d/sb-control.conf")
+
+var outboundProbeURL = "https://www.gstatic.com/generate_204"
+
+// managedSystemPath leaves production paths unchanged. The black-box E2E
+// suite sets SB_CONTROL_E2E_ROOT in the spawned agent process so the real task
+// executor can exercise atomic writes and rollback bookkeeping without
+// touching the host's /etc or /usr/local directories.
+func managedSystemPath(path string) string {
+	root := strings.TrimSpace(os.Getenv("SB_CONTROL_E2E_ROOT"))
+	if root == "" {
+		return path
+	}
+	return filepath.Join(root, filepath.FromSlash(strings.TrimPrefix(path, "/")))
+}
 
 // permissionHint appends operator guidance to a raw OS error when the failure
 // is caused by insufficient privileges. The agent must be able to write to
@@ -60,9 +80,70 @@ func executeTask(ctx context.Context, task Task, dataDir string) TaskResult {
 		return applyFail2Ban(ctx, task)
 	case "singbox.install", "singbox.upgrade":
 		return installSingBox(ctx, task, dataDir)
+	case "outbound.test":
+		return testOutbound(ctx, task)
 	default:
 		return TaskResult{Status: "failed", Summary: "task kind is not implemented by this agent build"}
 	}
+}
+
+func testOutbound(ctx context.Context, task Task) TaskResult {
+	var payload struct {
+		Type       string `json:"type"`
+		Server     string `json:"server"`
+		ServerPort uint16 `json:"server_port"`
+		Username   string `json:"username"`
+		Password   string `json:"password"`
+	}
+	if err := json.Unmarshal([]byte(task.Payload), &payload); err != nil || payload.Server == "" || payload.ServerPort == 0 {
+		return TaskResult{Status: "failed", Summary: "出口代理测试参数无效"}
+	}
+	testContext, cancel := context.WithTimeout(ctx, 12*time.Second)
+	defer cancel()
+	transport := &http.Transport{}
+	address := net.JoinHostPort(payload.Server, fmt.Sprint(payload.ServerPort))
+	switch payload.Type {
+	case "http":
+		proxyURL := &url.URL{Scheme: "http", Host: address}
+		if payload.Username != "" {
+			proxyURL.User = url.UserPassword(payload.Username, payload.Password)
+		}
+		transport.Proxy = http.ProxyURL(proxyURL)
+	case "socks":
+		var auth *proxy.Auth
+		if payload.Username != "" {
+			auth = &proxy.Auth{User: payload.Username, Password: payload.Password}
+		}
+		dialer, err := proxy.SOCKS5("tcp", address, auth, &net.Dialer{Timeout: 8 * time.Second})
+		if err != nil {
+			return TaskResult{Status: "failed", Summary: "创建 SOCKS5 测试连接失败：" + err.Error()}
+		}
+		if contextDialer, ok := dialer.(proxy.ContextDialer); ok {
+			transport.DialContext = contextDialer.DialContext
+		} else {
+			transport.DialContext = func(_ context.Context, network, address string) (net.Conn, error) {
+				return dialer.Dial(network, address)
+			}
+		}
+	default:
+		return TaskResult{Status: "failed", Summary: "不支持该出口代理类型"}
+	}
+	defer transport.CloseIdleConnections()
+	request, err := http.NewRequestWithContext(testContext, http.MethodGet, outboundProbeURL, nil)
+	if err != nil {
+		return TaskResult{Status: "failed", Summary: "创建出口测试请求失败：" + err.Error()}
+	}
+	started := time.Now()
+	response, err := (&http.Client{Transport: transport}).Do(request)
+	if err != nil {
+		return TaskResult{Status: "failed", Summary: "出口代理不可用：" + err.Error()}
+	}
+	defer response.Body.Close()
+	latency := time.Since(started).Milliseconds()
+	if response.StatusCode < 200 || response.StatusCode >= 400 {
+		return TaskResult{Status: "failed", Summary: fmt.Sprintf("出口代理返回 HTTP %d，延迟 %d ms", response.StatusCode, latency)}
+	}
+	return TaskResult{Status: "succeeded", Summary: fmt.Sprintf("出口代理可用，HTTP %d，延迟 %d ms", response.StatusCode, latency)}
 }
 
 type releaseManifest struct {
@@ -70,6 +151,7 @@ type releaseManifest struct {
 	Architecture string `json:"architecture"`
 	URL          string `json:"url"`
 	SHA256       string `json:"sha256"`
+	Archive      string `json:"archive,omitempty"`
 }
 
 func installSingBox(ctx context.Context, task Task, dataDir string) TaskResult {
@@ -80,7 +162,7 @@ func installSingBox(ctx context.Context, task Task, dataDir string) TaskResult {
 	if manifest.Architecture != runtime.GOARCH {
 		return TaskResult{Status: "failed", Summary: "signed sing-box release architecture does not match this agent"}
 	}
-	const binaryPath = "/usr/local/bin/sing-box"
+	binaryPath := managedSystemPath("/usr/local/bin/sing-box")
 	if output, err := exec.CommandContext(ctx, binaryPath, "version").CombinedOutput(); err == nil && strings.Contains(string(output), "version "+manifest.Version) && singBoxServiceActive(ctx) {
 		return TaskResult{Status: "succeeded", Summary: "requested sing-box version is already active", SingBoxVersion: manifest.Version}
 	}
@@ -123,6 +205,16 @@ func installSingBox(ctx context.Context, task Task, dataDir string) TaskResult {
 	if !strings.EqualFold(hex.EncodeToString(hash.Sum(nil)), manifest.SHA256) {
 		return TaskResult{Status: "failed", Summary: "sing-box artifact SHA-256 does not match"}
 	}
+	if manifest.Archive == "tar.gz" {
+		extractedPath, extractErr := extractSingBoxArchive(artifactPath, binaryDirectory)
+		if extractErr != nil {
+			return TaskResult{Status: "failed", Summary: "extract sing-box archive: " + extractErr.Error()}
+		}
+		defer os.Remove(extractedPath)
+		artifactPath = extractedPath
+	} else if manifest.Archive != "" {
+		return TaskResult{Status: "failed", Summary: "unsupported sing-box archive format"}
+	}
 	if err := os.Chmod(artifactPath, 0o755); err != nil {
 		return TaskResult{Status: "failed", Summary: "set sing-box artifact mode: " + err.Error()}
 	}
@@ -155,6 +247,48 @@ func installSingBox(ctx context.Context, task Task, dataDir string) TaskResult {
 		}
 	}
 	return TaskResult{Status: "failed", Summary: "sing-box service failed after upgrade and rollback did not complete"}
+}
+
+func extractSingBoxArchive(archivePath, directory string) (string, error) {
+	file, err := os.Open(archivePath)
+	if err != nil {
+		return "", err
+	}
+	defer file.Close()
+	compressed, err := gzip.NewReader(file)
+	if err != nil {
+		return "", err
+	}
+	defer compressed.Close()
+	reader := tar.NewReader(compressed)
+	for {
+		header, err := reader.Next()
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			return "", err
+		}
+		if header.Typeflag != tar.TypeReg || filepath.Base(header.Name) != "sing-box" || header.Size <= 0 || header.Size > 200*1024*1024 {
+			continue
+		}
+		target, err := os.CreateTemp(directory, ".sb-control-sing-box-extracted-*")
+		if err != nil {
+			return "", err
+		}
+		targetPath := target.Name()
+		if _, err := io.CopyN(target, reader, header.Size); err != nil {
+			target.Close()
+			os.Remove(targetPath)
+			return "", err
+		}
+		if err := target.Close(); err != nil {
+			os.Remove(targetPath)
+			return "", err
+		}
+		return targetPath, nil
+	}
+	return "", errors.New("archive does not contain sing-box binary")
 }
 
 // VerifyReleaseTask validates the signed, master-controlled artifact manifest
@@ -218,7 +352,11 @@ func applyNftables(ctx context.Context, task Task) TaskResult {
 		return TaskResult{Status: "failed", Summary: "nftables configuration SHA-256 does not match task hash"}
 	}
 	snapshot, _ := exec.CommandContext(ctx, "nft", "list", "table", "inet", "sb_control").CombinedOutput()
-	temporary, err := os.CreateTemp("/tmp", "sb-control-nft-*.nft")
+	nftTemporaryDirectory := managedSystemPath("/tmp")
+	if err := os.MkdirAll(nftTemporaryDirectory, 0o700); err != nil {
+		return TaskResult{Status: "failed", Summary: "create nftables temporary directory: " + err.Error() + permissionHint(err)}
+	}
+	temporary, err := os.CreateTemp(nftTemporaryDirectory, "sb-control-nft-*.nft")
 	if err != nil {
 		return TaskResult{Status: "failed", Summary: err.Error()}
 	}
@@ -241,7 +379,7 @@ func applyNftables(ctx context.Context, task Task) TaskResult {
 		_ = output
 	}
 	if len(snapshot) > 0 {
-		if restore, err := os.CreateTemp("/tmp", "sb-control-nft-restore-*.nft"); err == nil {
+		if restore, err := os.CreateTemp(nftTemporaryDirectory, "sb-control-nft-restore-*.nft"); err == nil {
 			restorePath := restore.Name()
 			if _, err := restore.Write(snapshot); err == nil {
 				restore.Close()
@@ -258,7 +396,7 @@ func applyNginxConfig(ctx context.Context, task Task) TaskResult {
 	var payload struct {
 		Configuration string `json:"configuration"`
 	}
-	if err := json.Unmarshal([]byte(task.Payload), &payload); err != nil || payload.Configuration == "" {
+	if err := json.Unmarshal([]byte(task.Payload), &payload); err != nil {
 		return TaskResult{Status: "failed", Summary: "invalid Nginx configuration payload"}
 	}
 	digest := sha256.Sum256([]byte(payload.Configuration))
@@ -396,7 +534,8 @@ func applySingBoxConfig(ctx context.Context, task Task) TaskResult {
 	return TaskResult{Status: "failed", Summary: "new configuration failed and automatic rollback did not complete: " + result.Summary}
 }
 
-const managedSingBoxUnit = "/etc/systemd/system/sing-box.service"
+var managedSingBoxUnit = managedSystemPath("/etc/systemd/system/sing-box.service")
+
 const singBoxUnitContents = `[Unit]
 Description=sing-box service (managed by sb-control)
 After=network.target

@@ -101,6 +101,15 @@ func (s *Store) UpdateOutbound(ctx context.Context, o Outbound) (Outbound, error
 	if err != nil {
 		return Outbound{}, fmt.Errorf("load outbound: %w", err)
 	}
+	if !o.Enabled {
+		referenced, err := s.outboundReferenced(ctx, o.ID)
+		if err != nil {
+			return Outbound{}, err
+		}
+		if referenced {
+			return Outbound{}, ErrConflict
+		}
+	}
 	var conflict string
 	err = s.db.QueryRowContext(ctx, `SELECT id FROM outbounds WHERE name = ? AND id <> ?`, o.Name, o.ID).Scan(&conflict)
 	if err == nil {
@@ -148,6 +157,34 @@ func (s *Store) ListOutbounds(ctx context.Context) ([]Outbound, error) {
 	return outbounds, rows.Err()
 }
 
+func (s *Store) outboundForTest(ctx context.Context, outboundID string) (Outbound, error) {
+	var outbound Outbound
+	var encrypted []byte
+	err := s.db.QueryRowContext(ctx, `SELECT id, name, type, server, server_port, username, credentials, enabled FROM outbounds WHERE id = ?`, outboundID).
+		Scan(&outbound.ID, &outbound.Name, &outbound.Type, &outbound.Server, &outbound.ServerPort, &outbound.Username, &encrypted, &outbound.Enabled)
+	if errors.Is(err, sql.ErrNoRows) {
+		return Outbound{}, ErrNotFound
+	}
+	if err != nil {
+		return Outbound{}, fmt.Errorf("load outbound for test: %w", err)
+	}
+	if outbound.Type == "direct" {
+		return Outbound{}, errors.New("the built-in direct outbound does not require testing")
+	}
+	if len(encrypted) > 0 {
+		plain, err := security.Decrypt(s.masterKey, encrypted)
+		if err != nil {
+			return Outbound{}, fmt.Errorf("decrypt outbound secret: %w", err)
+		}
+		var secret outboundSecret
+		if err := json.Unmarshal(plain, &secret); err != nil {
+			return Outbound{}, fmt.Errorf("decode outbound secret: %w", err)
+		}
+		outbound.Password = secret.Password
+	}
+	return outbound, nil
+}
+
 // loadEnabledOutbounds returns every enabled outbound with decrypted passwords
 // for configuration compilation. It never leaves the compiler.
 func (s *Store) loadEnabledOutbounds(ctx context.Context) ([]Outbound, error) {
@@ -180,6 +217,15 @@ func (s *Store) loadEnabledOutbounds(ctx context.Context) ([]Outbound, error) {
 }
 
 func (s *Store) SetOutboundEnabled(ctx context.Context, outboundID string, enabled bool) error {
+	if !enabled {
+		referenced, err := s.outboundReferenced(ctx, outboundID)
+		if err != nil {
+			return err
+		}
+		if referenced {
+			return ErrConflict
+		}
+	}
 	updated, err := s.db.ExecContext(ctx, `UPDATE outbounds SET enabled = ?, updated_at = ? WHERE id = ?`, enabled, nowUnix(), outboundID)
 	if err != nil {
 		return fmt.Errorf("set outbound state: %w", err)
@@ -201,6 +247,12 @@ func (s *Store) DeleteOutbound(ctx context.Context, outboundID string) error {
 	defer func() { _ = tx.Rollback() }()
 	if _, err := tx.ExecContext(ctx, `UPDATE listeners SET outbound_id = '', updated_at = ? WHERE outbound_id = ?`, nowUnix(), outboundID); err != nil {
 		return fmt.Errorf("detach listeners from outbound: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE endpoints SET outbound_id = 'direct', updated_at = ? WHERE outbound_id = ?`, nowUnix(), outboundID); err != nil {
+		return fmt.Errorf("detach endpoints from outbound: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE route_rules SET action = 'direct', outbound_tag = '', updated_at = ? WHERE action = 'outbound' AND outbound_tag = ?`, nowUnix(), outboundID); err != nil {
+		return fmt.Errorf("detach route rules from outbound: %w", err)
 	}
 	result, err := tx.ExecContext(ctx, `DELETE FROM outbounds WHERE id = ?`, outboundID)
 	if err != nil {
@@ -244,4 +296,54 @@ func (s *Store) ensureOutboundExists(ctx context.Context, outboundID string) err
 		return errors.New("selected outbound does not exist")
 	}
 	return err
+}
+
+func (s *Store) ensureEndpointOutboundExists(ctx context.Context, outboundID string) error {
+	if outboundID == "" || outboundID == "direct" {
+		return nil
+	}
+	return s.ensureOutboundExists(ctx, outboundID)
+}
+
+func (s *Store) ensureEnabledOutboundExists(ctx context.Context, outboundID string) error {
+	var exists int
+	err := s.db.QueryRowContext(ctx, `SELECT 1 FROM outbounds WHERE id = ? AND enabled = 1`, outboundID).Scan(&exists)
+	if errors.Is(err, sql.ErrNoRows) {
+		return errors.New("selected outbound does not exist or is disabled")
+	}
+	return err
+}
+
+func (s *Store) outboundReferenced(ctx context.Context, outboundID string) (bool, error) {
+	var count int
+	err := s.db.QueryRowContext(ctx, `SELECT
+		(SELECT COUNT(*) FROM listeners WHERE outbound_id = ?) +
+		(SELECT COUNT(*) FROM endpoints WHERE outbound_id = ?) +
+		(SELECT COUNT(*) FROM route_rules WHERE action = 'outbound' AND outbound_tag = ?)`,
+		outboundID, outboundID, outboundID).Scan(&count)
+	if err != nil {
+		return false, fmt.Errorf("check outbound references: %w", err)
+	}
+	return count > 0, nil
+}
+
+func (s *Store) OutboundNodeIDs(ctx context.Context, outboundID string) ([]string, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT node_id FROM listeners WHERE outbound_id = ?
+		UNION SELECT l.node_id FROM endpoints e JOIN listeners l ON l.id = e.listener_id WHERE e.outbound_id = ?
+		UNION SELECT node_id FROM route_rules WHERE action = 'outbound' AND outbound_tag = ?
+		ORDER BY 1`, outboundID, outboundID, outboundID)
+	if err != nil {
+		return nil, fmt.Errorf("list outbound nodes: %w", err)
+	}
+	defer rows.Close()
+	var nodeIDs []string
+	for rows.Next() {
+		var nodeID string
+		if err := rows.Scan(&nodeID); err != nil {
+			return nil, fmt.Errorf("read outbound node: %w", err)
+		}
+		nodeIDs = append(nodeIDs, nodeID)
+	}
+	return nodeIDs, rows.Err()
 }

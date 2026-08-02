@@ -12,8 +12,8 @@ import (
 	"strings"
 )
 
-const managedFail2BanJail = "/etc/fail2ban/jail.d/sb-control.local"
-const managedFail2BanFilterDir = "/etc/fail2ban/filter.d"
+var managedFail2BanJail = managedSystemPath("/etc/fail2ban/jail.d/sb-control.local")
+var managedFail2BanFilterDir = managedSystemPath("/etc/fail2ban/filter.d")
 
 // managedFilterPattern accepts only master-compiled filter file names inside
 // the sb-control namespace; anything else is rejected before touching disk.

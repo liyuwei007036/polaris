@@ -227,10 +227,10 @@ func (c *Conn) readChunk() ([]byte, error) {
 	return plaintext, nil
 }
 
-func (c *Conn) Close() error                       { return c.raw.Close() }
-func (c *Conn) SetDeadline(t time.Time) error       { return c.raw.SetDeadline(t) }
-func (c *Conn) SetReadDeadline(t time.Time) error   { return c.raw.SetReadDeadline(t) }
-func (c *Conn) RemoteAddr() net.Addr                { return c.raw.RemoteAddr() }
+func (c *Conn) Close() error                      { return c.raw.Close() }
+func (c *Conn) SetDeadline(t time.Time) error     { return c.raw.SetDeadline(t) }
+func (c *Conn) SetReadDeadline(t time.Time) error { return c.raw.SetReadDeadline(t) }
+func (c *Conn) RemoteAddr() net.Addr              { return c.raw.RemoteAddr() }
 
 // writeRaw/readRaw frame the (already Noise-encrypted) chunks on the wire
 // with a plain 4-byte big-endian length prefix — this length is ciphertext

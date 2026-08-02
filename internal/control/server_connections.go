@@ -93,3 +93,54 @@ func (s *Server) browserConnectionsStream(w http.ResponseWriter, r *http.Request
 		}
 	}
 }
+
+// browserLiveStream carries invalidation events for live operational data.
+// Pages fetch one initial snapshot, then refresh only when an agent or task
+// actually changes state.
+func (s *Server) browserLiveStream(w http.ResponseWriter, r *http.Request) {
+	if _, err := s.operator(r, false); err != nil {
+		writeError(w, err)
+		return
+	}
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		writeError(w, errors.New("streaming is unavailable"))
+		return
+	}
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("X-Accel-Buffering", "no")
+	w.WriteHeader(http.StatusOK)
+	writeEvent := func(event string, payload any) bool {
+		encoded, err := json.Marshal(payload)
+		if err != nil {
+			return false
+		}
+		if _, err := fmt.Fprintf(w, "event: %s\ndata: %s\n\n", event, encoded); err != nil {
+			return false
+		}
+		flusher.Flush()
+		return true
+	}
+	if !writeEvent("ready", map[string]any{}) {
+		return
+	}
+	ch := s.liveHub.subscribe()
+	defer s.liveHub.unsubscribe(ch)
+	ticker := time.NewTicker(20 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-r.Context().Done():
+			return
+		case event := <-ch:
+			if !writeEvent("change", event) {
+				return
+			}
+		case <-ticker.C:
+			if !writeEvent("keepalive", map[string]any{}) {
+				return
+			}
+		}
+	}
+}

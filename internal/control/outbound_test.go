@@ -1,6 +1,7 @@
 package control_test
 
 import (
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -78,6 +79,19 @@ func TestManagedOutboundCompilation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create listener with outbound: %v", err)
 	}
+	endpoint, err := store.CreateEndpoint(t.Context(), control.Endpoint{
+		ListenerID: listener.ID, Name: "account-a", Enabled: true, OutboundID: outbound.ID,
+	}, control.EndpointCredentials{Username: "account-a", Password: "account-password"})
+	if err != nil {
+		t.Fatalf("create endpoint with outbound: %v", err)
+	}
+	rule, err := store.CreateRouteRule(t.Context(), control.RouteRule{
+		NodeID: nodeID, Priority: 10, Enabled: true, DomainSuffix: []string{"example.com"},
+		Action: "outbound", OutboundTag: outbound.ID,
+	})
+	if err != nil {
+		t.Fatalf("create route rule with outbound: %v", err)
+	}
 	configuration, _, err := store.CompileNodeConfig(t.Context(), nodeID)
 	if err != nil {
 		t.Fatalf("compile config: %v", err)
@@ -91,6 +105,22 @@ func TestManagedOutboundCompilation(t *testing.T) {
 		if !strings.Contains(configuration, want) {
 			t.Fatalf("compiled config missing %q\n%s", want, configuration)
 		}
+	}
+	var compiled struct {
+		Route struct {
+			Rules []map[string]any `json:"rules"`
+		} `json:"route"`
+	}
+	if err := json.Unmarshal([]byte(configuration), &compiled); err != nil {
+		t.Fatal(err)
+	}
+	if len(compiled.Route.Rules) == 0 || compiled.Route.Rules[0]["outbound"] != "outbound-"+outbound.ID {
+		t.Fatalf("managed route rule did not use the compiled outbound tag: %#v", compiled.Route.Rules)
+	}
+
+	response = request(t, http.MethodPost, httpServer.URL+"/api/v1/outbounds/"+outbound.ID+"/enabled", map[string]bool{"enabled": false}, session, csrfToken)
+	if response.StatusCode != http.StatusConflict {
+		t.Fatalf("disable referenced outbound: got %d", response.StatusCode)
 	}
 
 	// A listener cannot reference an outbound that does not exist.
@@ -107,6 +137,9 @@ func TestManagedOutboundCompilation(t *testing.T) {
 	if response.StatusCode != http.StatusNoContent {
 		t.Fatalf("delete outbound: got %d", response.StatusCode)
 	}
+	if response.Header.Get("X-SB-Auto-Apply-Task") == "" {
+		t.Fatal("deleting a referenced outbound did not queue configuration apply")
+	}
 	listeners, err := store.ListListeners(t.Context(), nodeID)
 	if err != nil {
 		t.Fatal(err)
@@ -122,5 +155,19 @@ func TestManagedOutboundCompilation(t *testing.T) {
 	}
 	if !found {
 		t.Fatal("listener disappeared after outbound deletion")
+	}
+	endpoints, err := store.ListEndpoints(t.Context(), listener.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(endpoints) != 1 || endpoints[0].ID != endpoint.ID || endpoints[0].OutboundID != "direct" {
+		t.Fatalf("endpoint did not fall back to direct after outbound deletion: %#v", endpoints)
+	}
+	rules, err := store.ListRouteRules(t.Context(), nodeID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rules) != 1 || rules[0].ID != rule.ID || rules[0].Action != "direct" || rules[0].OutboundTag != "" {
+		t.Fatalf("route rule did not fall back to direct after outbound deletion: %#v", rules)
 	}
 }

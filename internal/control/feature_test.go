@@ -6,6 +6,9 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -31,6 +34,255 @@ func approveTestNode(t *testing.T, server *control.Server, baseURL, session, csr
 	}
 	decodeBody(t, response, &approved)
 	return approved.NodeID
+}
+
+func TestInboundMutationCreatesAutomaticApplyTask(t *testing.T) {
+	store, err := control.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	secret, err := store.CreateInitialAdmin(t.Context(), "admin@example.com", "correct horse battery staple")
+	if err != nil {
+		t.Fatal(err)
+	}
+	server, err := control.NewServer(store, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	httpServer := httptest.NewServer(server.Handler())
+	defer httpServer.Close()
+	session, csrfToken := login(t, httpServer.URL, secret)
+	nodeID := approveTestNode(t, server, httpServer.URL, session, csrfToken, "automatic-apply-node")
+
+	response := request(t, http.MethodPost, httpServer.URL+"/api/v1/listeners/quick", map[string]any{
+		"listener": map[string]any{
+			"node_id": nodeID, "name": "自动生效入站", "listen_address": "0.0.0.0", "port": 1080,
+			"enabled": true, "spec": map[string]any{"protocol": "socks", "network": "tcp"},
+		},
+		"default_outbound_id": "direct",
+	}, session, csrfToken)
+	if response.StatusCode != http.StatusCreated {
+		t.Fatalf("create quick listener: got %d", response.StatusCode)
+	}
+	if response.Header.Get("X-SB-Auto-Apply-Task") == "" {
+		t.Fatal("automatic apply task header missing")
+	}
+	response.Body.Close()
+
+	response = request(t, http.MethodGet, httpServer.URL+"/api/v1/tasks?node_id="+nodeID+"&page=1&page_size=20", nil, session, csrfToken)
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("list tasks: got %d", response.StatusCode)
+	}
+	var tasks struct {
+		Tasks []control.Task `json:"tasks"`
+	}
+	decodeBody(t, response, &tasks)
+	if len(tasks.Tasks) != 1 || tasks.Tasks[0].Kind != "singbox.apply_config" {
+		t.Fatalf("automatic tasks = %#v", tasks.Tasks)
+	}
+}
+
+func TestSharedPortInboundCreatesMultipleUsersAndNginxRoutes(t *testing.T) {
+	store, err := control.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	secret, err := store.CreateInitialAdmin(t.Context(), "admin@example.com", "correct horse battery staple")
+	if err != nil {
+		t.Fatal(err)
+	}
+	server, err := control.NewServer(store, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	httpServer := httptest.NewServer(server.Handler())
+	defer httpServer.Close()
+	session, csrfToken := login(t, httpServer.URL, secret)
+	nodeID := approveTestNode(t, server, httpServer.URL, session, csrfToken, "shared-port-node")
+	outbound, err := store.CreateOutbound(t.Context(), control.Outbound{Name: "用户 B 出口", Type: "socks", Server: "127.0.0.1", ServerPort: 1080, Enabled: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	realityKey, _, err := store.CreateRealityKey(t.Context(), "shared-port-reality")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	create := func(name, sni string) struct {
+		Listener  control.Listener     `json:"listener"`
+		Endpoints []control.Endpoint   `json:"endpoints"`
+		Ingress   control.IngressRoute `json:"ingress_route"`
+	} {
+		t.Helper()
+		response := request(t, http.MethodPost, httpServer.URL+"/api/v1/listeners/quick", map[string]any{
+			"listener": map[string]any{
+				"node_id": nodeID, "name": name, "listen_address": "0.0.0.0", "port": 443, "enabled": true,
+				"spec": map[string]any{
+					"protocol": "vless", "network": "tcp", "tls": map[string]any{"enabled": true, "server_name": sni},
+					"reality": map[string]any{"enabled": true, "handshake_server": sni, "handshake_port": 443, "key_id": realityKey.ID},
+				},
+			},
+			"accounts":      []map[string]any{{"name": "用户 A", "outbound_id": "direct"}, {"name": "用户 B", "outbound_id": outbound.ID}},
+			"ingress_route": map[string]any{"listen_address": "0.0.0.0", "port": 443, "sni": sni, "enabled": true},
+		}, session, csrfToken)
+		if response.StatusCode != http.StatusCreated {
+			t.Fatalf("create shared listener: got %d", response.StatusCode)
+		}
+		if response.Header.Get("X-SB-Auto-Apply-Task") == "" || response.Header.Get("X-SB-Auto-Apply-Nginx-Task") == "" {
+			t.Fatal("shared listener automatic task headers missing")
+		}
+		var created struct {
+			Listener  control.Listener     `json:"listener"`
+			Endpoints []control.Endpoint   `json:"endpoints"`
+			Ingress   control.IngressRoute `json:"ingress_route"`
+		}
+		decodeBody(t, response, &created)
+		return created
+	}
+
+	first := create("Reality A", "a.example.com")
+	second := create("Reality B", "b.example.com")
+	if len(first.Endpoints) != 2 || first.Endpoints[0].OutboundID != "direct" || first.Endpoints[1].OutboundID != outbound.ID {
+		t.Fatalf("generated accounts = %#v", first.Endpoints)
+	}
+	if first.Listener.Port != 443 || second.Listener.Port != 443 || first.Listener.BackendPort == second.Listener.BackendPort {
+		t.Fatalf("shared listener ports = %#v / %#v", first.Listener, second.Listener)
+	}
+	if first.Listener.ListenAddr != "127.0.0.1" || first.Ingress.Port != 443 || first.Ingress.BackendPort != first.Listener.BackendPort {
+		t.Fatalf("shared ingress = %#v / %#v", first.Listener, first.Ingress)
+	}
+	nginx, _, err := store.CompileNodeNginx(t.Context(), nodeID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, expected := range []string{"listen 0.0.0.0:443", "a.example.com", "b.example.com"} {
+		if !strings.Contains(nginx, expected) {
+			t.Fatalf("Nginx configuration missing %q:\n%s", expected, nginx)
+		}
+	}
+	compiled, _, err := store.CompileNodeConfig(t.Context(), nodeID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var configuration struct {
+		Route struct {
+			Rules []map[string]any `json:"rules"`
+		} `json:"route"`
+	}
+	if err := json.Unmarshal([]byte(compiled), &configuration); err != nil {
+		t.Fatal(err)
+	}
+	if len(configuration.Route.Rules) < 2 || configuration.Route.Rules[0]["auth_user"] == nil || configuration.Route.Rules[1]["auth_user"] == nil {
+		t.Fatalf("account rules are not first: %#v", configuration.Route.Rules)
+	}
+
+	response := request(t, http.MethodDelete, httpServer.URL+"/api/v1/ingress-routes/"+first.Ingress.ID, nil, session, csrfToken)
+	if response.StatusCode != http.StatusNoContent {
+		t.Fatalf("delete first shared ingress route: got %d", response.StatusCode)
+	}
+	response = request(t, http.MethodDelete, httpServer.URL+"/api/v1/ingress-routes/"+second.Ingress.ID, nil, session, csrfToken)
+	if response.StatusCode != http.StatusNoContent {
+		t.Fatalf("delete last shared ingress route: got %d", response.StatusCode)
+	}
+	if response.Header.Get("X-SB-Auto-Apply-Nginx-Task") == "" {
+		t.Fatal("deleting the last ingress route did not queue the Nginx clear task")
+	}
+	nginx, hash, err := store.CompileNodeNginx(t.Context(), nodeID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	digest := sha256.Sum256(nil)
+	if nginx != "" || hash != hex.EncodeToString(digest[:]) {
+		t.Fatalf("cleared Nginx configuration = %q, %q", nginx, hash)
+	}
+}
+
+func TestEmptyNginxConfigurationCanClearManagedRoutes(t *testing.T) {
+	configuration, hash, err := control.CompileNginxStream(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	digest := sha256.Sum256(nil)
+	if configuration != "" || hash != hex.EncodeToString(digest[:]) {
+		t.Fatalf("empty Nginx configuration = %q, %q", configuration, hash)
+	}
+}
+
+func TestOfficialSingBoxAcceptsPrimaryInboundVariants(t *testing.T) {
+	binary := os.Getenv("SING_BOX_BIN")
+	if binary == "" {
+		t.Skip("SING_BOX_BIN is not set")
+	}
+	store, err := control.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	secret, err := store.CreateInitialAdmin(t.Context(), "admin@example.com", "correct horse battery staple")
+	if err != nil {
+		t.Fatal(err)
+	}
+	server, err := control.NewServer(store, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	httpServer := httptest.NewServer(server.Handler())
+	defer httpServer.Close()
+	session, csrfToken := login(t, httpServer.URL, secret)
+	nodeID := approveTestNode(t, server, httpServer.URL, session, csrfToken, "official-config-node")
+	certificatePEM, privateKeyPEM := testCertificate(t)
+	certificate, err := store.CreateManagedCertificate(t.Context(), control.ManagedCertificateInput{
+		Name: "primary-inbound-certificate", CertificatePEM: certificatePEM, PrivateKeyPEM: privateKeyPEM, Enabled: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	realityKey, _, err := store.CreateRealityKey(t.Context(), "primary-inbound-reality")
+	if err != nil {
+		t.Fatal(err)
+	}
+	tls := control.TLSOptions{Enabled: true, ServerName: "example.com", CertificateID: certificate.ID}
+	definitions := []struct {
+		name        string
+		port        uint16
+		spec        control.ProtocolSpec
+		credentials control.EndpointCredentials
+	}{
+		{"VLESS WebSocket", 10443, control.ProtocolSpec{Protocol: "vless", Network: "tcp", TLS: tls, Transport: control.TransportOptions{Type: "ws", Path: "/ws", Host: "example.com"}}, control.EndpointCredentials{UUID: "bf000d23-0752-40b4-affe-68f7707a9661"}},
+		{"VLESS gRPC", 10444, control.ProtocolSpec{Protocol: "vless", Network: "tcp", TLS: tls, Transport: control.TransportOptions{Type: "grpc", ServiceName: "grpc-service"}}, control.EndpointCredentials{UUID: "4e05f165-94f3-4f54-aac7-0487dcb83011"}},
+		{"VLESS Reality", 10445, control.ProtocolSpec{Protocol: "vless", Network: "tcp", TLS: control.TLSOptions{Enabled: true}, Reality: control.RealityOptions{Enabled: true, KeyID: realityKey.ID, HandshakeServer: "www.microsoft.com", HandshakePort: 443, ShortIDs: []string{"0123456789abcdef"}}}, control.EndpointCredentials{UUID: "7d45d34f-09fc-43e6-b5cf-1ee1fbe3f2ca"}},
+		{"Hysteria2", 10443, control.ProtocolSpec{Protocol: "hysteria2", Network: "udp", TLS: tls, Hysteria: control.HysteriaOptions{UpMbps: 100, DownMbps: 100, Obfuscation: "audit-obfs"}}, control.EndpointCredentials{Password: "audit-password"}},
+	}
+	for _, definition := range definitions {
+		listener, err := store.CreateListener(t.Context(), control.Listener{
+			NodeID: nodeID, Name: definition.name, ListenAddr: "0.0.0.0", Port: definition.port, Enabled: true, Spec: definition.spec,
+		})
+		if err != nil {
+			t.Fatalf("create %s listener: %v", definition.name, err)
+		}
+		if _, err := store.CreateEndpoint(t.Context(), control.Endpoint{ListenerID: listener.ID, Name: definition.name + " 用户", Enabled: true, OutboundID: "direct"}, definition.credentials); err != nil {
+			t.Fatalf("create %s endpoint: %v", definition.name, err)
+		}
+	}
+	configuration, _, err := store.CompileNodeConfig(t.Context(), nodeID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, expected := range []string{"grpc-service", `"type": "salamander"`, `"up_mbps": 100`, `"auth_user"`} {
+		if !strings.Contains(configuration, expected) {
+			t.Fatalf("primary inbound configuration missing %q", expected)
+		}
+	}
+	configPath := filepath.Join(t.TempDir(), "sing-box-primary-inbounds.json")
+	if err := os.WriteFile(configPath, []byte(configuration), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	command := exec.Command(binary, "check", "-c", configPath)
+	if output, err := command.CombinedOutput(); err != nil {
+		t.Fatalf("official sing-box validation failed: %v\n%s\n%s", err, output, configuration)
+	}
 }
 
 func TestCompileFail2BanRendersManagedNamespace(t *testing.T) {
@@ -451,6 +703,16 @@ func TestNodeConnectionsAndClashAPICompilation(t *testing.T) {
 	}
 	if !strings.Contains(configuration, `"clash_api"`) || !strings.Contains(configuration, "127.0.0.1:9090") {
 		t.Fatal("compiled configuration does not enable the loopback clash API")
+	}
+	if binary := os.Getenv("SING_BOX_BIN"); binary != "" {
+		configPath := filepath.Join(t.TempDir(), "sing-box.json")
+		if err := os.WriteFile(configPath, []byte(configuration), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		command := exec.Command(binary, "check", "-c", configPath)
+		if output, err := command.CombinedOutput(); err != nil {
+			t.Fatalf("official sing-box validation failed: %v\n%s", err, output)
+		}
 	}
 
 	metrics := `{"collected_at":"2026-07-26T00:00:00Z","connections":[{"id":"c1","inbound":"vless","network":"tcp","source":"198.51.100.7:52011","destination":"203.0.113.5:443","host":"target.example.com","upload":100,"download":2048,"started_at":"2026-07-26T00:00:00Z","outbound":"direct"}],"capabilities":{"connection":{"cumulative_traffic":true,"instant_rate":false,"connection_count":true,"source":"sing-box clash_api http://127.0.0.1:9090","precision":"per_connection"}}}`

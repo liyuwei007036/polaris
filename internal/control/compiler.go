@@ -18,6 +18,12 @@ func (s *Store) CompileNodeConfig(ctx context.Context, nodeID string) (string, s
 		return "", "", err
 	}
 	inbounds := make([]map[string]any, 0, len(listeners))
+	type endpointRouteSelection struct {
+		ListenerID string
+		Name       string
+		OutboundID string
+	}
+	var endpointSelections []endpointRouteSelection
 	for _, listener := range listeners {
 		if !listener.Enabled {
 			continue
@@ -31,18 +37,21 @@ func (s *Store) CompileNodeConfig(ctx context.Context, nodeID string) (string, s
 			return "", "", err
 		}
 		inbounds = append(inbounds, inbound)
+		for _, endpoint := range endpoints {
+			if endpoint.OutboundID != "" {
+				endpointSelections = append(endpointSelections, endpointRouteSelection{
+					ListenerID: listener.ID,
+					Name:       endpoint.Name,
+					OutboundID: endpoint.OutboundID,
+				})
+			}
+		}
 	}
 	rules, err := s.ListEffectiveRouteRules(ctx, nodeID)
 	if err != nil {
 		return "", "", err
 	}
 	sortRouteRules(rules)
-	compiledRules := make([]map[string]any, 0, len(rules))
-	for _, rule := range rules {
-		if rule.Enabled {
-			compiledRules = append(compiledRules, compileRouteRule(rule))
-		}
-	}
 	// Managed outbounds: a built-in "direct" plus any enabled SOCKS5/HTTP proxies.
 	// Outbounds are global, so every node's config carries the same egress set.
 	managedOutbounds, err := s.loadEnabledOutbounds(ctx)
@@ -56,6 +65,42 @@ func (s *Store) CompileNodeConfig(ctx context.Context, nodeID string) (string, s
 		outbounds = append(outbounds, compileOutbound(ob, tag))
 		outboundTags[ob.ID] = tag
 	}
+	compiledRules := make([]map[string]any, 0, len(rules))
+	for _, rule := range rules {
+		if !rule.Enabled {
+			continue
+		}
+		compiled := compileRouteRule(rule)
+		if rule.Action == "outbound" {
+			tag, ok := outboundTags[rule.OutboundTag]
+			if !ok {
+				return "", "", fmt.Errorf("route rule %s references a missing or disabled outbound", rule.ID)
+			}
+			compiled["outbound"] = tag
+		}
+		compiledRules = append(compiledRules, compiled)
+	}
+	// An account-level outbound is authoritative for that authenticated user.
+	// Put these rules before general server rules so the per-account selection
+	// made in the inbound form cannot be overridden by a broader rule.
+	accountRules := make([]map[string]any, 0, len(endpointSelections))
+	for _, selection := range endpointSelections {
+		tag := "direct"
+		if selection.OutboundID != "direct" {
+			var ok bool
+			tag, ok = outboundTags[selection.OutboundID]
+			if !ok {
+				continue
+			}
+		}
+		accountRules = append(accountRules, map[string]any{
+			"inbound":   []string{"listener-" + selection.ListenerID},
+			"auth_user": []string{selection.Name},
+			"action":    "route",
+			"outbound":  tag,
+		})
+	}
+	compiledRules = append(accountRules, compiledRules...)
 	// Each listener with a selected outbound gets a fallback rule routing its
 	// inbound to that outbound; user-defined rules above still take precedence.
 	for _, listener := range listeners {
@@ -218,7 +263,7 @@ type endpointWithCredentials struct {
 }
 
 func (s *Store) loadEndpointCredentials(ctx context.Context, listenerID string) ([]endpointWithCredentials, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT id, listener_id, name, credentials, enabled FROM endpoints WHERE listener_id = ? AND enabled = 1 ORDER BY name, id`, listenerID)
+	rows, err := s.db.QueryContext(ctx, `SELECT id, listener_id, name, credentials, enabled, outbound_id FROM endpoints WHERE listener_id = ? AND enabled = 1 ORDER BY name, id`, listenerID)
 	if err != nil {
 		return nil, fmt.Errorf("load endpoint credentials: %w", err)
 	}
@@ -227,7 +272,7 @@ func (s *Store) loadEndpointCredentials(ctx context.Context, listenerID string) 
 	for rows.Next() {
 		var endpoint endpointWithCredentials
 		var encrypted []byte
-		if err := rows.Scan(&endpoint.ID, &endpoint.ListenerID, &endpoint.Name, &encrypted, &endpoint.Enabled); err != nil {
+		if err := rows.Scan(&endpoint.ID, &endpoint.ListenerID, &endpoint.Name, &encrypted, &endpoint.Enabled, &endpoint.OutboundID); err != nil {
 			return nil, err
 		}
 		plain, err := security.Decrypt(s.masterKey, encrypted)
@@ -275,6 +320,35 @@ func (s *Store) compileInbound(ctx context.Context, listener Listener, endpoints
 	}
 	if listener.Spec.Protocol == "shadowsocks" && len(endpoints) > 0 {
 		inbound["method"] = endpoints[0].Credentials.Method
+	}
+	switch listener.Spec.Protocol {
+	case "hysteria":
+		inbound["up_mbps"] = listener.Spec.Hysteria.UpMbps
+		inbound["down_mbps"] = listener.Spec.Hysteria.DownMbps
+		if listener.Spec.Hysteria.Obfuscation != "" {
+			inbound["obfs"] = listener.Spec.Hysteria.Obfuscation
+		}
+	case "hysteria2":
+		if listener.Spec.Hysteria.UpMbps != 0 {
+			inbound["up_mbps"] = listener.Spec.Hysteria.UpMbps
+		}
+		if listener.Spec.Hysteria.DownMbps != 0 {
+			inbound["down_mbps"] = listener.Spec.Hysteria.DownMbps
+		}
+		if listener.Spec.Hysteria.Obfuscation != "" {
+			inbound["obfs"] = map[string]any{"type": "salamander", "password": listener.Spec.Hysteria.Obfuscation}
+		}
+	case "tuic":
+		if listener.Spec.TUIC.CongestionControl != "" {
+			inbound["congestion_control"] = listener.Spec.TUIC.CongestionControl
+		}
+	case "shadowtls":
+		version := listener.Spec.ShadowTLS.Version
+		if version == 0 {
+			version = 3
+		}
+		inbound["version"] = version
+		inbound["handshake"] = map[string]any{"server": listener.Spec.ShadowTLS.HandshakeServer, "server_port": listener.Spec.ShadowTLS.HandshakePort}
 	}
 	return inbound, nil
 }
@@ -333,8 +407,10 @@ func compileUser(protocol string, endpoint endpointWithCredentials) (map[string]
 	case "tuic":
 		user["uuid"] = c.UUID
 		user["password"] = c.Password
-	case "trojan", "hysteria", "hysteria2", "anytls", "shadowtls":
+	case "trojan", "hysteria2", "anytls", "shadowtls":
 		user["password"] = c.Password
+	case "hysteria":
+		user["auth_str"] = c.Password
 	case "snell":
 		user["userkey"] = c.PSK
 		if c.PSK == "" {

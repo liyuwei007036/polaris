@@ -29,6 +29,15 @@ type MetricReport struct {
 	Capabilities map[string]MetricCapability `json:"capabilities"`
 	Connections  []ConnectionInfo            `json:"connections,omitempty"`
 	Fail2Ban     *Fail2BanReport             `json:"fail2ban,omitempty"`
+	Health       NodeHealth                  `json:"health"`
+}
+
+type NodeHealth struct {
+	Status            string `json:"status"`
+	SingBoxService    string `json:"sing_box_service"`
+	ClashAPIAvailable bool   `json:"clash_api_available"`
+	TrafficAvailable  bool   `json:"traffic_available"`
+	Message           string `json:"message,omitempty"`
 }
 
 // ConnectionInfo mirrors what the local sing-box Clash API reports. Fields the
@@ -239,12 +248,17 @@ func toWireStatus(local Status) wire.Status {
 		caps[k] = fmt.Sprint(v)
 	}
 	st := wire.Status{
-		CollectedAt:    local.Metrics.CollectedAt,
-		AgentVersion:   local.AgentVersion,
-		OS:             local.OS,
-		Architecture:   local.Architecture,
-		SingBoxVersion: local.SingBox,
-		Capabilities:   caps,
+		CollectedAt:       local.Metrics.CollectedAt,
+		AgentVersion:      local.AgentVersion,
+		OS:                local.OS,
+		Architecture:      local.Architecture,
+		SingBoxVersion:    local.SingBox,
+		Capabilities:      caps,
+		HealthStatus:      local.Metrics.Health.Status,
+		HealthMessage:     local.Metrics.Health.Message,
+		SingBoxService:    local.Metrics.Health.SingBoxService,
+		ClashAPIAvailable: local.Metrics.Health.ClashAPIAvailable,
+		TrafficAvailable:  local.Metrics.Health.TrafficAvailable,
 	}
 	if local.Metrics.Node != nil {
 		st.HasNodeTotals = true
