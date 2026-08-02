@@ -9,3 +9,4 @@ webui/node_modules/
 artifacts/
 webui/playwright-report/
 webui/test-results/
+服务器信息.txt
