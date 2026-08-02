@@ -139,6 +139,28 @@ Master 配置只包含端口，不配置监听 IP。Agent 名称自动读取操�
 
 配置模板位于 `deploy/sb-control-master.yaml` 和 `deploy/sb-control-agent.yaml`。
 
+`master.yaml`：
+
+```yaml
+data_dir: /var/lib/sb-control-master
+database_path: /var/lib/sb-control-master/sb-control.db
+agent_port: 8443
+web_port: 8080
+allow_insecure_http: false
+```
+
+`agent.yaml`：
+
+```yaml
+data_dir: /var/lib/sb-control-agent
+master_address: 127.0.0.1:8443
+master_public_key: <MASTER_NOISE_PUBKEY>
+heartbeat_interval: 30s
+connections_interval: 2s
+```
+
+Combined 首次安装时，先用 `master show-pubkey` 获取公钥并写入 `agent.yaml`，再启动 Combined。此时未注册 Agent 会被拒绝但 Master 控制台保持可用。在控制台生成一次性令牌后执行一次 `agent register --config /etc/sb-control/agent.yaml --token TOKEN`，然后在控制台批准。注册命令执行完成即退出，不是第二个长期服务；批准后 Combined 进程内的 Agent 会按正常认证流程自动重连。
+
 正式安装只使用 GitHub Release 已经编译完成的 Linux 二进制。安装 master 或 agent 时不在目标服务器上执行 `go build`、`npm ci` 或 `npm run build`。
 
 一个发布包中的 `sb-control` 二进制同时包含 master、agent 和已经嵌入的 Web 控制台，不需要下载不同角色的程序。
@@ -182,7 +204,7 @@ master 服务器的网络要求：
 
 - 对 agent 开放 `8443/TCP`。
 - 生产控制台通过反向代理开放 `443/TCP`。
-- `8080/TCP` 建议只监听 `127.0.0.1`，不要直接暴露到公网。
+- `8080/TCP` 不应直接向公网放行；使用主机防火墙仅允许本机反向代理或可信管理网访问。
 - master 需要访问 GitHub API，以查询官方 sing-box 最新稳定版和校验信息。
 
 agent 服务器的网络要求：
@@ -448,6 +470,8 @@ timeout 5 bash -c "</dev/tcp/${MASTER_HOST}/${MASTER_PORT}"
 cd "${PACKAGE}"
 sudo install -m 0755 ./sb-control /usr/local/bin/sb-control
 sudo install -d -o root -g root -m 0700 /var/lib/sb-control-agent
+sudo install -d -o root -g root -m 0700 /etc/sb-control
+sudo install -o root -g root -m 0600 deploy/sb-control-agent.yaml /etc/sb-control/agent.yaml
 ```
 
 master 与 agent 使用同一个二进制；运行角色由后面的 `master` 或 `agent` 子命令决定。
@@ -466,17 +490,11 @@ master 与 agent 使用同一个二进制；运行角色由后面的 `master` �
 把以下占位值替换为真实值：
 
 ```bash
-MASTER_ADDRESS='control.example.com:8443'
-MASTER_PUBKEY='<MASTER_NOISE_PUBKEY>'
 REGISTRATION_TOKEN='<ONE_TIME_TOKEN>'
-NODE_NAME='node-01'
 
 sudo /usr/local/bin/sb-control agent register \
-  --data-dir /var/lib/sb-control-agent \
-  --master "$MASTER_ADDRESS" \
-  --master-pubkey "$MASTER_PUBKEY" \
-  --token "$REGISTRATION_TOKEN" \
-  --node-name "$NODE_NAME"
+  --config /etc/sb-control/agent.yaml \
+  --token "$REGISTRATION_TOKEN"
 
 unset REGISTRATION_TOKEN
 ```
@@ -493,12 +511,9 @@ unset REGISTRATION_TOKEN
 
 ### 6. 创建 agent systemd 服务
 
-重新填写 master 地址和公钥，然后创建服务：
+先在 `/etc/sb-control/agent.yaml` 中填写 Master 地址和公钥，然后创建服务：
 
 ```bash
-MASTER_ADDRESS='control.example.com:8443'
-MASTER_PUBKEY='<MASTER_NOISE_PUBKEY>'
-
 sudo tee /etc/systemd/system/sb-control-agent.service >/dev/null <<EOF
 [Unit]
 Description=sb-control agent
@@ -509,7 +524,7 @@ Wants=network-online.target
 Type=simple
 User=root
 UMask=0077
-ExecStart=/usr/local/bin/sb-control agent run --data-dir /var/lib/sb-control-agent --master ${MASTER_ADDRESS} --master-pubkey ${MASTER_PUBKEY}
+ExecStart=/usr/local/bin/sb-control agent serve --config /etc/sb-control/agent.yaml
 Restart=on-failure
 RestartSec=5
 
@@ -522,9 +537,7 @@ sudo systemctl enable --now sb-control-agent.service
 sudo systemctl status sb-control-agent.service
 ```
 
-这里故意不传 `--sing-box-version`。agent 会优先执行本机 `sing-box version` 自动检测；未检测到版本时，master 才会为受支持的 Linux AMD64/ARM64 节点自动创建首次安装任务。
-
-仓库中的 `deploy/sb-control-agent.service` 是需要手工修改的模板。使用它时必须替换 `MASTER_HOST:8443` 和 `MASTER_NOISE_PUBKEY`，并删除示例中的固定 `--sing-box-version 1.12.0`，否则 master 会把该字符串当成节点已经安装的版本。
+Agent 会执行本机 `sing-box version` 自动检测；未检测到版本时，Master 为受支持的 Linux AMD64/ARM64 节点自动创建首次安装任务，并获取官方最新稳定版。
 
 可选参数：
 
@@ -532,7 +545,6 @@ sudo systemctl status sb-control-agent.service
 | --- | --- | --- |
 | `--heartbeat-interval` | `30s` | 允许 `5s` 到 `5m` |
 | `--connections-interval` | `2s` | 允许 `1s` 到 `30s` |
-| `--sing-box-version` | 空 | 通常不要设置；只用于无法执行本机 sing-box 的特殊兼容环境 |
 
 ### 7. 验证 agent 和 sing-box
 
@@ -594,7 +606,7 @@ sudo systemctl status sb-control-agent.service
 
 - 生产环境确认通过 HTTPS 访问。
 - 确认反向代理把请求转发到 `127.0.0.1:8080`。
-- 只有明文 HTTP 测试环境才使用 `--insecure-dev-cookies`。
+- 只有明文 HTTP 测试环境才使用 `--allow-insecure-http`。
 - 确认浏览器和 master 系统时间准确，否则 TOTP 可能失败。
 
 ### agent 无法连接 master
@@ -613,7 +625,7 @@ sudo systemctl status sb-control-agent.service
 
 ### sing-box 没有自动安装
 
-- 确认 agent 启动命令没有固定传入 `--sing-box-version`。
+- 确认 Agent 能执行本机 `sing-box version`；未安装时检查自动安装任务。
 - 确认节点报告的系统为 Linux，架构为 `amd64` 或 `arm64`。
 - 确认 master 能访问 GitHub API，agent 能访问官方 Release 下载地址。
 - 查看控制台“任务与审计”；首次自动安装失败后不会因每次心跳重复创建，需要手动点击“安装或升级”重试。
@@ -769,7 +781,7 @@ bash ./scripts_e2e.sh
 ```text
 .
 ├── .github/workflows/              # AMD64/ARM64 自动构建与 GitHub Release
-├── cmd/sb-control/                 # CLI 入口，master / agent 两种角色
+├── cmd/sb-control/                 # CLI 入口，master / agent / combined 三种模式
 ├── deploy/                         # systemd 服务模板
 ├── e2e/                            # 真实 master/agent 进程级黑盒测试
 ├── internal/agent/                 # 节点身份、指标采集和任务执行
@@ -784,10 +796,8 @@ bash ./scripts_e2e.sh
 
 ## 命令索引
 
-- `sb-control combined init-admin --config FILE --email EMAIL --password-stdin`
-- `sb-control combined reset-mfa --config FILE --email EMAIL`
-- `sb-control combined show-pubkey --config FILE`
-- `sb-control combined serve --config FILE`
+- `sb-control combined serve --master-config MASTER.yaml --agent-config AGENT.yaml`
+- `sb-control combined serve --master-data-dir DIR --database-path FILE --agent-port PORT --web-port PORT --agent-data-dir DIR --master HOST:PORT --master-pubkey KEY`
 
 ```text
 sb-control master init-admin ...
@@ -795,7 +805,8 @@ sb-control master reset-mfa ...
 sb-control master show-pubkey ...
 sb-control master serve ...
 sb-control agent register ...
-sb-control agent run ...
+sb-control agent serve ...
+sb-control combined serve ...
 ```
 
 直接运行参数不足的命令时，程序会输出可用的顶级命令。当前 CLI 不包含证书签发、取回证书或 agent HTTP 轮询命令。

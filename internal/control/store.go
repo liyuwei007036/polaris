@@ -588,6 +588,9 @@ func (s *Store) RegisterAgent(ctx context.Context, input RegistrationInput) (Reg
 	err := s.db.QueryRowContext(ctx, `SELECT id, node_name, status, COALESCE(node_id, '') FROM registrations WHERE public_key = ?`, input.PublicKey).
 		Scan(&existing.ID, &existing.NodeName, &existing.Status, &existing.NodeID)
 	if err == nil {
+		if existing.Status == "approved" {
+			return Registration{}, ErrUnauthorized
+		}
 		return existing, nil
 	}
 	if !errors.Is(err, sql.ErrNoRows) {

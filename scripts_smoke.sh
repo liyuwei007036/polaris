@@ -34,7 +34,7 @@ SECRET=$("$BIN" master init-admin --data-dir data --email admin@example.com --pa
 # No certificate needed anywhere: agent traffic is Noise-encrypted (raw
 # public keys, auto-managed by master), and the browser listener is plain
 # HTTP by design (put a reverse proxy in front for public HTTPS).
-nohup "$BIN" master serve --data-dir data --agent-listen 127.0.0.1:$AGENT_PORT --browser-listen 127.0.0.1:$PORT --insecure-dev-cookies >serve.log 2>&1 &
+nohup "$BIN" master serve --data-dir data --agent-port "$AGENT_PORT" --web-port "$PORT" --allow-insecure-http >serve.log 2>&1 &
 MPID=$!
 for i in $(seq 1 40); do
   c=$(curl -s -o /dev/null -w '%{http_code}' -X POST "$BASE/api/v1/auth/login" -H 'Content-Type: application/json' -d '{"email":"x","password":"y"}' 2>/dev/null)

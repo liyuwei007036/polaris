@@ -89,6 +89,22 @@ func TestSecureRegistrationLifecycle(t *testing.T) {
 	if response.StatusCode != http.StatusNoContent {
 		t.Fatalf("revoke node: got %d", response.StatusCode)
 	}
+
+	// A revoked static key must not be reported as approved through its old
+	// registration record. Re-enrollment requires a new agent identity.
+	retryToken := createRegistrationToken(t, httpServer.URL, session, csrfToken)
+	retryConn, err := agent.Connect(ctx, agentAddr, keypair, server.NoisePublicKey())
+	if err != nil {
+		t.Fatal(err)
+	}
+	retryAck, err := agent.Register(retryConn, retryToken, "test-node", map[string]string{"os": "linux"})
+	retryConn.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if retryAck.Status != "rejected" {
+		t.Fatalf("revoked identity registration status = %q, want rejected", retryAck.Status)
+	}
 }
 
 func TestRegistrationTokenCanOnlyBeUsedOnce(t *testing.T) {

@@ -274,9 +274,9 @@ func agentRegister(args []string) error {
 		if err := agent.SaveReleaseSigningPublicKey(configuration.DataDir, ack.ReleaseSigningPublicKeyPEM); err != nil {
 			return err
 		}
-		fmt.Printf("Node already approved (node_id=%s). Ready to run \"agent run\".\n", ack.NodeID)
+		fmt.Printf("Node already approved (node_id=%s). Ready to run \"agent serve\".\n", ack.NodeID)
 	case "pending":
-		fmt.Printf("Registration pending approval (registration_id=%s). Ask an administrator to approve it, then run \"agent run\" — it retries until approved.\n", ack.RegistrationID)
+		fmt.Printf("Registration pending approval (registration_id=%s). Ask an administrator to approve it, then run \"agent serve\" — it retries until approved.\n", ack.RegistrationID)
 	default:
 		return fmt.Errorf("registration %s", ack.Status)
 	}
@@ -397,5 +397,5 @@ func warnIfNotRoot() {
 }
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: sb-control master <init-admin|reset-mfa|serve|show-pubkey> ... | sb-control agent <register|run> ... | sb-control combined <init-admin|reset-mfa|serve|show-pubkey> --config FILE ...")
+	fmt.Fprintln(os.Stderr, "usage: sb-control master <init-admin|reset-mfa|serve|show-pubkey> ... | sb-control agent <register|serve> ... | sb-control combined serve ...")
 }

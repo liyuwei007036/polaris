@@ -69,9 +69,9 @@ func TestControlPlaneProcessJourney(t *testing.T) {
 
 	master := startProcess(t, "master", binaryPath, nil,
 		"master", "serve", "--data-dir", masterData,
-		"--agent-listen", masterAddress,
-		"--browser-listen", fmt.Sprintf("127.0.0.1:%d", browserPort),
-		"--insecure-dev-cookies")
+		"--agent-port", fmt.Sprint(agentPort),
+		"--web-port", fmt.Sprint(browserPort),
+		"--allow-insecure-http")
 	waitFor(t, 15*time.Second, "master health endpoint", func() bool {
 		response, err := http.Get(baseURL + "/api/v1/health")
 		if err != nil {
@@ -98,7 +98,7 @@ func TestControlPlaneProcessJourney(t *testing.T) {
 	registrationOutput := runCommand(t, 20*time.Second, nil, binaryPath,
 		"agent", "register", "--data-dir", agentData,
 		"--master", masterAddress, "--master-pubkey", masterPublicKey,
-		"--token", tokenResponse.Token, "--node-name", "E2E 节点")
+		"--token", tokenResponse.Token)
 	registrationMatch := regexp.MustCompile(`registration_id=([a-f0-9]{32})`).FindStringSubmatch(registrationOutput)
 	if len(registrationMatch) != 2 {
 		t.Fatalf("agent registration did not return a pending registration ID:\n%s", registrationOutput)
@@ -130,10 +130,9 @@ func TestControlPlaneProcessJourney(t *testing.T) {
 		"PATH="+stubDir+string(os.PathListSeparator)+os.Getenv("PATH"),
 	)
 	agentProcess := startProcess(t, "agent", binaryPath, agentEnv,
-		"agent", "run", "--data-dir", agentData,
+		"agent", "serve", "--data-dir", agentData,
 		"--master", masterAddress, "--master-pubkey", masterPublicKey,
-		"--heartbeat-interval", "5s", "--connections-interval", "1s",
-		"--sing-box-version", "e2e-stub")
+		"--heartbeat-interval", "5s", "--connections-interval", "1s")
 	t.Cleanup(func() { agentProcess.stop(t) })
 	waitFor(t, 20*time.Second, "approved agent to report online", func() bool {
 		var result struct {

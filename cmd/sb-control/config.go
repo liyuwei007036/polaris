@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"errors"
 	"flag"
 	"fmt"
@@ -172,7 +173,21 @@ func loadYAMLConfig(path string, target any) (string, error) {
 		return "", err
 	}
 	defer file.Close()
-	decoder := yaml.NewDecoder(io.LimitReader(file, 1024*1024))
+	data, err := io.ReadAll(io.LimitReader(file, 1024*1024+1))
+	if err != nil {
+		return "", err
+	}
+	if len(data) > 1024*1024 {
+		return "", errors.New("configuration file exceeds 1 MiB")
+	}
+	trimmed := bytes.TrimSpace(data)
+	if len(trimmed) == 0 {
+		return "", errors.New("configuration file is empty")
+	}
+	if trimmed[0] == '{' || trimmed[0] == '[' {
+		return "", errors.New("JSON configuration is not supported; use YAML syntax")
+	}
+	decoder := yaml.NewDecoder(bytes.NewReader(data))
 	decoder.KnownFields(true)
 	if err := decoder.Decode(target); err != nil {
 		return "", err
@@ -213,6 +228,10 @@ func normalizeAgentConfig(configuration agentConfig, base string) (agentConfig, 
 	configuration.MasterPublicKey = strings.TrimSpace(configuration.MasterPublicKey)
 	if configuration.MasterAddress == "" {
 		return agentConfig{}, errors.New("master_address is required")
+	}
+	host, _, err := net.SplitHostPort(configuration.MasterAddress)
+	if err != nil || strings.TrimSpace(host) == "" {
+		return agentConfig{}, errors.New("master_address must include a host and port")
 	}
 	if _, err := net.ResolveTCPAddr("tcp", configuration.MasterAddress); err != nil {
 		return agentConfig{}, fmt.Errorf("invalid master_address: %w", err)

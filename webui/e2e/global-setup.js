@@ -30,9 +30,9 @@ export default async function globalSetup() {
   const log = openSync(logPath, 'a')
   const master = spawn(executable, [
     'master', 'serve', '--data-dir', dataDir,
-    '--agent-listen', `127.0.0.1:${agentPort}`,
-    '--browser-listen', `127.0.0.1:${browserPort}`,
-    '--insecure-dev-cookies',
+    '--agent-port', `${agentPort}`,
+    '--web-port', `${browserPort}`,
+    '--allow-insecure-http',
   ], { cwd: projectRoot, stdio: ['ignore', log, log], windowsHide: true })
 
   try {

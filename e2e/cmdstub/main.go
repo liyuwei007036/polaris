@@ -13,6 +13,10 @@ func main() {
 	appendInvocation(name, os.Args[1:])
 	switch name {
 	case "sing-box":
+		if len(os.Args) == 2 && os.Args[1] == "version" {
+			fmt.Println("sing-box version e2e-stub")
+			return
+		}
 		if len(os.Args) < 4 || os.Args[1] != "check" || os.Args[2] != "-c" {
 			fail("unsupported sing-box invocation")
 		}

@@ -93,6 +93,13 @@ func TestYAMLConfigurationsAreStrictAndSeparated(t *testing.T) {
 	if _, _, err := loadMasterConfig(jsonPath); err == nil {
 		t.Fatal("JSON master configuration was accepted")
 	}
+	jsonAsYAMLPath := filepath.Join(directory, "json-as-yaml.yaml")
+	if err := os.WriteFile(jsonAsYAMLPath, []byte(`{"agent_port":8443}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := loadMasterConfig(jsonAsYAMLPath); err == nil {
+		t.Fatal("JSON syntax in a YAML file was accepted")
+	}
 	masterPath := filepath.Join(directory, "master.yaml")
 	if err := os.WriteFile(masterPath, []byte("master_address: 127.0.0.1:8443\n"), 0o600); err != nil {
 		t.Fatal(err)
