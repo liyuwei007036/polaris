@@ -38,6 +38,9 @@ func TestCompileAndMergePassthroughRoutes(t *testing.T) {
 	if strings.Count(merged, "listen 0.0.0.0:443;") != 1 {
 		t.Fatalf("merged configuration owns TCP/443 %d times", strings.Count(merged, "listen 0.0.0.0:443;"))
 	}
+	if !strings.Contains(merged, "proxy_connect_timeout 10s;") || !strings.Contains(merged, "proxy_timeout 10m;") {
+		t.Fatalf("merged configuration omitted proxy timeouts:\n%s", merged)
+	}
 }
 
 func TestMergePassthroughRejectsMissingGroupAndManagedSNIConflict(t *testing.T) {

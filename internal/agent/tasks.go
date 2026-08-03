@@ -20,7 +20,9 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
+	"strconv"
 	"strings"
 	"time"
 
@@ -31,6 +33,11 @@ import (
 var managedSingBoxConfig = managedSystemPath("/etc/sing-box/config.json")
 var managedNginxConfig = managedSystemPath("/etc/nginx/stream-conf.d/sb-control.conf")
 var managedNginxModuleConfig = managedSystemPath("/etc/nginx/modules-enabled/99-sb-control-stream.conf")
+var managedNginxMainConfig = managedSystemPath("/etc/nginx/nginx.conf")
+
+const minimumNginxWorkerConnections = 4096
+
+var nginxWorkerConnectionsPattern = regexp.MustCompile(`(?m)^([ \t]*worker_connections[ \t]+)([0-9]+)([ \t]*;)`)
 
 var outboundProbeURL = "https://www.gstatic.com/generate_204"
 
@@ -580,6 +587,9 @@ func ensureNginxReady(ctx context.Context, needed bool) error {
 	if !needed {
 		return nil
 	}
+	if err := ensureNginxWorkerCapacity(ctx); err != nil {
+		return err
+	}
 	fullConfig, fullConfigErr := exec.CommandContext(ctx, "nginx", "-T").CombinedOutput()
 	if installedByUs && fullConfigErr == nil && nginxHasHTTPListener(string(fullConfig)) {
 		return errors.New("Nginx 配置仍包含 HTTP 监听端口；为避免暴露默认站点，自动端口分配已停止")
@@ -590,7 +600,7 @@ func ensureNginxReady(ctx context.Context, needed bool) error {
 	if fullConfigErr == nil && strings.Contains(string(fullConfig), "stream {") {
 		return errors.New("现有 Nginx 已配置其他 stream 入口；请在该入口中加入 /etc/nginx/stream-conf.d/*.conf 后重试")
 	}
-	mainConfig, err := os.ReadFile("/etc/nginx/nginx.conf")
+	mainConfig, err := os.ReadFile(managedNginxMainConfig)
 	if err != nil {
 		return errors.New("读取 Nginx 主配置失败: " + err.Error())
 	}
@@ -612,6 +622,73 @@ func ensureNginxReady(ctx context.Context, needed bool) error {
 		return errors.New("写入 Nginx 自动端口配置入口失败: " + err.Error() + permissionHint(err))
 	}
 	return nil
+}
+
+func ensureNginxWorkerCapacity(ctx context.Context) error {
+	mainConfig, err := os.ReadFile(managedNginxMainConfig)
+	if err != nil {
+		return errors.New("读取 Nginx 主配置失败: " + err.Error())
+	}
+	updated, changed := raiseNginxWorkerConnections(mainConfig)
+	if !changed {
+		return nil
+	}
+	info, err := os.Stat(managedNginxMainConfig)
+	if err != nil {
+		return errors.New("读取 Nginx 主配置权限失败: " + err.Error())
+	}
+	if err := replaceFileAtomically(managedNginxMainConfig, updated, info.Mode().Perm()); err != nil {
+		return errors.New("提升 Nginx 连接容量失败: " + err.Error() + permissionHint(err))
+	}
+	if output, testErr := exec.CommandContext(ctx, "nginx", "-t").CombinedOutput(); testErr != nil {
+		if restoreErr := replaceFileAtomically(managedNginxMainConfig, mainConfig, info.Mode().Perm()); restoreErr != nil {
+			return errors.New(commandSummary("nginx -t", output, testErr) + "; 恢复 Nginx 主配置失败: " + restoreErr.Error())
+		}
+		return errors.New(commandSummary("nginx -t", output, testErr))
+	}
+	return nil
+}
+
+func raiseNginxWorkerConnections(configuration []byte) ([]byte, bool) {
+	matches := nginxWorkerConnectionsPattern.FindAllSubmatchIndex(configuration, 2)
+	if len(matches) != 1 {
+		return configuration, false
+	}
+	match := matches[0]
+	current, err := strconv.Atoi(string(configuration[match[4]:match[5]]))
+	if err != nil || current >= minimumNginxWorkerConnections {
+		return configuration, false
+	}
+	updated := make([]byte, 0, len(configuration)+4)
+	updated = append(updated, configuration[:match[4]]...)
+	updated = strconv.AppendInt(updated, minimumNginxWorkerConnections, 10)
+	updated = append(updated, configuration[match[5]:]...)
+	return updated, true
+}
+
+func replaceFileAtomically(path string, content []byte, mode os.FileMode) error {
+	temporary, err := os.CreateTemp(filepath.Dir(path), ".sb-control-nginx-main-*.conf")
+	if err != nil {
+		return err
+	}
+	temporaryPath := temporary.Name()
+	defer os.Remove(temporaryPath)
+	if _, err := temporary.Write(content); err != nil {
+		temporary.Close()
+		return err
+	}
+	if err := temporary.Chmod(mode); err != nil {
+		temporary.Close()
+		return err
+	}
+	if err := temporary.Sync(); err != nil {
+		temporary.Close()
+		return err
+	}
+	if err := temporary.Close(); err != nil {
+		return err
+	}
+	return os.Rename(temporaryPath, path)
 }
 
 func nginxHasHTTPListener(configuration string) bool {

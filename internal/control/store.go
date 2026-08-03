@@ -1240,6 +1240,9 @@ func (s *Store) CreateListener(ctx context.Context, listener Listener) (Listener
 	if err := ValidateListenerAddress(listener.ListenAddr, listener.Port); err != nil {
 		return Listener{}, err
 	}
+	if err := ValidateListenerTLS(listener.Spec, listener.Port); err != nil {
+		return Listener{}, err
+	}
 	if listener.BackendPort == 0 {
 		listener.BackendPort = listener.Port
 	}
@@ -1296,6 +1299,9 @@ func (s *Store) UpdateListener(ctx context.Context, listener Listener) (Listener
 		return Listener{}, err
 	}
 	if err := ValidateListenerAddress(listener.ListenAddr, listener.Port); err != nil {
+		return Listener{}, err
+	}
+	if err := ValidateListenerTLS(listener.Spec, listener.Port); err != nil {
 		return Listener{}, err
 	}
 	if listener.BackendPort == 0 {
@@ -2177,6 +2183,9 @@ CREATE INDEX IF NOT EXISTS idx_cloudflare_records_binding ON cloudflare_records(
 		return err
 	}
 	if err := s.addListenerColumn(ctx, "connection_domain TEXT NOT NULL DEFAULT ''"); err != nil {
+		return err
+	}
+	if err := s.migrateLegacyVLESSStreamTLS(ctx); err != nil {
 		return err
 	}
 	if _, err := s.db.ExecContext(ctx, `DROP TABLE IF EXISTS managed_certificates`); err != nil {

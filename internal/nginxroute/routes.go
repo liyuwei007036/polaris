@@ -41,7 +41,7 @@ func Compile(routes []Route) (string, error) {
 		output.WriteString(net.JoinHostPort(key.address, strconv.Itoa(int(key.port))))
 		output.WriteString(";\n    ssl_preread on;\n    proxy_pass $")
 		output.WriteString(name)
-		output.WriteString(";\n}\n\n")
+		output.WriteString(";\n    proxy_connect_timeout 10s;\n    proxy_timeout 10m;\n}\n\n")
 	}
 	return output.String(), nil
 }

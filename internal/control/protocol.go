@@ -120,6 +120,13 @@ func ValidateListenerAddress(address string, port uint16) error {
 	return nil
 }
 
+func ValidateListenerTLS(spec ProtocolSpec, port uint16) error {
+	if port == 443 && spec.Protocol == "vless" && !spec.Reality.Enabled && !spec.TLS.Enabled && (spec.Transport.Type == "ws" || spec.Transport.Type == "grpc") {
+		return errors.New("VLESS WebSocket and gRPC on TCP/443 require origin TLS")
+	}
+	return nil
+}
+
 func ValidateEndpointCredentials(protocol string, credentials EndpointCredentials) error {
 	switch protocol {
 	case "vless":

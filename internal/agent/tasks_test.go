@@ -36,6 +36,18 @@ func TestNginxHTTPListenerDetection(t *testing.T) {
 	}
 }
 
+func TestRaiseNginxWorkerConnections(t *testing.T) {
+	configuration := []byte("worker_processes auto;\nevents {\n\tworker_connections 768;\n}\n")
+	updated, changed := raiseNginxWorkerConnections(configuration)
+	if !changed || !strings.Contains(string(updated), "worker_connections 4096;") {
+		t.Fatalf("worker connection limit was not raised:\n%s", updated)
+	}
+	updated, changed = raiseNginxWorkerConnections(updated)
+	if changed || !strings.Contains(string(updated), "worker_connections 4096;") {
+		t.Fatalf("adequate worker connection limit was changed:\n%s", updated)
+	}
+}
+
 func TestInitialSingBoxConfigIsValidJSON(t *testing.T) {
 	var configuration map[string]any
 	if err := json.Unmarshal([]byte(initialSingBoxConfig), &configuration); err != nil {
