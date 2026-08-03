@@ -1,8 +1,9 @@
 <script setup>
-import { inject, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, inject, onBeforeUnmount, onMounted, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { CopyDocument, Edit, Plus, Refresh, RemoveFilled, Upload } from '@element-plus/icons-vue'
+import { CopyDocument, Edit, Plus, Refresh, RemoveFilled, Search } from '@element-plus/icons-vue'
 import { api, post, put } from '../api'
+import { formatBytes, formatDateTime, includesText } from '../format'
 import { subscribeLive } from '../live'
 import PageHeader from '../components/PageHeader.vue'
 
@@ -17,9 +18,6 @@ const tokenDialog = ref(false)
 const token = ref('')
 const expiresAt = ref('')
 const lifetime = ref(900)
-const releaseDialog = ref(false)
-const latestRelease = ref(null)
-const releaseNode = ref(null)
 const addressDialog = ref(false)
 const addressNode = ref(null)
 const clientAddress = ref('')
@@ -31,42 +29,16 @@ const nameSaving = ref(false)
 const rates = ref({})
 const refreshing = ref(false)
 const previousCounters = new Map()
-const now = ref(Date.now())
+const keyword = ref('')
+const statusFilter = ref('')
 let stopLive
 
-function formatBytes(value, suffix = '') {
-  let number = Number(value || 0)
-  const units = ['B', 'KB', 'MB', 'GB', 'TB']
-  let index = 0
-  while (number >= 1024 && index < units.length - 1) {
-    number /= 1024
-    index += 1
-  }
-  return `${index ? number.toFixed(number < 10 ? 2 : 1) : Math.round(number)} ${units[index]}${suffix}`
-}
-
-function relativeTime(value) {
-  const seconds = Math.max(0, Math.floor((now.value - Date.parse(value)) / 1000))
-  if (!Number.isFinite(seconds)) return '从未'
-  if (seconds < 5) return '刚刚'
-  if (seconds < 60) return `${seconds} 秒前`
-  if (seconds < 3600) return `${Math.floor(seconds / 60)} 分钟前`
-  return `${Math.floor(seconds / 3600)} 小时前`
-}
-
-function healthInfo(node) {
-  if (!node.online) return ['离线', 'info']
-  const health = metrics.value[node.id]?.health
-  if (health?.status === 'degraded') {
-    if (health.sing_box_service === 'active' && !health.clash_api_available) return ['连接数据异常', 'warning']
-    if (!health.traffic_available) return ['流量统计不可用', 'warning']
-    return ['检测数据不完整', 'warning']
-  }
-  return {
-    healthy: ['正常', 'success'],
-    stopped: ['连接服务已停止', 'danger'],
-  }[health?.status] || ['等待检测', 'info']
-}
+const filteredNodes = computed(() => appState.nodes.filter((node) => {
+  if (statusFilter.value === 'online' && !node.online) return false
+  if (statusFilter.value === 'offline' && node.online) return false
+  return includesText([node.name, node.client_address, node.os, node.architecture, node.agent_version, node.sing_box_version], keyword.value)
+}))
+const filteredPending = computed(() => pending.value.filter((row) => includesText([row.node_name, row.capabilities], keyword.value)))
 
 function updateRates(nodeID, report) {
   if (!report?.node || !report.collected_at) return
@@ -90,7 +62,6 @@ async function load(silent = false) {
   if (refreshing.value) return
   refreshing.value = true
   if (!silent) loading.value = true
-  now.value = Date.now()
   try {
     await loadNodes()
     if (isAdmin.value) {
@@ -137,18 +108,6 @@ async function revoke(node) {
   await post(`/nodes/${node.id}/revoke`, {})
   ElMessage.success('服务器已移除')
   await load()
-}
-
-async function openInstall(node) {
-  releaseNode.value = node
-  latestRelease.value = await api(`/sing-box/latest?architecture=${encodeURIComponent(node.architecture)}`)
-  releaseDialog.value = true
-}
-
-async function install() {
-  await post(`/nodes/${releaseNode.value.id}/sing-box/install`, { version: '' })
-  ElMessage.success('安装或升级操作已开始')
-  releaseDialog.value = false
 }
 
 function openClientAddress(node) {
@@ -201,20 +160,24 @@ onBeforeUnmount(() => {
 
 <template>
   <div class="page-shell">
-    <PageHeader title="服务器" description="添加和管理运行连接服务的服务器">
+    <PageHeader title="服务器">
       <el-button :icon="Refresh" @click="load">刷新</el-button>
-      <el-button v-if="isAdmin" type="primary" :icon="Plus" @click="generateToken">添加服务器</el-button>
+      <el-button v-if="isAdmin" type="primary" :icon="Plus" @click="generateToken">添加</el-button>
     </PageHeader>
-    <main v-loading="loading" class="page-content">
+    <main v-loading="loading" class="page-content page-content--tight">
+      <div class="search-toolbar" style="border-bottom: 1px solid var(--sb-border); border-radius: 7px; margin-bottom: 16px">
+        <el-input v-model="keyword" clearable :prefix-icon="Search" placeholder="搜索名称、地址或版本" style="width: 280px" />
+        <el-select v-model="statusFilter" clearable placeholder="全部状态" style="width: 150px"><el-option label="在线" value="online" /><el-option label="离线" value="offline" /></el-select>
+      </div>
       <template v-if="pending.length">
         <div class="section-title">等待确认的服务器</div>
         <div class="table-panel" style="margin-bottom: 24px">
-          <el-table :data="pending">
+          <el-table :data="filteredPending">
             <el-table-column label="服务器名称" min-width="180" prop="node_name" />
             <el-table-column label="支持的功能" min-width="260" prop="capabilities" show-overflow-tooltip />
-            <el-table-column label="接入时间" width="200" prop="created_at" />
-            <el-table-column label="操作" width="120">
-              <template #default="{ row }"><el-button type="primary" link @click="approve(row)">允许接入</el-button></template>
+            <el-table-column label="接入时间" width="180"><template #default="{ row }">{{ formatDateTime(row.created_at) }}</template></el-table-column>
+            <el-table-column label="操作" width="90" class-name="action-column">
+              <template #default="{ row }"><el-button type="primary" link @click="approve(row)">接入</el-button></template>
             </el-table-column>
           </el-table>
         </div>
@@ -222,7 +185,7 @@ onBeforeUnmount(() => {
 
       <div class="section-title">已接入服务器</div>
       <div class="table-panel">
-        <el-table :data="appState.nodes">
+        <el-table :data="filteredNodes">
           <el-table-column label="服务器" min-width="180">
             <template #default="{ row }">
               <span class="status-dot" :class="row.online ? 'online' : 'offline'" />
@@ -232,13 +195,10 @@ onBeforeUnmount(() => {
           <el-table-column label="系统" min-width="150">
             <template #default="{ row }">{{ row.os || '—' }} · {{ row.architecture || '—' }}</template>
           </el-table-column>
-          <el-table-column label="管理组件版本" width="130" prop="agent_version" />
-          <el-table-column label="连接服务版本" width="130" prop="sing_box_version" />
+          <el-table-column label="Agent 版本" width="120" prop="agent_version" />
+          <el-table-column label="sing-box 版本" width="130" prop="sing_box_version" />
           <el-table-column label="客户端连接地址" min-width="190">
             <template #default="{ row }"><span v-if="row.client_address" class="mono">{{ row.client_address }}</span><el-tag v-else type="warning">未配置</el-tag></template>
-          </el-table-column>
-          <el-table-column label="运行状态" width="135">
-            <template #default="{ row }"><el-tag :type="healthInfo(row)[1]">{{ healthInfo(row)[0] }}</el-tag></template>
           </el-table-column>
           <el-table-column label="当前下载 / 上传" min-width="180">
             <template #default="{ row }">
@@ -255,27 +215,25 @@ onBeforeUnmount(() => {
           <el-table-column label="连接数" width="90">
             <template #default="{ row }">{{ metrics[row.id]?.connections?.length ?? '—' }}</template>
           </el-table-column>
-          <el-table-column label="最后在线" width="125"><template #default="{ row }">{{ relativeTime(row.last_seen_at) }}</template></el-table-column>
-          <el-table-column label="操作" width="420" fixed="right">
+          <el-table-column label="最后在线" width="180"><template #default="{ row }">{{ formatDateTime(row.last_seen_at, '从未') }}</template></el-table-column>
+          <el-table-column label="操作" width="200" fixed="right" class-name="action-column">
             <template #default="{ row }">
-              <el-button v-if="canWrite" link :icon="Edit" @click="openNodeName(row)">修改名称</el-button>
-              <el-button v-if="canWrite" link :icon="Edit" @click="openClientAddress(row)">连接地址</el-button>
-              <el-button v-if="isAdmin" link :icon="Upload" @click="openInstall(row)">安装或升级</el-button>
+              <el-button v-if="canWrite" link :icon="Edit" @click="openNodeName(row)">名称</el-button>
+              <el-button v-if="canWrite" link :icon="Edit" @click="openClientAddress(row)">地址</el-button>
               <el-button v-if="isAdmin" link type="danger" :icon="RemoveFilled" @click="revoke(row)">移除</el-button>
             </template>
           </el-table-column>
         </el-table>
       </div>
-      <p class="subtle">网络速度和累计用量是服务器全部网络接口的总计，不代表某个接入服务或用户的单独用量。</p>
     </main>
 
     <el-dialog v-model="tokenDialog" title="服务器接入信息" width="580px">
       <el-alert title="此信息只显示一次，请立即复制并在要添加的服务器上使用。" type="warning" show-icon :closable="false" />
       <el-input v-model="token" readonly type="textarea" :rows="4" class="mono" style="margin-top: 16px" />
-      <p class="subtle">有效期至：{{ expiresAt }}</p>
+      <p class="subtle">有效期至：{{ formatDateTime(expiresAt) }}</p>
       <template #footer>
         <el-button @click="tokenDialog = false">完成</el-button>
-        <el-button type="primary" :icon="CopyDocument" @click="copyToken">复制接入信息</el-button>
+        <el-button type="primary" :icon="CopyDocument" @click="copyToken">复制</el-button>
       </template>
     </el-dialog>
 
@@ -288,18 +246,6 @@ onBeforeUnmount(() => {
       <template #footer>
         <el-button @click="nameDialog = false">取消</el-button>
         <el-button type="primary" :loading="nameSaving" :disabled="!nodeName.trim()" @click="saveNodeName">保存</el-button>
-      </template>
-    </el-dialog>
-
-    <el-dialog v-model="releaseDialog" title="安装或升级连接服务" width="500px">
-      <el-form label-position="top">
-        <el-form-item label="目标服务器"><el-input :model-value="releaseNode?.name" disabled /></el-form-item>
-        <el-form-item label="最新稳定版本"><el-input :model-value="latestRelease ? `${latestRelease.version} · ${latestRelease.architecture}` : '正在获取'" disabled /></el-form-item>
-        <el-alert title="系统会从 sing-box 官方来源获取最新稳定版本，完成安全校验后再安装。" type="info" show-icon :closable="false" />
-      </el-form>
-      <template #footer>
-        <el-button @click="releaseDialog = false">取消</el-button>
-        <el-button type="primary" :disabled="!latestRelease" @click="install">开始安装</el-button>
       </template>
     </el-dialog>
 

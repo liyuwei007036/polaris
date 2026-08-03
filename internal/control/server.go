@@ -38,6 +38,7 @@ type Server struct {
 	latestSingBoxReleaseFn func(context.Context, string) (SingBoxRelease, error)
 	connHub                *connectionsHub
 	liveHub                *liveHub
+	ipLocator              *ipLocator
 }
 
 type controlSession struct {
@@ -50,11 +51,15 @@ func NewServer(store *Store, secureCookies bool) (*Server, error) {
 	if err != nil {
 		return nil, err
 	}
+	ipLocator, err := newIPLocator()
+	if err != nil {
+		return nil, fmt.Errorf("load IP location database: %w", err)
+	}
 	return &Server{
 		store: store, noiseKeypair: keypair, secureCookies: secureCookies,
 		controls: make(map[string]*controlSession), autoInstallChecked: make(map[string]bool),
 		latestSingBoxReleaseFn: LatestOfficialSingBoxRelease,
-		connHub:                newConnectionsHub(), liveHub: newLiveHub(),
+		connHub:                newConnectionsHub(), liveHub: newLiveHub(), ipLocator: ipLocator,
 	}, nil
 }
 
@@ -143,6 +148,7 @@ func (s *Server) registerBrowserRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("PUT /api/v1/mihomo/proxy-groups/{id}", s.updateMihomoProxyGroup)
 	mux.HandleFunc("DELETE /api/v1/mihomo/proxy-groups/{id}", s.deleteMihomoProxyGroup)
 	mux.HandleFunc("GET /api/v1/mihomo/client-configs", s.listMihomoClientConfigs)
+	mux.HandleFunc("GET /api/v1/mihomo/subscription-access", s.listMihomoSubscriptionAccess)
 	mux.HandleFunc("POST /api/v1/mihomo/client-configs", s.createMihomoClientConfig)
 	mux.HandleFunc("PUT /api/v1/mihomo/client-configs/{id}", s.updateMihomoClientConfig)
 	mux.HandleFunc("POST /api/v1/mihomo/client-configs/{id}/enabled", s.setMihomoClientConfigEnabled)
@@ -1087,6 +1093,9 @@ func (s *Server) listFirewallRules(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		writeError(w, err)
 		return
+	}
+	for index := range rules {
+		rules[index].Location = s.ipLocator.LocateCIDR(rules[index].CIDR)
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"rules": rules})
 }

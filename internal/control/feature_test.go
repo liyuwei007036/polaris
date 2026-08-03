@@ -36,6 +36,46 @@ func approveTestNode(t *testing.T, server *control.Server, baseURL, session, csr
 	return approved.NodeID
 }
 
+func TestFirewallRulesIncludeIPLocations(t *testing.T) {
+	store, err := control.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	secret, err := store.CreateInitialAdmin(t.Context(), "admin@example.com", "correct horse battery staple")
+	if err != nil {
+		t.Fatal(err)
+	}
+	server, err := control.NewServer(store, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	httpServer := httptest.NewServer(server.Handler())
+	defer httpServer.Close()
+	session, csrfToken := login(t, httpServer.URL, secret)
+	nodeID := approveTestNode(t, server, httpServer.URL, session, csrfToken, "firewall-location-node")
+
+	response := request(t, http.MethodPost, httpServer.URL+"/api/v1/nodes/"+nodeID+"/firewall/rules", map[string]any{
+		"action": "accept", "protocol": "tcp", "cidr": "8.8.8.8/32", "port": 443, "enabled": true,
+	}, session, csrfToken)
+	if response.StatusCode != http.StatusCreated {
+		t.Fatalf("create firewall rule: got %d", response.StatusCode)
+	}
+	response.Body.Close()
+
+	response = request(t, http.MethodGet, httpServer.URL+"/api/v1/nodes/"+nodeID+"/firewall/rules", nil, session, csrfToken)
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("list firewall rules: got %d", response.StatusCode)
+	}
+	var result struct {
+		Rules []control.FirewallRule `json:"rules"`
+	}
+	decodeBody(t, response, &result)
+	if len(result.Rules) != 1 || !strings.Contains(result.Rules[0].Location, "United States") {
+		t.Fatalf("firewall rules missing IP location: %#v", result.Rules)
+	}
+}
+
 func TestInboundMutationCreatesAutomaticApplyTask(t *testing.T) {
 	store, err := control.Open(t.TempDir())
 	if err != nil {

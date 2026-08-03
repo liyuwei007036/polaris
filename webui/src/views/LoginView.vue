@@ -99,7 +99,7 @@ async function finishAuthentication(result) {
         </el-form-item>
         <el-button type="primary" size="large" :loading="loading" @click="submitMFA">登录</el-button>
         <div class="login-form__back">
-          <el-button link @click="step = 'credentials'; code = ''">返回重新输入账户</el-button>
+          <el-button link @click="step = 'credentials'; code = ''">返回</el-button>
         </div>
       </el-form>
     </section>

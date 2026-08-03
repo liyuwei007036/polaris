@@ -16,6 +16,7 @@ type FirewallRule struct {
 	Action    string `json:"action"`
 	Protocol  string `json:"protocol"`
 	CIDR      string `json:"cidr"`
+	Location  string `json:"location,omitempty"`
 	Port      uint16 `json:"port"`
 	ExpiresAt int64  `json:"expires_at,omitempty"`
 	Enabled   bool   `json:"enabled"`

@@ -273,7 +273,7 @@ func (s *Server) handleAgentMessage(ctx context.Context, node Node, msgType byte
 		if err := wire.Decode(body, &push); err != nil {
 			return false
 		}
-		connections := convertConnections(push.Connections)
+		connections := s.convertConnections(push.Connections)
 		connJSON, err := json.Marshal(connections)
 		if err != nil {
 			return false
@@ -366,17 +366,21 @@ type storedHealth struct {
 }
 
 type storedConnection struct {
-	ID          string `json:"id,omitempty"`
-	Inbound     string `json:"inbound,omitempty"`
-	Network     string `json:"network,omitempty"`
-	Source      string `json:"source,omitempty"`
-	Destination string `json:"destination,omitempty"`
-	Host        string `json:"host,omitempty"`
-	Upload      int64  `json:"upload"`
-	Download    int64  `json:"download"`
-	StartedAt   string `json:"started_at,omitempty"`
-	Outbound    string `json:"outbound,omitempty"`
-	Rule        string `json:"rule,omitempty"`
+	ID             string   `json:"id,omitempty"`
+	Inbound        string   `json:"inbound,omitempty"`
+	Network        string   `json:"network,omitempty"`
+	Source         string   `json:"source,omitempty"`
+	SourceIP       string   `json:"source_ip,omitempty"`
+	SourceLocation string   `json:"source_location,omitempty"`
+	Destination    string   `json:"destination,omitempty"`
+	Host           string   `json:"host,omitempty"`
+	Upload         int64    `json:"upload"`
+	Download       int64    `json:"download"`
+	StartedAt      string   `json:"started_at,omitempty"`
+	Outbound       string   `json:"outbound,omitempty"`
+	Rule           string   `json:"rule,omitempty"`
+	RulePayload    string   `json:"rule_payload,omitempty"`
+	Chains         []string `json:"chains,omitempty"`
 }
 
 type storedFail2BanJail struct {
@@ -392,12 +396,14 @@ type storedFail2Ban struct {
 	Jails     []storedFail2BanJail `json:"jails"`
 }
 
-func convertConnections(in []wire.ConnectionInfo) []storedConnection {
+func (s *Server) convertConnections(in []wire.ConnectionInfo) []storedConnection {
 	out := make([]storedConnection, 0, len(in))
 	for _, c := range in {
+		ip := addressIP(c.Source)
 		out = append(out, storedConnection{
 			ID: c.ID, Inbound: c.Inbound, Network: c.Network, Source: c.Source, Destination: c.Destination,
-			Host: c.Host, Upload: c.Upload, Download: c.Download, StartedAt: c.StartedAt, Outbound: c.Outbound, Rule: c.Rule,
+			SourceIP: ip, SourceLocation: s.ipLocator.Locate(ip), Host: c.Host, Upload: c.Upload, Download: c.Download,
+			StartedAt: c.StartedAt, Outbound: c.Outbound, Rule: c.Rule, RulePayload: c.RulePayload, Chains: c.Chains,
 		})
 	}
 	return out

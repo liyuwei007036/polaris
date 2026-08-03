@@ -295,10 +295,10 @@ onBeforeUnmount(() => {
   border-radius: 8px;
 }
 .app-brand strong { display: block; color: #fff; font-size: 16px; line-height: 1.2; }
-.app-brand small { color: #778197; font-size: 9px; letter-spacing: .8px; }
+.app-brand small { color: #778197; font-size: 9px; letter-spacing: 0; }
 .app-menu-scroll { flex: 1; min-height: 0; padding: 10px 0; }
 .menu-group { padding: 4px 9px 7px; }
-.menu-group__label { padding: 7px 10px; color: #687386; font-size: 11px; letter-spacing: .5px; }
+.menu-group__label { padding: 7px 10px; color: #687386; font-size: 11px; letter-spacing: 0; }
 .menu-item {
   width: 100%;
   height: 38px;

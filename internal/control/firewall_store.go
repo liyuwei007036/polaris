@@ -36,6 +36,7 @@ func (s *Store) CreateFirewallRule(ctx context.Context, rule FirewallRule) (Fire
 	if err := validateFirewallRule(rule); err != nil {
 		return FirewallRule{}, err
 	}
+	rule.Location = ""
 	var node int
 	if err := s.db.QueryRowContext(ctx, `SELECT 1 FROM nodes WHERE id=? AND revoked_at IS NULL`, rule.NodeID).Scan(&node); errors.Is(err, sql.ErrNoRows) {
 		return FirewallRule{}, ErrNotFound

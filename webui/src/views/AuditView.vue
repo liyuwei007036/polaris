@@ -1,7 +1,8 @@
 <script setup>
 import { computed, inject, onMounted, reactive, ref } from 'vue'
-import { Refresh } from '@element-plus/icons-vue'
+import { Refresh, Search } from '@element-plus/icons-vue'
 import { api } from '../api'
+import { formatDateTime, includesText } from '../format'
 import PageHeader from '../components/PageHeader.vue'
 
 const appState = inject('appState')
@@ -12,6 +13,8 @@ const tasks = ref([])
 const events = ref([])
 const taskQuery = reactive({ page: 1, pageSize: 20, total: 0, status: '' })
 const auditQuery = reactive({ page: 1, pageSize: 20, total: 0 })
+const taskKeyword = ref('')
+const auditKeyword = ref('')
 const nodeNames = computed(() => Object.fromEntries(appState.nodes.map((node) => [node.id, node.name])))
 const taskKinds = {
   'singbox.apply_config': '更新连接服务配置',
@@ -26,10 +29,12 @@ const taskStatuses = {
   queued: ['等待处理', 'info'], dispatched: ['正在处理', 'warning'],
   succeeded: ['已完成', 'success'], failed: ['未完成', 'danger'], rolled_back: ['已恢复原配置', 'warning'],
 }
+const filteredTasks = computed(() => tasks.value.filter((row) => includesText([taskKinds[row.kind], nodeNames.value[row.node_id], taskStatuses[row.status]?.[0], taskResult(row)], taskKeyword.value)))
+const filteredEvents = computed(() => events.value.filter((row) => includesText([row.operator_username, auditAction(row), auditTarget(row)], auditKeyword.value)))
 const targetNames = {
   operator: '管理账户', certificate: '加密证书', reality_key: 'Reality 连接密钥', registration_token: '服务器接入信息',
   subscription: '客户端更新地址', node: '服务器', registration: '服务器接入申请', firewall_rule: '访问限制',
-  singbox_release: '连接服务版本', listener: '接入服务', outbound: '上网出口', endpoint: '接入用户',
+  singbox_release: 'sing-box 版本', listener: '接入服务', outbound: '上网出口', endpoint: '接入用户',
   ingress_route: '接入端口分配', route_rule: '服务器访问规则', task: '系统操作', cloudflare: '域名解析设置',
   cloudflare_record: '域名解析记录', fail2ban_jail: '自动封禁规则', mihomo_proxy_group: '代理分组',
   mihomo_routing_profile: '客户端访问规则', mihomo_client_config: '客户端配置',
@@ -86,7 +91,7 @@ onMounted(() => { loadTasks(); loadAudit() })
 
 <template>
   <div class="page-shell">
-    <PageHeader title="操作记录" description="查看系统自动执行的操作和管理员修改记录">
+    <PageHeader title="操作记录">
       <el-button :icon="Refresh" @click="tab === 'tasks' ? loadTasks() : loadAudit()">刷新</el-button>
     </PageHeader>
     <main class="page-content">
@@ -94,25 +99,27 @@ onMounted(() => { loadTasks(); loadAudit() })
         <el-tabs v-model="tab" class="panel-tabs">
           <el-tab-pane label="系统操作" name="tasks">
             <div class="tab-actions tab-actions--start">
+              <el-input v-model="taskKeyword" clearable :prefix-icon="Search" placeholder="搜索操作、服务器或结果" style="width: 270px" />
               <el-select v-model="taskQuery.status" clearable placeholder="全部状态" style="width: 150px" @change="resetTaskPage">
                 <el-option v-for="(item, value) in taskStatuses" :key="value" :label="item[0]" :value="value" />
               </el-select>
             </div>
-            <el-table v-loading="loading" :data="tasks">
+            <el-table v-loading="loading" :data="filteredTasks">
               <el-table-column label="操作内容" min-width="190"><template #default="{ row }"><strong>{{ taskKinds[row.kind] || '其他系统操作' }}</strong></template></el-table-column>
               <el-table-column label="服务器" min-width="150"><template #default="{ row }">{{ nodeNames[row.node_id] || row.node_id }}</template></el-table-column>
               <el-table-column label="状态" width="110"><template #default="{ row }"><el-tag :type="taskStatuses[row.status]?.[1] || 'info'">{{ taskStatuses[row.status]?.[0] || row.status }}</el-tag></template></el-table-column>
               <el-table-column label="执行结果" min-width="300"><template #default="{ row }">{{ taskResult(row) }}</template></el-table-column>
-              <el-table-column label="开始时间" prop="created_at" width="190" />
+              <el-table-column label="开始时间" width="180"><template #default="{ row }">{{ formatDateTime(row.created_at) }}</template></el-table-column>
             </el-table>
             <div class="pagination-bar"><el-pagination v-model:current-page="taskQuery.page" v-model:page-size="taskQuery.pageSize" :total="taskQuery.total" :page-sizes="[20, 50, 100]" layout="total, sizes, prev, pager, next" @change="loadTasks" /></div>
           </el-tab-pane>
           <el-tab-pane v-if="isAdmin" label="管理员修改记录" name="audit">
-            <el-table v-loading="loading" :data="events">
+            <div class="tab-actions tab-actions--start"><el-input v-model="auditKeyword" clearable :prefix-icon="Search" placeholder="搜索操作人、内容或对象" style="width: 280px" /></div>
+            <el-table v-loading="loading" :data="filteredEvents">
               <el-table-column label="操作人" prop="operator_username" min-width="180" />
               <el-table-column label="修改内容" min-width="210"><template #default="{ row }">{{ auditAction(row) }}</template></el-table-column>
               <el-table-column label="修改对象" min-width="260"><template #default="{ row }">{{ auditTarget(row) }}</template></el-table-column>
-              <el-table-column label="时间" prop="created_at" width="190" />
+              <el-table-column label="时间" width="180"><template #default="{ row }">{{ formatDateTime(row.created_at) }}</template></el-table-column>
             </el-table>
             <div class="pagination-bar"><el-pagination v-model:current-page="auditQuery.page" v-model:page-size="auditQuery.pageSize" :total="auditQuery.total" :page-sizes="[20, 50, 100]" layout="total, sizes, prev, pager, next" @change="loadAudit" /></div>
           </el-tab-pane>

@@ -1,8 +1,9 @@
 <script setup>
 import { computed, inject, onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { ArrowDown, ArrowUp, CopyDocument, Delete, Edit, Plus, Refresh, RefreshRight } from '@element-plus/icons-vue'
+import { ArrowDown, ArrowUp, CopyDocument, Delete, Edit, Plus, Refresh, RefreshRight, Search } from '@element-plus/icons-vue'
 import { api, del, post, put } from '../api'
+import { formatDateTime, includesText } from '../format'
 import PageHeader from '../components/PageHeader.vue'
 
 const canWrite = inject('canWrite')
@@ -14,6 +15,12 @@ const dialogVisible = ref(false)
 const editing = ref(null)
 const configs = ref([])
 const proxyGroups = ref([])
+const tab = ref('configs')
+const accessLogs = ref([])
+const accessLoading = ref(false)
+const keyword = ref('')
+const selectedStatus = ref('')
+const accessQuery = reactive({ page: 1, pageSize: 20, total: 0, config_id: '', ip: '', location: '', user_agent: '' })
 const form = reactive({ name: '', proxy_group_ids: [], rule_mode: 'table', rules: [], raw_rules: '' })
 const strategyNames = { select: '手动选择', 'url-test': '自动测速', fallback: '故障切换' }
 const ruleTypes = [
@@ -26,6 +33,10 @@ const ruleTypes = [
 ]
 const noResolveTypes = new Set(['IP-CIDR', 'IP-CIDR6', 'IP-SUFFIX', 'IP-ASN', 'GEOIP'])
 const groupByID = computed(() => Object.fromEntries(proxyGroups.value.map((group) => [group.id, group])))
+const filteredConfigs = computed(() => configs.value.filter((config) => {
+  if (selectedStatus.value && String(config.enabled) !== selectedStatus.value) return false
+  return includesText([config.name, config.rule_mode, ...(config.proxy_group_ids || []).map((id) => groupByID.value[id]?.name)], keyword.value)
+}))
 const ruleActions = computed(() => [...resolveGroups(form.proxy_group_ids).map((group) => group.name), 'DIRECT', 'REJECT'])
 const formValid = computed(() => {
   if (!form.name.trim() || !form.proxy_group_ids.length) return false
@@ -57,6 +68,24 @@ async function load() {
   } finally {
     loading.value = false
   }
+}
+
+async function loadAccess() {
+  accessLoading.value = true
+  try {
+    const query = new URLSearchParams({ page: accessQuery.page, page_size: accessQuery.pageSize })
+    for (const key of ['config_id', 'ip', 'location', 'user_agent']) if (accessQuery[key]) query.set(key, accessQuery[key])
+    const result = await api(`/mihomo/subscription-access?${query}`)
+    accessLogs.value = result.access_logs || []
+    accessQuery.total = result.total || 0
+  } finally {
+    accessLoading.value = false
+  }
+}
+
+function searchAccess() {
+  accessQuery.page = 1
+  loadAccess()
 }
 
 function resetForm(config = null) {
@@ -173,18 +202,24 @@ async function remove(config) {
   await load()
 }
 
-onMounted(load)
+onMounted(() => { load(); loadAccess() })
 </script>
 
 <template>
   <div class="page-shell">
-    <PageHeader title="客户端配置" description="引用已有代理分组并配置客户端分流规则，生成可持续更新的 Mihomo 配置">
-      <el-button :icon="Refresh" @click="load">刷新</el-button>
-      <el-button v-if="canWrite" type="primary" :icon="Plus" @click="resetForm()">新建客户端配置</el-button>
+    <PageHeader title="客户端配置">
+      <el-button :icon="Refresh" @click="load(); loadAccess()">刷新</el-button>
+      <el-button v-if="canWrite" type="primary" :icon="Plus" @click="resetForm()">新建</el-button>
     </PageHeader>
     <main v-loading="loading" class="page-content">
       <div class="table-panel">
-        <el-table :data="configs">
+        <el-tabs v-model="tab" class="panel-tabs">
+          <el-tab-pane label="客户端配置" name="configs">
+            <div class="tab-actions tab-actions--start">
+              <el-input v-model="keyword" clearable :prefix-icon="Search" placeholder="搜索配置或分组" style="width: 260px" />
+              <el-select v-model="selectedStatus" clearable placeholder="全部状态" style="width: 140px"><el-option label="启用" value="true" /><el-option label="停用" value="false" /></el-select>
+            </div>
+        <el-table :data="filteredConfigs">
           <el-table-column label="配置名称" min-width="180" prop="name" />
           <el-table-column label="引用代理分组" min-width="300">
             <template #default="{ row }">
@@ -201,15 +236,34 @@ onMounted(load)
               <el-switch :model-value="row.enabled" inline-prompt active-text="启用" inactive-text="停用" :loading="changingState === row.id" :disabled="changingState === row.id || !canWrite" @change="setEnabled(row, $event)" />
             </template>
           </el-table-column>
-          <el-table-column label="操作" width="330" fixed="right">
+          <el-table-column label="操作" width="230" fixed="right" class-name="action-column">
             <template #default="{ row }">
-              <el-button link :icon="CopyDocument" @click="copySubscription(row)">复制更新地址</el-button>
-              <el-button v-if="canWrite" link :icon="RefreshRight" @click="rotateSubscription(row)">更换地址</el-button>
+              <el-button link :icon="CopyDocument" @click="copySubscription(row)">复制</el-button>
+              <el-button v-if="canWrite" link :icon="RefreshRight" @click="rotateSubscription(row)">更换</el-button>
               <el-button v-if="canWrite" link :icon="Edit" @click="resetForm(row)">编辑</el-button>
               <el-button v-if="isAdmin" link type="danger" :icon="Delete" @click="remove(row)">删除</el-button>
             </template>
           </el-table-column>
         </el-table>
+          </el-tab-pane>
+          <el-tab-pane label="访问记录" name="access">
+            <div class="tab-actions tab-actions--start access-filters">
+              <el-select v-model="accessQuery.config_id" clearable placeholder="全部配置" style="width: 180px"><el-option v-for="config in configs" :key="config.id" :label="config.name" :value="config.id" /></el-select>
+              <el-input v-model="accessQuery.ip" clearable placeholder="IP" style="width: 170px" @keyup.enter="searchAccess" />
+              <el-input v-model="accessQuery.location" clearable placeholder="归属地" style="width: 170px" @keyup.enter="searchAccess" />
+              <el-input v-model="accessQuery.user_agent" clearable placeholder="User-Agent" style="width: 220px" @keyup.enter="searchAccess" />
+              <el-button :icon="Search" @click="searchAccess">查询</el-button>
+            </div>
+            <el-table v-loading="accessLoading" :data="accessLogs">
+              <el-table-column label="客户端配置" prop="config_name" min-width="170" />
+              <el-table-column label="IP" prop="ip" min-width="170"><template #default="{ row }"><span class="mono">{{ row.ip || '—' }}</span></template></el-table-column>
+              <el-table-column label="IP 归属地" prop="location" min-width="190" />
+              <el-table-column label="User-Agent" prop="user_agent" min-width="320" show-overflow-tooltip />
+              <el-table-column label="访问时间" width="180"><template #default="{ row }">{{ formatDateTime(row.accessed_at) }}</template></el-table-column>
+            </el-table>
+            <div class="pagination-bar"><el-pagination v-model:current-page="accessQuery.page" v-model:page-size="accessQuery.pageSize" :total="accessQuery.total" :page-sizes="[20, 50, 100]" layout="total, sizes, prev, pager, next" @change="loadAccess" /></div>
+          </el-tab-pane>
+        </el-tabs>
       </div>
     </main>
 
@@ -224,7 +278,7 @@ onMounted(load)
 
         <section class="rules-section">
           <div class="section-heading">
-            <div><h3>访问规则</h3><span>规则按从上到下的顺序执行</span></div>
+            <div><h3>访问规则</h3></div>
             <el-radio-group v-model="form.rule_mode" aria-label="规则配置模式">
               <el-radio-button value="table">表格配置</el-radio-button>
               <el-radio-button value="text">高级纯文本</el-radio-button>
@@ -249,7 +303,7 @@ onMounted(load)
                 </tbody>
               </table>
             </div>
-            <el-button :icon="Plus" class="add-rule" @click="addRule">添加访问规则</el-button>
+            <el-button :icon="Plus" class="add-rule" @click="addRule">添加</el-button>
           </template>
           <el-input v-else v-model="form.raw_rules" type="textarea" :rows="10" aria-label="高级规则文本" placeholder="DOMAIN-SUFFIX,example.com,代理组&#10;MATCH,DIRECT" />
         </section>

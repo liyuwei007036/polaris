@@ -4,6 +4,7 @@ go 1.24.0
 
 require (
 	github.com/flynn/noise v1.1.0
+	github.com/lionsoul2014/ip2region/binding/golang v0.0.0-20260801005304-2955431edb26
 	golang.org/x/crypto v0.46.0
 	golang.org/x/net v0.48.0
 	gopkg.in/yaml.v3 v3.0.1

@@ -171,7 +171,6 @@ async function save() {
             <strong>{{ definition.label }}</strong>
             <span>{{ definition.summary }}</span>
           </div>
-          <el-tag effect="plain">{{ model.network.toUpperCase() }}</el-tag>
           <el-tag effect="plain">{{ securityOptions[model.security]?.label }}</el-tag>
         </div>
       </div>
@@ -195,11 +194,6 @@ async function save() {
             <el-col :span="8">
               <el-form-item label="服务端口" prop="port">
                 <el-input-number v-model="model.port" :min="1" :max="65535" :disabled="portManagedBySystem" controls-position="right" style="width: 100%" />
-              </el-form-item>
-            </el-col>
-            <el-col v-if="definition.networks" :span="12">
-              <el-form-item label="连接类型">
-                <el-segmented v-model="model.network" :options="definition.networks.map((value) => ({ label: value.toUpperCase(), value }))" />
               </el-form-item>
             </el-col>
           </el-row>
@@ -283,7 +277,7 @@ async function save() {
         <div class="form-section">
           <div class="account-section-head">
             <div><div class="form-section__head">用户与客户端节点</div><span>每个用户只属于当前服务器；客户端节点别名会直接写入该用户的订阅配置。</span></div>
-            <el-button :icon="Plus" @click="addAccount">添加用户</el-button>
+            <el-button :icon="Plus" @click="addAccount">添加</el-button>
           </div>
           <div class="account-list">
             <div v-for="(account, index) in accounts" :key="account.id || `new-${index}`" class="account-row">
@@ -307,7 +301,7 @@ async function save() {
       <div class="dialog-footer">
         <el-button @click="close">取消</el-button>
         <el-button type="primary" :loading="saving" @click="save">
-          {{ listener ? '保存并应用' : '创建并应用' }}
+          {{ listener ? '保存' : '创建' }}
         </el-button>
       </div>
     </template>

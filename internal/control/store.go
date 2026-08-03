@@ -2046,6 +2046,10 @@ CREATE TABLE IF NOT EXISTS mihomo_client_configs_v3 (
   enabled INTEGER NOT NULL DEFAULT 1,
   created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL
 );
+CREATE TABLE IF NOT EXISTS subscription_access_logs (
+  id TEXT PRIMARY KEY, config_id TEXT NOT NULL, config_name TEXT NOT NULL,
+  ip TEXT NOT NULL, location TEXT NOT NULL, user_agent TEXT NOT NULL, accessed_at INTEGER NOT NULL
+);
 CREATE TABLE IF NOT EXISTS subscription_rules (
   id TEXT PRIMARY KEY, subscription_id TEXT NOT NULL REFERENCES subscriptions(id), rule_json TEXT NOT NULL,
   created_at INTEGER NOT NULL
@@ -2092,6 +2096,8 @@ CREATE INDEX IF NOT EXISTS idx_managed_reality_keys_name ON managed_reality_keys
 CREATE INDEX IF NOT EXISTS idx_subscriptions_kind_enabled ON subscriptions(kind, enabled);
 CREATE INDEX IF NOT EXISTS idx_mihomo_client_routing_profile ON mihomo_client_configs(routing_profile_id);
 CREATE INDEX IF NOT EXISTS idx_subscription_rules_subscription ON subscription_rules(subscription_id);
+CREATE INDEX IF NOT EXISTS idx_subscription_access_time ON subscription_access_logs(accessed_at DESC);
+CREATE INDEX IF NOT EXISTS idx_subscription_access_config ON subscription_access_logs(config_id, accessed_at DESC);
 CREATE INDEX IF NOT EXISTS idx_node_metrics_updated ON node_metrics(updated_at);
 CREATE INDEX IF NOT EXISTS idx_firewall_rules_node ON firewall_rules(node_id, enabled, expires_at);
 CREATE INDEX IF NOT EXISTS idx_fail2ban_jails_node ON fail2ban_jails(node_id, enabled);
