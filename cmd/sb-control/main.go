@@ -309,15 +309,15 @@ func runAgentControl(args []string) error {
 	warnIfNotRoot()
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
-	return runAgentLoop(ctx, configuration.DataDir, configuration.MasterAddress, masterPub, interval, connInterval, "")
+	return runAgentLoop(ctx, configuration.DataDir, configuration.MasterAddress, masterPub, interval, connInterval, "", configuration.NginxPassthroughRoutes)
 }
 
-func runAgentLoop(ctx context.Context, dataDir, masterAddr string, masterPub [wire.KeySize]byte, interval, connInterval time.Duration, singBoxVersion string) error {
+func runAgentLoop(ctx context.Context, dataDir, masterAddr string, masterPub [wire.KeySize]byte, interval, connInterval time.Duration, singBoxVersion string, passthroughRoutes []agent.NginxPassthroughRoute) error {
 	keypair, err := agent.LoadOrCreateKeypair(dataDir)
 	if err != nil {
 		return err
 	}
-	handler := agent.NewTaskHandler(dataDir)
+	handler := agent.NewTaskHandlerWithOptions(agent.TaskOptions{DataDir: dataDir, NginxPassthroughRoutes: passthroughRoutes})
 	backoff := 5 * time.Second
 	const maxBackoff = 60 * time.Second
 	for ctx.Err() == nil {
@@ -351,7 +351,7 @@ func runAgentLoop(ctx context.Context, dataDir, masterAddr string, masterPub [wi
 			return err
 		}
 		backoff = 5 * time.Second
-		sessionErr := agent.RunSession(ctx, conn, handler, interval, connInterval, singBoxVersion)
+		sessionErr := agent.RunSession(ctx, conn, handler, interval, connInterval, singBoxVersion, dataDir)
 		conn.Close()
 		if ctx.Err() != nil {
 			return nil

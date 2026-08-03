@@ -3,6 +3,7 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -81,6 +82,36 @@ func TestAgentSupportsYAMLAndCommandLineConfiguration(t *testing.T) {
 	}
 	if fromCLI.MasterAddress != "127.0.0.1:19443" || fromCLI.HeartbeatInterval != "20s" {
 		t.Fatalf("agent command configuration = %#v", fromCLI)
+	}
+}
+
+func TestAgentSupportsValidatedNginxPassthroughRoutes(t *testing.T) {
+	directory := t.TempDir()
+	path := filepath.Join(directory, "agent.yaml")
+	content := "data_dir: state\nmaster_address: 127.0.0.1:18443\nmaster_public_key: " + testMasterPublicKey + `
+nginx_passthrough_routes:
+  - listen_address: 0.0.0.0
+    port: 443
+    sni: s2a.example.com
+    backend_address: 127.0.0.1
+    backend_port: 10444
+`
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	configuration, _, err := loadAgentConfig(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(configuration.NginxPassthroughRoutes) != 1 || configuration.NginxPassthroughRoutes[0].BackendPort != 10444 {
+		t.Fatalf("passthrough routes = %#v", configuration.NginxPassthroughRoutes)
+	}
+	invalid := strings.Replace(content, "s2a.example.com", "not a valid SNI", 1)
+	if err := os.WriteFile(path, []byte(invalid), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := loadAgentConfig(path); err == nil {
+		t.Fatal("invalid passthrough SNI was accepted")
 	}
 }
 

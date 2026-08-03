@@ -12,6 +12,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/sb-control/sb-control/internal/agent"
+	"github.com/sb-control/sb-control/internal/nginxroute"
 	"gopkg.in/yaml.v3"
 )
 
@@ -24,11 +26,12 @@ type masterConfig struct {
 }
 
 type agentConfig struct {
-	DataDir             string `yaml:"data_dir"`
-	MasterAddress       string `yaml:"master_address"`
-	MasterPublicKey     string `yaml:"master_public_key"`
-	HeartbeatInterval   string `yaml:"heartbeat_interval,omitempty"`
-	ConnectionsInterval string `yaml:"connections_interval,omitempty"`
+	DataDir                string                        `yaml:"data_dir"`
+	MasterAddress          string                        `yaml:"master_address"`
+	MasterPublicKey        string                        `yaml:"master_public_key"`
+	HeartbeatInterval      string                        `yaml:"heartbeat_interval,omitempty"`
+	ConnectionsInterval    string                        `yaml:"connections_interval,omitempty"`
+	NginxPassthroughRoutes []agent.NginxPassthroughRoute `yaml:"nginx_passthrough_routes,omitempty"`
 }
 
 type masterFlagValues struct {
@@ -244,6 +247,14 @@ func normalizeAgentConfig(configuration agentConfig, base string) (agentConfig, 
 	}
 	if _, _, err := agentDurations(configuration); err != nil {
 		return agentConfig{}, err
+	}
+	for _, route := range configuration.NginxPassthroughRoutes {
+		if err := nginxroute.Validate(nginxroute.Route{
+			ListenAddress: route.ListenAddress, Port: route.Port, SNI: route.SNI,
+			BackendAddress: route.BackendAddress, BackendPort: route.BackendPort,
+		}); err != nil {
+			return agentConfig{}, fmt.Errorf("invalid nginx_passthrough_routes entry: %w", err)
+		}
 	}
 	return configuration, nil
 }

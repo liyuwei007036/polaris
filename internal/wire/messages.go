@@ -75,6 +75,8 @@ type Status struct {
 	OS                string
 	Architecture      string
 	SingBoxVersion    string
+	SingBoxConfigHash string
+	NginxConfigHash   string
 	Capabilities      map[string]string
 	NodeReceivedBytes uint64
 	NodeSentBytes     uint64

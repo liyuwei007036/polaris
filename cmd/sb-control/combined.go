@@ -188,7 +188,7 @@ func serveCombined(ctx context.Context, masterConfiguration masterConfig, agentC
 		errorsChannel <- browserServer.ListenAndServe()
 	}()
 	go func() {
-		errorsChannel <- runAgentLoop(combinedContext, agentConfiguration.DataDir, agentConfiguration.MasterAddress, pinnedMasterKey, heartbeat, connections, "")
+		errorsChannel <- runAgentLoop(combinedContext, agentConfiguration.DataDir, agentConfiguration.MasterAddress, pinnedMasterKey, heartbeat, connections, "", agentConfiguration.NginxPassthroughRoutes)
 	}()
 	select {
 	case <-combinedContext.Done():

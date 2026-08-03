@@ -24,6 +24,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/sb-control/sb-control/internal/nginxroute"
 	"golang.org/x/net/proxy"
 )
 
@@ -59,28 +60,45 @@ func permissionHint(err error) string {
 // ExecuteTask only invokes a fixed local program with fixed arguments. It does
 // not accept shell text or a caller-supplied executable path.
 func ExecuteTask(ctx context.Context, task Task) TaskResult {
-	return executeTask(ctx, task, "")
+	return executeTask(ctx, task, TaskOptions{})
+}
+
+type NginxPassthroughRoute struct {
+	ListenAddress  string `yaml:"listen_address"`
+	Port           uint16 `yaml:"port"`
+	SNI            string `yaml:"sni"`
+	BackendAddress string `yaml:"backend_address"`
+	BackendPort    uint16 `yaml:"backend_port"`
+}
+
+type TaskOptions struct {
+	DataDir                string
+	NginxPassthroughRoutes []NginxPassthroughRoute
 }
 
 // NewTaskHandler binds task execution to the enrolled agent data directory.
 // Installation tasks require the release public key received at enrollment.
 func NewTaskHandler(dataDir string) TaskHandler {
-	executor := newTaskExecutor(dataDir)
+	return NewTaskHandlerWithOptions(TaskOptions{DataDir: dataDir})
+}
+
+func NewTaskHandlerWithOptions(options TaskOptions) TaskHandler {
+	executor := newTaskExecutor(options)
 	return executor.Handle
 }
 
-func executeTask(ctx context.Context, task Task, dataDir string) TaskResult {
+func executeTask(ctx context.Context, task Task, options TaskOptions) TaskResult {
 	switch task.Kind {
 	case "singbox.apply_config":
 		return applySingBoxConfig(ctx, task)
 	case "nginx.apply_config":
-		return applyNginxConfig(ctx, task)
+		return applyNginxConfig(ctx, task, options.NginxPassthroughRoutes)
 	case "firewall.apply":
 		return applyNftables(ctx, task)
 	case "fail2ban.apply":
 		return applyFail2Ban(ctx, task)
 	case "singbox.install", "singbox.upgrade":
-		return installSingBox(ctx, task, dataDir)
+		return installSingBox(ctx, task, options.DataDir)
 	case "outbound.test":
 		return testOutbound(ctx, task)
 	default:
@@ -393,7 +411,7 @@ func applyNftables(ctx context.Context, task Task) TaskResult {
 	return TaskResult{Status: "rolled_back", Summary: "nftables apply failed; attempted restore of sb_control table"}
 }
 
-func applyNginxConfig(ctx context.Context, task Task) TaskResult {
+func applyNginxConfig(ctx context.Context, task Task, passthrough []NginxPassthroughRoute) TaskResult {
 	var payload struct {
 		Configuration string `json:"configuration"`
 	}
@@ -404,12 +422,24 @@ func applyNginxConfig(ctx context.Context, task Task) TaskResult {
 	if !strings.EqualFold(hex.EncodeToString(digest[:]), task.ExpectedHash) {
 		return TaskResult{Status: "failed", Summary: "Nginx configuration SHA-256 does not match task hash"}
 	}
-	if err := ensureNginxReady(ctx, payload.Configuration != ""); err != nil {
+	routes := make([]nginxroute.Route, 0, len(passthrough))
+	for _, route := range passthrough {
+		routes = append(routes, nginxroute.Route{
+			ListenAddress: route.ListenAddress, Port: route.Port, SNI: route.SNI,
+			BackendAddress: route.BackendAddress, BackendPort: route.BackendPort,
+		})
+	}
+	effectiveConfiguration, err := nginxroute.MergePassthrough(payload.Configuration, routes)
+	if err != nil {
+		return TaskResult{Status: "failed", Summary: "merge Nginx passthrough routes: " + err.Error()}
+	}
+	effectiveDigest := sha256.Sum256([]byte(effectiveConfiguration))
+	if err := ensureNginxReady(ctx, effectiveConfiguration != ""); err != nil {
 		return TaskResult{Status: "failed", Summary: "prepare automatic TCP port routing: " + err.Error()}
 	}
 	if current, err := os.ReadFile(managedNginxConfig); err == nil {
 		currentDigest := sha256.Sum256(current)
-		if strings.EqualFold(hex.EncodeToString(currentDigest[:]), task.ExpectedHash) && nginxServiceActive(ctx) {
+		if currentDigest == effectiveDigest && nginxServiceActive(ctx) {
 			if testOutput, testErr := exec.CommandContext(ctx, "nginx", "-t").CombinedOutput(); testErr != nil {
 				return TaskResult{Status: "failed", Summary: commandSummary("nginx -t", testOutput, testErr)}
 			}
@@ -429,7 +459,7 @@ func applyNginxConfig(ctx context.Context, task Task) TaskResult {
 	}
 	temporaryPath := temporary.Name()
 	defer os.Remove(temporaryPath)
-	if _, err := temporary.WriteString(payload.Configuration); err != nil {
+	if _, err := temporary.WriteString(effectiveConfiguration); err != nil {
 		temporary.Close()
 		return TaskResult{Status: "failed", Summary: "write temporary Nginx configuration: " + err.Error()}
 	}
@@ -450,6 +480,9 @@ func applyNginxConfig(ctx context.Context, task Task) TaskResult {
 	}
 	if err := os.Rename(temporaryPath, managedNginxConfig); err != nil {
 		return TaskResult{Status: "failed", Summary: "atomically replace Nginx configuration: " + err.Error()}
+	}
+	if effectiveConfiguration == "" && !nginxServiceActive(ctx) {
+		return TaskResult{Status: "succeeded", Summary: "managed Nginx configuration cleared; inactive service left stopped"}
 	}
 	var applyErr string
 	if testOutput, testErr := exec.CommandContext(ctx, "nginx", "-t").CombinedOutput(); testErr != nil {

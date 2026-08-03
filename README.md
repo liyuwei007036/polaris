@@ -165,7 +165,16 @@ master_address: 127.0.0.1:8443
 master_public_key: <MASTER_NOISE_PUBKEY>
 heartbeat_interval: 30s
 connections_interval: 2s
+# 仅在已有 TCP/TLS 服务需要共用 sb-control 管理的 Nginx stream 端口时填写：
+nginx_passthrough_routes:
+  - listen_address: 0.0.0.0
+    port: 443
+    sni: existing.example.com
+    backend_address: 127.0.0.1
+    backend_port: 10444
 ```
+
+`nginx_passthrough_routes` 是已有非 sb-control 服务的 SNI 透传清单。Agent 会把这些条目与 Master 下发的接入服务合并到同一个受管 `server` 中，因此同一个地址和端口只会监听一次。每个条目的监听地址和端口必须已经由 Master 的接入服务管理，SNI 不能与受管接入服务重复。不要同时保留另一个监听相同地址和端口的 Nginx `stream server`。
 
 Combined 首次安装时，先用 `master show-pubkey` 获取公钥并写入 `agent.yaml`，再启动 Combined。此时未注册 Agent 会被拒绝但 Master 控制台保持可用。在控制台生成一次性令牌后执行一次 `agent register --config /etc/sb-control/agent.yaml --token TOKEN`，然后在控制台批准。注册命令执行完成即退出，不是第二个长期服务；批准后 Combined 进程内的 Agent 会按正常认证流程自动重连。
 
@@ -753,7 +762,7 @@ agent 只处理固定任务类型，不接受任意可执行文件路径或 Shel
 | Fail2Ban jail | `/etc/fail2ban/jail.d/sb-control.local` | `fail2ban-client -t` |
 | Fail2Ban filter | `/etc/fail2ban/filter.d/sb-control-*.conf` | 文件名和内容边界校验 |
 
-sing-box、Nginx、nftables 和 Fail2Ban 发布都保留或读取上一个状态，并在应用失败时尝试恢复。任务结果会记录为 `succeeded`、`failed` 或 `rolled_back`。
+sing-box、Nginx、nftables 和 Fail2Ban 发布都保留或读取上一个状态，并在应用失败时尝试恢复。任务结果会记录为 `succeeded`、`failed` 或 `rolled_back`。Agent 心跳会上报 sing-box 实际配置哈希，以及 Nginx 最近一次验证成功的期望哈希和实际文件哈希；Master 发现任一哈希与当前编译结果不一致时会自动重新下发配置。程序升级后的编译器修复和受管文件漂移因此不需要手工重新发布。
 
 Nginx SNI 分流要求系统的主 Nginx 配置在 `stream {}` 中包含：
 

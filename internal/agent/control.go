@@ -15,12 +15,14 @@ import (
 )
 
 type Status struct {
-	AgentVersion string
-	OS           string
-	Architecture string
-	SingBox      string
-	Capabilities map[string]any
-	Metrics      MetricReport
+	AgentVersion      string
+	OS                string
+	Architecture      string
+	SingBox           string
+	SingBoxConfigHash string
+	NginxConfigHash   string
+	Capabilities      map[string]any
+	Metrics           MetricReport
 }
 
 // MetricReport deliberately separates host-interface counters from
@@ -98,14 +100,19 @@ type TaskResult struct {
 }
 type TaskHandler func(context.Context, Task) TaskResult
 
-func DefaultStatus(singBoxVersion string) Status {
+func DefaultStatus(singBoxVersion, dataDir string) Status {
+	singBoxConfigHash, _ := configurationFileHash(managedSingBoxConfig)
 	return Status{
-		AgentVersion: "dev",
-		OS:           runtime.GOOS,
-		Architecture: runtime.GOARCH,
-		SingBox:      singBoxVersion,
-		Capabilities: map[string]any{"systemd": runtime.GOOS == "linux", "control_channel": "noise-tcp"},
-		Metrics:      CollectMetrics(),
+		AgentVersion:      "dev",
+		OS:                runtime.GOOS,
+		Architecture:      runtime.GOARCH,
+		SingBox:           singBoxVersion,
+		SingBoxConfigHash: singBoxConfigHash,
+		NginxConfigHash:   reportedNginxConfigurationHash(dataDir),
+		Capabilities: map[string]any{
+			"systemd": runtime.GOOS == "linux", "control_channel": "noise-tcp", "configuration_hashes": true,
+		},
+		Metrics: CollectMetrics(),
 	}
 }
 
@@ -159,7 +166,7 @@ func Register(conn *wire.Conn, token, nodeName string, capabilities map[string]s
 // executes Task messages the master pushes, and reports results back — all
 // multiplexed over the one Noise connection. It returns when ctx is
 // canceled or the connection fails (the caller reconnects with backoff).
-func RunSession(ctx context.Context, conn *wire.Conn, handler TaskHandler, heartbeatInterval, connectionsInterval time.Duration, singBoxVersion string) error {
+func RunSession(ctx context.Context, conn *wire.Conn, handler TaskHandler, heartbeatInterval, connectionsInterval time.Duration, singBoxVersion, dataDir string) error {
 	if singBoxVersion == "" {
 		singBoxVersion = detectSingBoxVersion(ctx)
 	}
@@ -181,7 +188,7 @@ func RunSession(ctx context.Context, conn *wire.Conn, handler TaskHandler, heart
 	}()
 
 	sendStatus := func() error {
-		body, err := wire.Encode(toWireStatus(DefaultStatus(singBoxVersion)))
+		body, err := wire.Encode(toWireStatus(DefaultStatus(singBoxVersion, dataDir)))
 		if err != nil {
 			return err
 		}
@@ -284,6 +291,8 @@ func toWireStatus(local Status) wire.Status {
 		OS:                local.OS,
 		Architecture:      local.Architecture,
 		SingBoxVersion:    local.SingBox,
+		SingBoxConfigHash: local.SingBoxConfigHash,
+		NginxConfigHash:   local.NginxConfigHash,
 		Capabilities:      caps,
 		HealthStatus:      local.Metrics.Health.Status,
 		HealthMessage:     local.Metrics.Health.Message,

@@ -14,7 +14,7 @@ import (
 var taskIDPattern = regexp.MustCompile(`^[a-f0-9]{32}$`)
 
 type taskExecutor struct {
-	dataDir string
+	options TaskOptions
 	mu      sync.Mutex
 }
 
@@ -25,12 +25,12 @@ type completedTask struct {
 	Result       TaskResult `json:"result"`
 }
 
-func newTaskExecutor(dataDir string) *taskExecutor {
-	return &taskExecutor{dataDir: dataDir}
+func newTaskExecutor(options TaskOptions) *taskExecutor {
+	return &taskExecutor{options: options}
 }
 
 func (e *taskExecutor) Handle(ctx context.Context, task Task) TaskResult {
-	if e.dataDir == "" || !taskIDPattern.MatchString(task.ID) {
+	if e.options.DataDir == "" || !taskIDPattern.MatchString(task.ID) {
 		return TaskResult{Status: "failed", Summary: "task ID is invalid"}
 	}
 	e.mu.Lock()
@@ -40,7 +40,12 @@ func (e *taskExecutor) Handle(ctx context.Context, task Task) TaskResult {
 	} else if found {
 		return result
 	}
-	result := executeTask(ctx, task, e.dataDir)
+	result := executeTask(ctx, task, e.options)
+	if result.Status == "succeeded" && task.Kind == "nginx.apply_config" {
+		if err := saveNginxConfigurationState(e.options.DataDir, task.ExpectedHash); err != nil {
+			result = TaskResult{Status: "failed", Summary: "persist Nginx configuration state: " + err.Error()}
+		}
+	}
 	if err := e.saveCompleted(task, result); err != nil {
 		return TaskResult{Status: "failed", Summary: "persist task result: " + err.Error()}
 	}
@@ -48,7 +53,7 @@ func (e *taskExecutor) Handle(ctx context.Context, task Task) TaskResult {
 }
 
 func (e *taskExecutor) completed(task Task) (TaskResult, bool, error) {
-	path := filepath.Join(e.dataDir, "completed-tasks", task.ID+".json")
+	path := filepath.Join(e.options.DataDir, "completed-tasks", task.ID+".json")
 	content, err := os.ReadFile(path)
 	if errors.Is(err, os.ErrNotExist) {
 		return TaskResult{}, false, nil
@@ -67,7 +72,7 @@ func (e *taskExecutor) completed(task Task) (TaskResult, bool, error) {
 }
 
 func (e *taskExecutor) saveCompleted(task Task, result TaskResult) error {
-	directory := filepath.Join(e.dataDir, "completed-tasks")
+	directory := filepath.Join(e.options.DataDir, "completed-tasks")
 	if err := os.MkdirAll(directory, 0o700); err != nil {
 		return err
 	}

@@ -42,7 +42,7 @@ func TestHandshakeAndFraming(t *testing.T) {
 	}
 
 	// Small message.
-	st := Status{AgentVersion: "dev", OS: "linux", Architecture: "arm64", Capabilities: map[string]string{"systemd": "true"}}
+	st := Status{AgentVersion: "dev", OS: "linux", Architecture: "arm64", SingBoxConfigHash: "singbox-hash", NginxConfigHash: "nginx-hash", Capabilities: map[string]string{"systemd": "true"}}
 	body, err := Encode(st)
 	if err != nil {
 		t.Fatal(err)
@@ -63,7 +63,7 @@ func TestHandshakeAndFraming(t *testing.T) {
 	if err := Decode(gotBody, &gotSt); err != nil {
 		t.Fatal(err)
 	}
-	if gotSt.AgentVersion != "dev" || gotSt.Capabilities["systemd"] != "true" {
+	if gotSt.AgentVersion != "dev" || gotSt.SingBoxConfigHash != "singbox-hash" || gotSt.NginxConfigHash != "nginx-hash" || gotSt.Capabilities["systemd"] != "true" {
 		t.Fatalf("unexpected decoded status: %#v", gotSt)
 	}
 

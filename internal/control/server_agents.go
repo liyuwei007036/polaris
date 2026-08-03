@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"log"
 	"net"
+	"strings"
 	"time"
 
 	"github.com/sb-control/sb-control/internal/wire"
@@ -231,6 +232,9 @@ func (s *Server) handleAgentMessage(ctx context.Context, node Node, msgType byte
 			return false
 		}
 		s.maybeInstallSingBox(ctx, node.ID, st.OS, st.Architecture, st.SingBoxVersion)
+		if st.Capabilities["configuration_hashes"] == "true" {
+			s.reconcileNodeDesiredState(ctx, node.ID, st.SingBoxVersion, st.SingBoxConfigHash, st.NginxConfigHash)
+		}
 		if err := s.mergeNodeMetrics(ctx, node.ID, func(m *storedMetrics) {
 			m.CollectedAt = st.CollectedAt
 			if st.HasNodeTotals {
@@ -291,6 +295,27 @@ func (s *Server) handleAgentMessage(ctx context.Context, node Node, msgType byte
 		return false
 	}
 	return true
+}
+
+func (s *Server) reconcileNodeDesiredState(ctx context.Context, nodeID, singBoxVersion, singBoxConfigHash, nginxConfigHash string) {
+	if singBoxVersion != "" {
+		_, desiredHash, err := s.store.CompileNodeConfig(ctx, nodeID)
+		if err != nil {
+			log.Printf("compile desired sing-box configuration for node %s: %v", nodeID, err)
+		} else if !strings.EqualFold(desiredHash, singBoxConfigHash) {
+			if _, err := s.dispatchNodeConfiguration(ctx, nodeID, ""); err != nil {
+				log.Printf("reconcile sing-box configuration for node %s: %v", nodeID, err)
+			}
+		}
+	}
+	_, desiredNginxHash, err := s.store.CompileNodeNginx(ctx, nodeID)
+	if err != nil {
+		log.Printf("compile desired Nginx configuration for node %s: %v", nodeID, err)
+	} else if !strings.EqualFold(desiredNginxHash, nginxConfigHash) {
+		if _, err := s.dispatchNodeNginx(ctx, nodeID, ""); err != nil {
+			log.Printf("reconcile Nginx configuration for node %s: %v", nodeID, err)
+		}
+	}
 }
 
 func (s *Server) maybeInstallSingBox(ctx context.Context, nodeID, operatingSystem, architecture, version string) {
