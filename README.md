@@ -241,12 +241,14 @@ git push origin v0.1.0
 
 GitHub Actions 会自动：
 
-1. 安装前端依赖并构建 Web UI。
-2. 运行 Go 测试。
-3. 把 Web UI 嵌入 `sb-control` 二进制。
-4. 分别编译 Linux AMD64 和 ARM64。
-5. 生成 `.tar.gz` 与 SHA-256 校验文件。
-6. 创建或更新对应标签的 GitHub Release。
+1. 验证一键安装脚本。
+2. 安装前端依赖并构建 Web UI。
+3. 运行 Go 测试。
+4. 把 Web UI 嵌入 `sb-control` 二进制。
+5. 分别编译 Linux AMD64 和 ARM64。
+6. 把安装脚本、systemd 服务和配置模板写入成品包。
+7. 生成 `.tar.gz` 与 SHA-256 校验文件。
+8. 创建或更新对应标签的 GitHub Release。
 
 发布完成后，Releases 页面应出现：
 
@@ -258,6 +260,51 @@ sb-control_0.1.0_linux_arm64.tar.gz.sha256
 ```
 
 在 GitHub 的 `Actions` 页面手动运行 `Build release packages` 只生成 Actions Artifacts，不创建正式 Release。用于服务器安装时，推荐推送版本标签并从 Releases 页面下载。
+
+## 一键安装
+
+仓库公开后，可以直接运行根目录的 `install.sh`。脚本只下载 GitHub Release 中已经编译完成的二进制，不会在目标服务器安装 Go、Node.js、npm，也不会编译源码。
+
+Master：
+
+```bash
+curl -fsSLo install.sh https://raw.githubusercontent.com/liyuwei007036/sb-control/main/install.sh \
+  && sudo bash install.sh master
+```
+
+Agent：
+
+```bash
+curl -fsSLo install.sh https://raw.githubusercontent.com/liyuwei007036/sb-control/main/install.sh \
+  && sudo bash install.sh agent
+```
+
+脚本会交互询问 Master 的 `主机:端口`、Noise 公钥和一次性注册令牌。令牌输入不会显示在终端中。也可以先设置 `SB_CONTROL_MASTER_ADDRESS`、`SB_CONTROL_MASTER_PUBKEY` 和 `SB_CONTROL_REGISTRATION_TOKEN`，用于受控的非交互部署。
+
+Combined：
+
+```bash
+curl -fsSLo install.sh https://raw.githubusercontent.com/liyuwei007036/sb-control/main/install.sh \
+  && sudo bash install.sh combined
+```
+
+Combined 会先启动本机 Master。在终端等待令牌输入时，登录控制台创建一次性注册令牌并粘贴；注册请求仍须在控制台确认后才会获得信任。
+
+生产环境默认使用带 `Secure` 属性的登录 Cookie，应先配置 HTTPS 反向代理。仅在可信内网临时测试并且需要直接通过 HTTP 登录时，才显式传入：
+
+```text
+--allow-insecure-http
+```
+
+不建议把远程脚本直接交给 root 执行时，可以先下载并检查：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/liyuwei007036/sb-control/main/install.sh -o install.sh
+less install.sh
+sudo bash install.sh master
+```
+
+安装指定版本时使用 `--version 0.1.3`。重复运行脚本可更新二进制和 systemd 服务；已有 `/etc/sb-control/*.yaml` 配置与 Agent 身份不会被覆盖。执行 `install.sh --help` 可查看全部参数。
 
 ## 从 GitHub Release 下载安装包
 
@@ -297,11 +344,24 @@ tar -xzf "${PACKAGE}.tar.gz"
 ```text
 sb-control_0.1.0_linux_amd64/
 ├── sb-control
+├── install.sh
 ├── README.md
-└── sb-control-agent.service
+└── deploy/
+    ├── sb-control-master.yaml
+    ├── sb-control-agent.yaml
+    ├── sb-control-master.service
+    ├── sb-control-agent.service
+    └── sb-control-combined.service
 ```
 
 `x86_64` 对应发布包中的 `amd64`，64 位 ARM 对应 `arm64`。当前发布流程不生成 32 位 ARMv7 包。
+
+解压后也可以完全离线地安装包内二进制：
+
+```bash
+cd "${PACKAGE}"
+sudo ./install.sh master
+```
 
 ## 安装 master
 

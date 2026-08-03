@@ -23,6 +23,9 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v7
 
+      - name: Validate installer
+        run: bash scripts_install_test.sh
+
       - name: Setup Node.js
         uses: actions/setup-node@v7
         with:
@@ -69,7 +72,9 @@ jobs:
           chmod 0755 "package/${package}/sb-control"
 
           cp README.md "package/${package}/"
-          cp deploy/sb-control-agent.service "package/${package}/"
+          cp install.sh "package/${package}/"
+          cp -R deploy "package/${package}/"
+          chmod 0755 "package/${package}/install.sh"
 
           tar -C package -czf "dist/${package}.tar.gz" "${package}"
 
