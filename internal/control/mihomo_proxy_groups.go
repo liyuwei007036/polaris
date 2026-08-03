@@ -231,6 +231,20 @@ func (s *Store) validateMihomoProxyGroupClients(ctx context.Context, candidate M
 		actions := map[string]bool{"DIRECT": true, "REJECT": true}
 		for groupID := range closure {
 			actions[strings.ToUpper(byID[groupID].Name)] = true
+			for _, member := range byID[groupID].Members {
+				if member.Kind != "endpoint" {
+					continue
+				}
+				proxy, err := s.mihomoProxy(ctx, member.ID, "")
+				if err != nil {
+					return err
+				}
+				name, ok := proxy["name"].(string)
+				if !ok || strings.TrimSpace(name) == "" {
+					return errors.New("generated Mihomo node name is invalid")
+				}
+				actions[strings.ToUpper(name)] = true
+			}
 		}
 		var rules mihomoClientRulesV3
 		if err := json.Unmarshal([]byte(item.rules), &rules); err != nil {
@@ -243,6 +257,15 @@ func (s *Store) validateMihomoProxyGroupClients(ctx context.Context, candidate M
 			}
 			if !actions[strings.ToUpper(action)] {
 				return fmt.Errorf("proxy group update would invalidate rule action %q in client config %q", rule.Action, item.name)
+			}
+		}
+		for _, provider := range rules.RuleProviders {
+			proxy := provider.Proxy
+			if strings.EqualFold(proxy, oldName) {
+				proxy = candidate.Name
+			}
+			if !actions[strings.ToUpper(proxy)] || strings.EqualFold(proxy, "REJECT") {
+				return fmt.Errorf("proxy group update would invalidate rule provider proxy %q in client config %q", provider.Proxy, item.name)
 			}
 		}
 	}
@@ -318,7 +341,7 @@ func (s *Store) CreateMihomoProxyGroup(ctx context.Context, group MihomoProxyGro
 	return group, nil
 }
 
-func rewriteMihomoClientGroupActions(ctx context.Context, tx *sql.Tx, oldName, newName string) error {
+func rewriteMihomoClientActions(ctx context.Context, tx *sql.Tx, oldName, newName string, configIDs map[string]bool) error {
 	if oldName == newName {
 		return nil
 	}
@@ -334,6 +357,9 @@ func rewriteMihomoClientGroupActions(ctx context.Context, tx *sql.Tx, oldName, n
 			rows.Close()
 			return err
 		}
+		if configIDs != nil && !configIDs[id] {
+			continue
+		}
 		var rules mihomoClientRulesV3
 		if err := json.Unmarshal([]byte(encoded), &rules); err != nil {
 			rows.Close()
@@ -343,6 +369,12 @@ func rewriteMihomoClientGroupActions(ctx context.Context, tx *sql.Tx, oldName, n
 		for index := range rules.Rules {
 			if strings.EqualFold(rules.Rules[index].Action, oldName) {
 				rules.Rules[index].Action = newName
+				changed = true
+			}
+		}
+		for index := range rules.RuleProviders {
+			if strings.EqualFold(rules.RuleProviders[index].Proxy, oldName) {
+				rules.RuleProviders[index].Proxy = newName
 				changed = true
 			}
 		}
@@ -409,7 +441,7 @@ func (s *Store) UpdateMihomoProxyGroup(ctx context.Context, group MihomoProxyGro
 		}
 		return MihomoProxyGroup{}, fmt.Errorf("update Mihomo proxy group: %w", err)
 	}
-	if err := rewriteMihomoClientGroupActions(ctx, tx, oldName, group.Name); err != nil {
+	if err := rewriteMihomoClientActions(ctx, tx, oldName, group.Name, nil); err != nil {
 		return MihomoProxyGroup{}, err
 	}
 	if err := tx.Commit(); err != nil {

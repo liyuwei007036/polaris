@@ -325,8 +325,13 @@ func TestControlPlaneProcessJourneyWithRealAgent(t *testing.T) {
 	}
 	api.mustJSON(t, http.MethodPost, "/api/v1/mihomo/client-configs", map[string]any{
 		"name": "E2E 客户端", "proxy_group_ids": []string{proxyGroup.ID},
-		"rule_mode": "table",
+		"rule_mode": "table", "rule_providers": []map[string]any{{
+			"name": "远程代理规则", "behavior": "domain", "format": "mrs",
+			"url": "https://rules.example.test/proxy.mrs", "path": "./ruleset/proxy.mrs",
+			"interval": 86400, "proxy": "DIRECT",
+		}},
 		"rules": []map[string]any{
+			{"type": "RULE-SET", "value": "远程代理规则", "action": "全部节点"},
 			{"type": "GEOSITE", "value": "CN", "action": "DIRECT"},
 			{"type": "GEOIP", "value": "CN", "action": "DIRECT", "no_resolve": true},
 			{"type": "MATCH", "action": "全部节点"},
@@ -343,7 +348,7 @@ func TestControlPlaneProcessJourneyWithRealAgent(t *testing.T) {
 	if disposition := responseHeader.Get("Content-Disposition"); !strings.Contains(disposition, `filename*=UTF-8''E2E%20%E5%AE%A2%E6%88%B7%E7%AB%AF.yaml`) {
 		t.Fatalf("Mihomo subscription filename is not UTF-8 encoded: %q", disposition)
 	}
-	for _, expected := range []string{"proxies:", `"server":"e2e.example.test"`, "proxy-groups:", `"name":"全部节点"`, "rules:", "GEOSITE,CN,DIRECT", "https://dns.alidns.com/dns-query"} {
+	for _, expected := range []string{"store-selected: true", "tun:", "strict-route: true", "proxies:", `"server":"e2e.example.test"`, "proxy-groups:", `"name":"全部节点"`, "rule-providers:", `"url":"https://rules.example.test/proxy.mrs"`, "rules:", "RULE-SET,远程代理规则,全部节点", "GEOSITE,CN,DIRECT", "enhanced-mode: fake-ip", "nameserver:\n    - rcode://success", "direct-nameserver:", "https://223.5.5.5/dns-query"} {
 		if !strings.Contains(string(yaml), expected) {
 			t.Fatalf("Mihomo subscription is missing %q:\n%s", expected, yaml)
 		}

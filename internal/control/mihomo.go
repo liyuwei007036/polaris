@@ -204,10 +204,7 @@ func (s *Store) mihomoProxy(ctx context.Context, endpointID, fallbackServer stri
 	if server == "" {
 		return nil, fmt.Errorf("node for listener %s has no client connection address", listener.Name)
 	}
-	displayName := strings.TrimSpace(endpoint.Alias)
-	if displayName == "" {
-		displayName = nodeName + " · " + listener.Name + " · " + endpoint.Name
-	}
+	displayName := mihomoEndpointDisplayName(endpoint.Alias, nodeName, listener.Name, endpoint.Name)
 	proxy := map[string]any{"name": displayName, "server": server, "port": listener.Port}
 	switch listener.Spec.Protocol {
 	case "vless":
@@ -273,4 +270,11 @@ func (s *Store) mihomoProxy(ctx context.Context, endpointID, fallbackServer stri
 		return nil, fmt.Errorf("transport %s on listener %s is not supported by Mihomo YAML export", listener.Spec.Transport.Type, listener.Name)
 	}
 	return proxy, nil
+}
+
+func mihomoEndpointDisplayName(alias, nodeName, listenerName, endpointName string) string {
+	if displayName := strings.TrimSpace(alias); displayName != "" {
+		return displayName
+	}
+	return nodeName + " · " + listenerName + " · " + endpointName
 }

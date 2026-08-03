@@ -7,14 +7,16 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/url"
 	"strings"
 
 	"github.com/sb-control/sb-control/internal/security"
 )
 
 type mihomoClientRulesV3 struct {
-	Rules    []MihomoRule `json:"rules"`
-	RawRules string       `json:"raw_rules"`
+	RuleProviders []MihomoRuleProvider `json:"rule_providers,omitempty"`
+	Rules         []MihomoRule         `json:"rules"`
+	RawRules      string               `json:"raw_rules"`
 }
 
 func isReservedMihomoClientName(name string) bool {
@@ -26,11 +28,11 @@ func isReservedMihomoClientName(name string) bool {
 	}
 }
 
-func normalizeMihomoClientRule(rule MihomoRule, actions map[string]string) (MihomoRule, error) {
+func normalizeMihomoClientRule(rule MihomoRule, actions, providers map[string]string) (MihomoRule, error) {
 	rule.Type = strings.ToUpper(strings.TrimSpace(rule.Type))
 	rule.Value = strings.TrimSpace(rule.Value)
 	rule.Action = strings.TrimSpace(rule.Action)
-	if !supportedMihomoRuleTypes[rule.Type] {
+	if rule.Type != "RULE-SET" && !supportedMihomoRuleTypes[rule.Type] {
 		return MihomoRule{}, fmt.Errorf("unsupported Mihomo rule type %q", rule.Type)
 	}
 	if rule.Type == "MATCH" {
@@ -38,18 +40,25 @@ func normalizeMihomoClientRule(rule MihomoRule, actions map[string]string) (Miho
 	} else if rule.Value == "" || strings.ContainsAny(rule.Value, "\r\n") {
 		return MihomoRule{}, errors.New("Mihomo rule value is required and cannot contain line breaks")
 	}
+	if rule.Type == "RULE-SET" {
+		name, exists := providers[strings.ToUpper(rule.Value)]
+		if !exists {
+			return MihomoRule{}, fmt.Errorf("Mihomo rule provider %q is not configured", rule.Value)
+		}
+		rule.Value = name
+	}
 	if normalized, ok := actions[strings.ToUpper(rule.Action)]; ok {
 		rule.Action = normalized
 	} else {
-		return MihomoRule{}, fmt.Errorf("Mihomo rule action %q does not name a proxy group, DIRECT, or REJECT", rule.Action)
+		return MihomoRule{}, fmt.Errorf("Mihomo rule action %q does not name a node, proxy group, DIRECT, or REJECT", rule.Action)
 	}
-	if rule.NoResolve && !mihomoNoResolveRuleTypes[rule.Type] {
+	if rule.NoResolve && rule.Type != "RULE-SET" && !mihomoNoResolveRuleTypes[rule.Type] {
 		return MihomoRule{}, errors.New("no-resolve is only valid for target IP rules")
 	}
 	return rule, nil
 }
 
-func parseMihomoClientRawRules(raw string, actions map[string]string) ([]MihomoRule, error) {
+func parseMihomoClientRawRules(raw string, actions, providers map[string]string) ([]MihomoRule, error) {
 	lines := strings.Split(strings.ReplaceAll(raw, "\r\n", "\n"), "\n")
 	rules := make([]MihomoRule, 0, len(lines))
 	for index, line := range lines {
@@ -77,13 +86,68 @@ func parseMihomoClientRawRules(raw string, actions map[string]string) ([]MihomoR
 		} else {
 			return nil, fmt.Errorf("Mihomo rule line %d is incomplete", index+1)
 		}
-		normalized, err := normalizeMihomoClientRule(rule, actions)
+		normalized, err := normalizeMihomoClientRule(rule, actions, providers)
 		if err != nil {
 			return nil, fmt.Errorf("Mihomo rule line %d: %w", index+1, err)
 		}
 		rules = append(rules, normalized)
 	}
 	return rules, nil
+}
+
+func normalizeMihomoRuleProviders(ruleProviders []MihomoRuleProvider, actions map[string]string) ([]MihomoRuleProvider, map[string]string, error) {
+	providers := make(map[string]string, len(ruleProviders))
+	for index := range ruleProviders {
+		provider := &ruleProviders[index]
+		provider.Name = strings.TrimSpace(provider.Name)
+		if err := validateMihomoName(provider.Name); err != nil {
+			return nil, nil, fmt.Errorf("rule provider: %w", err)
+		}
+		upperName := strings.ToUpper(provider.Name)
+		if _, exists := providers[upperName]; exists {
+			return nil, nil, fmt.Errorf("rule provider name %q is duplicated", provider.Name)
+		}
+		providers[upperName] = provider.Name
+
+		provider.Behavior = strings.ToLower(strings.TrimSpace(provider.Behavior))
+		switch provider.Behavior {
+		case "domain", "ipcidr", "classical":
+		default:
+			return nil, nil, fmt.Errorf("rule provider %q has an unsupported behavior", provider.Name)
+		}
+		provider.Format = strings.ToLower(strings.TrimSpace(provider.Format))
+		switch provider.Format {
+		case "yaml", "text", "mrs":
+		default:
+			return nil, nil, fmt.Errorf("rule provider %q has an unsupported format", provider.Name)
+		}
+		if provider.Format == "mrs" && provider.Behavior == "classical" {
+			return nil, nil, fmt.Errorf("rule provider %q cannot use mrs format with classical behavior", provider.Name)
+		}
+
+		provider.URL = strings.TrimSpace(provider.URL)
+		parsedURL, err := url.ParseRequestURI(provider.URL)
+		if err != nil || parsedURL.Host == "" || (parsedURL.Scheme != "http" && parsedURL.Scheme != "https") {
+			return nil, nil, fmt.Errorf("rule provider %q requires a valid HTTP or HTTPS URL", provider.Name)
+		}
+		provider.Path = strings.TrimSpace(provider.Path)
+		if provider.Path == "" || strings.ContainsAny(provider.Path, "\r\n") {
+			return nil, nil, fmt.Errorf("rule provider %q requires a path without line breaks", provider.Name)
+		}
+		if provider.Interval <= 0 {
+			return nil, nil, fmt.Errorf("rule provider %q requires a positive update interval", provider.Name)
+		}
+		provider.Proxy = strings.TrimSpace(provider.Proxy)
+		if provider.Proxy == "" {
+			provider.Proxy = "DIRECT"
+		}
+		proxy, exists := actions[strings.ToUpper(provider.Proxy)]
+		if !exists || proxy == "REJECT" {
+			return nil, nil, fmt.Errorf("rule provider %q download proxy must be DIRECT or a configured node or proxy group", provider.Name)
+		}
+		provider.Proxy = proxy
+	}
+	return ruleProviders, providers, nil
 }
 
 func validateMihomoClientTerminalRule(rules []MihomoRule) error {
@@ -253,6 +317,14 @@ func (s *Store) normalizeMihomoClientConfigV3(ctx context.Context, config *Mihom
 	for upper, name := range groupNames {
 		actions[upper] = name
 	}
+	for upper, endpointID := range endpointIDsByName {
+		actions[upper] = endpointNamesByID[endpointID]
+	}
+	var providers map[string]string
+	config.RuleProviders, providers, err = normalizeMihomoRuleProviders(config.RuleProviders, actions)
+	if err != nil {
+		return err
+	}
 	config.RuleMode = strings.ToLower(strings.TrimSpace(config.RuleMode))
 	if config.RuleMode == "" {
 		config.RuleMode = "table"
@@ -261,7 +333,7 @@ func (s *Store) normalizeMihomoClientConfigV3(ctx context.Context, config *Mihom
 	case "table":
 		normalized := make([]MihomoRule, 0, len(config.Rules))
 		for _, rule := range config.Rules {
-			rule, err = normalizeMihomoClientRule(rule, actions)
+			rule, err = normalizeMihomoClientRule(rule, actions, providers)
 			if err != nil {
 				return err
 			}
@@ -271,7 +343,7 @@ func (s *Store) normalizeMihomoClientConfigV3(ctx context.Context, config *Mihom
 		config.RawRules = formatMihomoRules(normalized)
 	case "text":
 		config.RawRules = strings.TrimSpace(strings.ReplaceAll(config.RawRules, "\r\n", "\n"))
-		config.Rules, err = parseMihomoClientRawRules(config.RawRules, actions)
+		config.Rules, err = parseMihomoClientRawRules(config.RawRules, actions, providers)
 		if err != nil {
 			return err
 		}
@@ -286,7 +358,7 @@ func encodeMihomoClientConfigV3(config MihomoClientConfig) (string, string, erro
 	if err != nil {
 		return "", "", err
 	}
-	rules, err := json.Marshal(mihomoClientRulesV3{Rules: config.Rules, RawRules: config.RawRules})
+	rules, err := json.Marshal(mihomoClientRulesV3{RuleProviders: config.RuleProviders, Rules: config.Rules, RawRules: config.RawRules})
 	if err != nil {
 		return "", "", err
 	}
@@ -308,7 +380,7 @@ func scanMihomoClientConfig(scanner interface{ Scan(...any) error }, masterKey [
 	if err := json.Unmarshal([]byte(rulesJSON), &rules); err != nil {
 		return MihomoClientConfig{}, err
 	}
-	config.Rules, config.RawRules = rules.Rules, rules.RawRules
+	config.RuleProviders, config.Rules, config.RawRules = rules.RuleProviders, rules.Rules, rules.RawRules
 	config.CreatedAt, config.UpdatedAt = unixTimeString(created), unixTimeString(updated)
 	token, err := security.Decrypt(masterKey, encryptedToken)
 	if err != nil {
@@ -696,6 +768,61 @@ func (s *Store) clientConfigReferencesAnyEndpoint(ctx context.Context, endpointI
 	return false, rows.Err()
 }
 
+func (s *Store) mihomoClientConfigIDsReferencingEndpoint(ctx context.Context, endpointID string) (map[string]bool, error) {
+	groups, err := s.ListMihomoProxyGroups(ctx)
+	if err != nil {
+		return nil, err
+	}
+	byID := make(map[string]MihomoProxyGroup, len(groups))
+	for _, group := range groups {
+		byID[group.ID] = group
+	}
+	contains := map[string]bool{}
+	checked := map[string]bool{}
+	var referencesEndpoint func(string) bool
+	referencesEndpoint = func(groupID string) bool {
+		if checked[groupID] {
+			return contains[groupID]
+		}
+		checked[groupID] = true
+		group, exists := byID[groupID]
+		if !exists {
+			return false
+		}
+		for _, member := range group.Members {
+			if member.Kind == "endpoint" && member.ID == endpointID || member.Kind == "group" && referencesEndpoint(member.ID) {
+				contains[groupID] = true
+				break
+			}
+		}
+		return contains[groupID]
+	}
+
+	rows, err := s.db.QueryContext(ctx, `SELECT id, groups_json FROM mihomo_client_configs_v3`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	configIDs := map[string]bool{}
+	for rows.Next() {
+		var configID, groupsJSON string
+		if err := rows.Scan(&configID, &groupsJSON); err != nil {
+			return nil, err
+		}
+		var roots []string
+		if err := json.Unmarshal([]byte(groupsJSON), &roots); err != nil {
+			return nil, err
+		}
+		for _, root := range roots {
+			if referencesEndpoint(root) {
+				configIDs[configID] = true
+				break
+			}
+		}
+	}
+	return configIDs, rows.Err()
+}
+
 func (s *Store) generateMihomoClientYAML(ctx context.Context, config MihomoClientConfig) (string, error) {
 	groups, err := s.resolveMihomoProxyGroups(ctx, config.ProxyGroupIDs)
 	if err != nil {
@@ -723,9 +850,15 @@ func (s *Store) generateMihomoClientYAML(ctx context.Context, config MihomoClien
 	}
 	var builder strings.Builder
 	builder.WriteString("mixed-port: 7890\nallow-lan: false\nmode: rule\nlog-level: info\n")
-	builder.WriteString("dns:\n  enable: true\n  ipv6: true\n  enhanced-mode: fake-ip\n")
+	builder.WriteString("profile:\n  store-selected: true\n")
+	builder.WriteString("tun:\n  enable: true\n  stack: mixed\n  auto-route: true\n  auto-detect-interface: true\n  strict-route: true\n")
+	builder.WriteString("  dns-hijack:\n    - any:53\n    - tcp://any:53\n")
+	builder.WriteString("dns:\n  enable: true\n  ipv6: false\n  enhanced-mode: fake-ip\n")
+	builder.WriteString("  fake-ip-range: 198.18.0.1/16\n  fake-ip-filter-mode: rule\n")
+	builder.WriteString("  fake-ip-filter:\n    - MATCH,fake-ip\n  respect-rules: false\n")
 	builder.WriteString("  default-nameserver:\n    - https://223.5.5.5/dns-query\n")
-	builder.WriteString("  nameserver:\n    - https://dns.alidns.com/dns-query\n    - https://doh.pub/dns-query\n")
+	builder.WriteString("  nameserver:\n    - rcode://success\n")
+	builder.WriteString("  direct-nameserver:\n    - https://223.5.5.5/dns-query\n  direct-nameserver-follow-policy: false\n")
 	builder.WriteString("  proxy-server-nameserver:\n    - https://223.5.5.5/dns-query\n")
 	builder.WriteString("proxies:\n")
 	for _, proxy := range proxies {
@@ -749,6 +882,18 @@ func (s *Store) generateMihomoClientYAML(ctx context.Context, config MihomoClien
 		}
 		encoded, _ := json.Marshal(object)
 		builder.WriteString("  - " + string(encoded) + "\n")
+	}
+	if len(config.RuleProviders) != 0 {
+		builder.WriteString("rule-providers:\n")
+		for _, provider := range config.RuleProviders {
+			name, _ := json.Marshal(provider.Name)
+			object := map[string]any{
+				"type": "http", "behavior": provider.Behavior, "format": provider.Format,
+				"url": provider.URL, "path": provider.Path, "interval": provider.Interval, "proxy": provider.Proxy,
+			}
+			encoded, _ := json.Marshal(object)
+			builder.WriteString("  " + string(name) + ": " + string(encoded) + "\n")
+		}
 	}
 	builder.WriteString("rules:\n")
 	for _, rule := range config.Rules {

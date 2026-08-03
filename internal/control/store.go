@@ -1505,8 +1505,8 @@ func (s *Store) UpdateEndpoint(ctx context.Context, endpoint Endpoint, credentia
 	if endpoint.ID == "" || endpoint.ListenerID == "" || endpoint.Name == "" || len(endpoint.Name) > 128 || len(endpoint.Alias) > 128 || strings.ContainsAny(endpoint.Alias, "\r\n") {
 		return Endpoint{}, errors.New("endpoint ID, listener and a name up to 128 characters are required")
 	}
-	var protocol, existingListener string
-	err := s.db.QueryRowContext(ctx, `SELECT l.protocol, e.listener_id FROM endpoints e JOIN listeners l ON l.id = e.listener_id WHERE e.id = ?`, endpoint.ID).Scan(&protocol, &existingListener)
+	var protocol, existingListener, oldName, oldAlias, listenerName, nodeName string
+	err := s.db.QueryRowContext(ctx, `SELECT l.protocol, e.listener_id, e.name, e.alias, l.name, n.name FROM endpoints e JOIN listeners l ON l.id = e.listener_id JOIN nodes n ON n.id = l.node_id WHERE e.id = ?`, endpoint.ID).Scan(&protocol, &existingListener, &oldName, &oldAlias, &listenerName, &nodeName)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Endpoint{}, ErrNotFound
 	}
@@ -1536,9 +1536,8 @@ func (s *Store) UpdateEndpoint(ctx context.Context, endpoint Endpoint, credentia
 			return Endpoint{}, fmt.Errorf("check endpoint alias conflict: %w", err)
 		}
 	}
-	if credentials == nil {
-		_, err = s.db.ExecContext(ctx, `UPDATE endpoints SET name = ?, alias = ?, enabled = ?, outbound_id = ?, updated_at = ? WHERE id = ?`, endpoint.Name, endpoint.Alias, endpoint.Enabled, endpoint.OutboundID, nowUnix(), endpoint.ID)
-	} else {
+	var encrypted []byte
+	if credentials != nil {
 		if err := ValidateEndpointCredentials(protocol, *credentials); err != nil {
 			return Endpoint{}, err
 		}
@@ -1546,14 +1545,36 @@ func (s *Store) UpdateEndpoint(ctx context.Context, endpoint Endpoint, credentia
 		if err != nil {
 			return Endpoint{}, err
 		}
-		encrypted, err := security.Encrypt(s.masterKey, plain)
+		encrypted, err = security.Encrypt(s.masterKey, plain)
 		if err != nil {
 			return Endpoint{}, err
 		}
-		_, err = s.db.ExecContext(ctx, `UPDATE endpoints SET name = ?, alias = ?, credentials = ?, enabled = ?, outbound_id = ?, updated_at = ? WHERE id = ?`, endpoint.Name, endpoint.Alias, encrypted, endpoint.Enabled, endpoint.OutboundID, nowUnix(), endpoint.ID)
+	}
+	configIDs, err := s.mihomoClientConfigIDsReferencingEndpoint(ctx, endpoint.ID)
+	if err != nil {
+		return Endpoint{}, fmt.Errorf("find Mihomo client endpoint references: %w", err)
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return Endpoint{}, err
+	}
+	defer tx.Rollback()
+	now := nowUnix()
+	if credentials == nil {
+		_, err = tx.ExecContext(ctx, `UPDATE endpoints SET name = ?, alias = ?, enabled = ?, outbound_id = ?, updated_at = ? WHERE id = ?`, endpoint.Name, endpoint.Alias, endpoint.Enabled, endpoint.OutboundID, now, endpoint.ID)
+	} else {
+		_, err = tx.ExecContext(ctx, `UPDATE endpoints SET name = ?, alias = ?, credentials = ?, enabled = ?, outbound_id = ?, updated_at = ? WHERE id = ?`, endpoint.Name, endpoint.Alias, encrypted, endpoint.Enabled, endpoint.OutboundID, now, endpoint.ID)
 	}
 	if err != nil {
 		return Endpoint{}, fmt.Errorf("update endpoint: %w", err)
+	}
+	oldDisplayName := mihomoEndpointDisplayName(oldAlias, nodeName, listenerName, oldName)
+	newDisplayName := mihomoEndpointDisplayName(endpoint.Alias, nodeName, listenerName, endpoint.Name)
+	if err := rewriteMihomoClientActions(ctx, tx, oldDisplayName, newDisplayName, configIDs); err != nil {
+		return Endpoint{}, fmt.Errorf("rewrite Mihomo client endpoint actions: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return Endpoint{}, err
 	}
 	return endpoint, nil
 }

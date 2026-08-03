@@ -36,6 +36,7 @@ func TestStoredMihomoConfigReferencesNestedGroupsRulesAndAliases(t *testing.T) {
 	session, csrfToken := login(t, httpServer.URL, secret)
 
 	var endpointIDs, nodeIDs []string
+	var endpoints []control.Endpoint
 	for index, name := range []string{"美国节点", "日本节点"} {
 		nodeID := approveTestNode(t, server, httpServer.URL, session, csrfToken, name)
 		nodeIDs = append(nodeIDs, nodeID)
@@ -55,6 +56,7 @@ func TestStoredMihomoConfigReferencesNestedGroupsRulesAndAliases(t *testing.T) {
 			t.Fatal(err)
 		}
 		endpointIDs = append(endpointIDs, endpoint.ID)
+		endpoints = append(endpoints, endpoint)
 	}
 
 	usGroup, err := store.CreateMihomoProxyGroup(t.Context(), control.MihomoProxyGroup{
@@ -79,7 +81,14 @@ func TestStoredMihomoConfigReferencesNestedGroupsRulesAndAliases(t *testing.T) {
 		Name:          "手机配置",
 		ProxyGroupIDs: []string{allGroup.ID},
 		RuleMode:      "table",
+		RuleProviders: []control.MihomoRuleProvider{{
+			Name: "远程代理规则", Behavior: "domain", Format: "mrs",
+			URL: "https://rules.example.com/proxy.mrs", Path: "./ruleset/proxy.mrs",
+			Interval: 86400, Proxy: "自动选择",
+		}},
 		Rules: []control.MihomoRule{
+			{Type: "RULE-SET", Value: "远程代理规则", Action: "自动选择"},
+			{Type: "DOMAIN-SUFFIX", Value: "youtube.com", Action: "洛杉矶 01"},
 			{Type: "DOMAIN-SUFFIX", Value: "example.com", Action: "自动选择"},
 			{Type: "MATCH", Action: "DIRECT"},
 		},
@@ -97,35 +106,84 @@ func TestStoredMihomoConfigReferencesNestedGroupsRulesAndAliases(t *testing.T) {
 	if config.SubscriptionPath == "" {
 		t.Fatal("new Mihomo client config did not receive a subscription path")
 	}
-	for _, expected := range []string{`"name":"美国节点"`, `"type":"url-test"`, `"name":"日本节点"`, `"name":"自动选择"`, `"proxies":["美国节点","日本节点"]`, `"name":"洛杉矶 01"`, `"name":"东京 01"`, `"server":"us.example.com"`, `"server":"jp.example.com"`, "DOMAIN-SUFFIX,example.com,自动选择", "MATCH,DIRECT", "https://223.5.5.5/dns-query", "https://dns.alidns.com/dns-query", "https://doh.pub/dns-query"} {
+	for _, expected := range []string{`"name":"美国节点"`, `"type":"url-test"`, `"name":"日本节点"`, `"name":"自动选择"`, `"proxies":["美国节点","日本节点"]`, `"name":"洛杉矶 01"`, `"name":"东京 01"`, `"server":"us.example.com"`, `"server":"jp.example.com"`, "rule-providers:", `"远程代理规则": {"behavior":"domain","format":"mrs","interval":86400,"path":"./ruleset/proxy.mrs","proxy":"自动选择","type":"http","url":"https://rules.example.com/proxy.mrs"}`, "RULE-SET,远程代理规则,自动选择", "DOMAIN-SUFFIX,youtube.com,洛杉矶 01", "DOMAIN-SUFFIX,example.com,自动选择", "MATCH,DIRECT", "fake-ip-range: 198.18.0.1/16", "fake-ip-filter-mode: rule", "- MATCH,fake-ip", "respect-rules: false", "rcode://success", "direct-nameserver-follow-policy: false", "https://223.5.5.5/dns-query"} {
 		if !strings.Contains(yaml, expected) {
 			t.Fatalf("stored YAML does not contain %q:\n%s", expected, yaml)
 		}
 	}
 	var generated struct {
+		Profile struct {
+			StoreSelected bool `yaml:"store-selected"`
+		} `yaml:"profile"`
+		TUN struct {
+			Enable      bool     `yaml:"enable"`
+			StrictRoute bool     `yaml:"strict-route"`
+			DNSHijack   []string `yaml:"dns-hijack"`
+		} `yaml:"tun"`
 		DNS struct {
-			DefaultNameserver     []string `yaml:"default-nameserver"`
-			Nameserver            []string `yaml:"nameserver"`
-			ProxyServerNameserver []string `yaml:"proxy-server-nameserver"`
+			IPv6                         bool     `yaml:"ipv6"`
+			EnhancedMode                 string   `yaml:"enhanced-mode"`
+			FakeIPRange                  string   `yaml:"fake-ip-range"`
+			FakeIPFilterMode             string   `yaml:"fake-ip-filter-mode"`
+			FakeIPFilter                 []string `yaml:"fake-ip-filter"`
+			RespectRules                 bool     `yaml:"respect-rules"`
+			DefaultNameserver            []string `yaml:"default-nameserver"`
+			Nameserver                   []string `yaml:"nameserver"`
+			DirectNameserver             []string `yaml:"direct-nameserver"`
+			DirectNameserverFollowPolicy bool     `yaml:"direct-nameserver-follow-policy"`
+			ProxyServerNameserver        []string `yaml:"proxy-server-nameserver"`
 		} `yaml:"dns"`
+		RuleProviders map[string]struct {
+			Type     string `yaml:"type"`
+			Behavior string `yaml:"behavior"`
+			Format   string `yaml:"format"`
+			URL      string `yaml:"url"`
+			Path     string `yaml:"path"`
+			Interval int    `yaml:"interval"`
+			Proxy    string `yaml:"proxy"`
+		} `yaml:"rule-providers"`
 	}
 	if err := gopkgyaml.Unmarshal([]byte(yaml), &generated); err != nil {
 		t.Fatalf("generated YAML cannot be parsed: %v\n%s", err, yaml)
 	}
-	for _, resolver := range append(append(generated.DNS.DefaultNameserver, generated.DNS.Nameserver...), generated.DNS.ProxyServerNameserver...) {
+	if provider := generated.RuleProviders["远程代理规则"]; provider.Type != "http" || provider.Behavior != "domain" || provider.Format != "mrs" || provider.Interval != 86400 || provider.Proxy != "自动选择" {
+		t.Fatalf("generated rule provider = %#v", provider)
+	}
+	if !generated.Profile.StoreSelected {
+		t.Fatal("generated config does not persist the selected proxy node")
+	}
+	if !generated.TUN.Enable || !generated.TUN.StrictRoute || len(generated.TUN.DNSHijack) != 2 {
+		t.Fatalf("generated TUN leak protection = %#v", generated.TUN)
+	}
+	if generated.DNS.IPv6 || generated.DNS.EnhancedMode != "fake-ip" || generated.DNS.FakeIPRange != "198.18.0.1/16" || generated.DNS.FakeIPFilterMode != "rule" || len(generated.DNS.FakeIPFilter) != 1 || generated.DNS.FakeIPFilter[0] != "MATCH,fake-ip" || generated.DNS.RespectRules {
+		t.Fatalf("generated Fake-IP DNS configuration = %#v", generated.DNS)
+	}
+	if len(generated.DNS.Nameserver) != 1 || generated.DNS.Nameserver[0] != "rcode://success" || generated.DNS.DirectNameserverFollowPolicy {
+		t.Fatalf("generated DNS routing configuration = %#v", generated.DNS)
+	}
+	for _, resolver := range append(append(generated.DNS.DefaultNameserver, generated.DNS.DirectNameserver...), generated.DNS.ProxyServerNameserver...) {
 		if !strings.HasPrefix(resolver, "https://") || !strings.Contains(resolver, "/dns-query") {
 			t.Fatalf("non-DoH resolver %q in generated YAML", resolver)
 		}
 	}
 
+	endpoints[0].Alias = "洛杉矶 02"
+	if _, err := store.UpdateEndpoint(t.Context(), endpoints[0], nil); err != nil {
+		t.Fatal(err)
+	}
+	_, yaml, err = store.GenerateStoredMihomoYAML(t.Context(), config.ID)
+	if err != nil || !strings.Contains(yaml, "DOMAIN-SUFFIX,youtube.com,洛杉矶 02") {
+		t.Fatalf("renamed endpoint was not synchronized to client rules: %v\n%s", err, yaml)
+	}
+
 	config.RuleMode = "text"
 	config.Rules = nil
-	config.RawRules = "# 按顺序分流\nDOMAIN-SUFFIX,example.org,自动选择\nMATCH,REJECT"
+	config.RawRules = "# 按顺序分流\nRULE-SET,远程代理规则,自动选择\nDOMAIN-SUFFIX,example.org,自动选择\nMATCH,REJECT"
 	updated, err := store.UpdateMihomoClientConfig(t.Context(), config)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if updated.RuleMode != "text" || len(updated.Rules) != 2 || !strings.Contains(updated.RawRules, "# 按顺序分流") {
+	if updated.RuleMode != "text" || len(updated.Rules) != 3 || len(updated.RuleProviders) != 1 || !strings.Contains(updated.RawRules, "# 按顺序分流") {
 		t.Fatalf("advanced rules were not preserved: %#v", updated)
 	}
 	_, yaml, err = store.GenerateStoredMihomoYAML(t.Context(), config.ID)
@@ -137,7 +195,7 @@ func TestStoredMihomoConfigReferencesNestedGroupsRulesAndAliases(t *testing.T) {
 		t.Fatal(err)
 	}
 	_, yaml, err = store.GenerateStoredMihomoYAML(t.Context(), config.ID)
-	if err != nil || !strings.Contains(yaml, "DOMAIN-SUFFIX,example.org,自动选择 2") {
+	if err != nil || !strings.Contains(yaml, "DOMAIN-SUFFIX,example.org,自动选择 2") || !strings.Contains(yaml, `"proxy":"自动选择 2"`) {
 		t.Fatalf("renamed group was not synchronized to client rules: %v\n%s", err, yaml)
 	}
 	response := request(t, http.MethodGet, httpServer.URL+config.SubscriptionPath, nil, "", "")
@@ -152,7 +210,7 @@ func TestStoredMihomoConfigReferencesNestedGroupsRulesAndAliases(t *testing.T) {
 	}
 	body, err := io.ReadAll(response.Body)
 	response.Body.Close()
-	if err != nil || !strings.Contains(string(body), `"name":"洛杉矶 01"`) {
+	if err != nil || !strings.Contains(string(body), `"name":"洛杉矶 02"`) {
 		t.Fatalf("subscription content does not contain alias: %v\n%s", err, body)
 	}
 	response = request(t, http.MethodGet, httpServer.URL+"/api/v1/mihomo/subscription-access?config_id="+config.ID+"&ip=127&location="+url.QueryEscape("本机")+"&user_agent=Go-http-client", nil, session, csrfToken)
@@ -214,6 +272,22 @@ func TestStoredMihomoConfigReferencesNestedGroupsRulesAndAliases(t *testing.T) {
 	}); err == nil || !strings.Contains(err.Error(), "MATCH") {
 		t.Fatalf("client config accepted rules without terminal MATCH: %v", err)
 	}
+	if _, err := store.CreateMihomoClientConfig(t.Context(), control.MihomoClientConfig{
+		Name: "未知规则供应商", RuleMode: "table", ProxyGroupIDs: []string{allGroup.ID},
+		Rules: []control.MihomoRule{{Type: "RULE-SET", Value: "missing", Action: "DIRECT"}, {Type: "MATCH", Action: "DIRECT"}},
+	}); err == nil || !strings.Contains(err.Error(), "rule provider") {
+		t.Fatalf("client config accepted an unknown rule provider: %v", err)
+	}
+	multiGroupConfig, err := store.CreateMihomoClientConfig(t.Context(), control.MihomoClientConfig{
+		Name: "多个代理组", RuleMode: "table", ProxyGroupIDs: []string{usGroup.ID, jpGroup.ID},
+		Rules: []control.MihomoRule{{Type: "MATCH", Action: "DIRECT"}},
+	})
+	if err != nil {
+		t.Fatalf("client config rejected multiple proxy groups: %v", err)
+	}
+	if err := store.DeleteMihomoClientConfig(t.Context(), multiGroupConfig.ID); err != nil {
+		t.Fatal(err)
+	}
 	groupA, err := store.CreateMihomoProxyGroup(t.Context(), control.MihomoProxyGroup{
 		Name: "分组 A", Strategy: "select", Members: []control.MihomoGroupMember{{Kind: "endpoint", ID: endpointIDs[0]}},
 	})
@@ -236,7 +310,7 @@ func TestStoredMihomoConfigReferencesNestedGroupsRulesAndAliases(t *testing.T) {
 		t.Fatalf("proxy group accepted an unknown group: %v", err)
 	}
 	if _, err := store.CreateMihomoProxyGroup(t.Context(), control.MihomoProxyGroup{
-		Name: "洛杉矶 01", Strategy: "select", Members: []control.MihomoGroupMember{{Kind: "endpoint", ID: endpointIDs[0]}},
+		Name: "洛杉矶 02", Strategy: "select", Members: []control.MihomoGroupMember{{Kind: "endpoint", ID: endpointIDs[0]}},
 	}); err == nil || !strings.Contains(err.Error(), "冲突") {
 		t.Fatalf("proxy group accepted a node/group name conflict: %v", err)
 	}

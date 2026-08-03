@@ -260,14 +260,25 @@ test('浏览器页面回归：真实登录，核心工作区 API 使用路由替
   await clientDialog.locator('.el-form-item').nth(1).locator('.el-select').click()
   await page.getByRole('option', { name: '组合策略 · 手动选择', exact: true }).click()
   await page.keyboard.press('Escape')
+  await clientDialog.getByRole('button', { name: '添加供应商', exact: true }).click()
+  await clientDialog.getByRole('textbox', { name: '供应商名称' }).fill('远程代理规则')
+  await clientDialog.getByRole('textbox', { name: '供应商规则地址' }).fill('https://rules.example.com/proxy.mrs')
+  await clientDialog.getByRole('textbox', { name: '供应商保存路径' }).fill('./ruleset/proxy.mrs')
   await clientDialog.getByRole('button', { name: '添加', exact: true }).click()
-  await clientDialog.getByLabel('规则匹配值').fill('example.com')
+  await clientDialog.locator('.rule-table tbody tr').nth(0).locator('td').nth(0).locator('.el-select').click()
+  await page.getByRole('option', { name: 'RULE-SET', exact: true }).click()
+  await expect(clientDialog.getByLabel('规则供应商')).toBeVisible()
   await clientDialog.locator('.rule-table tbody tr').nth(0).locator('td').nth(2).locator('.el-select').click()
   await page.getByRole('option', { name: '组合策略', exact: true }).click()
   await clientDialog.getByRole('button', { name: '添加', exact: true }).click()
-  await clientDialog.locator('.rule-table tbody tr').nth(1).locator('td').nth(0).locator('.el-select').click()
-  await page.getByRole('option', { name: 'MATCH', exact: true }).click()
+  await clientDialog.locator('.rule-table tbody tr').nth(1).locator('td').nth(1).getByRole('textbox').fill('youtube.com')
   await clientDialog.locator('.rule-table tbody tr').nth(1).locator('td').nth(2).locator('.el-select').click()
+  await page.keyboard.press('ArrowDown')
+  await page.keyboard.press('Enter')
+  await clientDialog.getByRole('button', { name: '添加', exact: true }).click()
+  await clientDialog.locator('.rule-table tbody tr').nth(2).locator('td').nth(0).locator('.el-select').click()
+  await page.getByRole('option', { name: 'MATCH', exact: true }).click()
+  await clientDialog.locator('.rule-table tbody tr').nth(2).locator('td').nth(2).locator('.el-select').click()
   await page.getByRole('option', { name: 'DIRECT', exact: true }).click()
   await expect(clientDialog.getByRole('radio', { name: '表格配置', exact: true })).toBeChecked()
   await clientDialog.locator('.el-radio-button').filter({ hasText: '高级纯文本' }).click()
@@ -278,9 +289,15 @@ test('浏览器页面回归：真实登录，核心工作区 API 使用路由替
   expect(savedClientConfig).toMatchObject({
     name: '组合分组配置',
     proxy_group_ids: [savedProxyGroups[1].id],
+    rule_providers: [{
+      name: '远程代理规则', behavior: 'domain', format: 'mrs',
+      url: 'https://rules.example.com/proxy.mrs', path: './ruleset/proxy.mrs',
+      interval: 86400, proxy: 'DIRECT',
+    }],
     rule_mode: 'table',
     rules: [
-      { type: 'DOMAIN-SUFFIX', value: 'example.com', action: '组合策略', no_resolve: false },
+      { type: 'RULE-SET', value: '远程代理规则', action: '组合策略', no_resolve: false },
+      { type: 'DOMAIN-SUFFIX', value: 'youtube.com', action: '测试节点 01', no_resolve: false },
       { type: 'MATCH', value: '', action: 'DIRECT', no_resolve: false },
     ],
   })
@@ -305,8 +322,10 @@ test('浏览器页面回归：真实登录，核心工作区 API 使用路由替
   const editClientDialog = page.getByRole('dialog', { name: '编辑客户端配置', exact: true })
   await expect(editClientDialog).toBeVisible()
   await expect(editClientDialog.getByRole('textbox', { name: '配置名称' })).toHaveValue('组合分组配置')
-  await expect(editClientDialog.getByLabel('规则匹配值').first()).toHaveValue('example.com')
-  await expect(editClientDialog.locator('.rule-table tbody tr')).toHaveCount(2)
+  await expect(editClientDialog.getByRole('textbox', { name: '供应商名称' })).toHaveValue('远程代理规则')
+  await expect(editClientDialog.getByRole('textbox', { name: '供应商规则地址' })).toHaveValue('https://rules.example.com/proxy.mrs')
+  await expect(editClientDialog.getByLabel('规则供应商')).toBeVisible()
+  await expect(editClientDialog.locator('.rule-table tbody tr')).toHaveCount(3)
   await page.setViewportSize({ width: 390, height: 844 })
   await expect.poll(() => editClientDialog.evaluate((element) => element.scrollWidth <= element.clientWidth)).toBe(true)
   await expect.poll(() => editClientDialog.locator('.el-dialog__body').evaluate((element) => element.scrollWidth <= element.clientWidth)).toBe(true)

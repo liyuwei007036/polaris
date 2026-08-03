@@ -45,22 +45,33 @@ type MihomoRule struct {
 	NoResolve bool   `json:"no_resolve,omitempty"`
 }
 
+type MihomoRuleProvider struct {
+	Name     string `json:"name"`
+	Behavior string `json:"behavior"`
+	Format   string `json:"format"`
+	URL      string `json:"url"`
+	Path     string `json:"path"`
+	Interval int    `json:"interval"`
+	Proxy    string `json:"proxy"`
+}
+
 type MihomoClientConfig struct {
-	ID               string              `json:"id"`
-	Name             string              `json:"name"`
-	Enabled          bool                `json:"enabled"`
-	ProxyGroupIDs    []string            `json:"proxy_group_ids"`
-	Groups           []MihomoClientGroup `json:"groups,omitempty"`
-	RuleMode         string              `json:"rule_mode,omitempty"`
-	EndpointIDs      []string            `json:"endpoint_ids,omitempty"`
-	Strategy         string              `json:"strategy,omitempty"`
-	RulePreset       string              `json:"rule_preset,omitempty"`
-	Rules            []MihomoRule        `json:"rules,omitempty"`
-	RawRules         string              `json:"raw_rules,omitempty"`
-	DefaultAction    string              `json:"default_action,omitempty"`
-	CreatedAt        string              `json:"created_at,omitempty"`
-	UpdatedAt        string              `json:"updated_at,omitempty"`
-	SubscriptionPath string              `json:"subscription_path,omitempty"`
+	ID               string               `json:"id"`
+	Name             string               `json:"name"`
+	Enabled          bool                 `json:"enabled"`
+	ProxyGroupIDs    []string             `json:"proxy_group_ids"`
+	Groups           []MihomoClientGroup  `json:"groups,omitempty"`
+	RuleMode         string               `json:"rule_mode,omitempty"`
+	EndpointIDs      []string             `json:"endpoint_ids,omitempty"`
+	Strategy         string               `json:"strategy,omitempty"`
+	RulePreset       string               `json:"rule_preset,omitempty"`
+	RuleProviders    []MihomoRuleProvider `json:"rule_providers,omitempty"`
+	Rules            []MihomoRule         `json:"rules,omitempty"`
+	RawRules         string               `json:"raw_rules,omitempty"`
+	DefaultAction    string               `json:"default_action,omitempty"`
+	CreatedAt        string               `json:"created_at,omitempty"`
+	UpdatedAt        string               `json:"updated_at,omitempty"`
+	SubscriptionPath string               `json:"subscription_path,omitempty"`
 	// Legacy fields are retained only while existing rows are migrated.
 	RoutingProfileID string `json:"routing_profile_id,omitempty"`
 }
