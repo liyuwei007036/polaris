@@ -48,6 +48,24 @@ func TestRaiseNginxWorkerConnections(t *testing.T) {
 	}
 }
 
+func TestRaiseNginxWorkerOpenFiles(t *testing.T) {
+	configuration := []byte("worker_processes auto;\nevents {\n\tworker_connections 4096;\n}\n")
+	updated, changed := raiseNginxWorkerOpenFiles(configuration)
+	if !changed || !strings.HasPrefix(string(updated), "worker_rlimit_nofile 65535;\n") {
+		t.Fatalf("worker file limit was not added:\n%s", updated)
+	}
+	updated, changed = raiseNginxWorkerOpenFiles(updated)
+	if changed || strings.Count(string(updated), "worker_rlimit_nofile") != 1 {
+		t.Fatalf("adequate worker file limit was changed:\n%s", updated)
+	}
+
+	configuration = []byte("worker_rlimit_nofile 1024;\nworker_processes auto;\n")
+	updated, changed = raiseNginxWorkerOpenFiles(configuration)
+	if !changed || !strings.Contains(string(updated), "worker_rlimit_nofile 65535;") {
+		t.Fatalf("worker file limit was not raised:\n%s", updated)
+	}
+}
+
 func TestInitialSingBoxConfigIsValidJSON(t *testing.T) {
 	var configuration map[string]any
 	if err := json.Unmarshal([]byte(initialSingBoxConfig), &configuration); err != nil {

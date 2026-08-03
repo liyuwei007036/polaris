@@ -36,8 +36,10 @@ var managedNginxModuleConfig = managedSystemPath("/etc/nginx/modules-enabled/99-
 var managedNginxMainConfig = managedSystemPath("/etc/nginx/nginx.conf")
 
 const minimumNginxWorkerConnections = 4096
+const minimumNginxWorkerOpenFiles = 65535
 
 var nginxWorkerConnectionsPattern = regexp.MustCompile(`(?m)^([ \t]*worker_connections[ \t]+)([0-9]+)([ \t]*;)`)
+var nginxWorkerOpenFilesPattern = regexp.MustCompile(`(?m)^([ \t]*worker_rlimit_nofile[ \t]+)([0-9]+)([ \t]*;)`)
 
 var outboundProbeURL = "https://www.gstatic.com/generate_204"
 
@@ -629,7 +631,9 @@ func ensureNginxWorkerCapacity(ctx context.Context) (bool, error) {
 	if err != nil {
 		return false, errors.New("读取 Nginx 主配置失败: " + err.Error())
 	}
-	updated, changed := raiseNginxWorkerConnections(mainConfig)
+	updated, connectionsChanged := raiseNginxWorkerConnections(mainConfig)
+	updated, openFilesChanged := raiseNginxWorkerOpenFiles(updated)
+	changed := connectionsChanged || openFilesChanged
 	if !changed {
 		return false, nil
 	}
@@ -683,6 +687,29 @@ func raiseNginxWorkerConnections(configuration []byte) ([]byte, bool) {
 	updated := make([]byte, 0, len(configuration)+4)
 	updated = append(updated, configuration[:match[4]]...)
 	updated = strconv.AppendInt(updated, minimumNginxWorkerConnections, 10)
+	updated = append(updated, configuration[match[5]:]...)
+	return updated, true
+}
+
+func raiseNginxWorkerOpenFiles(configuration []byte) ([]byte, bool) {
+	matches := nginxWorkerOpenFilesPattern.FindAllSubmatchIndex(configuration, 2)
+	if len(matches) == 0 {
+		updated := make([]byte, 0, len(configuration)+32)
+		updated = append(updated, "worker_rlimit_nofile 65535;\n"...)
+		updated = append(updated, configuration...)
+		return updated, true
+	}
+	if len(matches) != 1 {
+		return configuration, false
+	}
+	match := matches[0]
+	current, err := strconv.Atoi(string(configuration[match[4]:match[5]]))
+	if err != nil || current >= minimumNginxWorkerOpenFiles {
+		return configuration, false
+	}
+	updated := make([]byte, 0, len(configuration)+4)
+	updated = append(updated, configuration[:match[4]]...)
+	updated = strconv.AppendInt(updated, minimumNginxWorkerOpenFiles, 10)
 	updated = append(updated, configuration[match[5]:]...)
 	return updated, true
 }
