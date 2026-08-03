@@ -663,6 +663,20 @@ func TestCloudflareRecordsDriftAndPublish(t *testing.T) {
 	if !settings.Configured || settings.TokenMasked == "test-token-1234567890" || settings.TokenMasked == "" {
 		t.Fatalf("settings leak or missing mask: %#v", settings)
 	}
+	fake.mu.Lock()
+	fake.records["external-record"] = control.CloudflareRecord{ID: "external-record", Type: "A", Name: "existing.example.com", Content: "192.0.2.1", TTL: 300, Proxied: true}
+	fake.mu.Unlock()
+	response = request(t, http.MethodGet, httpServer.URL+"/api/v1/cloudflare/remote-records", nil, session, csrfToken)
+	var remoteRecords struct {
+		Records []control.CloudflareRecord `json:"records"`
+	}
+	decodeBody(t, response, &remoteRecords)
+	if len(remoteRecords.Records) != 1 || remoteRecords.Records[0].ID != "external-record" {
+		t.Fatalf("remote records not listed: %#v", remoteRecords.Records)
+	}
+	fake.mu.Lock()
+	delete(fake.records, "external-record")
+	fake.mu.Unlock()
 
 	response = request(t, http.MethodPost, httpServer.URL+"/api/v1/cloudflare/records", map[string]any{
 		"name": "test.example.com", "type": "TXT", "content": "hello", "ttl": 300,
@@ -699,6 +713,11 @@ func TestCloudflareRecordsDriftAndPublish(t *testing.T) {
 	decodeBody(t, response, &published)
 	if published.Record.Status != "synced" || published.Record.RemoteID == "" || len(fake.records) != 1 {
 		t.Fatalf("publish did not sync: %#v", published.Record)
+	}
+	response = request(t, http.MethodGet, httpServer.URL+"/api/v1/cloudflare/remote-records", nil, session, csrfToken)
+	decodeBody(t, response, &remoteRecords)
+	if len(remoteRecords.Records) != 0 {
+		t.Fatalf("managed record also listed as remote-only: %#v", remoteRecords.Records)
 	}
 
 	// Simulate an out-of-band console change, then detect drift without

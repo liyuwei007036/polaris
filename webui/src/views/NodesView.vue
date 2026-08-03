@@ -149,7 +149,7 @@ async function saveClientAddress() {
 onMounted(() => {
   load()
   stopLive = subscribeLive((event) => {
-    if (event.kind === 'node' || event.kind === 'connections') load(true).catch(() => {})
+    if (event.kind === 'node') load(true).catch(() => {})
   })
 })
 

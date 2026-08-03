@@ -56,6 +56,41 @@ func (s *Server) listCloudflareRecords(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"records": records})
 }
 
+func (s *Server) listRemoteCloudflareRecords(w http.ResponseWriter, r *http.Request) {
+	if _, err := s.operator(r, false); err != nil {
+		writeError(w, err)
+		return
+	}
+	zoneID, _, client, err := s.store.CloudflareZone(r.Context())
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	remotes, err := client.ListRecords(r.Context(), zoneID)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	managed, err := s.store.ListCloudflareRecords(r.Context())
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	matched := make(map[string]bool, len(managed))
+	for _, record := range managed {
+		if remote := findRemoteRecord(record, remotes); remote != nil {
+			matched[remote.ID] = true
+		}
+	}
+	unmanaged := make([]CloudflareRecord, 0, len(remotes))
+	for _, remote := range remotes {
+		if !matched[remote.ID] {
+			unmanaged = append(unmanaged, remote)
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"records": unmanaged})
+}
+
 func (s *Server) createCloudflareRecord(w http.ResponseWriter, r *http.Request) {
 	operator, err := s.admin(r)
 	if err != nil {

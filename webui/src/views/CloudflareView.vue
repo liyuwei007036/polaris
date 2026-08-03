@@ -29,9 +29,19 @@ const filteredRecords = computed(() => records.value.filter((row) => {
 async function load() {
   loading.value = true
   try {
-    const [settingsResult, recordResult, listenerResult] = await Promise.all([api('/cloudflare/settings'), api('/cloudflare/records'), api('/listeners')])
+    const [settingsResult, recordResult, listenerResult] = await Promise.all([
+      api('/cloudflare/settings'),
+      api('/cloudflare/records'),
+      api('/listeners'),
+    ])
+    const remoteResult = settingsResult.configured
+      ? await api('/cloudflare/remote-records').catch(() => ({ records: [] }))
+      : { records: [] }
     settings.value = settingsResult
-    records.value = recordResult.records || []
+    records.value = [
+      ...(recordResult.records || []).map((row) => ({ ...row, managed: true })),
+      ...(remoteResult.records || []).map((row) => ({ ...row, managed: false, status: 'external' })),
+    ]
     listeners.value = listenerResult.listeners || []
   } finally { loading.value = false }
 }
@@ -46,6 +56,7 @@ function checkResult(row) {
   if (row.last_error) return '检查失败，请确认 Cloudflare 连接设置和记录内容'
   if (row.status === 'synced') return '线上记录与当前设置一致'
   if (row.status === 'drift') return '线上记录与当前设置不一致'
+  if (row.status === 'external') return 'Cloudflare 线上已有，当前未由本平台管理'
   return row.observed ? '已读取线上记录' : '尚未检查'
 }
 onMounted(load)
@@ -61,8 +72,8 @@ onMounted(load)
     </PageHeader>
     <main class="page-content">
       <el-alert :title="settings.configured ? `已连接域名：${settings.zone_name || settings.zone_id}` : '尚未连接 Cloudflare 域名服务'" :type="settings.configured ? 'success' : 'warning'" show-icon :closable="false" style="margin-bottom: 16px" />
-      <div class="search-toolbar"><el-input v-model="keyword" clearable :prefix-icon="Search" placeholder="搜索域名或内容" style="width: 260px" /><el-select v-model="selectedType" clearable placeholder="全部类型" style="width: 140px"><el-option v-for="type in ['A','AAAA','CNAME','TXT']" :key="type" :label="type" :value="type" /></el-select><el-select v-model="selectedStatus" clearable placeholder="全部状态" style="width: 140px"><el-option label="已同步" value="synced" /><el-option label="存在差异" value="drift" /><el-option label="未发布" value="draft" /></el-select></div>
-      <div class="table-panel"><el-table v-loading="loading" :data="filteredRecords"><el-table-column label="记录类型" prop="type" width="90" /><el-table-column label="域名" prop="name" min-width="220" /><el-table-column label="指向地址或内容" prop="content" min-width="220" /><el-table-column label="Cloudflare 加速" width="130"><template #default="{ row }">{{ row.proxied ? '已启用' : '未启用' }}</template></el-table-column><el-table-column label="同步状态" width="110"><template #default="{ row }"><el-tag :type="row.status === 'synced' ? 'success' : row.status === 'drift' ? 'warning' : 'info'">{{ row.status === 'synced' ? '已同步' : row.status === 'drift' ? '存在差异' : '未发布' }}</el-tag></template></el-table-column><el-table-column label="检查结果" min-width="220"><template #default="{ row }">{{ checkResult(row) }}</template></el-table-column><el-table-column label="操作" width="150" fixed="right" class-name="action-column"><template #default="{ row }"><el-button v-if="isAdmin" link type="primary" :icon="Promotion" @click="publish(row)">发布</el-button><el-button v-if="isAdmin" link type="danger" :icon="Delete" @click="remove(row)">删除</el-button></template></el-table-column></el-table></div>
+      <div class="search-toolbar"><el-input v-model="keyword" clearable :prefix-icon="Search" placeholder="搜索域名或内容" style="width: 260px" /><el-select v-model="selectedType" clearable placeholder="全部类型" style="width: 140px"><el-option v-for="type in ['A','AAAA','CNAME','TXT']" :key="type" :label="type" :value="type" /></el-select><el-select v-model="selectedStatus" clearable placeholder="全部状态" style="width: 140px"><el-option label="线上已有" value="external" /><el-option label="已同步" value="synced" /><el-option label="存在差异" value="drift" /><el-option label="未发布" value="draft" /></el-select></div>
+      <div class="table-panel"><el-table v-loading="loading" :data="filteredRecords"><el-table-column label="记录类型" prop="type" width="90" /><el-table-column label="域名" prop="name" min-width="220" /><el-table-column label="指向地址或内容" prop="content" min-width="220" /><el-table-column label="Cloudflare 加速" width="130"><template #default="{ row }">{{ row.proxied ? '已启用' : '未启用' }}</template></el-table-column><el-table-column label="同步状态" width="110"><template #default="{ row }"><el-tag :type="row.status === 'synced' ? 'success' : row.status === 'drift' ? 'warning' : 'info'">{{ row.status === 'external' ? '线上已有' : row.status === 'synced' ? '已同步' : row.status === 'drift' ? '存在差异' : '未发布' }}</el-tag></template></el-table-column><el-table-column label="检查结果" min-width="220"><template #default="{ row }">{{ checkResult(row) }}</template></el-table-column><el-table-column label="操作" width="150" fixed="right" class-name="action-column"><template #default="{ row }"><el-button v-if="isAdmin && row.managed" link type="primary" :icon="Promotion" @click="publish(row)">发布</el-button><el-button v-if="isAdmin && row.managed" link type="danger" :icon="Delete" @click="remove(row)">删除</el-button></template></el-table-column></el-table></div>
     </main>
     <el-dialog v-model="settingsOpen" title="连接 Cloudflare" width="560px"><el-form label-position="top"><el-form-item label="区域编号（Zone ID）"><el-input v-model="config.zone_id" /></el-form-item><el-form-item label="域名"><el-input v-model="config.zone_name" placeholder="example.com" /></el-form-item><el-form-item label="访问令牌（API Token）"><el-input v-model="config.api_token" type="password" show-password placeholder="请输入有效令牌；留空不会保留原令牌" /></el-form-item></el-form><template #footer><el-button @click="settingsOpen = false">取消</el-button><el-button type="primary" :disabled="!config.zone_id || !config.api_token" @click="saveSettings">保存</el-button></template></el-dialog>
     <el-dialog v-model="recordOpen" title="新建域名记录" width="580px"><el-form label-position="top"><el-row :gutter="16"><el-col :span="8"><el-form-item label="记录类型"><el-select v-model="record.type"><el-option v-for="type in ['A','AAAA','CNAME','TXT']" :key="type" :label="type" :value="type" /></el-select></el-form-item></el-col><el-col :span="16"><el-form-item label="域名"><el-input v-model="record.name" placeholder="proxy.example.com" /></el-form-item></el-col></el-row><el-form-item label="指向地址或内容"><el-input v-model="record.content" /></el-form-item><el-row :gutter="16"><el-col :span="12"><el-form-item label="缓存时间（TTL）"><el-input-number v-model="record.ttl" :min="1" style="width: 100%" /></el-form-item></el-col><el-col :span="12"><el-form-item label="Cloudflare 加速"><el-switch v-model="record.proxied" active-text="启用" inactive-text="关闭" /></el-form-item></el-col></el-row><el-form-item v-if="record.proxied" label="对应的接入服务" required><el-select v-model="record.listener_id" style="width: 100%" placeholder="请选择对应的 VLESS WebSocket 接入服务" @change="record.node_id = listeners.find((item) => item.id === record.listener_id)?.node_id || ''"><el-option v-for="listener in listeners" :key="listener.id" :label="`${appState.nodes.find((node) => node.id === listener.node_id)?.name || '服务器'} · ${listener.name}`" :value="listener.id" /></el-select></el-form-item></el-form><template #footer><el-button @click="recordOpen = false">取消</el-button><el-button type="primary" :disabled="!record.name || !record.content || (record.proxied && !record.listener_id)" @click="saveRecord">保存</el-button></template></el-dialog>

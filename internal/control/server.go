@@ -124,6 +124,7 @@ func (s *Server) registerBrowserRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/v1/cloudflare/settings", s.cloudflareSettings)
 	mux.HandleFunc("PUT /api/v1/cloudflare/settings", s.setCloudflareSettings)
 	mux.HandleFunc("GET /api/v1/cloudflare/records", s.listCloudflareRecords)
+	mux.HandleFunc("GET /api/v1/cloudflare/remote-records", s.listRemoteCloudflareRecords)
 	mux.HandleFunc("POST /api/v1/cloudflare/records", s.createCloudflareRecord)
 	mux.HandleFunc("PUT /api/v1/cloudflare/records/{id}", s.updateCloudflareRecord)
 	mux.HandleFunc("DELETE /api/v1/cloudflare/records/{id}", s.deleteCloudflareRecord)
@@ -212,6 +213,11 @@ func (s *Server) dashboard(w http.ResponseWriter, r *http.Request) {
 	}
 	if contentType != "" {
 		w.Header().Set("Content-Type", contentType)
+	}
+	if strings.HasPrefix(asset, "assets/") {
+		w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+	} else {
+		w.Header().Set("Cache-Control", "no-cache")
 	}
 	w.Header().Set("Content-Security-Policy", "default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self'; img-src 'self' data:; base-uri 'none'; frame-ancestors 'none'")
 	w.Header().Set("X-Content-Type-Options", "nosniff")

@@ -29,6 +29,9 @@ func TestDashboardUsesGuidedOperatorLanguage(t *testing.T) {
 	if response.Code != 200 || !strings.Contains(response.Body.String(), `id="app"`) {
 		t.Fatalf("dashboard root was not served: status=%d", response.Code)
 	}
+	if cacheControl := response.Header().Get("Cache-Control"); cacheControl != "no-cache" {
+		t.Fatalf("dashboard root cache control = %q", cacheControl)
+	}
 
 	match := regexp.MustCompile(`src="(/assets/[^"]+)"`).FindStringSubmatch(html)
 	if len(match) != 2 {
@@ -42,5 +45,8 @@ func TestDashboardUsesGuidedOperatorLanguage(t *testing.T) {
 	}
 	if contentType := response.Header().Get("Content-Type"); !strings.Contains(contentType, "javascript") {
 		t.Fatalf("dashboard JavaScript asset has unexpected content type %q", contentType)
+	}
+	if cacheControl := response.Header().Get("Cache-Control"); cacheControl != "public, max-age=31536000, immutable" {
+		t.Fatalf("dashboard asset cache control = %q", cacheControl)
 	}
 }

@@ -35,6 +35,7 @@ const proxyChart = ref()
 const charts = []
 let stopLive
 let connectionSource
+let refreshTimer
 let resizeObserver
 
 const online = computed(() => appState.nodes.filter((node) => node.online).length)
@@ -193,18 +194,27 @@ function connectConnections() {
   })
 }
 
+function scheduleLoad() {
+  if (refreshTimer) return
+  refreshTimer = window.setTimeout(() => {
+    refreshTimer = undefined
+    load(true).catch(() => {})
+  }, 1000)
+}
+
 onMounted(async () => {
   await load()
   await nextTick()
   initCharts()
   connectConnections()
   stopLive = subscribeLive((event) => {
-    if (event.kind === 'node' || event.kind === 'connections' || event.kind === 'task') load(true).catch(() => {})
+    if (event.kind === 'node' || event.kind === 'task') scheduleLoad()
   })
 })
 
 onBeforeUnmount(() => {
   stopLive?.()
+  window.clearTimeout(refreshTimer)
   connectionSource?.close()
   resizeObserver?.disconnect()
   charts.forEach((chart) => chart.dispose())
