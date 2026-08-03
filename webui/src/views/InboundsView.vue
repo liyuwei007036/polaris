@@ -1,8 +1,9 @@
 <script setup>
 import { computed, inject, onMounted, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Delete, Edit, Plus, Refresh } from '@element-plus/icons-vue'
+import { Delete, Edit, Plus, Refresh, Search } from '@element-plus/icons-vue'
 import { api, del, post, put } from '../api'
+import { includesText } from '../format'
 import { protocolMap } from '../protocols'
 import PageHeader from '../components/PageHeader.vue'
 import ListenerFormDialog from '../components/ListenerFormDialog.vue'
@@ -20,8 +21,16 @@ const certificates = ref([])
 const endpointMap = ref({})
 const formOpen = ref(false)
 const editing = ref(null)
+const keyword = ref('')
+const selectedNode = ref('')
+const selectedStatus = ref('')
 
 const nodeNames = computed(() => Object.fromEntries(appState.nodes.map((item) => [item.id, item.name])))
+const filteredListeners = computed(() => listeners.value.filter((row) => {
+  if (selectedNode.value && row.node_id !== selectedNode.value) return false
+  if (selectedStatus.value && String(row.enabled) !== selectedStatus.value) return false
+  return includesText([nodeNames.value[row.node_id], row.name, row.port, row.spec?.protocol, row.spec?.transport?.type, securityLabel(row)], keyword.value)
+}))
 
 async function load() {
   loading.value = true
@@ -145,16 +154,19 @@ onMounted(load)
 
 <template>
   <div class="page-shell">
-    <PageHeader title="接入服务" description="创建客户端用于连接服务器的服务，并为不同用户指定上网出口">
+    <PageHeader title="接入服务">
       <el-button :icon="Refresh" @click="load">刷新</el-button>
-      <el-button v-if="canWrite" type="primary" :icon="Plus" @click="openCreate">新建接入服务</el-button>
+      <el-button v-if="canWrite" type="primary" :icon="Plus" @click="openCreate">新建</el-button>
     </PageHeader>
 
     <main class="page-content page-content--tight">
-      <p class="subtle">这里显示全部服务器的接入服务。保存、停用或删除后，系统会自动检查并应用。</p>
-
+      <div class="search-toolbar">
+        <el-input v-model="keyword" clearable :prefix-icon="Search" placeholder="搜索服务、协议或端口" style="width: 260px" />
+        <el-select v-model="selectedNode" clearable placeholder="全部服务器" style="width: 180px"><el-option v-for="node in appState.nodes" :key="node.id" :label="node.name" :value="node.id" /></el-select>
+        <el-select v-model="selectedStatus" clearable placeholder="全部状态" style="width: 140px"><el-option label="启用" value="true" /><el-option label="停用" value="false" /></el-select>
+      </div>
       <div class="table-panel">
-        <el-table v-loading="loading" :data="listeners" row-key="id">
+        <el-table v-loading="loading" :data="filteredListeners" row-key="id">
           <el-table-column label="服务器" min-width="150"><template #default="{ row }">{{ nodeNames[row.node_id] || row.node_id }}</template></el-table-column>
           <el-table-column label="服务名称" min-width="190">
             <template #default="{ row }">
@@ -178,9 +190,9 @@ onMounted(load)
               <el-tag :type="row.enabled ? 'success' : 'info'">{{ row.enabled ? '启用' : '停用' }}</el-tag>
             </template>
           </el-table-column>
-          <el-table-column label="操作" width="220" fixed="right">
+          <el-table-column label="操作" width="190" fixed="right" class-name="action-column">
             <template #default="{ row }">
-              <el-button v-if="canWrite" link :icon="Edit" @click="openEdit(row)">修改</el-button>
+              <el-button v-if="canWrite" link :icon="Edit" @click="openEdit(row)">编辑</el-button>
               <el-button v-if="canWrite" link @click="toggle(row)">{{ row.enabled ? '停用' : '启用' }}</el-button>
               <el-button v-if="isAdmin" link type="danger" :icon="Delete" @click="removeListener(row)">删除</el-button>
             </template>

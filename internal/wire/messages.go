@@ -53,6 +53,8 @@ type ConnectionInfo struct {
 	StartedAt   string
 	Outbound    string
 	Rule        string
+	RulePayload string
+	Chains      []string
 }
 
 // Fail2BanJailStatus mirrors one jail's status.

@@ -5,6 +5,8 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+
+	"github.com/sb-control/sb-control/internal/security"
 )
 
 func (s *Server) listMihomoProxyGroups(w http.ResponseWriter, r *http.Request) {
@@ -291,6 +293,15 @@ func (s *Server) mihomoClientSubscription(w http.ResponseWriter, r *http.Request
 		writeError(w, err)
 		return
 	}
+	ip := requestIP(r.RemoteAddr, map[string]string{
+		"CF-Connecting-IP": r.Header.Get("CF-Connecting-IP"),
+		"X-Real-IP":        r.Header.Get("X-Real-IP"),
+		"X-Forwarded-For":  r.Header.Get("X-Forwarded-For"),
+	})
+	if err := s.store.RecordSubscriptionAccess(r.Context(), configID, name, ip, s.ipLocator.Locate(ip), r.UserAgent()); err != nil {
+		writeError(w, err)
+		return
+	}
 	filename := strings.Map(func(r rune) rune {
 		if r == '-' || r == '_' || r == '.' || r >= '0' && r <= '9' || r >= 'A' && r <= 'Z' || r >= 'a' && r <= 'z' {
 			return r
@@ -306,4 +317,30 @@ func (s *Server) mihomoClientSubscription(w http.ResponseWriter, r *http.Request
 	w.Header().Set("Profile-Update-Interval", "24")
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write([]byte(yaml))
+}
+
+func (s *Server) listMihomoSubscriptionAccess(w http.ResponseWriter, r *http.Request) {
+	if _, err := s.operator(r, false); err != nil {
+		writeError(w, err)
+		return
+	}
+	page, err := security.ParsePositiveInt(r.URL.Query().Get("page"), 1, 1_000_000)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	pageSize, err := security.ParsePositiveInt(r.URL.Query().Get("page_size"), 20, 100)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	items, total, err := s.store.ListSubscriptionAccess(r.Context(), SubscriptionAccessFilter{
+		ConfigID: r.URL.Query().Get("config_id"), Location: r.URL.Query().Get("location"),
+		IP: r.URL.Query().Get("ip"), UserAgent: r.URL.Query().Get("user_agent"),
+	}, page, pageSize)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"access_logs": items, "total": total, "page": page, "page_size": pageSize})
 }

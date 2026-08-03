@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -153,6 +154,18 @@ func TestStoredMihomoConfigReferencesNestedGroupsRulesAndAliases(t *testing.T) {
 	response.Body.Close()
 	if err != nil || !strings.Contains(string(body), `"name":"洛杉矶 01"`) {
 		t.Fatalf("subscription content does not contain alias: %v\n%s", err, body)
+	}
+	response = request(t, http.MethodGet, httpServer.URL+"/api/v1/mihomo/subscription-access?config_id="+config.ID+"&ip=127&location="+url.QueryEscape("本机")+"&user_agent=Go-http-client", nil, session, csrfToken)
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("list subscription access: got %d", response.StatusCode)
+	}
+	var accessPage struct {
+		Total int                          `json:"total"`
+		Logs  []control.SubscriptionAccess `json:"access_logs"`
+	}
+	decodeBody(t, response, &accessPage)
+	if accessPage.Total != 1 || len(accessPage.Logs) != 1 || accessPage.Logs[0].ConfigName != "手机配置" || accessPage.Logs[0].Location != "本机" || accessPage.Logs[0].AccessedAt == "" {
+		t.Fatalf("unexpected subscription access page: %#v", accessPage)
 	}
 	response = request(t, http.MethodPost, httpServer.URL+"/api/v1/mihomo/client-configs/"+config.ID+"/enabled", map[string]bool{"enabled": false}, session, csrfToken)
 	if response.StatusCode != http.StatusOK {

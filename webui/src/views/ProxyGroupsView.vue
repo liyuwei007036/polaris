@@ -1,8 +1,9 @@
 <script setup>
 import { computed, inject, onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Delete, Edit, Plus, Refresh } from '@element-plus/icons-vue'
+import { Delete, Edit, Plus, Refresh, Search } from '@element-plus/icons-vue'
 import { api, del, post, put } from '../api'
+import { includesText } from '../format'
 import PageHeader from '../components/PageHeader.vue'
 import { protocolMap } from '../protocols'
 
@@ -18,6 +19,8 @@ const groups = ref([])
 const listeners = ref([])
 const endpoints = ref([])
 const form = reactive({ name: '', strategy: 'select', members: [] })
+const keyword = ref('')
+const selectedStrategy = ref('')
 const supported = new Set(['vless', 'vmess', 'trojan', 'shadowsocks', 'hysteria2', 'socks', 'http'])
 const strategyNames = { select: '手动选择', 'url-test': '自动测速', fallback: '故障切换' }
 
@@ -39,6 +42,10 @@ const clientNodes = computed(() => listeners.value
 const nodeNames = computed(() => Object.fromEntries(clientNodes.value.map((item) => [item.id, item.label])))
 const groupNames = computed(() => Object.fromEntries(groups.value.map((item) => [item.id, item.name])))
 const formValid = computed(() => Boolean(form.name.trim() && form.members.length))
+const filteredGroups = computed(() => groups.value.filter((group) => {
+  if (selectedStrategy.value && group.strategy !== selectedStrategy.value) return false
+  return includesText([group.name, strategyNames[group.strategy], ...(group.members || []).map(memberLabel)], keyword.value)
+}))
 
 async function load() {
   loading.value = true
@@ -111,14 +118,17 @@ onMounted(load)
 
 <template>
   <div class="page-shell">
-    <PageHeader title="代理分组" description="组合客户端节点和其他代理分组，供客户端配置引用">
+    <PageHeader title="代理分组">
       <el-button :icon="Refresh" @click="load">刷新</el-button>
-      <el-button v-if="canWrite" type="primary" :icon="Plus" @click="resetForm()">新建代理分组</el-button>
+      <el-button v-if="canWrite" type="primary" :icon="Plus" @click="resetForm()">新建</el-button>
     </PageHeader>
     <main v-loading="loading" class="page-content">
-      <el-alert title="分组成员按顺序写入 Mihomo；被其他分组或客户端配置引用的分组不能删除。" type="info" show-icon :closable="false" class="page-alert" />
+      <div class="search-toolbar">
+        <el-input v-model="keyword" clearable :prefix-icon="Search" placeholder="搜索分组或成员" style="width: 260px" />
+        <el-select v-model="selectedStrategy" clearable placeholder="全部策略" style="width: 160px"><el-option v-for="(label, value) in strategyNames" :key="value" :label="label" :value="value" /></el-select>
+      </div>
       <div class="table-panel">
-        <el-table :data="groups">
+        <el-table :data="filteredGroups">
           <el-table-column label="分组名称" min-width="180" prop="name" />
           <el-table-column label="策略" width="140"><template #default="{ row }">{{ strategyNames[row.strategy] }}</template></el-table-column>
           <el-table-column label="成员" min-width="340">
@@ -128,7 +138,7 @@ onMounted(load)
               </el-tag>
             </template>
           </el-table-column>
-          <el-table-column label="操作" width="180" fixed="right">
+          <el-table-column label="操作" width="150" fixed="right" class-name="action-column">
             <template #default="{ row }">
               <el-button v-if="canWrite" link :icon="Edit" @click="resetForm(row)">编辑</el-button>
               <el-button v-if="isAdmin" link type="danger" :icon="Delete" @click="remove(row)">删除</el-button>

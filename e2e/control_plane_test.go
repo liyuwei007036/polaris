@@ -159,14 +159,18 @@ func TestControlPlaneProcessJourneyWithRealAgent(t *testing.T) {
 	waitFor(t, 10*time.Second, "agent connection snapshot to reach the master", func() bool {
 		var result struct {
 			Connections []struct {
-				ID   string `json:"id"`
-				Host string `json:"host"`
+				ID             string   `json:"id"`
+				Host           string   `json:"host"`
+				SourceLocation string   `json:"source_location"`
+				RulePayload    string   `json:"rule_payload"`
+				Chains         []string `json:"chains"`
 			} `json:"connections"`
 		}
 		if !api.tryJSON(http.MethodGet, "/api/v1/nodes/"+approval.NodeID+"/connections", nil, false, http.StatusOK, &result) {
 			return false
 		}
-		return len(result.Connections) == 1 && result.Connections[0].ID == "e2e-connection" && result.Connections[0].Host == "example.test"
+		return len(result.Connections) == 1 && result.Connections[0].ID == "e2e-connection" && result.Connections[0].Host == "example.test" &&
+			result.Connections[0].SourceLocation == "内网" && result.Connections[0].RulePayload == "example.test" && len(result.Connections[0].Chains) == 1
 	})
 
 	var outbound struct {
@@ -507,7 +511,7 @@ func startClashAPI(t *testing.T) *httptest.Server {
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = io.WriteString(w, `{"connections":[{"id":"e2e-connection","metadata":{"network":"tcp","type":"vless","sourceIP":"192.0.2.10","sourcePort":"42000","destinationIP":"198.51.100.20","destinationPort":"443","host":"example.test"},"upload":128,"download":512,"start":"2026-08-02T00:00:00Z","chains":["direct"],"rule":"MATCH"}]}`)
+		_, _ = io.WriteString(w, `{"connections":[{"id":"e2e-connection","metadata":{"network":"tcp","type":"vless","sourceIP":"192.168.1.10","sourcePort":"42000","destinationIP":"198.51.100.20","destinationPort":"443","host":"example.test"},"upload":128,"download":512,"start":"2026-08-02T00:00:00Z","chains":["direct"],"rule":"DOMAIN","rulePayload":"example.test"}]}`)
 	}))
 	t.Cleanup(server.Close)
 	return server

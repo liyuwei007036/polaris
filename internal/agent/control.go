@@ -46,17 +46,19 @@ type NodeHealth struct {
 // ConnectionInfo mirrors what the local sing-box Clash API reports. Fields the
 // API does not provide stay empty; nothing is inferred.
 type ConnectionInfo struct {
-	ID          string `json:"id,omitempty"`
-	Inbound     string `json:"inbound,omitempty"`
-	Network     string `json:"network,omitempty"`
-	Source      string `json:"source,omitempty"`
-	Destination string `json:"destination,omitempty"`
-	Host        string `json:"host,omitempty"`
-	Upload      int64  `json:"upload"`
-	Download    int64  `json:"download"`
-	StartedAt   string `json:"started_at,omitempty"`
-	Outbound    string `json:"outbound,omitempty"`
-	Rule        string `json:"rule,omitempty"`
+	ID          string   `json:"id,omitempty"`
+	Inbound     string   `json:"inbound,omitempty"`
+	Network     string   `json:"network,omitempty"`
+	Source      string   `json:"source,omitempty"`
+	Destination string   `json:"destination,omitempty"`
+	Host        string   `json:"host,omitempty"`
+	Upload      int64    `json:"upload"`
+	Download    int64    `json:"download"`
+	StartedAt   string   `json:"started_at,omitempty"`
+	Outbound    string   `json:"outbound,omitempty"`
+	Rule        string   `json:"rule,omitempty"`
+	RulePayload string   `json:"rule_payload,omitempty"`
+	Chains      []string `json:"chains,omitempty"`
 }
 
 type Fail2BanReport struct {
@@ -310,7 +312,8 @@ func toWireConnections(in []ConnectionInfo) []wire.ConnectionInfo {
 	for _, c := range in {
 		out = append(out, wire.ConnectionInfo{
 			ID: c.ID, Inbound: c.Inbound, Network: c.Network, Source: c.Source, Destination: c.Destination,
-			Host: c.Host, Upload: c.Upload, Download: c.Download, StartedAt: c.StartedAt, Outbound: c.Outbound, Rule: c.Rule,
+			Host: c.Host, Upload: c.Upload, Download: c.Download, StartedAt: c.StartedAt, Outbound: c.Outbound,
+			Rule: c.Rule, RulePayload: c.RulePayload, Chains: c.Chains,
 		})
 	}
 	return out

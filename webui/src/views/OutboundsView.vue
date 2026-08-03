@@ -1,8 +1,9 @@
 <script setup>
-import { inject, onMounted, reactive, ref } from 'vue'
+import { computed, inject, onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Connection, Delete, Edit, Plus, Refresh } from '@element-plus/icons-vue'
+import { Connection, Delete, Edit, Plus, Refresh, Search } from '@element-plus/icons-vue'
 import { api, del, friendlyError, post, put } from '../api'
+import { includesText } from '../format'
 import { waitForTask } from '../live'
 import PageHeader from '../components/PageHeader.vue'
 
@@ -20,6 +21,14 @@ const testing = ref(false)
 const testTarget = ref(null)
 const testNodeID = ref('')
 const form = reactive({ name: '', type: 'socks', server: '', server_port: 1080, username: '', password: '', enabled: true })
+const keyword = ref('')
+const selectedType = ref('')
+const selectedStatus = ref('')
+const filteredRows = computed(() => rows.value.filter((row) => {
+  if (selectedType.value && row.type !== selectedType.value) return false
+  if (selectedStatus.value && String(row.enabled) !== selectedStatus.value) return false
+  return includesText([row.name, row.type, row.server, row.server_port, row.username], keyword.value)
+}))
 
 async function load() {
   loading.value = true
@@ -76,20 +85,24 @@ onMounted(load)
 
 <template>
   <div class="page-shell">
-    <PageHeader title="上网出口" description="设置用户访问互联网时使用的 SOCKS5 或 HTTP 代理服务器">
+    <PageHeader title="上网出口">
       <el-button :icon="Refresh" @click="load">刷新</el-button>
-      <el-button v-if="canWrite" type="primary" :icon="Plus" @click="openCreate">新建上网出口</el-button>
+      <el-button v-if="canWrite" type="primary" :icon="Plus" @click="openCreate">新建</el-button>
     </PageHeader>
     <main class="page-content">
-      <el-alert title="用户未选择其他出口时，将直接使用当前服务器访问互联网。" type="info" show-icon :closable="false" style="margin-bottom: 16px" />
+      <div class="search-toolbar">
+        <el-input v-model="keyword" clearable :prefix-icon="Search" placeholder="搜索名称、地址或用户" style="width: 260px" />
+        <el-select v-model="selectedType" clearable placeholder="全部类型" style="width: 140px"><el-option label="SOCKS5" value="socks" /><el-option label="HTTP" value="http" /><el-option label="直连" value="direct" /></el-select>
+        <el-select v-model="selectedStatus" clearable placeholder="全部状态" style="width: 140px"><el-option label="启用" value="true" /><el-option label="停用" value="false" /></el-select>
+      </div>
       <div class="table-panel">
-        <el-table v-loading="loading" :data="rows">
+        <el-table v-loading="loading" :data="filteredRows">
           <el-table-column label="名称" prop="name" min-width="180" />
           <el-table-column label="类型" width="110"><template #default="{ row }"><el-tag>{{ row.type.toUpperCase() }}</el-tag></template></el-table-column>
           <el-table-column label="服务器" min-width="220"><template #default="{ row }"><span class="mono">{{ row.type === 'direct' ? '服务器直连' : `${row.server}:${row.server_port}` }}</span></template></el-table-column>
           <el-table-column label="登录用户名" prop="username" min-width="140"><template #default="{ row }">{{ row.username || '—' }}</template></el-table-column>
           <el-table-column label="状态" width="90"><template #default="{ row }"><el-tag :type="row.enabled ? 'success' : 'info'">{{ row.enabled ? '启用' : '停用' }}</el-tag></template></el-table-column>
-          <el-table-column label="操作" width="275" fixed="right">
+          <el-table-column label="操作" width="250" fixed="right" class-name="action-column">
             <template #default="{ row }">
               <template v-if="row.type !== 'direct'">
                 <el-button link type="primary" :icon="Connection" @click="openTest(row)">测试</el-button>
@@ -129,7 +142,7 @@ onMounted(load)
       </el-form>
       <template #footer>
         <el-button @click="testDialog = false">取消</el-button>
-        <el-button type="primary" :loading="testing" :disabled="!testNodeID" @click="runTest">开始检测</el-button>
+        <el-button type="primary" :loading="testing" :disabled="!testNodeID" @click="runTest">检测</el-button>
       </template>
     </el-dialog>
   </div>

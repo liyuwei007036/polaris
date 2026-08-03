@@ -48,7 +48,7 @@ async function save() {
         <el-form-item label="再次输入新密码">
           <el-input v-model="form.confirm_password" type="password" show-password autocomplete="new-password" placeholder="请再次输入新密码" @keyup.enter="save" />
         </el-form-item>
-        <el-button type="primary" size="large" :loading="loading" @click="save">保存新密码并进入平台</el-button>
+        <el-button type="primary" size="large" :loading="loading" @click="save">保存</el-button>
       </el-form>
     </section>
   </div>
