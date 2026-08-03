@@ -107,6 +107,7 @@ test('浏览器页面回归：真实登录，核心工作区 API 使用路由替
   await dialog.locator('.protocol-select .el-select').click()
   await page.locator('.el-select-dropdown__item').filter({ hasText: 'VLESS + WebSocket' }).click()
   await expect(dialog.getByRole('textbox', { name: '请求路径' })).toHaveValue(/^\/[0-9a-f]{24}$/)
+  await expect(dialog.getByText('TLS 加密（自动证书）', { exact: true })).toBeVisible()
   await dialog.getByRole('button', { name: '取消', exact: true }).click()
   await expect(dialog).toBeHidden()
 
@@ -122,7 +123,7 @@ test('浏览器页面回归：真实登录，核心工作区 API 使用路由替
     id: 'listener-1', node_id: 'node-1', name: 'WebSocket 接入', connection_domain: 'ws.example.com', listen_address: '0.0.0.0',
     port: 18444, backend_port: 18444, enabled: true, outbound_id: '',
     spec: {
-      protocol: 'vless', network: 'tcp', tls: { enabled: false }, reality: { enabled: false },
+      protocol: 'vless', network: 'tcp', tls: { enabled: true, alpn: ['http/1.1'] }, reality: { enabled: false },
       transport: { type: 'ws', path: '', host: '', service_name: '' },
     },
   }
@@ -210,6 +211,7 @@ test('浏览器页面回归：真实登录，核心工作区 API 使用路由替
   await editDialog.getByRole('button', { name: '保存', exact: true }).click()
   await expect(editDialog).toBeHidden()
   expect(savedListener.spec.transport).toEqual({ type: 'ws', path: '', host: '', service_name: '' })
+  expect(savedListener.spec.tls).toMatchObject({ enabled: true, alpn: ['http/1.1'] })
   expect(updatedAccount).toMatchObject({ name: '修改后的用户', alias: '测试节点 01', enabled: true, outbound_id: 'direct' })
   expect(createdAccount).toEqual({ name: '新增用户', alias: '测试节点 02', outbound_id: 'direct' })
 

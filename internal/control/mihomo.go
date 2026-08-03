@@ -223,6 +223,9 @@ func (s *Store) mihomoProxy(ctx context.Context, endpointID, fallbackServer stri
 	}
 	if listener.Spec.TLS.Enabled {
 		proxy["tls"] = true
+		if len(listener.Spec.TLS.ALPN) > 0 {
+			proxy["alpn"] = listener.Spec.TLS.ALPN
+		}
 	}
 	if listener.Spec.Protocol == "hysteria2" {
 		proxy["skip-cert-verify"] = true

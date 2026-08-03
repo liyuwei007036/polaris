@@ -46,6 +46,7 @@ func TestSupportedInboundModes(t *testing.T) {
 			spec: control.ProtocolSpec{
 				Protocol:  "vless",
 				Network:   "tcp",
+				TLS:       control.TLSOptions{Enabled: true, ALPN: []string{"http/1.1"}},
 				Transport: control.TransportOptions{Type: "ws"},
 			},
 		},
@@ -54,6 +55,7 @@ func TestSupportedInboundModes(t *testing.T) {
 			spec: control.ProtocolSpec{
 				Protocol:  "vless",
 				Network:   "tcp",
+				TLS:       control.TLSOptions{Enabled: true, ALPN: []string{"h2"}},
 				Transport: control.TransportOptions{Type: "grpc", ServiceName: "proxy"},
 			},
 		},

@@ -49,6 +49,7 @@ function randomAccountName() {
 
 function setProfile(value) {
   model.value.profile = value
+  model.value.tls_alpn = value === 'vless-grpc' ? ['h2'] : value === 'vless-ws' ? ['http/1.1'] : []
   normalizeProfile()
   if (listenerProfileMap[value]?.transport === 'ws' && !model.value.transport_path) {
     model.value.transport_path = `/${randomHex(12)}`
@@ -193,7 +194,7 @@ async function save() {
             <el-col :span="24">
               <el-form-item label="连接域名" prop="connection_domain">
                 <el-input v-model="model.connection_domain" placeholder="proxy.example.com" />
-                <div class="form-hint">客户端连接这个域名；它独立于 Reality 目标网站、WebSocket Host 和 gRPC 服务名称。</div>
+                <div class="form-hint">客户端连接这个域名。WS/gRPC 通过 Cloudflare 时，它同时作为 TLS 回源 SNI；Reality 分流使用下方的目标网站。</div>
               </el-form-item>
             </el-col>
           </el-row>
@@ -227,6 +228,7 @@ async function save() {
             <el-col v-if="model.transport_type === 'ws'" :span="12">
               <el-form-item label="请求域名（Host）">
                 <el-input v-model="model.transport_host" placeholder="可选" />
+                <div class="form-hint">Cloudflare 转发 WebSocket 请求时使用的 HTTP Host，通常与连接域名相同。</div>
               </el-form-item>
             </el-col>
             <el-col v-if="model.transport_type === 'grpc'" :span="14">

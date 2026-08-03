@@ -80,16 +80,16 @@ func (s *Store) CreateListenerWithAutomaticPortRouting(ctx context.Context, list
 		}
 		newName, err := automaticRouteName(listener)
 		if err != nil {
-			return Listener{}, nil, false, userErrorf("端口 %d 已被使用；如需自动使用同一端口，两个接入服务都必须启用加密并填写不同的连接域名", listener.Port)
+			return Listener{}, nil, false, userErrorf("端口 %d 已被使用；如需自动使用同一端口，TCP 接入服务必须启用 TLS 或 Reality，并使用不同的实际 SNI", listener.Port)
 		}
 		seenNames[newName] = struct{}{}
 		for index := range existing {
 			name, nameErr := automaticRouteName(existing[index])
 			if nameErr != nil {
-				return Listener{}, nil, false, userErrorf("端口 %d 已被“%s”使用，且该服务无法按连接域名自动区分，请选择其他端口", listener.Port, existing[index].Name)
+				return Listener{}, nil, false, userErrorf("端口 %d 已被“%s”使用，且该服务无法按实际 SNI 自动区分，请启用 TLS 或选择其他端口", listener.Port, existing[index].Name)
 			}
 			if _, duplicate := seenNames[name]; duplicate {
-				return Listener{}, nil, false, userErrorf("连接域名 %s 已用于端口 %d，请为每个接入服务填写不同的连接域名", name, listener.Port)
+				return Listener{}, nil, false, userErrorf("实际 SNI %s 已用于端口 %d；请修改连接域名，Reality 接入请修改目标网站", name, listener.Port)
 			}
 			seenNames[name] = struct{}{}
 		}
@@ -217,9 +217,12 @@ func automaticRouteName(listener Listener) (string, error) {
 		return "", errors.New("listener does not expose TLS SNI")
 	}
 	name := listener.Domain
+	if listener.Spec.Reality.Enabled {
+		name = listener.Spec.Reality.HandshakeServer
+	}
 	name = strings.TrimSuffix(strings.ToLower(strings.TrimSpace(name)), ".")
 	if !validSNI(name) {
-		return "", errors.New("listener connection domain is invalid")
+		return "", errors.New("listener TLS SNI is invalid")
 	}
 	return name, nil
 }
@@ -245,11 +248,11 @@ func (s *Store) prepareAutomaticRouteUpdate(ctx context.Context, listener Listen
 	}
 	name, err := automaticRouteName(listener)
 	if err != nil {
-		return nil, userErrorf("该接入服务正在自动使用同一端口，必须保留有效的加密连接域名")
+		return nil, userErrorf("该接入服务正在自动使用同一端口，必须保留有效且唯一的实际 SNI")
 	}
 	for _, existing := range routes {
 		if existing.ID != route.ID && existing.ListenAddress == route.ListenAddress && existing.Port == route.Port && strings.EqualFold(existing.SNI, name) && existing.Enabled {
-			return nil, userErrorf("连接域名 %s 已用于端口 %d，请填写其他连接域名", name, route.Port)
+			return nil, userErrorf("实际 SNI %s 已用于端口 %d，请填写其他连接域名或 Reality 目标网站", name, route.Port)
 		}
 	}
 	route.SNI = name

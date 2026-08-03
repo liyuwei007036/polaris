@@ -2,6 +2,7 @@ package control_test
 
 import (
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"net/http"
@@ -172,7 +173,7 @@ func TestSharedPortInboundCreatesMultipleUsersAndNginxRoutes(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	create := func(name, sni string, expectAutomaticRouting bool) struct {
+	create := func(name, connectionDomain, realitySNI string, expectAutomaticRouting bool) struct {
 		Listener  control.Listener      `json:"listener"`
 		Endpoints []control.Endpoint    `json:"endpoints"`
 		Ingress   *control.IngressRoute `json:"ingress_route"`
@@ -180,10 +181,10 @@ func TestSharedPortInboundCreatesMultipleUsersAndNginxRoutes(t *testing.T) {
 		t.Helper()
 		response := request(t, http.MethodPost, httpServer.URL+"/api/v1/listeners/quick", map[string]any{
 			"listener": map[string]any{
-				"node_id": nodeID, "name": name, "connection_domain": sni, "listen_address": "0.0.0.0", "port": 443, "enabled": true,
+				"node_id": nodeID, "name": name, "connection_domain": connectionDomain, "listen_address": "0.0.0.0", "port": 443, "enabled": true,
 				"spec": map[string]any{
 					"protocol": "vless", "network": "tcp", "tls": map[string]any{"enabled": true},
-					"reality": map[string]any{"enabled": true, "handshake_server": "www.microsoft.com", "handshake_port": 443, "key_id": realityKey.ID},
+					"reality": map[string]any{"enabled": true, "handshake_server": realitySNI, "handshake_port": 443, "key_id": realityKey.ID},
 				},
 			},
 			"accounts": []map[string]any{{"name": "用户 A", "outbound_id": "direct"}, {"name": "用户 B", "outbound_id": outbound.ID}},
@@ -206,8 +207,8 @@ func TestSharedPortInboundCreatesMultipleUsersAndNginxRoutes(t *testing.T) {
 		return created
 	}
 
-	first := create("Reality A", "a.example.com", false)
-	second := create("Reality B", "b.example.com", true)
+	first := create("Reality A", "a.example.com", "reality-a.example.com", false)
+	second := create("Reality B", "b.example.com", "reality-b.example.com", true)
 	if len(first.Endpoints) != 2 || first.Endpoints[0].OutboundID != "direct" || first.Endpoints[1].OutboundID != outbound.ID {
 		t.Fatalf("generated accounts = %#v", first.Endpoints)
 	}
@@ -242,7 +243,7 @@ func TestSharedPortInboundCreatesMultipleUsersAndNginxRoutes(t *testing.T) {
 		t.Fatalf("automatic route backends = %#v", routes)
 	}
 	editedSecond := secondListener
-	editedSecond.Domain = "vless-b-new.example.com"
+	editedSecond.Spec.Reality.HandshakeServer = "reality-b-new.example.com"
 	editResponse := request(t, http.MethodPut, httpServer.URL+"/api/v1/listeners/"+secondListener.ID, editedSecond, session, csrfToken)
 	if editResponse.StatusCode != http.StatusOK {
 		t.Fatalf("edit automatically routed listener: got %d", editResponse.StatusCode)
@@ -253,7 +254,7 @@ func TestSharedPortInboundCreatesMultipleUsersAndNginxRoutes(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, route := range routes {
-		if route.ListenerID == secondListener.ID && route.SNI != "vless-b-new.example.com" {
+		if route.ListenerID == secondListener.ID && route.SNI != "reality-b-new.example.com" {
 			t.Fatalf("automatic route name was not updated: %#v", route)
 		}
 	}
@@ -270,10 +271,10 @@ func TestSharedPortInboundCreatesMultipleUsersAndNginxRoutes(t *testing.T) {
 
 	duplicateDomain := request(t, http.MethodPost, httpServer.URL+"/api/v1/listeners/quick", map[string]any{
 		"listener": map[string]any{
-			"node_id": nodeID, "name": "重复域名", "connection_domain": "a.example.com", "port": 443, "enabled": true,
+			"node_id": nodeID, "name": "重复 SNI", "connection_domain": "c.example.com", "port": 443, "enabled": true,
 			"spec": map[string]any{
 				"protocol": "vless", "network": "tcp", "tls": map[string]any{"enabled": true},
-				"reality": map[string]any{"enabled": true, "handshake_server": "www.microsoft.com", "handshake_port": 443, "key_id": realityKey.ID},
+				"reality": map[string]any{"enabled": true, "handshake_server": "reality-a.example.com", "handshake_port": 443, "key_id": realityKey.ID},
 			},
 		},
 		"accounts": []map[string]any{{"name": "用户 C", "outbound_id": "direct"}},
@@ -283,14 +284,14 @@ func TestSharedPortInboundCreatesMultipleUsersAndNginxRoutes(t *testing.T) {
 	}
 	var duplicateError map[string]string
 	decodeBody(t, duplicateDomain, &duplicateError)
-	if !strings.Contains(duplicateError["error"], "不同的连接域名") {
+	if !strings.Contains(duplicateError["error"], "实际 SNI") {
 		t.Fatalf("duplicate domain error = %#v", duplicateError)
 	}
 
 	plainTCP := request(t, http.MethodPost, httpServer.URL+"/api/v1/listeners/quick", map[string]any{
 		"listener": map[string]any{
 			"node_id": nodeID, "name": "无加密 TCP", "port": 443, "enabled": true,
-			"spec": map[string]any{"protocol": "vless", "network": "tcp", "tls": map[string]any{"enabled": false}},
+			"spec": map[string]any{"protocol": "vless", "network": "tcp", "tls": map[string]any{"enabled": false}, "transport": map[string]any{"type": "ws", "path": "/plain"}},
 		},
 		"accounts": []map[string]any{{"name": "用户 D", "outbound_id": "direct"}},
 	}, session, csrfToken)
@@ -328,7 +329,7 @@ func TestSharedPortInboundCreatesMultipleUsersAndNginxRoutes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, expected := range []string{"listen 0.0.0.0:443", "a.example.com", "vless-b-new.example.com"} {
+	for _, expected := range []string{"listen 0.0.0.0:443", "reality-a.example.com", "reality-b-new.example.com"} {
 		if !strings.Contains(nginx, expected) {
 			t.Fatalf("Nginx configuration missing %q:\n%s", expected, nginx)
 		}
@@ -378,6 +379,167 @@ func TestEmptyNginxConfigurationCanClearManagedRoutes(t *testing.T) {
 	digest := sha256.Sum256(nil)
 	if configuration != "" || hash != hex.EncodeToString(digest[:]) {
 		t.Fatalf("empty Nginx configuration = %q, %q", configuration, hash)
+	}
+}
+
+func TestRealityWebSocketGRPCAndHysteria2SharePublicPort443(t *testing.T) {
+	store, err := control.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	secret, err := store.CreateInitialAdmin(t.Context(), "admin@example.com", "correct horse battery staple")
+	if err != nil {
+		t.Fatal(err)
+	}
+	server, err := control.NewServer(store, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	httpServer := httptest.NewServer(server.Handler())
+	defer httpServer.Close()
+	session, csrfToken := login(t, httpServer.URL, secret)
+	nodeID := approveTestNode(t, server, httpServer.URL, session, csrfToken, "four-protocol-443-node")
+
+	create := func(name, domain string, spec map[string]any, expectIngress bool) control.Listener {
+		t.Helper()
+		response := request(t, http.MethodPost, httpServer.URL+"/api/v1/listeners/quick", map[string]any{
+			"listener": map[string]any{
+				"node_id": nodeID, "name": name, "connection_domain": domain,
+				"listen_address": "0.0.0.0", "port": 443, "enabled": true, "spec": spec,
+			},
+			"accounts": []map[string]any{{"name": name + " 用户", "alias": name, "enabled": true, "outbound_id": "direct"}},
+		}, session, csrfToken)
+		if response.StatusCode != http.StatusCreated {
+			var failure map[string]any
+			decodeBody(t, response, &failure)
+			t.Fatalf("create %s on port 443: status %d, response %#v", name, response.StatusCode, failure)
+		}
+		var created struct {
+			Listener control.Listener      `json:"listener"`
+			Ingress  *control.IngressRoute `json:"ingress_route"`
+		}
+		decodeBody(t, response, &created)
+		if (created.Ingress != nil) != expectIngress {
+			t.Fatalf("create %s ingress = %#v, want present %v", name, created.Ingress, expectIngress)
+		}
+		return created.Listener
+	}
+
+	reality := create("Reality 443", "reality.example.com", map[string]any{
+		"protocol": "vless", "network": "tcp", "tls": map[string]any{"enabled": true},
+		"reality": map[string]any{"enabled": true, "handshake_server": "reality-target.example.com", "handshake_port": 443},
+	}, false)
+	websocket := create("WebSocket 443", "ws.example.com", map[string]any{
+		"protocol": "vless", "network": "tcp", "tls": map[string]any{"enabled": true, "alpn": []string{"http/1.1"}},
+		"transport": map[string]any{"type": "ws", "path": "/ws", "host": "ws.example.com"},
+	}, true)
+	grpc := create("gRPC 443", "grpc.example.com", map[string]any{
+		"protocol": "vless", "network": "tcp", "tls": map[string]any{"enabled": true, "alpn": []string{"h2"}},
+		"transport": map[string]any{"type": "grpc", "service_name": "grpc-service"},
+	}, true)
+	hysteria := create("HY2 443", "hy2.example.com", map[string]any{
+		"protocol": "hysteria2", "network": "udp", "tls": map[string]any{"enabled": true},
+	}, false)
+
+	listeners, err := store.ListListeners(t.Context(), nodeID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	byID := map[string]control.Listener{}
+	for _, listener := range listeners {
+		byID[listener.ID] = listener
+		if listener.Port != 443 {
+			t.Fatalf("listener %s public port = %d, want 443", listener.Name, listener.Port)
+		}
+	}
+	seenBackends := map[uint16]bool{}
+	for _, id := range []string{reality.ID, websocket.ID, grpc.ID} {
+		listener := byID[id]
+		if listener.ListenAddr != "127.0.0.1" || listener.BackendPort == 443 || seenBackends[listener.BackendPort] {
+			t.Fatalf("TCP listener was not assigned a unique loopback backend: %#v", listener)
+		}
+		seenBackends[listener.BackendPort] = true
+	}
+	if got := byID[hysteria.ID]; got.Spec.Network != "udp" || got.ListenAddr != "0.0.0.0" || got.BackendPort != 443 {
+		t.Fatalf("HY2 did not remain on UDP/443: %#v", got)
+	}
+
+	routes, err := store.ListIngressRoutes(t.Context(), nodeID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(routes) != 3 {
+		t.Fatalf("TCP/443 SNI routes = %#v, want 3", routes)
+	}
+	wantSNI := map[string]string{
+		reality.ID:   "reality-target.example.com",
+		websocket.ID: "ws.example.com",
+		grpc.ID:      "grpc.example.com",
+	}
+	for _, route := range routes {
+		if route.Port != 443 || route.SNI != wantSNI[route.ListenerID] {
+			t.Fatalf("unexpected SNI route: %#v, want SNI %q", route, wantSNI[route.ListenerID])
+		}
+	}
+
+	nginx, _, err := store.CompileNodeNginx(t.Context(), nodeID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, expected := range []string{"listen 0.0.0.0:443", "reality-target.example.com", "ws.example.com", "grpc.example.com"} {
+		if !strings.Contains(nginx, expected) {
+			t.Fatalf("shared TCP/443 configuration missing %q:\n%s", expected, nginx)
+		}
+	}
+	configuration, _, err := store.CompileNodeConfig(t.Context(), nodeID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, expected := range []string{"\"type\": \"ws\"", "\"type\": \"grpc\"", "\"type\": \"hysteria2\"", "BEGIN CERTIFICATE"} {
+		if !strings.Contains(configuration, expected) {
+			t.Fatalf("four-protocol sing-box configuration missing %q", expected)
+		}
+	}
+	if binary := os.Getenv("SING_BOX_BIN"); binary != "" {
+		configPath := filepath.Join(t.TempDir(), "sing-box-four-protocol-443.json")
+		if err := os.WriteFile(configPath, []byte(configuration), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if output, err := exec.Command(binary, "check", "-c", configPath).CombinedOutput(); err != nil {
+			t.Fatalf("official sing-box rejected four-protocol port 443 configuration: %v\n%s", err, output)
+		}
+	}
+	wsEndpoints, err := store.ListEndpoints(t.Context(), websocket.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	grpcEndpoints, err := store.ListEndpoints(t.Context(), grpc.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, token, err := store.CreateSubscription(t.Context(), control.SubscriptionInput{
+		Kind: control.ClientSubscription, Name: "WS and gRPC 443", EndpointIDs: []string{wsEndpoints[0].ID, grpcEndpoints[0].ID}, Enabled: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	encoded, err := store.GenerateClientSubscription(t.Context(), token)
+	if err != nil {
+		t.Fatal(err)
+	}
+	decoded, err := base64.StdEncoding.DecodeString(encoded)
+	if err != nil {
+		t.Fatal(err)
+	}
+	links := string(decoded)
+	for _, expected := range []string{
+		"ws.example.com:443", "security=tls", "sni=ws.example.com", "type=ws", "path=%2Fws", "host=ws.example.com",
+		"grpc.example.com:443", "sni=grpc.example.com", "type=grpc", "serviceName=grpc-service",
+	} {
+		if !strings.Contains(links, expected) {
+			t.Fatalf("shared-port client subscription missing %q:\n%s", expected, links)
+		}
 	}
 }
 
@@ -800,11 +962,35 @@ func TestCloudflareProxyValidationFollowsListenerType(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	wsTLSListener, err := store.CreateListener(t.Context(), control.Listener{
+		NodeID: nodeID, Name: "vless-ws-tls", Domain: "ws-tls.example.com", ListenAddr: "127.0.0.1", Port: 443, BackendPort: 20443, Enabled: true,
+		Spec: control.ProtocolSpec{Protocol: "vless", Network: "tcp", TLS: control.TLSOptions{Enabled: true}, Transport: control.TransportOptions{Type: "ws", Path: "/ws-tls"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	grpcListener, err := store.CreateListener(t.Context(), control.Listener{
+		NodeID: nodeID, Name: "vless-grpc-tls", Domain: "grpc.example.com", ListenAddr: "127.0.0.1", Port: 443, BackendPort: 20444, Enabled: true,
+		Spec: control.ProtocolSpec{Protocol: "vless", Network: "tcp", TLS: control.TLSOptions{Enabled: true}, Transport: control.TransportOptions{Type: "grpc", ServiceName: "grpc-service"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	if _, err := store.CreateCloudflareRecord(t.Context(), control.ManagedCloudflareRecord{
 		Name: "ws.example.com", Type: "A", Content: "192.0.2.10", TTL: 1, Proxied: true, ListenerID: wsListener.ID,
 	}); err != nil {
 		t.Fatalf("rejected orange cloud for WebSocket listener on 8080: %v", err)
+	}
+	if _, err := store.CreateCloudflareRecord(t.Context(), control.ManagedCloudflareRecord{
+		Name: "ws-tls.example.com", Type: "A", Content: "192.0.2.15", TTL: 1, Proxied: true, ListenerID: wsTLSListener.ID,
+	}); err != nil {
+		t.Fatalf("rejected orange cloud for TLS WebSocket listener on 443: %v", err)
+	}
+	if _, err := store.CreateCloudflareRecord(t.Context(), control.ManagedCloudflareRecord{
+		Name: "grpc.example.com", Type: "A", Content: "192.0.2.16", TTL: 1, Proxied: true, ListenerID: grpcListener.ID,
+	}); err != nil {
+		t.Fatalf("rejected orange cloud for TLS gRPC listener on 443: %v", err)
 	}
 	if _, err := store.CreateCloudflareRecord(t.Context(), control.ManagedCloudflareRecord{
 		Name: "reality.example.com", Type: "A", Content: "192.0.2.11", TTL: 1, Proxied: true, ListenerID: realityListener.ID,

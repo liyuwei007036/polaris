@@ -1,13 +1,14 @@
 export const securityOptions = {
   none: { label: '不加密（仅限可信网络）', value: 'none' },
+  tls: { label: 'TLS 加密（自动证书）', value: 'tls' },
   reality: { label: 'Reality 免证书加密', value: 'reality' },
   auto: { label: '自动生成加密', value: 'auto' },
 }
 
 export const listenerProfiles = [
   { value: 'vless-reality', label: 'VLESS + Reality', summary: '免证书加密连接', protocol: 'vless', security: 'reality', transport: '' },
-  { value: 'vless-ws', label: 'VLESS + WebSocket', summary: '适合通过 WebSocket 转发', protocol: 'vless', security: 'none', transport: 'ws' },
-  { value: 'vless-grpc', label: 'VLESS + gRPC', summary: '使用 gRPC 传输', protocol: 'vless', security: 'none', transport: 'grpc' },
+  { value: 'vless-ws', label: 'VLESS + WebSocket', summary: 'TLS 回源，适合通过 Cloudflare 转发', protocol: 'vless', security: 'tls', transport: 'ws' },
+  { value: 'vless-grpc', label: 'VLESS + gRPC', summary: 'TLS 回源，使用 gRPC 传输', protocol: 'vless', security: 'tls', transport: 'grpc' },
   { value: 'hysteria2', label: 'Hysteria2', summary: '自动生成加密配置', protocol: 'hysteria2', security: 'auto', transport: '' },
 ]
 
@@ -19,7 +20,7 @@ export const protocols = [
     label: 'VLESS',
     summary: '支持 Reality、WebSocket 和 gRPC',
     network: 'tcp',
-    security: ['reality', 'none'],
+    security: ['reality', 'tls', 'none'],
     transports: true,
     recommended: true,
     defaultPort: 443,
@@ -82,6 +83,7 @@ export function listenerPayload(model) {
   const profile = listenerProfileMap[model.profile]
   const definition = protocolMap[profile.protocol]
   const security = profile.security
+  const defaultALPN = profile.transport === 'grpc' ? ['h2'] : profile.transport === 'ws' ? ['http/1.1'] : []
   const automaticallyManaged = ['127.0.0.1', '::1'].includes(model.listen_address) && model.backend_port && model.backend_port !== model.original_port
   return {
     node_id: model.node_id,
@@ -97,7 +99,7 @@ export function listenerPayload(model) {
       network: definition.network,
       tls: {
         enabled: security === 'auto' || security === 'tls' || security === 'reality',
-        alpn: model.tls_alpn || [],
+        alpn: model.tls_alpn?.length ? model.tls_alpn : defaultALPN,
         min_version: model.tls_min_version || '',
         max_version: model.tls_max_version || '',
         cipher_suites: [],

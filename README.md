@@ -16,7 +16,7 @@
 - 全局直连、SOCKS5、HTTP 出站管理。
 - 客户端订阅分享链接，以及可下载的 Mihomo YAML 与分流策略。
 - sing-box 配置自动应用，并从官方 GitHub Release 获取最新稳定版、校验摘要后签名安装或升级。
-- 同一服务器出现兼容的 TCP 端口重复时，自动生成并发布基于连接域名的端口分配配置。
+- 同一服务器出现兼容的 TLS TCP 端口重复时，自动生成并发布基于实际 SNI 的端口分配配置。
 - nftables 防火墙和 Fail2Ban 配置发布。
 - Cloudflare DNS 期望状态、发布确认、远端校验和漂移检测。
 - 主机累计流量、实时连接、Fail2Ban 状态、任务结果和审计日志。
@@ -707,6 +707,10 @@ sudo systemctl status sb-control-agent.service
 
 VLESS 仅允许 Reality、WebSocket 或 gRPC 三种模式；Hysteria2 使用自身的 QUIC 传输。其他入站协议及传输组合均会被后端拒绝。
 
+WebSocket 和 gRPC 新建时默认启用自动生成的 TLS 源站证书，可通过 Cloudflare `Full` 模式回源。Cloudflare `Full (strict)` 不信任自动生成的自签名证书，需要另行部署受信任的 Origin CA 或公开证书。Reality 必须使用灰云直连；它的同端口路由键是客户端实际发送的 Reality 目标网站 SNI，而不是连接域名。
+
+同一节点可以让 Reality、WebSocket 和 gRPC 共用公网 TCP/443：Nginx stream 读取 TLS ClientHello 的 SNI 后转发到各自的 loopback 内部端口。Hysteria2 使用 UDP/443，因此可同时占用相同的数值端口。三个 TCP 接入的实际 SNI 必须互不相同。
+
 这里表示协议已经进入类型与校验清单，不代表所有 sing-box 版本和参数组合都经过真实节点互通测试。正式发布前仍应使用目标节点上的实际 sing-box 版本执行配置检查和客户端连通性验证。
 
 ### 订阅
@@ -733,6 +737,7 @@ Cloudflare 集成支持 `A`、`AAAA`、`CNAME` 和 `TXT` 记录。master 保存�
 - 单条“发布”先返回差异，确认后才创建或更新远端记录。
 - 已发布记录的删除需要二次确认。
 - 橙云记录必须绑定 Listener，以便校验协议、传输层、端口和 TLS 兼容性。
+- 橙云支持启用 TLS 的 VLESS WebSocket，以及使用 TLS/443 的 VLESS gRPC；Cloudflare 侧还需启用对应的 gRPC 功能。
 - Reality 和 UDP Listener 只能使用灰云 DNS。
 
 ## 配置发布与文件边界

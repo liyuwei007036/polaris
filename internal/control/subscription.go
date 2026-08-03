@@ -308,10 +308,29 @@ func (s *Store) clientSubscriptionLine(ctx context.Context, endpointID string) (
 	}
 	address, name := net.JoinHostPort(host, fmt.Sprint(listener.Port)), url.QueryEscape(displayName)
 	query := url.Values{}
-	if listener.Spec.Protocol == "vless" && listener.Spec.TLS.Enabled {
-		query.Set("security", "tls")
+	if listener.Spec.Protocol == "vless" {
+		query.Set("encryption", "none")
+		if listener.Spec.TLS.Enabled {
+			query.Set("security", "tls")
+			if listener.Domain != "" {
+				query.Set("sni", listener.Domain)
+			}
+		}
 		if len(listener.Spec.TLS.ALPN) > 0 {
 			query.Set("alpn", strings.Join(listener.Spec.TLS.ALPN, ","))
+		}
+		switch listener.Spec.Transport.Type {
+		case "ws":
+			query.Set("type", "ws")
+			query.Set("path", listener.Spec.Transport.Path)
+			if listener.Spec.Transport.Host != "" {
+				query.Set("host", listener.Spec.Transport.Host)
+			}
+		case "grpc":
+			query.Set("type", "grpc")
+			query.Set("serviceName", listener.Spec.Transport.ServiceName)
+		default:
+			query.Set("type", "tcp")
 		}
 	}
 	if listener.Spec.Reality.Enabled {

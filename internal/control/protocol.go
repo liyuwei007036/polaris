@@ -88,9 +88,6 @@ func ValidateProtocolSpec(spec ProtocolSpec) error {
 				return errors.New("VLESS Reality cannot be combined with WebSocket or gRPC")
 			}
 		} else {
-			if spec.TLS.Enabled {
-				return errors.New("VLESS with TLS is not supported; use Reality, WebSocket, or gRPC")
-			}
 			if spec.Transport.Type != "ws" && spec.Transport.Type != "grpc" {
 				return errors.New("VLESS requires Reality, WebSocket, or gRPC")
 			}
