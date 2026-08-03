@@ -4,18 +4,17 @@ import { ElMessage } from 'element-plus'
 import { CircleCheck, Delete, Plus } from '@element-plus/icons-vue'
 import {
   createListenerModel,
+  listenerProfileMap,
+  listenerProfiles,
   listenerPayload,
   protocolMap,
-  protocols,
   securityOptions,
-  transportOptions,
 } from '../protocols'
 
 const props = defineProps({
   modelValue: { type: Boolean, required: true },
   listener: { type: Object, default: null },
   nodes: { type: Array, default: () => [] },
-  certificates: { type: Array, default: () => [] },
   outbounds: { type: Array, default: () => [] },
   endpoints: { type: Array, default: () => [] },
   saving: { type: Boolean, default: false },
@@ -25,28 +24,16 @@ const emit = defineEmits(['update:modelValue', 'save'])
 const formRef = ref()
 const model = ref(createListenerModel(null, ''))
 const accounts = ref([])
-const definition = computed(() => protocolMap[model.value.protocol] || protocols[0])
-const visibleProtocols = computed(() => protocols.filter((item) => item.stable))
-const allowedSecurity = computed(() => definition.value.security.map((value) => securityOptions[value]))
-const showTLS = computed(() => model.value.security === 'tls')
+const selectedProfile = computed(() => listenerProfileMap[model.value.profile])
 const showReality = computed(() => model.value.security === 'reality')
 const portManagedBySystem = computed(() => Boolean(props.listener && ['127.0.0.1', '::1'].includes(props.listener.listen_address) && props.listener.backend_port !== props.listener.port))
-const securityHelp = computed(() => ({
-  none: definition.value.value === 'shadowsocks'
-    ? 'Shadowsocks 已自带加密，无需另行配置证书。'
-    : '不使用证书时，连接不会获得额外保护。VLESS、SOCKS5 和 HTTP 仅建议在可信内网使用。',
-  tls: definition.value.security.length === 1 && definition.value.security[0] === 'tls'
-    ? `使用与客户端连接域名匹配的加密证书。${definition.value.label} 必须选择此方式。`
-    : '使用与客户端连接域名匹配的加密证书，可保护客户端与服务器之间的连接。',
-  reality: '无需准备域名证书，由 Reality 提供连接保护。仅支持部分协议。',
-})[model.value.security])
 
 const rules = computed(() => ({
+  profile: [{ required: true, message: '请选择接入模式', trigger: 'change' }],
   node_id: [{ required: true, message: '请选择服务器', trigger: 'change' }],
   name: [{ required: true, message: '请输入服务名称', trigger: 'blur' }],
+  connection_domain: [{ required: true, message: '请输入连接域名', trigger: 'blur' }],
   port: [{ required: true, message: '请输入服务端口', trigger: 'blur' }],
-  certificate_id: showTLS.value ? [{ required: true, message: '请选择加密证书', trigger: 'change' }] : [],
-  tls_server_name: showTLS.value ? [{ required: true, message: '请输入证书域名', trigger: 'blur' }] : [],
   reality_handshake_server: showReality.value ? [{ required: true, message: '请输入 Reality 目标网站', trigger: 'blur' }] : [],
 }))
 
@@ -60,9 +47,12 @@ function randomAccountName() {
   return `user_${randomHex(4)}`
 }
 
-function setTransportType(type) {
-  model.value.transport_type = type
-  if (type === 'ws' && !model.value.transport_path) model.value.transport_path = `/${randomHex(12)}`
+function setProfile(value) {
+  model.value.profile = value
+  normalizeProfile()
+  if (listenerProfileMap[value]?.transport === 'ws' && !model.value.transport_path) {
+    model.value.transport_path = `/${randomHex(12)}`
+  }
 }
 
 watch(
@@ -79,28 +69,29 @@ watch(
           outbound_id: endpoint.outbound_id || 'direct',
         }))
       : [{ id: '', name: randomAccountName(), alias: '', enabled: true, outbound_id: 'direct' }]
-    normalizeProtocol()
+    normalizeProfile()
     await nextTick()
     formRef.value?.clearValidate()
   },
 )
 
 watch(
-  () => model.value.protocol,
+  () => model.value.profile,
   () => {
-    normalizeProtocol()
+    normalizeProfile()
   },
 )
 
-function normalizeProtocol() {
-  const protocol = definition.value
-  if (!protocol) return
-  if (!protocol.security.includes(model.value.security)) model.value.security = protocol.security[0]
-  if (protocol.networks && !protocol.networks.includes(model.value.network)) model.value.network = protocol.networks[0]
-  if (!protocol.networks) model.value.network = protocol.network
-  if (!protocol.transports) model.value.transport_type = ''
+function normalizeProfile() {
+  const profile = listenerProfileMap[model.value.profile]
+  if (!profile) return
+  const protocol = protocolMap[profile.protocol]
+  model.value.protocol = profile.protocol
+  model.value.network = protocol.network
+  model.value.security = profile.security
+  model.value.transport_type = profile.transport
   if (!props.listener) {
-    model.value.name = `${protocol.label} 接入服务`
+    model.value.name = `${profile.label} 接入服务`
     model.value.port = protocol.defaultPort || 443
   }
 }
@@ -120,7 +111,8 @@ function removeAccount(index) {
 async function save() {
   try {
     await formRef.value.validate()
-    if (model.value.transport_type === 'grpc' && !model.value.transport_service_name) {
+    if (!selectedProfile.value) throw new Error('请选择接入模式')
+    if (selectedProfile.value.transport === 'grpc' && !model.value.transport_service_name) {
       throw new Error('请填写 gRPC 服务名称')
     }
     const names = accounts.value.map((item) => item.name.trim())
@@ -157,19 +149,19 @@ async function save() {
       <div class="form-section">
         <div class="form-section__head">选择连接协议</div>
         <div class="protocol-select">
-          <label>客户端使用的协议</label>
-          <el-select v-model="model.protocol" style="width: 100%" placeholder="请选择连接协议">
-            <el-option v-for="protocol in visibleProtocols" :key="protocol.value" :label="protocol.recommended ? `${protocol.label}（推荐）` : protocol.label" :value="protocol.value">
-              <span>{{ protocol.label }}</span>
-              <span class="option-meta">{{ protocol.summary }}</span>
+          <label>接入模式</label>
+          <el-select :model-value="model.profile" style="width: 100%" placeholder="请选择接入模式" @update:model-value="setProfile">
+            <el-option v-for="profile in listenerProfiles" :key="profile.value" :label="profile.label" :value="profile.value">
+              <span>{{ profile.label }}</span>
+              <span class="option-meta">{{ profile.summary }}</span>
             </el-option>
           </el-select>
         </div>
-        <div class="protocol-summary">
+        <div v-if="selectedProfile" class="protocol-summary">
           <el-icon color="#2563eb" :size="24"><CircleCheck /></el-icon>
           <div class="protocol-summary__main">
-            <strong>{{ definition.label }}</strong>
-            <span>{{ definition.summary }}</span>
+            <strong>{{ selectedProfile.label }}</strong>
+            <span>{{ selectedProfile.summary }}</span>
           </div>
           <el-tag effect="plain">{{ securityOptions[model.security]?.label }}</el-tag>
         </div>
@@ -197,34 +189,18 @@ async function save() {
               </el-form-item>
             </el-col>
           </el-row>
-        </div>
-
-        <div class="form-section">
-          <div class="form-section__head">连接安全</div>
-          <el-form-item v-if="allowedSecurity.length > 1" label="保护方式">
-            <el-segmented v-model="model.security" :options="allowedSecurity" />
-          </el-form-item>
-          <el-alert :title="securityHelp" type="info" show-icon :closable="false" style="margin-bottom: 16px" />
-
-          <div v-if="model.protocol === 'socks'" class="warning-strip">
-            SOCKS5 不会加密连接，仅建议在可信内网使用，或限制允许连接的来源地址。
-          </div>
-
-          <el-row v-if="showTLS" :gutter="16">
-            <el-col :span="12">
-              <el-form-item label="证书对应域名" prop="tls_server_name">
-                <el-input v-model="model.tls_server_name" placeholder="proxy.example.com" />
-              </el-form-item>
-            </el-col>
-            <el-col :span="12">
-              <el-form-item label="加密证书" prop="certificate_id">
-                <el-select v-model="model.certificate_id" style="width: 100%" placeholder="请选择已导入的证书">
-                  <el-option v-for="certificate in certificates" :key="certificate.id" :label="certificate.name" :value="certificate.id" />
-                </el-select>
+          <el-row :gutter="16">
+            <el-col :span="24">
+              <el-form-item label="连接域名" prop="connection_domain">
+                <el-input v-model="model.connection_domain" placeholder="proxy.example.com" />
+                <div class="form-hint">客户端连接这个域名；它独立于 Reality 目标网站、WebSocket Host 和 gRPC 服务名称。</div>
               </el-form-item>
             </el-col>
           </el-row>
+        </div>
 
+        <div v-if="showReality" class="form-section">
+          <div class="form-section__head">连接安全</div>
           <el-row v-if="showReality" :gutter="16">
             <el-col :span="14">
               <el-form-item label="目标网站" prop="reality_handshake_server">
@@ -240,24 +216,15 @@ async function save() {
           <el-alert v-if="showReality" title="Reality 密钥和 Short ID 会在创建接入服务时自动生成，无需手动配置。" type="success" :closable="false" />
         </div>
 
-        <el-collapse v-if="definition.transports">
-          <el-collapse-item title="高级设置：连接传输方式" name="optional">
-        <div v-if="definition.transports" class="form-section">
-          <div class="form-section__head">传输方式</div>
+        <div v-if="['ws', 'grpc'].includes(model.transport_type)" class="form-section">
+          <div class="form-section__head">传输配置</div>
           <el-row :gutter="16">
-            <el-col :span="10">
-              <el-form-item label="传输方式">
-                <el-select :model-value="model.transport_type" style="width: 100%" @update:model-value="setTransportType">
-                  <el-option v-for="option in transportOptions" :key="option.value" :label="option.label" :value="option.value" />
-                </el-select>
-              </el-form-item>
-            </el-col>
-            <el-col v-if="['ws', 'httpupgrade', 'http'].includes(model.transport_type)" :span="14">
+            <el-col v-if="model.transport_type === 'ws'" :span="12">
               <el-form-item label="请求路径">
                 <el-input v-model="model.transport_path" placeholder="/proxy" />
               </el-form-item>
             </el-col>
-            <el-col v-if="['ws', 'httpupgrade', 'http'].includes(model.transport_type)" :span="12">
+            <el-col v-if="model.transport_type === 'ws'" :span="12">
               <el-form-item label="请求域名（Host）">
                 <el-input v-model="model.transport_host" placeholder="可选" />
               </el-form-item>
@@ -270,9 +237,6 @@ async function save() {
             </el-col>
           </el-row>
         </div>
-
-          </el-collapse-item>
-        </el-collapse>
 
         <div class="form-section">
           <div class="account-section-head">

@@ -76,7 +76,6 @@ getcheck /api/v1/nodes nodes
 getcheck /api/v1/listeners listeners
 getcheck /api/v1/tasks tasks
 getcheck /api/v1/operators operators
-getcheck /api/v1/certificates certificates
 getcheck /api/v1/reality-keys reality_keys
 getcheck /api/v1/sing-box/releases releases
 getcheck /api/v1/cloudflare/settings configured
@@ -88,9 +87,6 @@ code=$(req POST /api/v1/reality-keys "$CSRF" '{"name":"vk-1"}'); b=$(cat $RESP);
 code=$(req POST /api/v1/operators "$CSRF" '{"email":"op1@example.com","password":"Op1-pass-123","role":"operator"}'); b=$(cat $RESP); ok2xx "$code" && [ -n "$(echo "$b"|jf totp_secret)" ] && ok "POST operators -> totp_secret" || no "operators: $code $b"
 SHA=$(printf 'a%.0s' $(seq 1 64))
 code=$(req POST /api/v1/sing-box/releases "$CSRF" "{\"version\":\"1.9.0\",\"architecture\":\"arm64\",\"url\":\"https://example.com/x\",\"sha256\":\"$SHA\",\"enabled\":true}"); b=$(cat $RESP); ok2xx "$code" && ok "POST sing-box/releases" || no "release: $code $b"
-openssl req -x509 -newkey rsa:2048 -nodes -keyout ic.key -out ic.crt -days 2 -subj "/CN=example.com" >/dev/null 2>&1
-CP=$(python3 -c 'import json;print(json.dumps(open("ic.crt").read()))'); KP=$(python3 -c 'import json;print(json.dumps(open("ic.key").read()))')
-code=$(req POST /api/v1/certificates "$CSRF" "{\"name\":\"example.com\",\"certificate_pem\":$CP,\"private_key_pem\":$KP,\"enabled\":true}"); b=$(cat $RESP); ok2xx "$code" && ok "POST certificates (import PEM)" || no "certificate: $code $b"
 code=$(req PUT /api/v1/cloudflare/settings "$CSRF" '{"zone_id":"z123","zone_name":"example.com","api_token":"tok-abc"}'); b=$(cat $RESP); ok2xx "$code" && ok "PUT cloudflare/settings" || no "cf settings: $code $b"
 # verify a client subscription can be created once an endpoint would exist: check empty-list 200 already covered.
 

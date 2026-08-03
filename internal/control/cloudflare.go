@@ -126,8 +126,8 @@ func ValidateCloudflareProxy(recordType, listenerProtocol, transport string, por
 	if recordType != "A" && recordType != "AAAA" && recordType != "CNAME" {
 		return errors.New("only A, AAAA and CNAME records can be proxied")
 	}
-	if listenerProtocol != "http" && transport != "ws" && transport != "httpupgrade" {
-		return errors.New("standard Cloudflare proxy only supports HTTP/HTTPS or WebSocket listeners")
+	if listenerProtocol != "vless" || transport != "ws" {
+		return errors.New("standard Cloudflare proxy only supports VLESS WebSocket listeners")
 	}
 	httpPorts := map[uint16]bool{80: true, 8080: true, 8880: true, 2052: true, 2082: true, 2086: true, 2095: true}
 	httpsPorts := map[uint16]bool{443: true, 2053: true, 2083: true, 2087: true, 2096: true, 8443: true}

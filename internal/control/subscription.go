@@ -275,10 +275,10 @@ func (s *Store) clientSubscriptionLine(ctx context.Context, endpointID string) (
 	var listener Listener
 	var spec string
 	var clientAddress, nodeName string
-	err := s.db.QueryRowContext(ctx, `SELECT e.id, e.listener_id, e.name, e.alias, e.credentials, e.enabled, l.id, l.node_id, l.name, l.listen_address, l.port, l.backend_port, l.enabled, l.spec, n.client_address, n.name
+	err := s.db.QueryRowContext(ctx, `SELECT e.id, e.listener_id, e.name, e.alias, e.credentials, e.enabled, l.id, l.node_id, l.name, l.connection_domain, l.listen_address, l.port, l.backend_port, l.enabled, l.spec, n.client_address, n.name
 		FROM endpoints e JOIN listeners l ON l.id = e.listener_id JOIN nodes n ON n.id = l.node_id
 		WHERE e.id = ? AND e.enabled = 1 AND l.enabled = 1 AND n.revoked_at IS NULL`, endpointID).
-		Scan(&endpoint.ID, &endpoint.ListenerID, &endpoint.Name, &endpoint.Alias, &encrypted, &endpoint.Enabled, &listener.ID, &listener.NodeID, &listener.Name, &listener.ListenAddr, &listener.Port, &listener.BackendPort, &listener.Enabled, &spec, &clientAddress, &nodeName)
+		Scan(&endpoint.ID, &endpoint.ListenerID, &endpoint.Name, &endpoint.Alias, &encrypted, &endpoint.Enabled, &listener.ID, &listener.NodeID, &listener.Name, &listener.Domain, &listener.ListenAddr, &listener.Port, &listener.BackendPort, &listener.Enabled, &spec, &clientAddress, &nodeName)
 	if errors.Is(err, sql.ErrNoRows) {
 		return "", ErrNotFound
 	}
@@ -295,7 +295,10 @@ func (s *Store) clientSubscriptionLine(ctx context.Context, endpointID string) (
 	if err := json.Unmarshal(plain, &endpoint.Credentials); err != nil {
 		return "", err
 	}
-	host := strings.TrimSpace(clientAddress)
+	host := strings.TrimSpace(listener.Domain)
+	if host == "" {
+		host = strings.TrimSpace(clientAddress)
+	}
 	if host == "" {
 		return "", fmt.Errorf("node %s has no client connection address", nodeName)
 	}
@@ -305,11 +308,8 @@ func (s *Store) clientSubscriptionLine(ctx context.Context, endpointID string) (
 	}
 	address, name := net.JoinHostPort(host, fmt.Sprint(listener.Port)), url.QueryEscape(displayName)
 	query := url.Values{}
-	if listener.Spec.TLS.Enabled {
+	if listener.Spec.Protocol == "vless" && listener.Spec.TLS.Enabled {
 		query.Set("security", "tls")
-		if listener.Spec.TLS.ServerName != "" {
-			query.Set("sni", listener.Spec.TLS.ServerName)
-		}
 		if len(listener.Spec.TLS.ALPN) > 0 {
 			query.Set("alpn", strings.Join(listener.Spec.TLS.ALPN, ","))
 		}
@@ -320,9 +320,16 @@ func (s *Store) clientSubscriptionLine(ctx context.Context, endpointID string) (
 			return "", err
 		}
 		query.Set("security", "reality")
+		query.Set("sni", listener.Spec.Reality.HandshakeServer)
 		query.Set("pbk", public)
 		if len(listener.Spec.Reality.ShortIDs) > 0 {
 			query.Set("sid", listener.Spec.Reality.ShortIDs[0])
+		}
+	}
+	if listener.Spec.Protocol == "hysteria2" {
+		query.Set("insecure", "1")
+		if listener.Domain != "" {
+			query.Set("sni", listener.Domain)
 		}
 	}
 	suffix := ""
@@ -332,18 +339,10 @@ func (s *Store) clientSubscriptionLine(ctx context.Context, endpointID string) (
 	switch listener.Spec.Protocol {
 	case "vless":
 		return "vless://" + url.QueryEscape(endpoint.Credentials.UUID) + "@" + address + suffix + "#" + name, nil
-	case "trojan":
-		return "trojan://" + url.QueryEscape(endpoint.Credentials.Password) + "@" + address + suffix + "#" + name, nil
-	case "shadowsocks":
-		return "ss://" + base64.RawStdEncoding.EncodeToString([]byte(endpoint.Credentials.Method+":"+endpoint.Credentials.Password)) + "@" + address + "#" + name, nil
 	case "hysteria2":
 		return "hysteria2://" + url.QueryEscape(endpoint.Credentials.Password) + "@" + address + suffix + "#" + name, nil
-	case "socks":
-		return "socks://" + url.QueryEscape(endpoint.Credentials.Username) + ":" + url.QueryEscape(endpoint.Credentials.Password) + "@" + address + "#" + name, nil
-	case "http":
-		return "http://" + url.QueryEscape(endpoint.Credentials.Username) + ":" + url.QueryEscape(endpoint.Credentials.Password) + "@" + address + "#" + name, nil
 	}
-	return "", nil
+	return "", fmt.Errorf("unsupported inbound protocol %q", listener.Spec.Protocol)
 }
 
 func (s *Store) realityPublicKey(ctx context.Context, keyID string) (string, error) {

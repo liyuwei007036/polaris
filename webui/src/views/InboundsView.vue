@@ -17,7 +17,6 @@ const loading = ref(false)
 const saving = ref(false)
 const listeners = ref([])
 const outbounds = ref([])
-const certificates = ref([])
 const endpointMap = ref({})
 const formOpen = ref(false)
 const editing = ref(null)
@@ -29,21 +28,19 @@ const nodeNames = computed(() => Object.fromEntries(appState.nodes.map((item) =>
 const filteredListeners = computed(() => listeners.value.filter((row) => {
   if (selectedNode.value && row.node_id !== selectedNode.value) return false
   if (selectedStatus.value && String(row.enabled) !== selectedStatus.value) return false
-  return includesText([nodeNames.value[row.node_id], row.name, row.port, row.spec?.protocol, row.spec?.transport?.type, securityLabel(row)], keyword.value)
+  return includesText([nodeNames.value[row.node_id], row.name, row.connection_domain, row.port, row.spec?.protocol, row.spec?.transport?.type, securityLabel(row)], keyword.value)
 }))
 
 async function load() {
   loading.value = true
   try {
     await loadNodes()
-    const [listenerResult, outboundResult, certificateResult] = await Promise.all([
+    const [listenerResult, outboundResult] = await Promise.all([
       api('/listeners'),
       api('/outbounds').catch(() => ({ outbounds: [] })),
-      api('/certificates').catch(() => ({ certificates: [] })),
     ])
     listeners.value = listenerResult.listeners || []
     outbounds.value = outboundResult.outbounds || []
-    certificates.value = (certificateResult.certificates || []).filter((item) => item.enabled)
     const pairs = await Promise.all(
       listeners.value.map(async (listener) => {
         const result = await api(`/listeners/${listener.id}/endpoints`).catch(() => ({ endpoints: [] }))
@@ -182,6 +179,9 @@ onMounted(load)
           <el-table-column label="端口" width="110">
             <template #default="{ row }"><span class="mono">{{ row.port }}</span></template>
           </el-table-column>
+          <el-table-column label="连接域名" min-width="190">
+            <template #default="{ row }"><span class="mono">{{ row.connection_domain || '使用服务器地址' }}</span></template>
+          </el-table-column>
           <el-table-column label="用户" width="90" align="center">
             <template #default="{ row }">{{ endpointMap[row.id]?.length || 0 }}</template>
           </el-table-column>
@@ -205,7 +205,6 @@ onMounted(load)
       v-model="formOpen"
       :listener="editing"
       :nodes="appState.nodes"
-      :certificates="certificates"
       :outbounds="outbounds"
       :endpoints="editing ? endpointMap[editing.id] || [] : []"
       :saving="saving"

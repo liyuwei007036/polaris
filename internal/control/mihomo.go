@@ -177,10 +177,10 @@ func (s *Store) mihomoProxy(ctx context.Context, endpointID, fallbackServer stri
 	var spec string
 	var clientAddress string
 	var nodeName string
-	err := s.db.QueryRowContext(ctx, `SELECT e.id, e.listener_id, e.name, e.alias, e.credentials, e.enabled, l.id, l.node_id, l.name, l.listen_address, l.port, l.backend_port, l.enabled, l.spec
+	err := s.db.QueryRowContext(ctx, `SELECT e.id, e.listener_id, e.name, e.alias, e.credentials, e.enabled, l.id, l.node_id, l.name, l.connection_domain, l.listen_address, l.port, l.backend_port, l.enabled, l.spec
 		, n.client_address, n.name FROM endpoints e JOIN listeners l ON l.id=e.listener_id JOIN nodes n ON n.id=l.node_id
 		WHERE e.id=? AND e.enabled=1 AND l.enabled=1 AND n.revoked_at IS NULL`, endpointID).
-		Scan(&endpoint.ID, &endpoint.ListenerID, &endpoint.Name, &endpoint.Alias, &encrypted, &endpoint.Enabled, &listener.ID, &listener.NodeID, &listener.Name, &listener.ListenAddr, &listener.Port, &listener.BackendPort, &listener.Enabled, &spec, &clientAddress, &nodeName)
+		Scan(&endpoint.ID, &endpoint.ListenerID, &endpoint.Name, &endpoint.Alias, &encrypted, &endpoint.Enabled, &listener.ID, &listener.NodeID, &listener.Name, &listener.Domain, &listener.ListenAddr, &listener.Port, &listener.BackendPort, &listener.Enabled, &spec, &clientAddress, &nodeName)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
 	}
@@ -197,7 +197,10 @@ func (s *Store) mihomoProxy(ctx context.Context, endpointID, fallbackServer stri
 	if err := json.Unmarshal(plain, &endpoint.Credentials); err != nil {
 		return nil, err
 	}
-	server := strings.TrimSpace(clientAddress)
+	server := strings.TrimSpace(listener.Domain)
+	if server == "" {
+		server = strings.TrimSpace(clientAddress)
+	}
 	if server == "" {
 		server = fallbackServer
 	}
@@ -213,31 +216,18 @@ func (s *Store) mihomoProxy(ctx context.Context, endpointID, fallbackServer stri
 		if endpoint.Credentials.Flow != "" {
 			proxy["flow"] = endpoint.Credentials.Flow
 		}
-	case "vmess":
-		proxy["type"], proxy["uuid"], proxy["alterId"], proxy["cipher"] = "vmess", endpoint.Credentials.UUID, endpoint.Credentials.AlterID, "auto"
-		proxy["udp"] = true
-	case "trojan":
-		proxy["type"], proxy["password"] = "trojan", endpoint.Credentials.Password
-		proxy["udp"] = true
-	case "shadowsocks":
-		proxy["type"], proxy["cipher"], proxy["password"] = "ss", endpoint.Credentials.Method, endpoint.Credentials.Password
-		proxy["udp"] = true
 	case "hysteria2":
 		proxy["type"], proxy["password"] = "hysteria2", endpoint.Credentials.Password
-	case "socks":
-		proxy["type"], proxy["username"], proxy["password"] = "socks5", endpoint.Credentials.Username, endpoint.Credentials.Password
-		proxy["udp"] = true
-	case "http":
-		proxy["type"], proxy["username"], proxy["password"] = "http", endpoint.Credentials.Username, endpoint.Credentials.Password
 	default:
 		return nil, fmt.Errorf("protocol %s is not supported by Mihomo YAML export", listener.Spec.Protocol)
 	}
 	if listener.Spec.TLS.Enabled {
 		proxy["tls"] = true
-		if listener.Spec.Protocol == "trojan" || listener.Spec.Protocol == "hysteria2" {
-			proxy["sni"] = listener.Spec.TLS.ServerName
-		} else {
-			proxy["servername"] = listener.Spec.TLS.ServerName
+	}
+	if listener.Spec.Protocol == "hysteria2" {
+		proxy["skip-cert-verify"] = true
+		if listener.Domain != "" {
+			proxy["sni"] = listener.Domain
 		}
 	}
 	if listener.Spec.Reality.Enabled {

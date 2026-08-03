@@ -95,7 +95,7 @@ test('浏览器页面回归：真实登录，核心工作区 API 使用路由替
   const dialog = page.getByRole('dialog', { name: '新建接入服务', exact: true })
   await expect(dialog).toBeVisible()
   await expect(dialog.getByText('端口共享', { exact: true })).toHaveCount(0)
-  await expect(dialog.getByText('Reality 密钥和 Short ID 会在创建接入服务时自动生成，无需手动配置。', { exact: true })).toHaveCount(0)
+  await expect(dialog.getByText('Reality 密钥和 Short ID 会在创建接入服务时自动生成，无需手动配置。', { exact: true })).toBeVisible()
   await expect(dialog.getByRole('button', { name: '添加', exact: true })).toBeVisible()
   await expect(dialog.getByRole('textbox', { name: '用户名称' })).toHaveCount(1)
   await expect(dialog.getByRole('textbox', { name: '用户名称' })).toHaveValue(/^user_[0-9a-f]{8}$/)
@@ -104,11 +104,8 @@ test('浏览器页面回归：真实登录，核心工作区 API 使用路由替
   await expect(dialog).toBeVisible()
   await page.keyboard.press('Escape')
   await expect(dialog).toBeVisible()
-  await dialog.getByRole('button', { name: '高级设置：连接传输方式' }).click()
-  const transportField = dialog.locator('.el-form-item').filter({ hasText: '传输方式' })
-  await expect(transportField.locator('.el-select')).toBeVisible()
-  await transportField.locator('.el-select').click()
-  await page.getByRole('option', { name: 'WebSocket', exact: true }).click()
+  await dialog.locator('.protocol-select .el-select').click()
+  await page.locator('.el-select-dropdown__item').filter({ hasText: 'VLESS + WebSocket' }).click()
   await expect(dialog.getByRole('textbox', { name: '请求路径' })).toHaveValue(/^\/[0-9a-f]{24}$/)
   await dialog.getByRole('button', { name: '取消', exact: true }).click()
   await expect(dialog).toBeHidden()
@@ -122,7 +119,7 @@ test('浏览器页面回归：真实登录，核心工作区 API 使用路由替
   let rejectFirstProxyGroup = true
   const savedProxyGroups = []
   const listener = {
-    id: 'listener-1', node_id: 'node-1', name: 'WebSocket 接入', listen_address: '0.0.0.0',
+    id: 'listener-1', node_id: 'node-1', name: 'WebSocket 接入', connection_domain: 'ws.example.com', listen_address: '0.0.0.0',
     port: 18444, backend_port: 18444, enabled: true, outbound_id: '',
     spec: {
       protocol: 'vless', network: 'tcp', tls: { enabled: false }, reality: { enabled: false },
@@ -137,7 +134,6 @@ test('浏览器页面回归：真实登录，核心工作区 API 使用路由替
     if (request.method() === 'GET' && path === '/api/v1/nodes/node-1/metrics') return route.fulfill({ json: { report: null } })
     if (request.method() === 'GET' && path === '/api/v1/listeners') return route.fulfill({ json: { listeners: [listener] } })
     if (request.method() === 'GET' && path === '/api/v1/outbounds') return route.fulfill({ json: { outbounds: [] } })
-    if (request.method() === 'GET' && path === '/api/v1/certificates') return route.fulfill({ json: { certificates: [] } })
     if (request.method() === 'GET' && path === '/api/v1/mihomo/proxy-groups') return route.fulfill({ json: { proxy_groups: savedProxyGroups } })
     if (request.method() === 'GET' && path === '/api/v1/mihomo/client-configs') return route.fulfill({ json: { client_configs: savedClientConfig ? [savedClientConfig] : [] } })
     if (request.method() === 'GET' && path === '/api/v1/listeners/listener-1/endpoints') {
@@ -186,11 +182,13 @@ test('浏览器页面回归：真实登录，核心工作区 API 使用路由替
 
   await page.getByRole('button', { name: '新建', exact: true }).click()
   const createDialog = page.getByRole('dialog', { name: '新建接入服务', exact: true })
+  await createDialog.getByRole('textbox', { name: '连接域名' }).fill('reality.example.com')
   await createDialog.getByRole('textbox', { name: '客户端节点别名' }).fill('测试节点 01')
   await createDialog.getByRole('button', { name: '创建', exact: true }).click()
   await expect(page.getByText('测试校验错误：请检查接入服务参数', { exact: true })).toBeVisible()
   await expect(createDialog).toBeVisible()
   expect(quickListenerPayload.accounts).toHaveLength(1)
+  expect(quickListenerPayload.listener.connection_domain).toBe('reality.example.com')
   expect(quickListenerPayload.accounts[0].name).toMatch(/^user_[0-9a-f]{8}$/)
   expect(quickListenerPayload.accounts[0]).toMatchObject({ alias: '测试节点 01', enabled: true, outbound_id: 'direct' })
   await createDialog.getByRole('button', { name: '取消', exact: true }).click()
@@ -201,13 +199,13 @@ test('浏览器页面回归：真实登录，核心工作区 API 使用路由替
   const accountAliases = editDialog.getByRole('textbox', { name: '客户端节点别名' })
   await expect(accountNames).toHaveValue('默认账号')
   await expect(accountAliases).toHaveValue('测试节点 01')
+  await expect(editDialog.getByRole('textbox', { name: '连接域名' })).toHaveValue('ws.example.com')
   await accountNames.fill('修改后的用户')
   await expect(editDialog.getByRole('button', { name: '添加', exact: true })).toBeVisible()
   await editDialog.getByRole('button', { name: '添加', exact: true }).click()
   await expect(accountNames).toHaveCount(2)
   await accountNames.nth(1).fill('新增用户')
   await accountAliases.nth(1).fill('测试节点 02')
-  await editDialog.getByRole('button', { name: '高级设置：连接传输方式' }).click()
   await expect(editDialog.getByRole('textbox', { name: '请求路径' })).toHaveValue('')
   await editDialog.getByRole('button', { name: '保存', exact: true }).click()
   await expect(editDialog).toBeHidden()

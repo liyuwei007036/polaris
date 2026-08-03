@@ -1,170 +1,50 @@
 export const securityOptions = {
   none: { label: '不加密（仅限可信网络）', value: 'none' },
-  tls: { label: '使用加密证书', value: 'tls' },
   reality: { label: 'Reality 免证书加密', value: 'reality' },
+  auto: { label: '自动生成加密', value: 'auto' },
 }
 
-export const transportOptions = [
-  { label: '协议默认方式', value: '' },
-  { label: 'WebSocket', value: 'ws' },
-  { label: 'gRPC', value: 'grpc' },
+export const listenerProfiles = [
+  { value: 'vless-reality', label: 'VLESS + Reality', summary: '免证书加密连接', protocol: 'vless', security: 'reality', transport: '' },
+  { value: 'vless-ws', label: 'VLESS + WebSocket', summary: '适合通过 WebSocket 转发', protocol: 'vless', security: 'none', transport: 'ws' },
+  { value: 'vless-grpc', label: 'VLESS + gRPC', summary: '使用 gRPC 传输', protocol: 'vless', security: 'none', transport: 'grpc' },
+  { value: 'hysteria2', label: 'Hysteria2', summary: '自动生成加密配置', protocol: 'hysteria2', security: 'auto', transport: '' },
 ]
+
+export const listenerProfileMap = Object.fromEntries(listenerProfiles.map((profile) => [profile.value, profile]))
 
 export const protocols = [
   {
     value: 'vless',
     label: 'VLESS',
-    summary: '常用连接协议，可使用证书或 Reality 保护连接',
+    summary: '支持 Reality、WebSocket 和 gRPC',
     network: 'tcp',
-    security: ['none', 'tls', 'reality'],
+    security: ['reality', 'none'],
     transports: true,
-    credential: 'uuid-flow',
     recommended: true,
-    common: true,
-    stable: true,
-    defaultPort: 443,
-  },
-  {
-    value: 'trojan',
-    label: 'Trojan',
-    summary: '使用密码连接，建议同时配置加密证书',
-    network: 'tcp',
-    security: ['tls', 'none'],
-    transports: true,
-    credential: 'password',
-    common: true,
-    stable: true,
     defaultPort: 443,
   },
   {
     value: 'hysteria2',
     label: 'Hysteria2',
-    summary: '适合延迟较高或网络不稳定的场景，必须配置证书',
+    summary: '基于 QUIC 的 UDP 入站',
     network: 'udp',
-    security: ['tls'],
+    security: ['auto'],
     transports: false,
-    credential: 'password',
-    common: true,
-    stable: true,
     defaultPort: 443,
-  },
-  {
-    value: 'tuic',
-    label: 'TUIC',
-    summary: '适合移动网络，使用双重身份信息连接',
-    network: 'udp',
-    security: ['tls'],
-    transports: false,
-    credential: 'uuid-password',
-    common: true,
-    defaultPort: 443,
-  },
-  {
-    value: 'shadowsocks',
-    label: 'Shadowsocks',
-    summary: '自带加密，可按需要使用 TCP 或 UDP',
-    network: 'tcp',
-    networks: ['tcp', 'udp'],
-    security: ['none'],
-    transports: false,
-    credential: 'shadowsocks',
-    common: true,
-    stable: true,
-    defaultPort: 8388,
-  },
-  {
-    value: 'vmess',
-    label: 'VMess',
-    summary: '用于兼容旧客户端，新建服务建议优先选择 VLESS',
-    network: 'tcp',
-    security: ['none', 'tls'],
-    transports: true,
-    credential: 'uuid-alter',
-    stable: true,
-    defaultPort: 443,
-  },
-  {
-    value: 'anytls',
-    label: 'AnyTLS',
-    summary: '使用密码和加密证书建立连接',
-    network: 'tcp',
-    security: ['tls'],
-    transports: false,
-    credential: 'password',
-  },
-  {
-    value: 'socks',
-    label: 'SOCKS5',
-    summary: '适合可信内网，不应直接开放到公网',
-    network: 'tcp',
-    security: ['none'],
-    transports: false,
-    credential: 'user-password',
-    common: true,
-    stable: true,
-    defaultPort: 1080,
-  },
-  {
-    value: 'http',
-    label: 'HTTP',
-    summary: '供支持 HTTP 代理的客户端使用，可设置用户名和密码',
-    network: 'tcp',
-    security: ['none', 'tls'],
-    transports: false,
-    credential: 'user-password',
-    stable: true,
-    defaultPort: 8080,
-  },
-  {
-    value: 'naive',
-    label: 'NaiveProxy',
-    summary: '使用用户名、密码和加密证书连接',
-    network: 'tcp',
-    security: ['tls'],
-    transports: false,
-    credential: 'user-password',
-  },
-  {
-    value: 'hysteria',
-    label: 'Hysteria',
-    summary: '用于兼容旧版 Hysteria 客户端',
-    network: 'udp',
-    security: ['tls'],
-    transports: false,
-    credential: 'password',
-  },
-  {
-    value: 'shadowtls',
-    label: 'ShadowTLS',
-    summary: '使用密码连接，适用于兼容 ShadowTLS 的客户端',
-    network: 'tcp',
-    security: ['none'],
-    transports: false,
-    credential: 'password',
-    listenerExtras: 'shadowtls',
-  },
-  {
-    value: 'snell',
-    label: 'Snell',
-    summary: '适用于 Surge 客户端，使用共享密钥连接',
-    network: 'tcp',
-    security: ['none'],
-    transports: false,
-    credential: 'psk',
-    listenerExtras: 'snell',
   },
 ]
 
 export const protocolMap = Object.fromEntries(protocols.map((protocol) => [protocol.value, protocol]))
 
-export const shadowsocksMethods = [
-  '2022-blake3-aes-128-gcm',
-  '2022-blake3-aes-256-gcm',
-  '2022-blake3-chacha20-poly1305',
-  'aes-128-gcm',
-  'aes-256-gcm',
-  'chacha20-ietf-poly1305',
-]
+function profileValue(spec) {
+  if (spec.protocol === 'hysteria2') return 'hysteria2'
+  if (spec.protocol !== 'vless') return ''
+  if (spec.reality?.enabled) return 'vless-reality'
+  if (spec.transport?.type === 'ws') return 'vless-ws'
+  if (spec.transport?.type === 'grpc') return 'vless-grpc'
+  return ''
+}
 
 export function createListenerModel(existing, nodeID = '') {
   const spec = existing?.spec || {}
@@ -173,17 +53,17 @@ export function createListenerModel(existing, nodeID = '') {
     id: existing?.id || '',
     node_id: existing?.node_id || nodeID,
     name: existing?.name || '',
+    connection_domain: existing?.connection_domain || '',
     listen_address: existing?.listen_address || '0.0.0.0',
     port: existing?.port || 443,
     original_port: existing?.port || 0,
     backend_port: existing?.backend_port || 0,
     enabled: existing?.enabled ?? true,
     outbound_id: existing?.outbound_id || '',
+    profile: existing ? profileValue(spec) : 'vless-reality',
     protocol: spec.protocol || 'vless',
     network: spec.network || 'tcp',
     security,
-    tls_server_name: spec.tls?.server_name || '',
-    certificate_id: spec.tls?.certificate_id || '',
     tls_alpn: spec.tls?.alpn || [],
     tls_min_version: spec.tls?.min_version || '',
     tls_max_version: spec.tls?.max_version || '',
@@ -195,41 +75,32 @@ export function createListenerModel(existing, nodeID = '') {
     transport_path: spec.transport?.path || '',
     transport_host: spec.transport?.host || '',
     transport_service_name: spec.transport?.service_name || '',
-    hysteria_up_mbps: spec.hysteria?.up_mbps || 0,
-    hysteria_down_mbps: spec.hysteria?.down_mbps || 0,
-    hysteria_obfuscation: spec.hysteria?.obfuscation || '',
-    tuic_congestion_control: spec.tuic?.congestion_control || 'bbr',
-    snell_version: spec.snell?.version || 5,
-    snell_mode: spec.snell?.mode || '',
-    shadowtls_version: spec.shadowtls?.version || 3,
-    shadowtls_handshake_server: spec.shadowtls?.handshake_server || '',
-    shadowtls_handshake_port: spec.shadowtls?.handshake_port || 443,
   }
 }
 
 export function listenerPayload(model) {
-  const definition = protocolMap[model.protocol]
-  const security = definition.security.includes(model.security) ? model.security : definition.security[0]
+  const profile = listenerProfileMap[model.profile]
+  const definition = protocolMap[profile.protocol]
+  const security = profile.security
   const automaticallyManaged = ['127.0.0.1', '::1'].includes(model.listen_address) && model.backend_port && model.backend_port !== model.original_port
   return {
     node_id: model.node_id,
     name: model.name,
+    connection_domain: model.connection_domain.trim(),
     listen_address: model.listen_address || '0.0.0.0',
     port: Number(model.port),
     backend_port: automaticallyManaged ? Number(model.backend_port) : Number(model.port),
     enabled: Boolean(model.enabled),
     outbound_id: model.outbound_id || '',
     spec: {
-      protocol: model.protocol,
-      network: definition.networks?.includes(model.network) ? model.network : definition.network,
+      protocol: profile.protocol,
+      network: definition.network,
       tls: {
-        enabled: security === 'tls' || security === 'reality',
-        server_name: security === 'tls' ? model.tls_server_name : security === 'reality' ? model.reality_handshake_server : '',
+        enabled: security === 'auto' || security === 'tls' || security === 'reality',
         alpn: model.tls_alpn || [],
         min_version: model.tls_min_version || '',
         max_version: model.tls_max_version || '',
         cipher_suites: [],
-        certificate_id: security === 'tls' ? model.certificate_id : '',
       },
       reality: {
         enabled: security === 'reality',
@@ -239,37 +110,11 @@ export function listenerPayload(model) {
         key_id: security === 'reality' ? model.reality_key_id : '',
       },
       transport: {
-        type: definition.transports ? model.transport_type || '' : '',
-        path: definition.transports ? model.transport_path || '' : '',
-        host: definition.transports ? model.transport_host || '' : '',
-        service_name: definition.transports ? model.transport_service_name || '' : '',
-      },
-      hysteria: {
-        up_mbps: Number(model.hysteria_up_mbps || 0),
-        down_mbps: Number(model.hysteria_down_mbps || 0),
-        obfuscation: model.hysteria_obfuscation || '',
-      },
-      tuic: { congestion_control: model.tuic_congestion_control || '' },
-      snell: { version: Number(model.snell_version || 0), mode: model.snell_mode || '' },
-      shadowtls: {
-        version: Number(model.shadowtls_version || 0),
-        handshake_server: model.shadowtls_handshake_server || '',
-        handshake_port: Number(model.shadowtls_handshake_port || 0),
+        type: profile.transport,
+        path: profile.transport === 'ws' ? model.transport_path || '' : '',
+        host: profile.transport === 'ws' ? model.transport_host || '' : '',
+        service_name: profile.transport === 'grpc' ? model.transport_service_name || '' : '',
       },
     },
-  }
-}
-
-export function createCredentialModel(protocol) {
-  return {
-    name: '',
-    enabled: true,
-    uuid: '',
-    password: '',
-    username: '',
-    method: protocol === 'shadowsocks' ? shadowsocksMethods[0] : '',
-    psk: '',
-    flow: '',
-    alter_id: 0,
   }
 }

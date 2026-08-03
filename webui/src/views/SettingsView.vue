@@ -1,9 +1,9 @@
 <script setup>
 import { computed, inject, onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Delete, Plus, Refresh, Search } from '@element-plus/icons-vue'
+import { Plus, Refresh, Search } from '@element-plus/icons-vue'
 import QRCode from 'qrcode'
-import { api, del, post, put } from '../api'
+import { api, post, put } from '../api'
 import { formatDateTime, includesText } from '../format'
 import PageHeader from '../components/PageHeader.vue'
 
@@ -12,36 +12,27 @@ const isAdmin = inject('isAdmin')
 const loading = ref(false)
 const tab = ref('account')
 const operators = ref([])
-const certificates = ref([])
 const dialog = ref('')
 const totpSetup = reactive({ open: false, loading: false, secret: '', qr: '', code: '' })
 const operator = reactive({ username: '', password: '', role: 'operator' })
-const certificate = reactive({ name: '', certificate_pem: '', private_key_pem: '', enabled: true })
 const operatorKeyword = ref('')
 const operatorStatus = ref('')
-const certificateKeyword = ref('')
 const filteredOperators = computed(() => operators.value.filter((row) => {
   if (operatorStatus.value && String(row.enabled) !== operatorStatus.value) return false
   return includesText([row.username, row.role], operatorKeyword.value)
 }))
-const filteredCertificates = computed(() => certificates.value.filter((row) => includesText([row.name], certificateKeyword.value)))
 
 async function load() {
   loading.value = true
   try {
-    const [operatorResult, certificateResult] = await Promise.all([
-      isAdmin.value ? api('/operators') : Promise.resolve({ operators: [] }),
-      api('/certificates'),
-    ])
+    const operatorResult = await (isAdmin.value ? api('/operators') : Promise.resolve({ operators: [] }))
     operators.value = operatorResult.operators || []
-    certificates.value = certificateResult.certificates || []
   } finally { loading.value = false }
 }
 
 function open(kind) {
   dialog.value = kind
   if (kind === 'operator') Object.assign(operator, { username: '', password: '', role: 'operator' })
-  if (kind === 'certificate') Object.assign(certificate, { name: '', certificate_pem: '', private_key_pem: '', enabled: true })
 }
 
 async function saveOperator() {
@@ -107,8 +98,6 @@ async function disableOwnTOTP() {
   await load()
 }
 
-async function saveCertificate() { await post('/certificates', certificate); dialog.value = ''; await load() }
-async function removeCertificate(row) { await ElMessageBox.confirm(`确认删除证书“${row.name}”？`, '删除证书', { type: 'warning' }); await del(`/certificates/${row.id}`); await load() }
 onMounted(load)
 </script>
 
@@ -145,11 +134,6 @@ onMounted(load)
             </el-table>
           </el-tab-pane>
 
-          <el-tab-pane label="加密证书" name="certificates">
-            <div class="tab-actions tab-actions--start"><el-input v-model="certificateKeyword" clearable :prefix-icon="Search" placeholder="搜索证书名称" style="width: 250px" /><span class="toolbar__spacer" /><el-button v-if="isAdmin" type="primary" :icon="Plus" @click="open('certificate')">导入</el-button></div>
-            <el-table v-loading="loading" :data="filteredCertificates"><el-table-column label="名称" prop="name" min-width="220" /><el-table-column label="状态" width="100"><template #default="{ row }"><el-tag :type="row.enabled ? 'success' : 'info'">{{ row.enabled ? '启用' : '停用' }}</el-tag></template></el-table-column><el-table-column label="更新时间" min-width="180"><template #default="{ row }">{{ formatDateTime(row.updated_at) }}</template></el-table-column><el-table-column label="操作" width="90" class-name="action-column"><template #default="{ row }"><el-button v-if="isAdmin" link type="danger" :icon="Delete" @click="removeCertificate(row)">删除</el-button></template></el-table-column></el-table>
-          </el-tab-pane>
-
         </el-tabs>
       </div>
     </main>
@@ -166,7 +150,6 @@ onMounted(load)
       <template #footer><el-button @click="totpSetup.open = false">取消</el-button><el-button type="primary" :loading="totpSetup.loading" @click="enableTOTP">启用</el-button></template>
     </el-dialog>
     <el-dialog :model-value="dialog === 'operator'" title="新建管理账户" width="540px" @close="dialog = ''"><el-form label-position="top"><el-form-item label="用户名"><el-input v-model="operator.username" placeholder="3 至 64 位，可使用字母、数字、点、下划线和短横线" /></el-form-item><el-form-item label="初始密码"><el-input v-model="operator.password" type="password" show-password /><div class="form-tip">用户首次登录时必须修改此密码。</div></el-form-item><el-form-item label="权限"><el-select v-model="operator.role" style="width: 100%"><el-option label="管理员" value="admin" /><el-option label="运维人员" value="operator" /><el-option label="只读用户" value="viewer" /></el-select></el-form-item></el-form><template #footer><el-button @click="dialog = ''">取消</el-button><el-button type="primary" :disabled="!operator.username || operator.password.length < 12" @click="saveOperator">创建</el-button></template></el-dialog>
-    <el-dialog :model-value="dialog === 'certificate'" title="导入加密证书" width="700px" @close="dialog = ''"><el-form label-position="top"><el-form-item label="证书名称"><el-input v-model="certificate.name" /></el-form-item><el-form-item label="证书内容（PEM 格式）"><el-input v-model="certificate.certificate_pem" type="textarea" :rows="6" class="mono" /></el-form-item><el-form-item label="证书私钥（PEM 格式）"><el-input v-model="certificate.private_key_pem" type="textarea" :rows="6" class="mono" /></el-form-item></el-form><template #footer><el-button @click="dialog = ''">取消</el-button><el-button type="primary" :disabled="!certificate.name || !certificate.certificate_pem || !certificate.private_key_pem" @click="saveCertificate">导入</el-button></template></el-dialog>
   </div>
 </template>
 

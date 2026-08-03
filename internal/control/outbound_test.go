@@ -72,16 +72,16 @@ func TestManagedOutboundCompilation(t *testing.T) {
 	// A listener selecting the outbound compiles into an outbound object plus a
 	// fallback route rule tying its inbound to that outbound tag.
 	listener, err := store.CreateListener(t.Context(), control.Listener{
-		NodeID: nodeID, Name: "socks-in", ListenAddr: "0.0.0.0", Port: 1081, Enabled: true,
+		NodeID: nodeID, Name: "vless-ws-in", ListenAddr: "0.0.0.0", Port: 1081, Enabled: true,
 		OutboundID: outbound.ID,
-		Spec:       control.ProtocolSpec{Protocol: "socks", Network: "tcp"},
+		Spec:       control.ProtocolSpec{Protocol: "vless", Network: "tcp", Transport: control.TransportOptions{Type: "ws"}},
 	})
 	if err != nil {
 		t.Fatalf("create listener with outbound: %v", err)
 	}
 	endpoint, err := store.CreateEndpoint(t.Context(), control.Endpoint{
 		ListenerID: listener.ID, Name: "account-a", Enabled: true, OutboundID: outbound.ID,
-	}, control.EndpointCredentials{Username: "account-a", Password: "account-password"})
+	}, control.EndpointCredentials{UUID: "bf000d23-0752-40b4-affe-68f7707a9661"})
 	if err != nil {
 		t.Fatalf("create endpoint with outbound: %v", err)
 	}
@@ -127,7 +127,7 @@ func TestManagedOutboundCompilation(t *testing.T) {
 	if _, err := store.CreateListener(t.Context(), control.Listener{
 		NodeID: nodeID, Name: "bad-out", ListenAddr: "0.0.0.0", Port: 1082, Enabled: true,
 		OutboundID: "nonexistent-outbound",
-		Spec:       control.ProtocolSpec{Protocol: "socks", Network: "tcp"},
+		Spec:       control.ProtocolSpec{Protocol: "vless", Network: "tcp", Transport: control.TransportOptions{Type: "ws"}},
 	}); err == nil {
 		t.Fatal("accepted listener referencing a dangling outbound")
 	}

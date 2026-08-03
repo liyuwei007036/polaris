@@ -21,7 +21,7 @@ const endpoints = ref([])
 const form = reactive({ name: '', strategy: 'select', members: [] })
 const keyword = ref('')
 const selectedStrategy = ref('')
-const supported = new Set(['vless', 'vmess', 'trojan', 'shadowsocks', 'hysteria2', 'socks', 'http'])
+const supported = new Set(['vless', 'hysteria2'])
 const strategyNames = { select: '手动选择', 'url-test': '自动测速', fallback: '故障切换' }
 
 const clientNodes = computed(() => listeners.value
@@ -30,13 +30,14 @@ const clientNodes = computed(() => listeners.value
     .filter((endpoint) => endpoint.listener_id === listener.id && endpoint.enabled)
     .map((endpoint) => {
       const node = appState.nodes.find((item) => item.id === listener.node_id)
+      const address = listener.connection_domain || node?.client_address || ''
       return {
         id: endpoint.id,
         label: endpoint.alias || `${node?.name || listener.node_id} · ${listener.name} · ${endpoint.name}`,
         detail: `${node?.name || listener.node_id} · ${listener.name} · ${endpoint.name}`,
         protocol: protocolMap[listener.spec?.protocol]?.label || listener.spec?.protocol,
-        address: node?.client_address ? `${node.client_address}:${listener.port}` : '未填写连接地址',
-        disabled: !node?.client_address,
+        address: address ? `${address}:${listener.port}` : '未填写连接地址',
+        disabled: !address,
       }
     })))
 const nodeNames = computed(() => Object.fromEntries(clientNodes.value.map((item) => [item.id, item.label])))

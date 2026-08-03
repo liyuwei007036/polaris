@@ -222,10 +222,7 @@ func compileOutbound(ob Outbound, tag string) map[string]any {
 	return outbound
 }
 
-// compileTransport renders a v2ray-style transport (ws/grpc/httpupgrade/http/
-// quic) as a sing-box inbound "transport" object. An empty type keeps the
-// listener on plain TCP by returning nil (no transport block emitted). This is
-// what makes VLESS+WS / VLESS+gRPC and CDN fronting actually reach the node.
+// compileTransport renders the supported VLESS transports.
 func compileTransport(t TransportOptions) map[string]any {
 	switch t.Type {
 	case "ws":
@@ -234,25 +231,8 @@ func compileTransport(t TransportOptions) map[string]any {
 			transport["headers"] = map[string]any{"Host": t.Host}
 		}
 		return transport
-	case "httpupgrade":
-		transport := map[string]any{"type": "httpupgrade", "path": t.Path}
-		if t.Host != "" {
-			transport["host"] = t.Host
-		}
-		return transport
 	case "grpc":
 		return map[string]any{"type": "grpc", "service_name": t.ServiceName}
-	case "http":
-		transport := map[string]any{"type": "http"}
-		if t.Host != "" {
-			transport["host"] = []string{t.Host}
-		}
-		if t.Path != "" {
-			transport["path"] = t.Path
-		}
-		return transport
-	case "quic":
-		return map[string]any{"type": "quic"}
 	}
 	return nil
 }
@@ -293,7 +273,7 @@ func (s *Store) compileInbound(ctx context.Context, listener Listener, endpoints
 	}
 	inbound := map[string]any{"type": listener.Spec.Protocol, "tag": "listener-" + listener.ID, "listen": listener.ListenAddr, "listen_port": listener.BackendPort}
 	if listener.Spec.TLS.Enabled {
-		tls, err := s.compileTLS(ctx, listener.Spec)
+		tls, err := s.compileTLS(ctx, listener)
 		if err != nil {
 			return nil, err
 		}
@@ -311,53 +291,15 @@ func (s *Store) compileInbound(ctx context.Context, listener Listener, endpoints
 		if err != nil {
 			return nil, err
 		}
-		if user != nil {
-			users = append(users, user)
-		}
+		users = append(users, user)
 	}
-	if ProtocolSupportsEndpoints(listener.Spec.Protocol) {
-		inbound["users"] = users
-	}
-	if listener.Spec.Protocol == "shadowsocks" && len(endpoints) > 0 {
-		inbound["method"] = endpoints[0].Credentials.Method
-	}
-	switch listener.Spec.Protocol {
-	case "hysteria":
-		inbound["up_mbps"] = listener.Spec.Hysteria.UpMbps
-		inbound["down_mbps"] = listener.Spec.Hysteria.DownMbps
-		if listener.Spec.Hysteria.Obfuscation != "" {
-			inbound["obfs"] = listener.Spec.Hysteria.Obfuscation
-		}
-	case "hysteria2":
-		if listener.Spec.Hysteria.UpMbps != 0 {
-			inbound["up_mbps"] = listener.Spec.Hysteria.UpMbps
-		}
-		if listener.Spec.Hysteria.DownMbps != 0 {
-			inbound["down_mbps"] = listener.Spec.Hysteria.DownMbps
-		}
-		if listener.Spec.Hysteria.Obfuscation != "" {
-			inbound["obfs"] = map[string]any{"type": "salamander", "password": listener.Spec.Hysteria.Obfuscation}
-		}
-	case "tuic":
-		if listener.Spec.TUIC.CongestionControl != "" {
-			inbound["congestion_control"] = listener.Spec.TUIC.CongestionControl
-		}
-	case "shadowtls":
-		version := listener.Spec.ShadowTLS.Version
-		if version == 0 {
-			version = 3
-		}
-		inbound["version"] = version
-		inbound["handshake"] = map[string]any{"server": listener.Spec.ShadowTLS.HandshakeServer, "server_port": listener.Spec.ShadowTLS.HandshakePort}
-	}
+	inbound["users"] = users
 	return inbound, nil
 }
 
-func (s *Store) compileTLS(ctx context.Context, spec ProtocolSpec) (map[string]any, error) {
+func (s *Store) compileTLS(ctx context.Context, listener Listener) (map[string]any, error) {
+	spec := listener.Spec
 	configuration := map[string]any{"enabled": true}
-	if spec.TLS.ServerName != "" {
-		configuration["server_name"] = spec.TLS.ServerName
-	}
 	if len(spec.TLS.ALPN) > 0 {
 		configuration["alpn"] = spec.TLS.ALPN
 	}
@@ -383,7 +325,7 @@ func (s *Store) compileTLS(ctx context.Context, spec ProtocolSpec) (map[string]a
 		}
 		return configuration, nil
 	}
-	certificate, privateKey, err := s.loadManagedCertificatePEM(ctx, spec.TLS.CertificateID)
+	certificate, privateKey, err := generateHysteria2Certificate(listener.Domain)
 	if err != nil {
 		return nil, err
 	}
@@ -401,28 +343,10 @@ func compileUser(protocol string, endpoint endpointWithCredentials) (map[string]
 		if c.Flow != "" {
 			user["flow"] = c.Flow
 		}
-	case "vmess":
-		user["uuid"] = c.UUID
-		user["alter_id"] = c.AlterID
-	case "tuic":
-		user["uuid"] = c.UUID
-		user["password"] = c.Password
-	case "trojan", "hysteria2", "anytls", "shadowtls":
-		user["password"] = c.Password
-	case "hysteria":
-		user["auth_str"] = c.Password
-	case "snell":
-		user["userkey"] = c.PSK
-		if c.PSK == "" {
-			user["userkey"] = c.Password
-		}
-	case "shadowsocks":
-		user["password"] = c.Password
-	case "socks", "http", "naive":
-		user["username"] = c.Username
+	case "hysteria2":
 		user["password"] = c.Password
 	default:
-		return nil, nil
+		return nil, fmt.Errorf("unsupported inbound protocol %q", protocol)
 	}
 	return user, nil
 }

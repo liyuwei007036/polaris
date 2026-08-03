@@ -32,7 +32,7 @@ const taskStatuses = {
 const filteredTasks = computed(() => tasks.value.filter((row) => includesText([taskKinds[row.kind], nodeNames.value[row.node_id], taskStatuses[row.status]?.[0], taskResult(row)], taskKeyword.value)))
 const filteredEvents = computed(() => events.value.filter((row) => includesText([row.operator_username, auditAction(row), auditTarget(row)], auditKeyword.value)))
 const targetNames = {
-  operator: '管理账户', certificate: '加密证书', reality_key: 'Reality 连接密钥', registration_token: '服务器接入信息',
+  operator: '管理账户', reality_key: 'Reality 连接密钥', registration_token: '服务器接入信息',
   subscription: '客户端更新地址', node: '服务器', registration: '服务器接入申请', firewall_rule: '访问限制',
   singbox_release: 'sing-box 版本', listener: '接入服务', outbound: '上网出口', endpoint: '接入用户',
   ingress_route: '接入端口分配', route_rule: '服务器访问规则', task: '系统操作', cloudflare: '域名解析设置',

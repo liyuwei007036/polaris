@@ -3,20 +3,13 @@ package control_test
 import (
 	"bytes"
 	"context"
-	"crypto/ecdsa"
-	"crypto/elliptic"
 	"crypto/hmac"
-	"crypto/rand"
 	"crypto/sha1" // #nosec G505 -- test reproduces RFC 6238 TOTP client output.
-	"crypto/x509"
-	"crypto/x509/pkix"
 	"encoding/base32"
 	"encoding/base64"
 	"encoding/binary"
 	"encoding/json"
-	"encoding/pem"
 	"fmt"
-	"math/big"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -363,12 +356,7 @@ func TestCompileTLSAndRealityListeners(t *testing.T) {
 	if err := store.SetNodeClientAddress(t.Context(), approved.NodeID, "config.example.com"); err != nil {
 		t.Fatal(err)
 	}
-	certificatePEM, privateKeyPEM := testCertificate(t)
-	certificate, err := store.CreateManagedCertificate(t.Context(), control.ManagedCertificateInput{Name: "test-cert", CertificatePEM: certificatePEM, PrivateKeyPEM: privateKeyPEM, Enabled: true})
-	if err != nil {
-		t.Fatal(err)
-	}
-	tlsListener, err := store.CreateListener(t.Context(), control.Listener{NodeID: approved.NodeID, Name: "trojan", ListenAddr: "0.0.0.0", Port: 4443, Enabled: true, Spec: control.ProtocolSpec{Protocol: "trojan", Network: "tcp", TLS: control.TLSOptions{Enabled: true, CertificateID: certificate.ID}}})
+	tlsListener, err := store.CreateListener(t.Context(), control.Listener{NodeID: approved.NodeID, Name: "hysteria2", Domain: "hy2.example.com", ListenAddr: "0.0.0.0", Port: 4443, Enabled: true, Spec: control.ProtocolSpec{Protocol: "hysteria2", Network: "udp", TLS: control.TLSOptions{Enabled: true}}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -412,7 +400,7 @@ func TestCompileTLSAndRealityListeners(t *testing.T) {
 	}
 	content, err := store.GenerateClientSubscription(t.Context(), accessToken)
 	decoded, decodeErr := base64.StdEncoding.DecodeString(content)
-	if err != nil || decodeErr != nil || !strings.Contains(string(decoded), "trojan://") {
+	if err != nil || decodeErr != nil || !strings.Contains(string(decoded), "hysteria2://") || !strings.Contains(string(decoded), "hy2.example.com:4443") || !strings.Contains(string(decoded), "sni=hy2.example.com") {
 		t.Fatalf("generate client subscription: %q, %v, %v", content, err, decodeErr)
 	}
 	if err := store.SetEndpointEnabled(t.Context(), tlsEndpoint.ID, false); err != nil {
@@ -420,27 +408,9 @@ func TestCompileTLSAndRealityListeners(t *testing.T) {
 	}
 	content, err = store.GenerateClientSubscription(t.Context(), accessToken)
 	decoded, decodeErr = base64.StdEncoding.DecodeString(content)
-	if err != nil || decodeErr != nil || strings.Contains(string(decoded), "trojan://") {
+	if err != nil || decodeErr != nil || strings.Contains(string(decoded), "hysteria2://") {
 		t.Fatalf("disabled endpoint remained in client subscription: %q, %v, %v", content, err, decodeErr)
 	}
-}
-
-func testCertificate(t *testing.T) (string, string) {
-	t.Helper()
-	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-	if err != nil {
-		t.Fatal(err)
-	}
-	certificate := &x509.Certificate{SerialNumber: big.NewInt(1), Subject: pkix.Name{CommonName: "example.com"}, NotBefore: time.Now().Add(-time.Hour), NotAfter: time.Now().Add(time.Hour), DNSNames: []string{"example.com"}, KeyUsage: x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment}
-	der, err := x509.CreateCertificate(rand.Reader, certificate, certificate, &key.PublicKey, key)
-	if err != nil {
-		t.Fatal(err)
-	}
-	keyDER, err := x509.MarshalPKCS8PrivateKey(key)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})), string(pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: keyDER}))
 }
 
 // TestApprovedAgentSessionUpdatesNodeStatus exercises the whole Noise-based

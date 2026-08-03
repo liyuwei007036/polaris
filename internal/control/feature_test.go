@@ -98,7 +98,7 @@ func TestInboundMutationCreatesAutomaticApplyTask(t *testing.T) {
 	response := request(t, http.MethodPost, httpServer.URL+"/api/v1/listeners/quick", map[string]any{
 		"listener": map[string]any{
 			"node_id": nodeID, "name": "自动生效入站", "listen_address": "0.0.0.0", "port": 1080,
-			"enabled": true, "spec": map[string]any{"protocol": "socks", "network": "tcp"},
+			"enabled": true, "spec": map[string]any{"protocol": "vless", "network": "tcp", "transport": map[string]any{"type": "ws"}},
 		},
 		"default_outbound_id": "direct",
 	}, session, csrfToken)
@@ -180,10 +180,10 @@ func TestSharedPortInboundCreatesMultipleUsersAndNginxRoutes(t *testing.T) {
 		t.Helper()
 		response := request(t, http.MethodPost, httpServer.URL+"/api/v1/listeners/quick", map[string]any{
 			"listener": map[string]any{
-				"node_id": nodeID, "name": name, "listen_address": "0.0.0.0", "port": 443, "enabled": true,
+				"node_id": nodeID, "name": name, "connection_domain": sni, "listen_address": "0.0.0.0", "port": 443, "enabled": true,
 				"spec": map[string]any{
-					"protocol": "vless", "network": "tcp", "tls": map[string]any{"enabled": true, "server_name": sni},
-					"reality": map[string]any{"enabled": true, "handshake_server": sni, "handshake_port": 443, "key_id": realityKey.ID},
+					"protocol": "vless", "network": "tcp", "tls": map[string]any{"enabled": true},
+					"reality": map[string]any{"enabled": true, "handshake_server": "www.microsoft.com", "handshake_port": 443, "key_id": realityKey.ID},
 				},
 			},
 			"accounts": []map[string]any{{"name": "用户 A", "outbound_id": "direct"}, {"name": "用户 B", "outbound_id": outbound.ID}},
@@ -242,8 +242,7 @@ func TestSharedPortInboundCreatesMultipleUsersAndNginxRoutes(t *testing.T) {
 		t.Fatalf("automatic route backends = %#v", routes)
 	}
 	editedSecond := secondListener
-	editedSecond.Spec.TLS.ServerName = "vless-b-new.example.com"
-	editedSecond.Spec.Reality.HandshakeServer = "vless-b-new.example.com"
+	editedSecond.Domain = "vless-b-new.example.com"
 	editResponse := request(t, http.MethodPut, httpServer.URL+"/api/v1/listeners/"+secondListener.ID, editedSecond, session, csrfToken)
 	if editResponse.StatusCode != http.StatusOK {
 		t.Fatalf("edit automatically routed listener: got %d", editResponse.StatusCode)
@@ -271,10 +270,10 @@ func TestSharedPortInboundCreatesMultipleUsersAndNginxRoutes(t *testing.T) {
 
 	duplicateDomain := request(t, http.MethodPost, httpServer.URL+"/api/v1/listeners/quick", map[string]any{
 		"listener": map[string]any{
-			"node_id": nodeID, "name": "重复域名", "port": 443, "enabled": true,
+			"node_id": nodeID, "name": "重复域名", "connection_domain": "a.example.com", "port": 443, "enabled": true,
 			"spec": map[string]any{
-				"protocol": "vless", "network": "tcp", "tls": map[string]any{"enabled": true, "server_name": "a.example.com"},
-				"reality": map[string]any{"enabled": true, "handshake_server": "a.example.com", "handshake_port": 443, "key_id": realityKey.ID},
+				"protocol": "vless", "network": "tcp", "tls": map[string]any{"enabled": true},
+				"reality": map[string]any{"enabled": true, "handshake_server": "www.microsoft.com", "handshake_port": 443, "key_id": realityKey.ID},
 			},
 		},
 		"accounts": []map[string]any{{"name": "用户 C", "outbound_id": "direct"}},
@@ -302,7 +301,7 @@ func TestSharedPortInboundCreatesMultipleUsersAndNginxRoutes(t *testing.T) {
 	udp := request(t, http.MethodPost, httpServer.URL+"/api/v1/listeners/quick", map[string]any{
 		"listener": map[string]any{
 			"node_id": nodeID, "name": "UDP 443", "port": 443, "enabled": true,
-			"spec": map[string]any{"protocol": "shadowsocks", "network": "udp"},
+			"spec": map[string]any{"protocol": "hysteria2", "network": "udp", "tls": map[string]any{"enabled": true}},
 		},
 		"accounts": []map[string]any{{"name": "UDP 用户", "outbound_id": "direct"}},
 	}, session, csrfToken)
@@ -313,7 +312,7 @@ func TestSharedPortInboundCreatesMultipleUsersAndNginxRoutes(t *testing.T) {
 	secondUDP := request(t, http.MethodPost, httpServer.URL+"/api/v1/listeners/quick", map[string]any{
 		"listener": map[string]any{
 			"node_id": nodeID, "name": "重复 UDP 443", "port": 443, "enabled": true,
-			"spec": map[string]any{"protocol": "shadowsocks", "network": "udp"},
+			"spec": map[string]any{"protocol": "hysteria2", "network": "udp", "tls": map[string]any{"enabled": true}},
 		},
 		"accounts": []map[string]any{{"name": "UDP 用户 2", "outbound_id": "direct"}},
 	}, session, csrfToken)
@@ -404,28 +403,21 @@ func TestOfficialSingBoxAcceptsPrimaryInboundVariants(t *testing.T) {
 	defer httpServer.Close()
 	session, csrfToken := login(t, httpServer.URL, secret)
 	nodeID := approveTestNode(t, server, httpServer.URL, session, csrfToken, "official-config-node")
-	certificatePEM, privateKeyPEM := testCertificate(t)
-	certificate, err := store.CreateManagedCertificate(t.Context(), control.ManagedCertificateInput{
-		Name: "primary-inbound-certificate", CertificatePEM: certificatePEM, PrivateKeyPEM: privateKeyPEM, Enabled: true,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
 	realityKey, _, err := store.CreateRealityKey(t.Context(), "primary-inbound-reality")
 	if err != nil {
 		t.Fatal(err)
 	}
-	tls := control.TLSOptions{Enabled: true, ServerName: "example.com", CertificateID: certificate.ID}
+	tls := control.TLSOptions{Enabled: true}
 	definitions := []struct {
 		name        string
 		port        uint16
 		spec        control.ProtocolSpec
 		credentials control.EndpointCredentials
 	}{
-		{"VLESS WebSocket", 10443, control.ProtocolSpec{Protocol: "vless", Network: "tcp", TLS: tls, Transport: control.TransportOptions{Type: "ws", Path: "/ws", Host: "example.com"}}, control.EndpointCredentials{UUID: "bf000d23-0752-40b4-affe-68f7707a9661"}},
-		{"VLESS gRPC", 10444, control.ProtocolSpec{Protocol: "vless", Network: "tcp", TLS: tls, Transport: control.TransportOptions{Type: "grpc", ServiceName: "grpc-service"}}, control.EndpointCredentials{UUID: "4e05f165-94f3-4f54-aac7-0487dcb83011"}},
+		{"VLESS WebSocket", 10443, control.ProtocolSpec{Protocol: "vless", Network: "tcp", Transport: control.TransportOptions{Type: "ws", Path: "/ws", Host: "example.com"}}, control.EndpointCredentials{UUID: "bf000d23-0752-40b4-affe-68f7707a9661"}},
+		{"VLESS gRPC", 10444, control.ProtocolSpec{Protocol: "vless", Network: "tcp", Transport: control.TransportOptions{Type: "grpc", ServiceName: "grpc-service"}}, control.EndpointCredentials{UUID: "4e05f165-94f3-4f54-aac7-0487dcb83011"}},
 		{"VLESS Reality", 10445, control.ProtocolSpec{Protocol: "vless", Network: "tcp", TLS: control.TLSOptions{Enabled: true}, Reality: control.RealityOptions{Enabled: true, KeyID: realityKey.ID, HandshakeServer: "www.microsoft.com", HandshakePort: 443, ShortIDs: []string{"0123456789abcdef"}}}, control.EndpointCredentials{UUID: "7d45d34f-09fc-43e6-b5cf-1ee1fbe3f2ca"}},
-		{"Hysteria2", 10443, control.ProtocolSpec{Protocol: "hysteria2", Network: "udp", TLS: tls, Hysteria: control.HysteriaOptions{UpMbps: 100, DownMbps: 100, Obfuscation: "audit-obfs"}}, control.EndpointCredentials{Password: "audit-password"}},
+		{"Hysteria2", 10443, control.ProtocolSpec{Protocol: "hysteria2", Network: "udp", TLS: tls}, control.EndpointCredentials{Password: "audit-password"}},
 	}
 	for _, definition := range definitions {
 		listener, err := store.CreateListener(t.Context(), control.Listener{
@@ -442,7 +434,7 @@ func TestOfficialSingBoxAcceptsPrimaryInboundVariants(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, expected := range []string{"grpc-service", `"type": "salamander"`, `"up_mbps": 100`, `"auth_user"`} {
+	for _, expected := range []string{"grpc-service", `"type": "hysteria2"`, `"auth_user"`} {
 		if !strings.Contains(configuration, expected) {
 			t.Fatalf("primary inbound configuration missing %q", expected)
 		}
@@ -771,14 +763,9 @@ func TestCloudflareProxyValidationFollowsListenerType(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	certificatePEM, privateKeyPEM := testCertificate(t)
-	certificate, err := store.CreateManagedCertificate(t.Context(), control.ManagedCertificateInput{Name: "cdn-cert", CertificatePEM: certificatePEM, PrivateKeyPEM: privateKeyPEM, Enabled: true})
-	if err != nil {
-		t.Fatal(err)
-	}
 	wsListener, err := store.CreateListener(t.Context(), control.Listener{
-		NodeID: nodeID, Name: "vless-ws", ListenAddr: "0.0.0.0", Port: 8443, Enabled: true,
-		Spec: control.ProtocolSpec{Protocol: "vless", Network: "tcp", TLS: control.TLSOptions{Enabled: true, CertificateID: certificate.ID}, Transport: control.TransportOptions{Type: "ws", Path: "/ws"}},
+		NodeID: nodeID, Name: "vless-ws", ListenAddr: "0.0.0.0", Port: 8080, Enabled: true,
+		Spec: control.ProtocolSpec{Protocol: "vless", Network: "tcp", Transport: control.TransportOptions{Type: "ws", Path: "/ws"}},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -798,7 +785,7 @@ func TestCloudflareProxyValidationFollowsListenerType(t *testing.T) {
 	if _, err := store.CreateCloudflareRecord(t.Context(), control.ManagedCloudflareRecord{
 		Name: "ws.example.com", Type: "A", Content: "192.0.2.10", TTL: 1, Proxied: true, ListenerID: wsListener.ID,
 	}); err != nil {
-		t.Fatalf("rejected orange cloud for WebSocket+TLS listener on 8443: %v", err)
+		t.Fatalf("rejected orange cloud for WebSocket listener on 8080: %v", err)
 	}
 	if _, err := store.CreateCloudflareRecord(t.Context(), control.ManagedCloudflareRecord{
 		Name: "reality.example.com", Type: "A", Content: "192.0.2.11", TTL: 1, Proxied: true, ListenerID: realityListener.ID,
@@ -817,7 +804,7 @@ func TestCloudflareProxyValidationFollowsListenerType(t *testing.T) {
 	}
 	badPort, err := store.CreateListener(t.Context(), control.Listener{
 		NodeID: nodeID, Name: "vless-ws-4444", ListenAddr: "0.0.0.0", Port: 4444, Enabled: true,
-		Spec: control.ProtocolSpec{Protocol: "vless", Network: "tcp", TLS: control.TLSOptions{Enabled: true, CertificateID: certificate.ID}, Transport: control.TransportOptions{Type: "ws", Path: "/ws"}},
+		Spec: control.ProtocolSpec{Protocol: "vless", Network: "tcp", Transport: control.TransportOptions{Type: "ws", Path: "/ws"}},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -854,19 +841,14 @@ func TestNodeConnectionsAndClashAPICompilation(t *testing.T) {
 	session, csrfToken := login(t, httpServer.URL, secret)
 	nodeID := approveTestNode(t, server, httpServer.URL, session, csrfToken, "metrics-node")
 
-	certificatePEM, privateKeyPEM := testCertificate(t)
-	certificate, err := store.CreateManagedCertificate(t.Context(), control.ManagedCertificateInput{Name: "metrics-cert", CertificatePEM: certificatePEM, PrivateKeyPEM: privateKeyPEM, Enabled: true})
-	if err != nil {
-		t.Fatal(err)
-	}
 	listener, err := store.CreateListener(t.Context(), control.Listener{
-		NodeID: nodeID, Name: "trojan", ListenAddr: "0.0.0.0", Port: 8443, Enabled: true,
-		Spec: control.ProtocolSpec{Protocol: "trojan", Network: "tcp", TLS: control.TLSOptions{Enabled: true, CertificateID: certificate.ID}},
+		NodeID: nodeID, Name: "vless-ws", ListenAddr: "0.0.0.0", Port: 8443, Enabled: true,
+		Spec: control.ProtocolSpec{Protocol: "vless", Network: "tcp", Transport: control.TransportOptions{Type: "ws"}},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.CreateEndpoint(t.Context(), control.Endpoint{ListenerID: listener.ID, Name: "alice", Enabled: true}, control.EndpointCredentials{Password: "password"}); err != nil {
+	if _, err := store.CreateEndpoint(t.Context(), control.Endpoint{ListenerID: listener.ID, Name: "alice", Enabled: true}, control.EndpointCredentials{UUID: "bf000d23-0752-40b4-affe-68f7707a9661"}); err != nil {
 		t.Fatal(err)
 	}
 	configuration, _, err := store.CompileNodeConfig(t.Context(), nodeID)

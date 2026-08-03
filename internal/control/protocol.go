@@ -7,8 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"net"
-	"sort"
-	"strings"
 )
 
 // ProtocolSpec is a closed, typed representation of the common listener
@@ -20,20 +18,14 @@ type ProtocolSpec struct {
 	TLS       TLSOptions       `json:"tls"`
 	Reality   RealityOptions   `json:"reality"`
 	Transport TransportOptions `json:"transport"`
-	Hysteria  HysteriaOptions  `json:"hysteria"`
-	TUIC      TUICOptions      `json:"tuic"`
-	Snell     SnellOptions     `json:"snell"`
-	ShadowTLS ShadowTLSOptions `json:"shadowtls"`
 }
 
 type TLSOptions struct {
-	Enabled       bool     `json:"enabled"`
-	ServerName    string   `json:"server_name"`
-	ALPN          []string `json:"alpn"`
-	MinVersion    string   `json:"min_version"`
-	MaxVersion    string   `json:"max_version"`
-	CipherSuites  []string `json:"cipher_suites"`
-	CertificateID string   `json:"certificate_id"`
+	Enabled      bool     `json:"enabled"`
+	ALPN         []string `json:"alpn"`
+	MinVersion   string   `json:"min_version"`
+	MaxVersion   string   `json:"max_version"`
+	CipherSuites []string `json:"cipher_suites"`
 }
 type RealityOptions struct {
 	Enabled         bool     `json:"enabled"`
@@ -48,58 +40,24 @@ type TransportOptions struct {
 	Host        string `json:"host"`
 	ServiceName string `json:"service_name"`
 }
-type HysteriaOptions struct {
-	UpMbps      uint32 `json:"up_mbps"`
-	DownMbps    uint32 `json:"down_mbps"`
-	Obfuscation string `json:"obfuscation"`
-}
-type TUICOptions struct {
-	CongestionControl string `json:"congestion_control"`
-}
-type SnellOptions struct {
-	Version uint8  `json:"version"`
-	Mode    string `json:"mode"`
-}
-type ShadowTLSOptions struct {
-	Version         uint8  `json:"version"`
-	HandshakeServer string `json:"handshake_server"`
-	HandshakePort   uint16 `json:"handshake_port"`
-}
 
 type EndpointCredentials struct {
 	UUID     string `json:"uuid,omitempty"`
 	Password string `json:"password,omitempty"`
-	Username string `json:"username,omitempty"`
-	Method   string `json:"method,omitempty"`
-	PSK      string `json:"psk,omitempty"`
 	Flow     string `json:"flow,omitempty"`
-	AlterID  uint32 `json:"alter_id,omitempty"`
 }
 
 type protocolDefinition struct {
-	networks  []string
-	endpoints bool
+	network string
 }
 
 var protocolDefinitions = map[string]protocolDefinition{
-	"direct": {networks: []string{"tcp", "udp"}}, "mixed": {networks: []string{"tcp"}}, "socks": {networks: []string{"tcp"}, endpoints: true},
-	"http": {networks: []string{"tcp"}, endpoints: true}, "shadowsocks": {networks: []string{"tcp", "udp"}, endpoints: true},
-	"vmess": {networks: []string{"tcp"}, endpoints: true}, "trojan": {networks: []string{"tcp"}, endpoints: true},
-	"naive": {networks: []string{"tcp"}, endpoints: true}, "hysteria": {networks: []string{"udp"}, endpoints: true},
-	"shadowtls": {networks: []string{"tcp"}, endpoints: true}, "tuic": {networks: []string{"udp"}, endpoints: true},
-	"hysteria2": {networks: []string{"udp"}, endpoints: true}, "vless": {networks: []string{"tcp"}, endpoints: true},
-	"anytls": {networks: []string{"tcp"}, endpoints: true}, "snell": {networks: []string{"tcp"}, endpoints: true},
-	"tun": {networks: []string{"tcp", "udp"}}, "redirect": {networks: []string{"tcp"}}, "tproxy": {networks: []string{"tcp", "udp"}},
-	"cloudflared": {networks: []string{"tcp"}},
+	"hysteria2": {network: "udp"},
+	"vless":     {network: "tcp"},
 }
 
 func SupportedProtocols() []string {
-	protocols := make([]string, 0, len(protocolDefinitions))
-	for protocol := range protocolDefinitions {
-		protocols = append(protocols, protocol)
-	}
-	sort.Strings(protocols)
-	return protocols
+	return []string{"hysteria2", "vless"}
 }
 
 func ValidateProtocolSpec(spec ProtocolSpec) error {
@@ -107,79 +65,49 @@ func ValidateProtocolSpec(spec ProtocolSpec) error {
 	if !ok {
 		return fmt.Errorf("unsupported sing-box inbound protocol %q", spec.Protocol)
 	}
-	if spec.Network != "tcp" && spec.Network != "udp" {
-		return errors.New("listener network must be tcp or udp")
-	}
-	validNetwork := false
-	for _, network := range definition.networks {
-		if network == spec.Network {
-			validNetwork = true
-			break
-		}
-	}
-	if !validNetwork {
+	if spec.Network != definition.network {
 		return fmt.Errorf("protocol %s does not support %s", spec.Protocol, spec.Network)
 	}
-	if ProtocolRequiresTLS(spec.Protocol) && !spec.TLS.Enabled {
-		return fmt.Errorf("protocol %s requires TLS", spec.Protocol)
+	if spec.Protocol == "hysteria2" {
+		if !spec.TLS.Enabled {
+			return errors.New("Hysteria2 requires TLS")
+		}
+		if spec.Reality.Enabled || spec.Transport.Type != "" {
+			return errors.New("Hysteria2 does not support Reality or VLESS transports")
+		}
 	}
-	if spec.Reality.Enabled && spec.Protocol != "vless" {
-		return errors.New("Reality is only supported by VLESS listeners: Reality disguises a real TCP TLS handshake, and other protocols use their own handshake (e.g. Hysteria2 runs over QUIC), so the two cannot be combined")
-	}
-	if spec.Reality.Enabled && (!spec.TLS.Enabled || spec.Reality.HandshakeServer == "" || spec.Reality.HandshakePort == 0) {
-		return errors.New("Reality requires TLS, handshake server, and handshake port")
-	}
-	if spec.Reality.Enabled && spec.Reality.KeyID == "" {
-		return errors.New("Reality requires a managed Reality key")
-	}
-	if spec.TLS.Enabled && !spec.Reality.Enabled && spec.TLS.CertificateID == "" {
-		return errors.New("TLS listener requires a managed certificate")
+	if spec.Protocol == "vless" {
+		if spec.Reality.Enabled {
+			if !spec.TLS.Enabled || spec.Reality.HandshakeServer == "" || spec.Reality.HandshakePort == 0 {
+				return errors.New("VLESS Reality requires TLS, handshake server, and handshake port")
+			}
+			if spec.Reality.KeyID == "" {
+				return errors.New("VLESS Reality requires a managed Reality key")
+			}
+			if spec.Transport.Type != "" {
+				return errors.New("VLESS Reality cannot be combined with WebSocket or gRPC")
+			}
+		} else {
+			if spec.TLS.Enabled {
+				return errors.New("VLESS with TLS is not supported; use Reality, WebSocket, or gRPC")
+			}
+			if spec.Transport.Type != "ws" && spec.Transport.Type != "grpc" {
+				return errors.New("VLESS requires Reality, WebSocket, or gRPC")
+			}
+		}
 	}
 	for _, version := range []string{spec.TLS.MinVersion, spec.TLS.MaxVersion} {
 		if version != "" && version != "1.0" && version != "1.1" && version != "1.2" && version != "1.3" {
 			return errors.New("TLS version must be 1.0, 1.1, 1.2, or 1.3")
 		}
 	}
-	if spec.Transport.Type != "" && spec.Transport.Type != "http" && spec.Transport.Type != "ws" && spec.Transport.Type != "httpupgrade" && spec.Transport.Type != "grpc" && spec.Transport.Type != "quic" {
+	if spec.Transport.Type != "" && spec.Transport.Type != "ws" && spec.Transport.Type != "grpc" {
 		return errors.New("unsupported listener transport")
-	}
-	if spec.Transport.Type != "" {
-		switch spec.Protocol {
-		case "vless", "vmess", "trojan", "http":
-		default:
-			return errors.New("transport is only supported by VLESS, VMess, Trojan, or HTTP listeners")
-		}
 	}
 	if spec.Transport.Type == "grpc" && spec.Transport.ServiceName == "" {
 		return errors.New("gRPC transport requires a service name")
 	}
-	if spec.Protocol == "snell" && spec.Snell.Version != 0 && spec.Snell.Version != 5 && spec.Snell.Version != 6 {
-		return errors.New("Snell version must be 5 or 6")
-	}
-	if spec.Protocol == "shadowtls" && spec.ShadowTLS.Version != 0 && spec.ShadowTLS.Version != 2 && spec.ShadowTLS.Version != 3 {
-		return errors.New("ShadowTLS version must be 2 or 3")
-	}
-	if spec.Protocol == "shadowtls" && (spec.ShadowTLS.HandshakeServer == "" || spec.ShadowTLS.HandshakePort == 0) {
-		return errors.New("ShadowTLS requires a handshake server and port")
-	}
-	if spec.Protocol == "hysteria" && (spec.Hysteria.UpMbps == 0 || spec.Hysteria.DownMbps == 0) {
-		return errors.New("Hysteria requires upload and download bandwidth")
-	}
-	if spec.Protocol == "tuic" && spec.TUIC.CongestionControl != "" && spec.TUIC.CongestionControl != "cubic" && spec.TUIC.CongestionControl != "new_reno" && spec.TUIC.CongestionControl != "bbr" {
-		return errors.New("TUIC congestion control must be cubic, new_reno, or bbr")
-	}
 	return nil
-}
-
-func ProtocolSupportsEndpoints(protocol string) bool { return protocolDefinitions[protocol].endpoints }
-
-func ProtocolRequiresTLS(protocol string) bool {
-	switch protocol {
-	case "naive", "hysteria", "tuic", "hysteria2", "anytls":
-		return true
-	default:
-		return false
-	}
 }
 
 func ValidateListenerAddress(address string, port uint16) error {
@@ -196,29 +124,17 @@ func ValidateListenerAddress(address string, port uint16) error {
 }
 
 func ValidateEndpointCredentials(protocol string, credentials EndpointCredentials) error {
-	if !ProtocolSupportsEndpoints(protocol) {
-		return fmt.Errorf("protocol %s does not accept endpoints", protocol)
-	}
 	switch protocol {
-	case "vless", "vmess", "tuic":
+	case "vless":
 		if credentials.UUID == "" {
-			return fmt.Errorf("protocol %s requires a UUID", protocol)
+			return errors.New("VLESS requires a UUID")
 		}
-	case "trojan", "hysteria", "hysteria2", "anytls", "shadowtls", "snell":
-		if credentials.Password == "" && credentials.PSK == "" {
-			return fmt.Errorf("protocol %s requires a password or PSK", protocol)
+	case "hysteria2":
+		if credentials.Password == "" {
+			return errors.New("Hysteria2 requires a password")
 		}
-	case "shadowsocks":
-		if credentials.Password == "" || credentials.Method == "" {
-			return errors.New("Shadowsocks requires method and password")
-		}
-	case "socks", "http", "naive":
-		if credentials.Username == "" || credentials.Password == "" {
-			return fmt.Errorf("protocol %s requires username and password", protocol)
-		}
-	}
-	if strings.ContainsAny(credentials.Username, "\r\n") {
-		return errors.New("endpoint username contains a line break")
+	default:
+		return fmt.Errorf("unsupported inbound protocol %q", protocol)
 	}
 	return nil
 }
@@ -249,39 +165,16 @@ func GenerateEndpointCredentials(protocol string) (EndpointCredentials, error) {
 			value[0:4], value[4:6], value[6:8], value[8:10], value[10:16]), nil
 	}
 
-	var credentials EndpointCredentials
-	var err error
 	switch protocol {
-	case "vless", "vmess":
-		credentials.UUID, err = randomUUID()
-	case "tuic":
-		credentials.UUID, err = randomUUID()
-		if err == nil {
-			credentials.Password, err = randomPassword(24)
-		}
-	case "socks", "http", "naive":
-		credentials.Username = "proxy"
-		credentials.Password, err = randomPassword(24)
-	case "shadowsocks":
-		credentials.Method = "2022-blake3-aes-256-gcm"
-		value, readErr := randomBytes(32)
-		if readErr != nil {
-			err = readErr
-		} else {
-			credentials.Password = base64.StdEncoding.EncodeToString(value)
-		}
-	case "snell":
-		credentials.PSK, err = randomPassword(24)
+	case "vless":
+		uuid, err := randomUUID()
+		return EndpointCredentials{UUID: uuid}, err
+	case "hysteria2":
+		password, err := randomPassword(24)
+		return EndpointCredentials{Password: password}, err
 	default:
-		credentials.Password, err = randomPassword(24)
+		return EndpointCredentials{}, fmt.Errorf("unsupported inbound protocol %q", protocol)
 	}
-	if err != nil {
-		return EndpointCredentials{}, err
-	}
-	if err := ValidateEndpointCredentials(protocol, credentials); err != nil {
-		return EndpointCredentials{}, err
-	}
-	return credentials, nil
 }
 
 func GenerateRealityShortID() (string, error) {

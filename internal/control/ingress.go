@@ -30,6 +30,10 @@ func (s *Store) CreateListenerWithAutomaticPortRouting(ctx context.Context, list
 	if err := ValidateProtocolSpec(listener.Spec); err != nil {
 		return Listener{}, nil, false, err
 	}
+	listener.Domain = normalizeConnectionDomain(listener.Domain)
+	if err := validateConnectionDomain(listener.Domain); err != nil {
+		return Listener{}, nil, false, err
+	}
 	if listener.ListenAddr == "" {
 		listener.ListenAddr = "0.0.0.0"
 	}
@@ -139,8 +143,8 @@ func (s *Store) CreateListenerWithAutomaticPortRouting(ctx context.Context, list
 	if err != nil {
 		return Listener{}, nil, false, err
 	}
-	if _, err := tx.ExecContext(ctx, `INSERT INTO listeners (id, node_id, name, protocol, network, listen_address, port, backend_port, enabled, spec, outbound_id, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, listener.ID, listener.NodeID, listener.Name, listener.Spec.Protocol, listener.Spec.Network, listener.ListenAddr, listener.Port, listener.BackendPort, listener.Enabled, string(spec), listener.OutboundID, nowUnix(), nowUnix()); err != nil {
+	if _, err := tx.ExecContext(ctx, `INSERT INTO listeners (id, node_id, name, connection_domain, protocol, network, listen_address, port, backend_port, enabled, spec, outbound_id, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, listener.ID, listener.NodeID, listener.Name, listener.Domain, listener.Spec.Protocol, listener.Spec.Network, listener.ListenAddr, listener.Port, listener.BackendPort, listener.Enabled, string(spec), listener.OutboundID, nowUnix(), nowUnix()); err != nil {
 		return Listener{}, nil, false, fmt.Errorf("create listener: %w", err)
 	}
 	var route *IngressRoute
@@ -159,7 +163,7 @@ func (s *Store) CreateListenerWithAutomaticPortRouting(ctx context.Context, list
 }
 
 func listenersOnPublicPort(ctx context.Context, tx *sql.Tx, nodeID, network string, port uint16) ([]Listener, error) {
-	rows, err := tx.QueryContext(ctx, `SELECT id, node_id, name, listen_address, port, backend_port, enabled, spec, outbound_id
+	rows, err := tx.QueryContext(ctx, `SELECT id, node_id, name, connection_domain, listen_address, port, backend_port, enabled, spec, outbound_id
 		FROM listeners WHERE node_id = ? AND network = ? AND port = ? AND enabled = 1 ORDER BY id`, nodeID, network, port)
 	if err != nil {
 		return nil, fmt.Errorf("find listeners on public port: %w", err)
@@ -169,7 +173,7 @@ func listenersOnPublicPort(ctx context.Context, tx *sql.Tx, nodeID, network stri
 	for rows.Next() {
 		var listener Listener
 		var spec string
-		if err := rows.Scan(&listener.ID, &listener.NodeID, &listener.Name, &listener.ListenAddr, &listener.Port, &listener.BackendPort, &listener.Enabled, &spec, &listener.OutboundID); err != nil {
+		if err := rows.Scan(&listener.ID, &listener.NodeID, &listener.Name, &listener.Domain, &listener.ListenAddr, &listener.Port, &listener.BackendPort, &listener.Enabled, &spec, &listener.OutboundID); err != nil {
 			return nil, err
 		}
 		if err := json.Unmarshal([]byte(spec), &listener.Spec); err != nil {
@@ -212,13 +216,10 @@ func automaticRouteName(listener Listener) (string, error) {
 	if listener.Spec.Network != "tcp" || !listener.Spec.TLS.Enabled {
 		return "", errors.New("listener does not expose TLS SNI")
 	}
-	name := listener.Spec.TLS.ServerName
-	if name == "" && listener.Spec.Reality.Enabled {
-		name = listener.Spec.Reality.HandshakeServer
-	}
+	name := listener.Domain
 	name = strings.TrimSuffix(strings.ToLower(strings.TrimSpace(name)), ".")
 	if !validSNI(name) {
-		return "", errors.New("listener TLS server name is invalid")
+		return "", errors.New("listener connection domain is invalid")
 	}
 	return name, nil
 }
@@ -430,8 +431,8 @@ func (s *Store) CompileNodeNginx(ctx context.Context, nodeID string) (string, st
 func (s *Store) listenerForIngress(ctx context.Context, listenerID, nodeID string) (Listener, error) {
 	var listener Listener
 	var spec string
-	err := s.db.QueryRowContext(ctx, `SELECT id, node_id, name, listen_address, port, backend_port, enabled, spec FROM listeners WHERE id = ? AND node_id = ?`, listenerID, nodeID).
-		Scan(&listener.ID, &listener.NodeID, &listener.Name, &listener.ListenAddr, &listener.Port, &listener.BackendPort, &listener.Enabled, &spec)
+	err := s.db.QueryRowContext(ctx, `SELECT id, node_id, name, connection_domain, listen_address, port, backend_port, enabled, spec FROM listeners WHERE id = ? AND node_id = ?`, listenerID, nodeID).
+		Scan(&listener.ID, &listener.NodeID, &listener.Name, &listener.Domain, &listener.ListenAddr, &listener.Port, &listener.BackendPort, &listener.Enabled, &spec)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Listener{}, ErrNotFound
 	}

@@ -102,10 +102,6 @@ func (s *Server) registerBrowserRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("PUT /api/v1/operators/{id}", s.updateOperator)
 	mux.HandleFunc("POST /api/v1/operators/{id}/password", s.setOperatorPassword)
 	mux.HandleFunc("POST /api/v1/operators/{id}/totp/reset", s.resetOperatorTOTP)
-	mux.HandleFunc("GET /api/v1/certificates", s.listManagedCertificates)
-	mux.HandleFunc("POST /api/v1/certificates", s.createManagedCertificate)
-	mux.HandleFunc("PUT /api/v1/certificates/{id}", s.replaceManagedCertificate)
-	mux.HandleFunc("DELETE /api/v1/certificates/{id}", s.deleteManagedCertificate)
 	mux.HandleFunc("POST /api/v1/nodes/registration-tokens", s.createRegistrationToken)
 	mux.HandleFunc("GET /api/v1/nodes", s.listNodes)
 	mux.HandleFunc("PUT /api/v1/nodes/{id}/name", s.setNodeName)
@@ -511,91 +507,6 @@ func (s *Server) resetOperatorTOTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := s.store.AppendAudit(r.Context(), administrator.ID, "operator.mfa_reset", "operator", r.PathValue("id"), "operator two-factor authentication disabled"); err != nil {
-		writeError(w, err)
-		return
-	}
-	w.WriteHeader(http.StatusNoContent)
-}
-
-func (s *Server) listManagedCertificates(w http.ResponseWriter, r *http.Request) {
-	if _, err := s.operator(r, false); err != nil {
-		writeError(w, err)
-		return
-	}
-	certificates, err := s.store.ListManagedCertificates(r.Context())
-	if err != nil {
-		writeError(w, err)
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]any{"certificates": certificates})
-}
-
-func (s *Server) createManagedCertificate(w http.ResponseWriter, r *http.Request) {
-	operator, err := s.admin(r)
-	if err != nil {
-		writeError(w, err)
-		return
-	}
-	var input ManagedCertificateInput
-	if !decodeJSON(w, r, &input) {
-		return
-	}
-	certificate, err := s.store.CreateManagedCertificate(r.Context(), input)
-	if err != nil {
-		writeError(w, err)
-		return
-	}
-	if err := s.store.AppendAudit(r.Context(), operator.ID, "certificate.created", "certificate", certificate.ID, "managed TLS certificate created; PEM omitted"); err != nil {
-		writeError(w, err)
-		return
-	}
-	writeJSON(w, http.StatusCreated, certificate)
-}
-
-func (s *Server) replaceManagedCertificate(w http.ResponseWriter, r *http.Request) {
-	operator, err := s.admin(r)
-	if err != nil {
-		writeError(w, err)
-		return
-	}
-	var input ManagedCertificateInput
-	if !decodeJSON(w, r, &input) {
-		return
-	}
-	nodeIDs, err := s.store.CertificateNodeIDs(r.Context(), r.PathValue("id"))
-	if err != nil {
-		writeError(w, err)
-		return
-	}
-	certificate, err := s.store.ReplaceManagedCertificate(r.Context(), r.PathValue("id"), input)
-	if err != nil {
-		writeError(w, err)
-		return
-	}
-	if err := s.store.AppendAudit(r.Context(), operator.ID, "certificate.replaced", "certificate", certificate.ID, "managed TLS certificate replaced; PEM omitted"); err != nil {
-		writeError(w, err)
-		return
-	}
-	tasks, err := s.dispatchNodeConfigurations(r.Context(), nodeIDs, operator.ID)
-	if err != nil {
-		writeError(w, err)
-		return
-	}
-	setAutoApplyTaskHeaders(w, tasks)
-	writeJSON(w, http.StatusOK, certificate)
-}
-
-func (s *Server) deleteManagedCertificate(w http.ResponseWriter, r *http.Request) {
-	operator, err := s.admin(r)
-	if err != nil {
-		writeError(w, err)
-		return
-	}
-	if err := s.store.DeleteManagedCertificate(r.Context(), r.PathValue("id")); err != nil {
-		writeError(w, err)
-		return
-	}
-	if err := s.store.AppendAudit(r.Context(), operator.ID, "certificate.deleted", "certificate", r.PathValue("id"), "managed TLS certificate deleted"); err != nil {
 		writeError(w, err)
 		return
 	}

@@ -176,8 +176,8 @@ func (s *Store) validateCloudflareRecord(ctx context.Context, record *ManagedClo
 func (s *Store) listenerByID(ctx context.Context, listenerID string) (Listener, error) {
 	var listener Listener
 	var spec string
-	err := s.db.QueryRowContext(ctx, `SELECT id, node_id, name, listen_address, port, backend_port, enabled, spec FROM listeners WHERE id = ?`, listenerID).
-		Scan(&listener.ID, &listener.NodeID, &listener.Name, &listener.ListenAddr, &listener.Port, &listener.BackendPort, &listener.Enabled, &spec)
+	err := s.db.QueryRowContext(ctx, `SELECT id, node_id, name, connection_domain, listen_address, port, backend_port, enabled, spec FROM listeners WHERE id = ?`, listenerID).
+		Scan(&listener.ID, &listener.NodeID, &listener.Name, &listener.Domain, &listener.ListenAddr, &listener.Port, &listener.BackendPort, &listener.Enabled, &spec)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Listener{}, ErrNotFound
 	}

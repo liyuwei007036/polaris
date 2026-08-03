@@ -27,7 +27,7 @@ const selectedStatus = ref('')
 const accessQuery = reactive({ page: 1, pageSize: 20, total: 0, config_id: '', ip: '', location: '', user_agent: '' })
 const form = reactive({ name: '', proxy_group_ids: [], rule_providers: [], rule_mode: 'table', rules: [], raw_rules: '' })
 const strategyNames = { select: '手动选择', 'url-test': '自动测速', fallback: '故障切换' }
-const supportedProtocols = new Set(['vless', 'vmess', 'trojan', 'shadowsocks', 'hysteria2', 'socks', 'http'])
+const supportedProtocols = new Set(['vless', 'hysteria2'])
 const ruleTypes = [
   'DOMAIN', 'DOMAIN-SUFFIX', 'DOMAIN-KEYWORD', 'DOMAIN-WILDCARD', 'DOMAIN-REGEX', 'GEOSITE',
   'IP-CIDR', 'IP-CIDR6', 'IP-SUFFIX', 'IP-ASN', 'GEOIP', 'SRC-GEOIP', 'SRC-IP-ASN',
@@ -49,7 +49,7 @@ const selectedNodeNames = computed(() => endpoints.value
   .map((endpoint) => {
     const listener = listeners.value.find((item) => item.id === endpoint.listener_id)
     const node = appState.nodes.find((item) => item.id === listener?.node_id)
-    if (!listener?.enabled || !supportedProtocols.has(listener.spec?.protocol) || !node?.client_address) return ''
+    if (!listener?.enabled || !supportedProtocols.has(listener.spec?.protocol) || !(listener.connection_domain || node?.client_address)) return ''
     return endpoint.alias || `${node.name || listener.node_id} · ${listener.name} · ${endpoint.name}`
   })
   .filter(Boolean))

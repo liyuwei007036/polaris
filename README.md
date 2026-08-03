@@ -691,7 +691,7 @@ sudo systemctl status sb-control-agent.service
 推荐按以下顺序配置：
 
 1. 在“节点”中接入并批准服务器。
-2. 节点首次上线后会自动安装官方最新稳定版 sing-box；普通 TLS 按需在“系统设置”中导入证书，Reality 密钥与 Short ID 在创建接入服务时自动生成，控制台不提供手动配置入口。
+2. 节点首次上线后会自动安装官方最新稳定版 sing-box；Hysteria2 证书、Reality 密钥与 Short ID 均由系统在生成配置时自动处理，控制台不要求管理员导入或维护证书。
 3. 在“出口代理”中按需创建全局 SOCKS5 或 HTTP 出口；不配置时使用内置 `direct`。
 4. 在“接入服务”中创建服务并添加用户；每个用户属于该服务所在的服务器，并填写唯一的“客户端节点别名”，保存后自动生成凭据并应用到对应服务器。
 5. 在“流量路由”中按需配置直连、拒绝或指定出口规则；变更后自动应用。
@@ -703,15 +703,15 @@ sudo systemctl status sb-control-agent.service
 
 当前控制台允许创建以下 sing-box 入站类型：
 
-`anytls`、`http`、`hysteria`、`hysteria2`、`naive`、`shadowsocks`、`shadowtls`、`snell`、`socks`、`trojan`、`tuic`、`vless`、`vmess`。
+当前只支持 `Hysteria2`、`VLESS + Reality`、`VLESS + WebSocket` 和 `VLESS + gRPC`。
 
-传输层支持 `HTTP`、`WebSocket`、`HTTPUpgrade`、`gRPC` 和 `QUIC`，但仅可用于后端允许的协议组合。Reality 仅支持 VLESS。
+VLESS 仅允许 Reality、WebSocket 或 gRPC 三种模式；Hysteria2 使用自身的 QUIC 传输。其他入站协议及传输组合均会被后端拒绝。
 
 这里表示协议已经进入类型与校验清单，不代表所有 sing-box 版本和参数组合都经过真实节点互通测试。正式发布前仍应使用目标节点上的实际 sing-box 版本执行配置检查和客户端连通性验证。
 
 ### 订阅
 
-客户端订阅把多个 Endpoint 生成的分享链接合并后整体 Base64 编码。目前能生成链接的协议为 VLESS、Trojan、Shadowsocks、Hysteria2、SOCKS 和 HTTP。连接主机始终取服务器的“客户端连接地址”，显示名称始终取用户的“客户端节点别名”；缺少连接地址时拒绝生成无效订阅。
+客户端订阅把多个 Endpoint 生成的分享链接合并后整体 Base64 编码。目前只生成 VLESS 和 Hysteria2 链接。连接主机优先取每个 Listener 的“连接域名”，历史 Listener 未填写时才回退服务器的“客户端连接地址”；显示名称始终取用户的“客户端节点别名”。
 
 ### Mihomo YAML
 
@@ -723,7 +723,7 @@ sudo systemctl status sb-control-agent.service
 
 客户端配置使用 Fake-IP 承载代理域名，业务 DNS 返回 `rcode://success`，使代理请求携带原始域名并由最终命中的节点远端解析。规则动作可直接指向节点或代理组：选择组中的 A/B 节点时，代理流量与域名解析随实际节点切换；单独指定 YouTube 等规则走节点 C 时，对应域名也交给 C 远端解析。直连域名及代理服务器地址使用客户端直连 DoH。配置同时启用 TUN、DNS 劫持和严格路由，避免系统普通 DNS 绕过 Mihomo。
 
-用于解析 DoH 服务器域名和代理节点域名的 `default-nameserver`、`proxy-server-nameserver` 仍使用 `https://223.5.5.5/dns-query` 直连引导。代理节点建立前无法通过自身解析自身域名；如果要求引导查询也不暴露客户端公网出口 IP，服务器的“客户端连接地址”必须填写 IP，TLS/Reality 域名只放在 SNI。配置不会写入明文 UDP/TCP DNS 服务器。
+用于解析 DoH 服务器域名和代理节点连接域名的 `default-nameserver`、`proxy-server-nameserver` 使用 `https://223.5.5.5/dns-query` 直连引导。Reality 目标网站、WebSocket Host 和 gRPC 服务名称不会替代 Listener 的“连接域名”。配置不会写入明文 UDP/TCP DNS 服务器。
 
 ### Cloudflare
 

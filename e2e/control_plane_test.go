@@ -6,18 +6,12 @@ import (
 	"bytes"
 	"context"
 	"crypto/hmac"
-	"crypto/rand"
-	"crypto/rsa"
 	"crypto/sha1"
-	"crypto/x509"
-	"crypto/x509/pkix"
 	"encoding/base32"
 	"encoding/binary"
 	"encoding/json"
-	"encoding/pem"
 	"fmt"
 	"io"
-	"math/big"
 	"net"
 	"net/http"
 	"net/http/cookiejar"
@@ -195,8 +189,8 @@ func TestControlPlaneProcessJourneyWithRealAgent(t *testing.T) {
 	var quickListener quickListenerResponse
 	header := api.mustJSON(t, http.MethodPost, "/api/v1/listeners/quick", map[string]any{
 		"listener": map[string]any{
-			"node_id": approval.NodeID, "name": "E2E VLESS", "listen_address": "0.0.0.0", "port": 24443, "enabled": true,
-			"spec": map[string]any{"protocol": "vless", "network": "tcp"},
+			"node_id": approval.NodeID, "name": "E2E VLESS", "connection_domain": "ws.e2e.test", "listen_address": "0.0.0.0", "port": 24443, "enabled": true,
+			"spec": map[string]any{"protocol": "vless", "network": "tcp", "transport": map[string]any{"type": "ws"}},
 		},
 		"accounts": []map[string]any{
 			{"name": "E2E 用户 A", "outbound_id": "direct"},
@@ -224,22 +218,16 @@ func TestControlPlaneProcessJourneyWithRealAgent(t *testing.T) {
 		}
 	}
 
-	certificatePEM, privateKeyPEM := selfSignedCertificate(t, []string{"vless-a.e2e.test", "vless-b.e2e.test", "hy2.e2e.test"})
-	var certificate struct {
-		ID string `json:"id"`
-	}
-	api.mustJSON(t, http.MethodPost, "/api/v1/certificates", map[string]any{
-		"name": "E2E 共享证书", "certificate_pem": certificatePEM, "private_key_pem": privateKeyPEM, "enabled": true,
-	}, true, http.StatusCreated, &certificate)
 	sharedEndpointIDs := make([]string, 0, 3)
 	for index, serverName := range []string{"vless-a.e2e.test", "vless-b.e2e.test"} {
 		var shared quickListenerResponse
 		headers := api.mustJSON(t, http.MethodPost, "/api/v1/listeners/quick", map[string]any{
 			"listener": map[string]any{
-				"node_id": approval.NodeID, "name": fmt.Sprintf("E2E 自动端口 VLESS %d", index+1), "listen_address": "0.0.0.0", "port": 443, "enabled": true,
+				"node_id": approval.NodeID, "name": fmt.Sprintf("E2E 自动端口 VLESS %d", index+1), "connection_domain": serverName, "listen_address": "0.0.0.0", "port": 443, "enabled": true,
 				"spec": map[string]any{
 					"protocol": "vless", "network": "tcp",
-					"tls": map[string]any{"enabled": true, "server_name": serverName, "certificate_id": certificate.ID},
+					"tls":     map[string]any{"enabled": true},
+					"reality": map[string]any{"enabled": true, "handshake_server": serverName, "handshake_port": 443},
 				},
 			},
 			"accounts": []map[string]any{{"name": fmt.Sprintf("E2E 接入用户 %d", index+1), "outbound_id": "direct"}},
@@ -262,10 +250,10 @@ func TestControlPlaneProcessJourneyWithRealAgent(t *testing.T) {
 	var hysteria2 quickListenerResponse
 	hysteriaHeaders := api.mustJSON(t, http.MethodPost, "/api/v1/listeners/quick", map[string]any{
 		"listener": map[string]any{
-			"node_id": approval.NodeID, "name": "E2E Hysteria2 UDP 443", "listen_address": "0.0.0.0", "port": 443, "enabled": true,
+			"node_id": approval.NodeID, "name": "E2E Hysteria2 UDP 443", "connection_domain": "hy2.e2e.test", "listen_address": "0.0.0.0", "port": 443, "enabled": true,
 			"spec": map[string]any{
 				"protocol": "hysteria2", "network": "udp",
-				"tls": map[string]any{"enabled": true, "server_name": "hy2.e2e.test", "certificate_id": certificate.ID},
+				"tls": map[string]any{"enabled": true},
 			},
 		},
 		"accounts": []map[string]any{{"name": "E2E Hysteria2 用户", "outbound_id": "direct"}},
@@ -348,7 +336,7 @@ func TestControlPlaneProcessJourneyWithRealAgent(t *testing.T) {
 	if disposition := responseHeader.Get("Content-Disposition"); !strings.Contains(disposition, `filename*=UTF-8''E2E%20%E5%AE%A2%E6%88%B7%E7%AB%AF.yaml`) {
 		t.Fatalf("Mihomo subscription filename is not UTF-8 encoded: %q", disposition)
 	}
-	for _, expected := range []string{"store-selected: true", "tun:", "strict-route: true", "proxies:", `"server":"e2e.example.test"`, "proxy-groups:", `"name":"全部节点"`, "rule-providers:", `"url":"https://rules.example.test/proxy.mrs"`, "rules:", "RULE-SET,远程代理规则,全部节点", "GEOSITE,CN,DIRECT", "enhanced-mode: fake-ip", "nameserver:\n    - rcode://success", "direct-nameserver:", "https://223.5.5.5/dns-query"} {
+	for _, expected := range []string{"store-selected: true", "tun:", "strict-route: true", "proxies:", `"server":"ws.e2e.test"`, `"server":"hy2.e2e.test"`, `"sni":"hy2.e2e.test"`, "proxy-groups:", `"name":"全部节点"`, "rule-providers:", `"url":"https://rules.example.test/proxy.mrs"`, "rules:", "RULE-SET,远程代理规则,全部节点", "GEOSITE,CN,DIRECT", "enhanced-mode: fake-ip", "nameserver:\n    - rcode://success", "direct-nameserver:", "https://223.5.5.5/dns-query"} {
 		if !strings.Contains(string(yaml), expected) {
 			t.Fatalf("Mihomo subscription is missing %q:\n%s", expected, yaml)
 		}
@@ -520,28 +508,6 @@ func startClashAPI(t *testing.T) *httptest.Server {
 	}))
 	t.Cleanup(server.Close)
 	return server
-}
-
-func selfSignedCertificate(t *testing.T, names []string) (string, string) {
-	t.Helper()
-	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
-	if err != nil {
-		t.Fatal(err)
-	}
-	now := time.Now().UTC()
-	template := x509.Certificate{
-		SerialNumber: big.NewInt(1), Subject: pkix.Name{CommonName: names[0]}, DNSNames: names,
-		NotBefore: now.Add(-time.Hour), NotAfter: now.Add(24 * time.Hour),
-		KeyUsage:    x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,
-		ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
-	}
-	certificateDER, err := x509.CreateCertificate(rand.Reader, &template, &template, &privateKey.PublicKey, privateKey)
-	if err != nil {
-		t.Fatal(err)
-	}
-	certificatePEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: certificateDER})
-	privateKeyPEM := pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(privateKey)})
-	return string(certificatePEM), string(privateKeyPEM)
 }
 
 func verifyEmbeddedWebApplication(t *testing.T, baseURL string) {

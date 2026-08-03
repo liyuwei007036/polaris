@@ -44,14 +44,14 @@ func TestStoredMihomoConfigReferencesNestedGroupsRulesAndAliases(t *testing.T) {
 			t.Fatal(err)
 		}
 		listener, err := store.CreateListener(t.Context(), control.Listener{
-			NodeID: nodeID, Name: "SOCKS 入站", ListenAddr: "0.0.0.0", Port: uint16(1080 + index), Enabled: true,
-			Spec: control.ProtocolSpec{Protocol: "socks", Network: "tcp"},
+			NodeID: nodeID, Name: "VLESS WebSocket 入站", Domain: []string{"us-listener.example.com", "jp-listener.example.com"}[index], ListenAddr: "0.0.0.0", Port: uint16(1080 + index), Enabled: true,
+			Spec: control.ProtocolSpec{Protocol: "vless", Network: "tcp", Transport: control.TransportOptions{Type: "ws"}},
 		})
 		if err != nil {
 			t.Fatal(err)
 		}
 		endpoint, err := store.CreateEndpoint(t.Context(), control.Endpoint{ListenerID: listener.ID, Name: "默认账号", Alias: []string{"洛杉矶 01", "东京 01"}[index], Enabled: true},
-			control.EndpointCredentials{Username: "user", Password: "secret"})
+			control.EndpointCredentials{UUID: []string{"bf000d23-0752-40b4-affe-68f7707a9661", "4e05f165-94f3-4f54-aac7-0487dcb83011"}[index]})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -106,7 +106,7 @@ func TestStoredMihomoConfigReferencesNestedGroupsRulesAndAliases(t *testing.T) {
 	if config.SubscriptionPath == "" {
 		t.Fatal("new Mihomo client config did not receive a subscription path")
 	}
-	for _, expected := range []string{`"name":"美国节点"`, `"type":"url-test"`, `"name":"日本节点"`, `"name":"自动选择"`, `"proxies":["美国节点","日本节点"]`, `"name":"洛杉矶 01"`, `"name":"东京 01"`, `"server":"us.example.com"`, `"server":"jp.example.com"`, "rule-providers:", `"远程代理规则": {"behavior":"domain","format":"mrs","interval":86400,"path":"./ruleset/proxy.mrs","proxy":"自动选择","type":"http","url":"https://rules.example.com/proxy.mrs"}`, "RULE-SET,远程代理规则,自动选择", "DOMAIN-SUFFIX,youtube.com,洛杉矶 01", "DOMAIN-SUFFIX,example.com,自动选择", "MATCH,DIRECT", "fake-ip-range: 198.18.0.1/16", "fake-ip-filter-mode: rule", "- MATCH,fake-ip", "respect-rules: false", "rcode://success", "direct-nameserver-follow-policy: false", "https://223.5.5.5/dns-query"} {
+	for _, expected := range []string{`"name":"美国节点"`, `"type":"url-test"`, `"name":"日本节点"`, `"name":"自动选择"`, `"proxies":["美国节点","日本节点"]`, `"name":"洛杉矶 01"`, `"name":"东京 01"`, `"server":"us-listener.example.com"`, `"server":"jp-listener.example.com"`, "rule-providers:", `"远程代理规则": {"behavior":"domain","format":"mrs","interval":86400,"path":"./ruleset/proxy.mrs","proxy":"自动选择","type":"http","url":"https://rules.example.com/proxy.mrs"}`, "RULE-SET,远程代理规则,自动选择", "DOMAIN-SUFFIX,youtube.com,洛杉矶 01", "DOMAIN-SUFFIX,example.com,自动选择", "MATCH,DIRECT", "fake-ip-range: 198.18.0.1/16", "fake-ip-filter-mode: rule", "- MATCH,fake-ip", "respect-rules: false", "rcode://success", "direct-nameserver-follow-policy: false", "https://223.5.5.5/dns-query"} {
 		if !strings.Contains(yaml, expected) {
 			t.Fatalf("stored YAML does not contain %q:\n%s", expected, yaml)
 		}
@@ -320,27 +320,12 @@ func TestStoredMihomoConfigReferencesNestedGroupsRulesAndAliases(t *testing.T) {
 		t.Fatalf("proxy group accepted a reserved name: %v", err)
 	}
 
-	unsupportedListener, err := store.CreateListener(t.Context(), control.Listener{
+	_, err = store.CreateListener(t.Context(), control.Listener{
 		NodeID: nodeIDs[0], Name: "HTTPUpgrade 接入", ListenAddr: "0.0.0.0", Port: 2080, Enabled: true,
 		Spec: control.ProtocolSpec{Protocol: "vless", Network: "tcp", Transport: control.TransportOptions{Type: "httpupgrade", Path: "/proxy"}},
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	credentials, err := control.GenerateEndpointCredentials("vless")
-	if err != nil {
-		t.Fatal(err)
-	}
-	unsupportedEndpoint, err := store.CreateEndpoint(t.Context(), control.Endpoint{
-		ListenerID: unsupportedListener.ID, Name: "HTTPUpgrade 用户", Alias: "HTTPUpgrade 节点", Enabled: true,
-	}, credentials)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := store.CreateMihomoProxyGroup(t.Context(), control.MihomoProxyGroup{
-		Name: "不兼容传输", Strategy: "select", Members: []control.MihomoGroupMember{{Kind: "endpoint", ID: unsupportedEndpoint.ID}},
-	}); err == nil || !strings.Contains(err.Error(), "transport httpupgrade") {
-		t.Fatalf("proxy group accepted a transport that cannot be exported: %v", err)
+	if err == nil || !strings.Contains(err.Error(), "Reality, WebSocket, or gRPC") {
+		t.Fatalf("accepted removed HTTPUpgrade transport: %v", err)
 	}
 	if _, err := store.CreateMihomoClientConfig(t.Context(), control.MihomoClientConfig{
 		Name: "旧式组合", Groups: []control.MihomoClientGroup{{ID: "legacy-group"}}, RoutingProfileID: "legacy-profile",
@@ -390,8 +375,8 @@ func TestEndpointOutboundCompilesAuthenticatedUserRoutes(t *testing.T) {
 		t.Fatal(err)
 	}
 	listener, err := store.CreateListener(t.Context(), control.Listener{
-		NodeID: nodeID, Name: "SOCKS 入站", ListenAddr: "0.0.0.0", Port: 1080, Enabled: true,
-		Spec: control.ProtocolSpec{Protocol: "socks", Network: "tcp"},
+		NodeID: nodeID, Name: "VLESS WebSocket 入站", ListenAddr: "0.0.0.0", Port: 1080, Enabled: true,
+		Spec: control.ProtocolSpec{Protocol: "vless", Network: "tcp", Transport: control.TransportOptions{Type: "ws"}},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -400,7 +385,7 @@ func TestEndpointOutboundCompilesAuthenticatedUserRoutes(t *testing.T) {
 		{ListenerID: listener.ID, Name: "用户 A", Enabled: true, OutboundID: "direct"},
 		{ListenerID: listener.ID, Name: "用户 B", Enabled: true, OutboundID: outbound.ID},
 	} {
-		if _, err := store.CreateEndpoint(t.Context(), endpoint, control.EndpointCredentials{Username: endpoint.Name, Password: "secret"}); err != nil {
+		if _, err := store.CreateEndpoint(t.Context(), endpoint, control.EndpointCredentials{UUID: "bf000d23-0752-40b4-affe-68f7707a9661"}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -454,13 +439,13 @@ func TestGenerateMihomoYAMLUsesClientServerAddressAndRuleOrder(t *testing.T) {
 	}
 
 	listener, err := store.CreateListener(t.Context(), control.Listener{
-		NodeID: nodeID, Name: "SOCKS 入站", ListenAddr: "0.0.0.0", Port: 1080, Enabled: true,
-		Spec: control.ProtocolSpec{Protocol: "socks", Network: "tcp"},
+		NodeID: nodeID, Name: "VLESS WebSocket 入站", ListenAddr: "0.0.0.0", Port: 1080, Enabled: true,
+		Spec: control.ProtocolSpec{Protocol: "vless", Network: "tcp", Transport: control.TransportOptions{Type: "ws"}},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	endpoint, err := store.CreateEndpoint(t.Context(), control.Endpoint{ListenerID: listener.ID, Name: "用户 A", Enabled: true}, control.EndpointCredentials{Username: "alice", Password: "secret"})
+	endpoint, err := store.CreateEndpoint(t.Context(), control.Endpoint{ListenerID: listener.ID, Name: "用户 A", Enabled: true}, control.EndpointCredentials{UUID: "bf000d23-0752-40b4-affe-68f7707a9661"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -473,7 +458,7 @@ func TestGenerateMihomoYAMLUsesClientServerAddressAndRuleOrder(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, expected := range []string{`"server":"proxy.example.com"`, `"username":"alice"`, "DOMAIN-SUFFIX,github.com,PROXY", "IP-CIDR,1.1.1.0/24,PROXY,no-resolve", "MATCH,DIRECT"} {
+	for _, expected := range []string{`"server":"proxy.example.com"`, `"uuid":"bf000d23-0752-40b4-affe-68f7707a9661"`, "DOMAIN-SUFFIX,github.com,PROXY", "IP-CIDR,1.1.1.0/24,PROXY,no-resolve", "MATCH,DIRECT"} {
 		if !strings.Contains(yaml, expected) {
 			t.Fatalf("generated YAML does not contain %q:\n%s", expected, yaml)
 		}
@@ -548,18 +533,11 @@ func TestMihomoRoutingProfileSupportsRawAndStructuredRules(t *testing.T) {
 	}
 }
 
-func TestProtocolsThatRequireTLSRejectPlainInbound(t *testing.T) {
-	for _, protocol := range []string{"naive", "hysteria", "tuic", "hysteria2", "anytls"} {
-		network := "tcp"
-		if protocol == "hysteria" || protocol == "tuic" || protocol == "hysteria2" {
-			network = "udp"
+func TestRemovedInboundProtocolsAreRejected(t *testing.T) {
+	for _, protocol := range []string{"anytls", "http", "hysteria", "naive", "shadowsocks", "shadowtls", "snell", "socks", "trojan", "tuic", "vmess"} {
+		err := control.ValidateProtocolSpec(control.ProtocolSpec{Protocol: protocol, Network: "tcp"})
+		if err == nil || !strings.Contains(err.Error(), "unsupported") {
+			t.Fatalf("removed protocol %s error = %v", protocol, err)
 		}
-		err := control.ValidateProtocolSpec(control.ProtocolSpec{Protocol: protocol, Network: network})
-		if err == nil || !strings.Contains(err.Error(), "requires TLS") {
-			t.Fatalf("%s without TLS error = %v", protocol, err)
-		}
-	}
-	if err := control.ValidateProtocolSpec(control.ProtocolSpec{Protocol: "shadowsocks", Network: "tcp"}); err != nil {
-		t.Fatalf("Shadowsocks should not require TLS: %v", err)
 	}
 }

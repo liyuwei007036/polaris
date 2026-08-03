@@ -153,6 +153,7 @@ type Listener struct {
 	ID          string       `json:"id"`
 	NodeID      string       `json:"node_id"`
 	Name        string       `json:"name"`
+	Domain      string       `json:"connection_domain"`
 	ListenAddr  string       `json:"listen_address"`
 	Port        uint16       `json:"port"`
 	BackendPort uint16       `json:"backend_port"`
@@ -1072,6 +1073,17 @@ func (s *Store) SetNodeClientAddress(ctx context.Context, nodeID, address string
 	return nil
 }
 
+func validateConnectionDomain(value string) error {
+	if value != "" && !validSNI(value) {
+		return errors.New("connection domain must be a valid hostname without scheme or port")
+	}
+	return nil
+}
+
+func normalizeConnectionDomain(value string) string {
+	return strings.TrimSuffix(strings.ToLower(strings.TrimSpace(value)), ".")
+}
+
 func (s *Store) SetNodeSingBoxVersion(ctx context.Context, nodeID, version string) error {
 	if version == "" || len(version) > 128 || strings.ContainsAny(version, "\r\n") {
 		return errors.New("sing-box version is invalid")
@@ -1221,6 +1233,10 @@ func (s *Store) CreateListener(ctx context.Context, listener Listener) (Listener
 	if err := ValidateProtocolSpec(listener.Spec); err != nil {
 		return Listener{}, err
 	}
+	listener.Domain = normalizeConnectionDomain(listener.Domain)
+	if err := validateConnectionDomain(listener.Domain); err != nil {
+		return Listener{}, err
+	}
 	if err := ValidateListenerAddress(listener.ListenAddr, listener.Port); err != nil {
 		return Listener{}, err
 	}
@@ -1260,8 +1276,8 @@ func (s *Store) CreateListener(ctx context.Context, listener Listener) (Listener
 	if err != nil {
 		return Listener{}, err
 	}
-	_, err = s.db.ExecContext(ctx, `INSERT INTO listeners (id, node_id, name, protocol, network, listen_address, port, backend_port, enabled, spec, outbound_id, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, listener.ID, listener.NodeID, listener.Name, listener.Spec.Protocol, listener.Spec.Network, listener.ListenAddr, listener.Port, listener.BackendPort, listener.Enabled, string(spec), listener.OutboundID, nowUnix(), nowUnix())
+	_, err = s.db.ExecContext(ctx, `INSERT INTO listeners (id, node_id, name, connection_domain, protocol, network, listen_address, port, backend_port, enabled, spec, outbound_id, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, listener.ID, listener.NodeID, listener.Name, listener.Domain, listener.Spec.Protocol, listener.Spec.Network, listener.ListenAddr, listener.Port, listener.BackendPort, listener.Enabled, string(spec), listener.OutboundID, nowUnix(), nowUnix())
 	if err != nil {
 		return Listener{}, fmt.Errorf("create listener: %w", err)
 	}
@@ -1273,6 +1289,10 @@ func (s *Store) UpdateListener(ctx context.Context, listener Listener) (Listener
 		return Listener{}, errors.New("listener ID, node and a name up to 128 characters are required")
 	}
 	if err := ValidateProtocolSpec(listener.Spec); err != nil {
+		return Listener{}, err
+	}
+	listener.Domain = normalizeConnectionDomain(listener.Domain)
+	if err := validateConnectionDomain(listener.Domain); err != nil {
 		return Listener{}, err
 	}
 	if err := ValidateListenerAddress(listener.ListenAddr, listener.Port); err != nil {
@@ -1325,8 +1345,8 @@ func (s *Store) UpdateListener(ctx context.Context, listener Listener) (Listener
 	if err != nil {
 		return Listener{}, fmt.Errorf("encode listener spec: %w", err)
 	}
-	_, err = s.db.ExecContext(ctx, `UPDATE listeners SET name = ?, protocol = ?, network = ?, listen_address = ?, port = ?, backend_port = ?, enabled = ?, spec = ?, outbound_id = ?, updated_at = ? WHERE id = ?`,
-		listener.Name, listener.Spec.Protocol, listener.Spec.Network, listener.ListenAddr, listener.Port, listener.BackendPort, listener.Enabled, string(spec), listener.OutboundID, nowUnix(), listener.ID)
+	_, err = s.db.ExecContext(ctx, `UPDATE listeners SET name = ?, connection_domain = ?, protocol = ?, network = ?, listen_address = ?, port = ?, backend_port = ?, enabled = ?, spec = ?, outbound_id = ?, updated_at = ? WHERE id = ?`,
+		listener.Name, listener.Domain, listener.Spec.Protocol, listener.Spec.Network, listener.ListenAddr, listener.Port, listener.BackendPort, listener.Enabled, string(spec), listener.OutboundID, nowUnix(), listener.ID)
 	if err != nil {
 		return Listener{}, fmt.Errorf("update listener: %w", err)
 	}
@@ -1334,7 +1354,7 @@ func (s *Store) UpdateListener(ctx context.Context, listener Listener) (Listener
 }
 
 func (s *Store) ListListeners(ctx context.Context, nodeID string) ([]Listener, error) {
-	query := `SELECT id, node_id, name, listen_address, port, backend_port, enabled, spec, outbound_id FROM listeners`
+	query := `SELECT id, node_id, name, connection_domain, listen_address, port, backend_port, enabled, spec, outbound_id FROM listeners`
 	args := []any{}
 	if nodeID != "" {
 		query += " WHERE node_id = ?"
@@ -1350,7 +1370,7 @@ func (s *Store) ListListeners(ctx context.Context, nodeID string) ([]Listener, e
 	for rows.Next() {
 		var listener Listener
 		var spec string
-		if err := rows.Scan(&listener.ID, &listener.NodeID, &listener.Name, &listener.ListenAddr, &listener.Port, &listener.BackendPort, &listener.Enabled, &spec, &listener.OutboundID); err != nil {
+		if err := rows.Scan(&listener.ID, &listener.NodeID, &listener.Name, &listener.Domain, &listener.ListenAddr, &listener.Port, &listener.BackendPort, &listener.Enabled, &spec, &listener.OutboundID); err != nil {
 			return nil, fmt.Errorf("read listener: %w", err)
 		}
 		if err := json.Unmarshal([]byte(spec), &listener.Spec); err != nil {
@@ -1996,7 +2016,7 @@ CREATE TABLE IF NOT EXISTS tasks (
 );
 CREATE TABLE IF NOT EXISTS listeners (
   id TEXT PRIMARY KEY, node_id TEXT NOT NULL REFERENCES nodes(id), name TEXT NOT NULL, protocol TEXT NOT NULL, network TEXT NOT NULL,
-  listen_address TEXT NOT NULL, port INTEGER NOT NULL, backend_port INTEGER NOT NULL, enabled INTEGER NOT NULL, spec TEXT NOT NULL,
+  connection_domain TEXT NOT NULL DEFAULT '', listen_address TEXT NOT NULL, port INTEGER NOT NULL, backend_port INTEGER NOT NULL, enabled INTEGER NOT NULL, spec TEXT NOT NULL,
   outbound_id TEXT NOT NULL DEFAULT '',
   created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL
 );
@@ -2026,10 +2046,6 @@ CREATE TABLE IF NOT EXISTS singbox_releases (
   id TEXT PRIMARY KEY, version TEXT NOT NULL, architecture TEXT NOT NULL, url TEXT NOT NULL, sha256 TEXT NOT NULL,
   enabled INTEGER NOT NULL, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
   UNIQUE(version, architecture)
-);
-CREATE TABLE IF NOT EXISTS managed_certificates (
-  id TEXT PRIMARY KEY, name TEXT NOT NULL UNIQUE, certificate_pem BLOB NOT NULL, private_key_pem BLOB NOT NULL,
-  enabled INTEGER NOT NULL, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL
 );
 CREATE TABLE IF NOT EXISTS managed_reality_keys (
   id TEXT PRIMARY KEY, name TEXT NOT NULL UNIQUE, public_key TEXT NOT NULL, private_key BLOB NOT NULL,
@@ -2112,7 +2128,6 @@ CREATE INDEX IF NOT EXISTS idx_outbounds_enabled ON outbounds(enabled);
 CREATE INDEX IF NOT EXISTS idx_route_rules_node_priority ON route_rules(node_id, priority, id);
 CREATE INDEX IF NOT EXISTS idx_ingress_routes_node_endpoint ON ingress_routes(node_id, listen_address, port, sni, enabled);
 CREATE INDEX IF NOT EXISTS idx_singbox_releases_version_architecture ON singbox_releases(version, architecture, enabled);
-CREATE INDEX IF NOT EXISTS idx_managed_certificates_name ON managed_certificates(name, enabled);
 CREATE INDEX IF NOT EXISTS idx_managed_reality_keys_name ON managed_reality_keys(name, enabled);
 CREATE INDEX IF NOT EXISTS idx_subscriptions_kind_enabled ON subscriptions(kind, enabled);
 CREATE INDEX IF NOT EXISTS idx_mihomo_client_routing_profile ON mihomo_client_configs(routing_profile_id);
@@ -2153,6 +2168,12 @@ CREATE INDEX IF NOT EXISTS idx_cloudflare_records_binding ON cloudflare_records(
 	}
 	if err := s.addListenerColumn(ctx, "outbound_id TEXT NOT NULL DEFAULT ''"); err != nil {
 		return err
+	}
+	if err := s.addListenerColumn(ctx, "connection_domain TEXT NOT NULL DEFAULT ''"); err != nil {
+		return err
+	}
+	if _, err := s.db.ExecContext(ctx, `DROP TABLE IF EXISTS managed_certificates`); err != nil {
+		return fmt.Errorf("remove managed certificates table: %w", err)
 	}
 	if err := s.addEndpointColumn(ctx, "outbound_id TEXT NOT NULL DEFAULT ''"); err != nil {
 		return err

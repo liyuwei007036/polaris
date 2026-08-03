@@ -20,12 +20,12 @@ func TestLegacyMihomoConfigMigratesOnceWithoutResurrection(t *testing.T) {
 	}
 	listener, err := store.CreateListener(t.Context(), Listener{
 		NodeID: nodeID, Name: "迁移接入", ListenAddr: "0.0.0.0", Port: 1080, Enabled: true,
-		Spec: ProtocolSpec{Protocol: "socks", Network: "tcp"},
+		Spec: ProtocolSpec{Protocol: "vless", Network: "tcp", Transport: TransportOptions{Type: "ws"}},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	endpoint, err := store.CreateEndpoint(t.Context(), Endpoint{ListenerID: listener.ID, Name: "旧用户", Enabled: true}, EndpointCredentials{Username: "user", Password: "secret"})
+	endpoint, err := store.CreateEndpoint(t.Context(), Endpoint{ListenerID: listener.ID, Name: "旧用户", Enabled: true}, EndpointCredentials{UUID: "bf000d23-0752-40b4-affe-68f7707a9661"})
 	if err != nil {
 		t.Fatal(err)
 	}

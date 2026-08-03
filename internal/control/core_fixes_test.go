@@ -46,7 +46,7 @@ func TestNodeRenameAutomaticRealityAndEndpointAliasFlow(t *testing.T) {
 
 	response = request(t, http.MethodPost, httpServer.URL+"/api/v1/listeners/quick", map[string]any{
 		"listener": map[string]any{
-			"node_id": nodeID, "name": "自动 Reality", "port": 443, "enabled": true,
+			"node_id": nodeID, "name": "自动 Reality", "connection_domain": "listener.example.com", "port": 443, "enabled": true,
 			"spec": map[string]any{
 				"protocol": "vless", "network": "tcp", "tls": map[string]any{"enabled": true},
 				"reality": map[string]any{
@@ -110,8 +110,8 @@ func TestNodeRenameAutomaticRealityAndEndpointAliasFlow(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(decoded), "sg.example.com:443") || !strings.Contains(string(decoded), "%E6%96%B0%E5%8A%A0%E5%9D%A1%E4%B8%93%E7%BA%BF+01") {
-		t.Fatalf("subscription did not use the client address and endpoint alias: %s", decoded)
+	if !strings.Contains(string(decoded), "listener.example.com:443") || !strings.Contains(string(decoded), "sni=www.microsoft.com") || !strings.Contains(string(decoded), "%E6%96%B0%E5%8A%A0%E5%9D%A1%E4%B8%93%E7%BA%BF+01") {
+		t.Fatalf("subscription did not keep the connection domain, Reality target and endpoint alias separate: %s", decoded)
 	}
 	if err := store.DeleteEndpoint(t.Context(), created.Endpoints[0].ID); err != control.ErrConflict {
 		t.Fatalf("referenced endpoint deletion = %v, want conflict", err)
