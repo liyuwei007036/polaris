@@ -317,6 +317,7 @@ func (s *Store) compileTLS(ctx context.Context, listener Listener) (map[string]a
 		if err != nil {
 			return nil, err
 		}
+		configuration["server_name"] = spec.Reality.HandshakeServer
 		configuration["reality"] = map[string]any{
 			"enabled":     true,
 			"handshake":   map[string]any{"server": spec.Reality.HandshakeServer, "server_port": spec.Reality.HandshakePort},

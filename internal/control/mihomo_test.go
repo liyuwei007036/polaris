@@ -90,6 +90,7 @@ func TestStoredMihomoConfigReferencesNestedGroupsRulesAndAliases(t *testing.T) {
 			{Type: "RULE-SET", Value: "远程代理规则", Action: "自动选择"},
 			{Type: "DOMAIN-SUFFIX", Value: "youtube.com", Action: "洛杉矶 01"},
 			{Type: "DOMAIN-SUFFIX", Value: "example.com", Action: "自动选择"},
+			{Type: "IP-ASN", Value: "13335", Action: "自动选择"},
 			{Type: "MATCH", Action: "DIRECT"},
 		},
 	})
@@ -106,12 +107,15 @@ func TestStoredMihomoConfigReferencesNestedGroupsRulesAndAliases(t *testing.T) {
 	if config.SubscriptionPath == "" {
 		t.Fatal("new Mihomo client config did not receive a subscription path")
 	}
-	for _, expected := range []string{`"name":"美国节点"`, `"type":"url-test"`, `"name":"日本节点"`, `"name":"自动选择"`, `"proxies":["美国节点","日本节点"]`, `"name":"洛杉矶 01"`, `"name":"东京 01"`, `"server":"us-listener.example.com"`, `"server":"jp-listener.example.com"`, "rule-providers:", `"远程代理规则": {"behavior":"domain","format":"mrs","interval":86400,"path":"./ruleset/proxy.mrs","proxy":"自动选择","type":"http","url":"https://rules.example.com/proxy.mrs"}`, "RULE-SET,远程代理规则,自动选择", "DOMAIN-SUFFIX,youtube.com,洛杉矶 01", "DOMAIN-SUFFIX,example.com,自动选择", "MATCH,DIRECT", "fake-ip-range: 198.18.0.1/16", "fake-ip-filter-mode: rule", "- MATCH,fake-ip", "respect-rules: false", "rcode://success", "direct-nameserver-follow-policy: false", "https://223.5.5.5/dns-query"} {
+	for _, expected := range []string{`"name":"美国节点"`, `"type":"url-test"`, `"name":"日本节点"`, `"name":"自动选择"`, `"proxies":["美国节点","日本节点"]`, `"name":"洛杉矶 01"`, `"name":"东京 01"`, `"server":"us-listener.example.com"`, `"server":"jp-listener.example.com"`, "geox-url:", "testingcf.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@release/GeoLite2-ASN.mmdb", "rule-providers:", `"远程代理规则": {"behavior":"domain","format":"mrs","interval":86400,"path":"./ruleset/proxy.mrs","proxy":"自动选择","type":"http","url":"https://rules.example.com/proxy.mrs"}`, "RULE-SET,远程代理规则,自动选择", "DOMAIN-SUFFIX,youtube.com,洛杉矶 01", "DOMAIN-SUFFIX,example.com,自动选择", "IP-ASN,13335,自动选择", "MATCH,DIRECT", "fake-ip-range: 198.18.0.1/16", "fake-ip-filter-mode: rule", "- MATCH,fake-ip", "respect-rules: false", "rcode://success", "direct-nameserver-follow-policy: false", "https://223.5.5.5/dns-query"} {
 		if !strings.Contains(yaml, expected) {
 			t.Fatalf("stored YAML does not contain %q:\n%s", expected, yaml)
 		}
 	}
 	var generated struct {
+		GeoxURL struct {
+			ASN string `yaml:"asn"`
+		} `yaml:"geox-url"`
 		Profile struct {
 			StoreSelected bool `yaml:"store-selected"`
 		} `yaml:"profile"`
@@ -148,6 +152,9 @@ func TestStoredMihomoConfigReferencesNestedGroupsRulesAndAliases(t *testing.T) {
 	}
 	if provider := generated.RuleProviders["远程代理规则"]; provider.Type != "http" || provider.Behavior != "domain" || provider.Format != "mrs" || provider.Interval != 86400 || provider.Proxy != "自动选择" {
 		t.Fatalf("generated rule provider = %#v", provider)
+	}
+	if !strings.Contains(generated.GeoxURL.ASN, "GeoLite2-ASN.mmdb") {
+		t.Fatalf("generated ASN data source = %q", generated.GeoxURL.ASN)
 	}
 	if !generated.Profile.StoreSelected {
 		t.Fatal("generated config does not persist the selected proxy node")

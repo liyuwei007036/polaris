@@ -851,6 +851,12 @@ func (s *Store) generateMihomoClientYAML(ctx context.Context, config MihomoClien
 	var builder strings.Builder
 	builder.WriteString("mixed-port: 7890\nallow-lan: false\nmode: rule\nlog-level: info\n")
 	builder.WriteString("profile:\n  store-selected: true\n")
+	for _, rule := range config.Rules {
+		if rule.Type == "IP-ASN" || rule.Type == "SRC-IP-ASN" {
+			builder.WriteString("geox-url:\n  asn: https://testingcf.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@release/GeoLite2-ASN.mmdb\n")
+			break
+		}
+	}
 	builder.WriteString("tun:\n  enable: true\n  stack: mixed\n  auto-route: true\n  auto-detect-interface: true\n  strict-route: true\n")
 	builder.WriteString("  dns-hijack:\n    - any:53\n    - tcp://any:53\n")
 	builder.WriteString("dns:\n  enable: true\n  ipv6: false\n  enhanced-mode: fake-ip\n")

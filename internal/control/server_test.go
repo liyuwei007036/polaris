@@ -391,7 +391,7 @@ func TestCompileTLSAndRealityListeners(t *testing.T) {
 	if err != nil {
 		t.Fatalf("compile TLS and Reality configuration: %v", err)
 	}
-	if !strings.Contains(configuration, "BEGIN CERTIFICATE") || !strings.Contains(configuration, privateRealityKey) {
+	if !strings.Contains(configuration, "BEGIN CERTIFICATE") || !strings.Contains(configuration, privateRealityKey) || !strings.Contains(configuration, `"server_name": "www.example.com"`) {
 		t.Fatal("compiled configuration omitted managed TLS or Reality material")
 	}
 	subscription, accessToken, err := store.CreateSubscription(t.Context(), control.SubscriptionInput{Kind: control.ClientSubscription, Name: "clients", EndpointIDs: []string{tlsEndpoint.ID}, Enabled: true})

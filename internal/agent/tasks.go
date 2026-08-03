@@ -410,7 +410,13 @@ func applyNginxConfig(ctx context.Context, task Task) TaskResult {
 	if current, err := os.ReadFile(managedNginxConfig); err == nil {
 		currentDigest := sha256.Sum256(current)
 		if strings.EqualFold(hex.EncodeToString(currentDigest[:]), task.ExpectedHash) && nginxServiceActive(ctx) {
-			return TaskResult{Status: "succeeded", Summary: "requested Nginx configuration is already active"}
+			if testOutput, testErr := exec.CommandContext(ctx, "nginx", "-t").CombinedOutput(); testErr != nil {
+				return TaskResult{Status: "failed", Summary: commandSummary("nginx -t", testOutput, testErr)}
+			}
+			if reloadOutput, reloadErr := exec.CommandContext(ctx, "systemctl", "reload", "nginx.service").CombinedOutput(); reloadErr != nil {
+				return TaskResult{Status: "failed", Summary: commandSummary("systemctl reload nginx.service", reloadOutput, reloadErr)}
+			}
+			return TaskResult{Status: "succeeded", Summary: "Nginx configuration validated and reloaded"}
 		}
 	}
 	directory := filepath.Dir(managedNginxConfig)
