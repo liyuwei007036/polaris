@@ -587,7 +587,7 @@ func ensureNginxReady(ctx context.Context, needed bool) error {
 	if !needed {
 		return nil
 	}
-	if err := ensureNginxWorkerCapacity(ctx); err != nil {
+	if _, err := ensureNginxWorkerCapacity(ctx); err != nil {
 		return err
 	}
 	fullConfig, fullConfigErr := exec.CommandContext(ctx, "nginx", "-T").CombinedOutput()
@@ -624,27 +624,48 @@ func ensureNginxReady(ctx context.Context, needed bool) error {
 	return nil
 }
 
-func ensureNginxWorkerCapacity(ctx context.Context) error {
+func ensureNginxWorkerCapacity(ctx context.Context) (bool, error) {
 	mainConfig, err := os.ReadFile(managedNginxMainConfig)
 	if err != nil {
-		return errors.New("读取 Nginx 主配置失败: " + err.Error())
+		return false, errors.New("读取 Nginx 主配置失败: " + err.Error())
 	}
 	updated, changed := raiseNginxWorkerConnections(mainConfig)
 	if !changed {
-		return nil
+		return false, nil
 	}
 	info, err := os.Stat(managedNginxMainConfig)
 	if err != nil {
-		return errors.New("读取 Nginx 主配置权限失败: " + err.Error())
+		return false, errors.New("读取 Nginx 主配置权限失败: " + err.Error())
 	}
 	if err := replaceFileAtomically(managedNginxMainConfig, updated, info.Mode().Perm()); err != nil {
-		return errors.New("提升 Nginx 连接容量失败: " + err.Error() + permissionHint(err))
+		return false, errors.New("提升 Nginx 连接容量失败: " + err.Error() + permissionHint(err))
 	}
 	if output, testErr := exec.CommandContext(ctx, "nginx", "-t").CombinedOutput(); testErr != nil {
 		if restoreErr := replaceFileAtomically(managedNginxMainConfig, mainConfig, info.Mode().Perm()); restoreErr != nil {
-			return errors.New(commandSummary("nginx -t", output, testErr) + "; 恢复 Nginx 主配置失败: " + restoreErr.Error())
+			return false, errors.New(commandSummary("nginx -t", output, testErr) + "; 恢复 Nginx 主配置失败: " + restoreErr.Error())
 		}
-		return errors.New(commandSummary("nginx -t", output, testErr))
+		return false, errors.New(commandSummary("nginx -t", output, testErr))
+	}
+	return true, nil
+}
+
+func EnsureManagedNginxCapacity(ctx context.Context) error {
+	if strings.TrimSpace(os.Getenv("SB_CONTROL_E2E_ROOT")) != "" || !commandExists("nginx") {
+		return nil
+	}
+	configuration, err := os.ReadFile(managedNginxConfig)
+	if os.IsNotExist(err) || strings.TrimSpace(string(configuration)) == "" {
+		return nil
+	}
+	if err != nil {
+		return errors.New("读取受管 Nginx 配置失败: " + err.Error())
+	}
+	changed, err := ensureNginxWorkerCapacity(ctx)
+	if err != nil || !changed || !nginxServiceActive(ctx) {
+		return err
+	}
+	if output, reloadErr := exec.CommandContext(ctx, "systemctl", "reload", "nginx.service").CombinedOutput(); reloadErr != nil {
+		return errors.New(commandSummary("systemctl reload nginx.service", output, reloadErr))
 	}
 	return nil
 }
