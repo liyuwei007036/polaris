@@ -3,6 +3,7 @@ package control
 import (
 	"crypto/x509"
 	"encoding/pem"
+	"strings"
 	"testing"
 )
 
@@ -47,5 +48,38 @@ func TestMigrationRemovesManagedCertificatesTable(t *testing.T) {
 	}
 	if count != 0 {
 		t.Fatal("managed certificates table still exists after migration")
+	}
+}
+
+func TestCompileHysteria2ConfigurationIsStable(t *testing.T) {
+	store, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	nodeID := strings.Repeat("a", 32)
+	if _, err := store.db.Exec(`INSERT INTO nodes (id, name, public_key, created_at) VALUES (?, ?, ?, ?)`, nodeID, "hysteria-node", []byte(strings.Repeat("k", 32)), nowUnix()); err != nil {
+		t.Fatal(err)
+	}
+	listener, err := store.CreateListener(t.Context(), Listener{
+		NodeID: nodeID, Name: "hysteria2", Domain: "hy2.example.com", ListenAddr: "0.0.0.0", Port: 443, Enabled: true,
+		Spec: ProtocolSpec{Protocol: "hysteria2", Network: "udp", TLS: TLSOptions{Enabled: true}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.CreateEndpoint(t.Context(), Endpoint{ListenerID: listener.ID, Name: "client", Enabled: true}, EndpointCredentials{Password: "secret"}); err != nil {
+		t.Fatal(err)
+	}
+	firstConfig, firstHash, err := store.CompileNodeConfig(t.Context(), nodeID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondConfig, secondHash, err := store.CompileNodeConfig(t.Context(), nodeID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if firstConfig != secondConfig || firstHash != secondHash {
+		t.Fatalf("unchanged Hysteria2 listener compiled differently: first=%s second=%s", firstHash, secondHash)
 	}
 }

@@ -326,7 +326,7 @@ func (s *Store) compileTLS(ctx context.Context, listener Listener) (map[string]a
 		}
 		return configuration, nil
 	}
-	certificate, privateKey, err := generateHysteria2Certificate(listener.Domain)
+	certificate, privateKey, err := s.loadOrCreateHysteria2Certificate(ctx, listener.ID, listener.Domain)
 	if err != nil {
 		return nil, err
 	}

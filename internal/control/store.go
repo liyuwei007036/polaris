@@ -1453,6 +1453,9 @@ func (s *Store) DeleteListener(ctx context.Context, listenerID string) error {
 	if _, err := tx.ExecContext(ctx, `DELETE FROM endpoints WHERE listener_id = ?`, listenerID); err != nil {
 		return fmt.Errorf("delete listener endpoints: %w", err)
 	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM listener_certificates WHERE listener_id = ?`, listenerID); err != nil {
+		return fmt.Errorf("delete listener certificate: %w", err)
+	}
 	result, err := tx.ExecContext(ctx, `DELETE FROM listeners WHERE id = ?`, listenerID)
 	if err != nil {
 		return fmt.Errorf("delete listener: %w", err)
@@ -2050,6 +2053,10 @@ CREATE TABLE IF NOT EXISTS singbox_releases (
 CREATE TABLE IF NOT EXISTS managed_reality_keys (
   id TEXT PRIMARY KEY, name TEXT NOT NULL UNIQUE, public_key TEXT NOT NULL, private_key BLOB NOT NULL,
   enabled INTEGER NOT NULL, created_at INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS listener_certificates (
+  listener_id TEXT PRIMARY KEY REFERENCES listeners(id), domain TEXT NOT NULL, certificate BLOB NOT NULL,
+  created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL
 );
 CREATE TABLE IF NOT EXISTS subscriptions (
   id TEXT PRIMARY KEY, kind TEXT NOT NULL, node_id TEXT REFERENCES nodes(id), name TEXT NOT NULL,
