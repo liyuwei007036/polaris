@@ -80,17 +80,43 @@ test('浏览器页面回归：真实登录，核心工作区 API 使用路由替
   for (const [navigation, heading] of pages) {
     await page.getByRole('button', { name: navigation, exact: true }).click()
     await expect(page.getByRole('heading', { name: heading, exact: true })).toBeVisible()
+    // The page we navigated away from has to actually go. A transition that
+    // never finishes leaves the old page stacked on top of the new one, which
+    // looks like navigation silently doing nothing.
+    await expect(page.locator('.page-shell')).toHaveCount(1)
+    // Lists paginate, so the pager must be on screen rather than pushed off
+    // the bottom by a tall page of rows.
+    const pager = page.locator('.pagination-bar').first()
+    if (await pager.count()) {
+      const geometry = await page.evaluate(() => {
+        const bar = document.querySelector('.pagination-bar')
+        const content = document.querySelector('.page-content')
+        return {
+          pagerBottom: Math.round(bar.getBoundingClientRect().bottom),
+          viewport: window.innerHeight,
+          contentOverflow: content ? content.scrollHeight - content.clientHeight : null,
+        }
+      })
+      expect(geometry, `${heading}: ${JSON.stringify(geometry)}`).toMatchObject({ contentOverflow: 0 })
+      expect(geometry.pagerBottom, `${heading} pager off screen: ${JSON.stringify(geometry)}`).toBeLessThanOrEqual(geometry.viewport)
+    }
   }
 
+  // Scope these to the page body: Element Plus teleports every select's
+  // dropdown to <body>, so a bare text match also finds panels belonging to
+  // pages that are no longer on screen.
   await page.getByRole('button', { name: '当前连接', exact: true }).click()
-  await expect(page.getByText('全部服务器', { exact: true })).toBeVisible()
+  await expect(page.locator('.page-shell')).toHaveCount(1)
+  await expect(page.locator('.page-shell').getByText('全部服务器', { exact: true })).toBeVisible()
   await page.getByRole('button', { name: '网络防护', exact: true }).click()
-  await expect(page.getByText('全部服务器', { exact: true })).toBeVisible()
+  await expect(page.locator('.page-shell')).toHaveCount(1)
+  await expect(page.locator('.page-shell').getByText('全部服务器', { exact: true })).toBeVisible()
   await expect(page.getByText('来源地址范围 / IP 归属地', { exact: true })).toBeVisible()
   await page.getByRole('button', { name: '操作记录', exact: true }).click()
   await expect(page.getByRole('tabpanel', { name: '系统操作', exact: true }).getByText('共 0 条', { exact: true })).toBeVisible()
 
   await page.getByRole('button', { name: '接入服务', exact: true }).click()
+  await expect(page.getByRole('heading', { name: '接入服务', exact: true })).toBeVisible()
   await page.getByRole('button', { name: '新建', exact: true }).click()
   const dialog = page.getByRole('dialog', { name: '新建接入服务', exact: true })
   await expect(dialog).toBeVisible()
@@ -179,6 +205,7 @@ test('浏览器页面回归：真实登录，核心工作区 API 使用路由替
   })
   await page.getByRole('button', { name: '服务器', exact: true }).click()
   await page.getByRole('button', { name: '接入服务', exact: true }).click()
+  await expect(page.getByRole('heading', { name: '接入服务', exact: true })).toBeVisible()
   await expect(page.getByRole('button', { name: '添加', exact: true })).toHaveCount(0)
 
   await page.getByRole('button', { name: '新建', exact: true }).click()
@@ -216,6 +243,9 @@ test('浏览器页面回归：真实登录，核心工作区 API 使用路由替
   expect(createdAccount).toEqual({ name: '新增用户', alias: '测试节点 02', outbound_id: 'direct' })
 
   await page.getByRole('button', { name: '代理分组', exact: true }).click()
+  // Wait for the page itself before pressing a button that exists on several
+  // pages, otherwise the click can still land on the one being left behind.
+  await expect(page.getByRole('heading', { name: '代理分组', exact: true })).toBeVisible()
   await page.getByRole('button', { name: '新建', exact: true }).click()
   let groupDialog = page.getByRole('dialog', { name: '新建代理分组', exact: true })
   await groupDialog.getByRole('textbox', { name: '分组名称' }).fill('基础节点')
@@ -248,6 +278,7 @@ test('浏览器页面回归：真实登录，核心工作区 API 使用路由替
   await editGroupDialog.getByRole('button', { name: '取消', exact: true }).click()
 
   await page.getByRole('button', { name: '客户端配置', exact: true }).click()
+  await expect(page.getByRole('heading', { name: '客户端配置', exact: true })).toBeVisible()
   await expect(page.getByRole('button', { name: '新建', exact: true })).toBeVisible()
   await expect(page.getByRole('button', { name: '管理代理分组', exact: true })).toHaveCount(0)
   await page.getByRole('button', { name: '新建', exact: true }).click()

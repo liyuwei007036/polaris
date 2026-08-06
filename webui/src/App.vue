@@ -258,6 +258,10 @@ onBeforeUnmount(() => {
         <el-button size="small" type="primary" @click="navigate('settings')">前往系统设置</el-button>
         <el-button size="small" text @click="updateBannerDismissed = true">暂不提醒</el-button>
       </div>
+      <!-- out-in keeps exactly one page mounted at a time. It only works
+           because the leave half of the transition is defined; without it
+           Vue waits for an end event that never arrives and navigation
+           freezes on the page you were leaving. -->
       <transition name="page" mode="out-in">
         <component :is="activeComponent" :key="currentView" />
       </transition>
@@ -357,7 +361,7 @@ onBeforeUnmount(() => {
 .operator-info strong { color: #e5e7eb; font-size: 12px; }
 .operator-info small { color: #7f8a9e; font-size: 11px; margin-top: 2px; }
 .operator-panel :deep(.el-button) { color: #8c96a8; }
-.app-main { --el-main-padding: 0; min-width: 0; height: 100%; background: #f4f6f9; display: flex; flex-direction: column; }
+.app-main { --el-main-padding: 0; min-width: 0; height: 100%; overflow: hidden; background: #f4f6f9; display: flex; flex-direction: column; }
 .app-main > :last-child { flex: 1; min-height: 0; }
 .update-banner {
   flex: none;

@@ -21,8 +21,12 @@ html, body, #app { width: 100%; height: 100%; margin: 0; }
 body { min-width: 0; overflow: hidden; }
 button, input, textarea, select { font: inherit; }
 
-.page-enter-active { transition: opacity .16s ease, transform .16s ease; }
-.page-enter-from { opacity: 0; transform: translateY(4px); }
+/* Both halves of the page transition must be defined. With only the enter
+   half, `mode="out-in"` had no leave animation to wait for and the outgoing
+   page could be left stuck in page-leave-active forever, so switching pages
+   silently stopped working. */
+.page-enter-active, .page-leave-active { transition: opacity .16s ease, transform .16s ease; }
+.page-enter-from, .page-leave-to { opacity: 0; transform: translateY(4px); }
 .page-shell { height: 100%; display: flex; flex-direction: column; min-width: 0; }
 .page-header { height: 64px; flex: none; display: flex; align-items: center; padding: 0 24px; background: #fff; border-bottom: 1px solid var(--sb-border); }
 .page-header__title { margin: 0; font-size: 18px; font-weight: 680; line-height: 1.25; color: #101828; letter-spacing: 0; }

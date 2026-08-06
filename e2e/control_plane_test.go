@@ -287,7 +287,10 @@ func TestControlPlaneProcessJourneyWithRealAgent(t *testing.T) {
 	commandInvocations = readFile(t, commandLog)
 	for _, expected := range []string{
 		"nginx -t", "systemctl reload nginx.service", "nft -c -f", "nft -f",
-		"fail2ban-client -t", "systemctl reload-or-restart fail2ban.service",
+		// Fail2Ban is restarted, not reloaded: a reload re-reads the jails but
+		// never runs a ban action's actionstart, so the nftables table the
+		// bans go into is never created and nothing is actually blocked.
+		"fail2ban-client -t", "systemctl restart fail2ban.service",
 	} {
 		if !strings.Contains(commandInvocations, expected) {
 			t.Fatalf("agent did not invoke %q; command log:\n%s", expected, commandInvocations)
