@@ -66,6 +66,7 @@ jobs:
 
           go build \
             -trimpath \
+            -ldflags "-X github.com/sb-control/sb-control/internal/version.Version=${version}" \
             -o "package/${package}/sb-control" \
             ./cmd/sb-control
 

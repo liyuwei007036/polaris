@@ -34,7 +34,9 @@ const appState = reactive({
   totp_enabled: false,
   must_change_password: false,
   nodes: [],
+  systemUpdate: null,
 })
+const updateBannerDismissed = ref(false)
 
 const groups = [
   {
@@ -103,6 +105,12 @@ async function loadNodes() {
   return appState.nodes
 }
 
+async function loadSystemUpdate(refresh = false) {
+  if (!authenticated.value) return null
+  appState.systemUpdate = await api(refresh ? '/system/update?refresh=1' : '/system/update')
+  return appState.systemUpdate
+}
+
 async function checkSession() {
   checking.value = true
   try {
@@ -124,6 +132,7 @@ function setAuthenticated(session) {
   authenticated.value = true
   if (appState.must_change_password) return
   loadNodes().catch(() => {})
+  loadSystemUpdate().catch(() => {})
   stopAppLive?.()
   stopAppLive = subscribeLive((event) => {
     if (event.kind === 'node') loadNodes().catch(() => {})
@@ -171,6 +180,7 @@ provide('appState', appState)
 provide('canWrite', canWrite)
 provide('isAdmin', isAdmin)
 provide('loadNodes', loadNodes)
+provide('loadSystemUpdate', loadSystemUpdate)
 provide('navigate', navigate)
 
 onMounted(() => {
@@ -243,6 +253,11 @@ onBeforeUnmount(() => {
     </el-aside>
 
     <el-main class="app-main">
+      <div v-if="appState.systemUpdate?.update_available && !updateBannerDismissed" class="update-banner">
+        <span>发现新版本 v{{ appState.systemUpdate.latest_version }}（当前 v{{ appState.systemUpdate.current_version }}），可前往系统设置执行更新。</span>
+        <el-button size="small" type="primary" @click="navigate('settings')">前往系统设置</el-button>
+        <el-button size="small" text @click="updateBannerDismissed = true">暂不提醒</el-button>
+      </div>
       <transition name="page" mode="out-in">
         <component :is="activeComponent" :key="currentView" />
       </transition>
@@ -342,7 +357,20 @@ onBeforeUnmount(() => {
 .operator-info strong { color: #e5e7eb; font-size: 12px; }
 .operator-info small { color: #7f8a9e; font-size: 11px; margin-top: 2px; }
 .operator-panel :deep(.el-button) { color: #8c96a8; }
-.app-main { --el-main-padding: 0; min-width: 0; height: 100%; background: #f4f6f9; }
+.app-main { --el-main-padding: 0; min-width: 0; height: 100%; background: #f4f6f9; display: flex; flex-direction: column; }
+.app-main > :last-child { flex: 1; min-height: 0; }
+.update-banner {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 9px 20px;
+  color: #92400e;
+  background: #fef3c7;
+  border-bottom: 1px solid #fcd34d;
+  font-size: 13px;
+}
+.update-banner > span { flex: 1; min-width: 0; }
 
 @media (max-width: 900px) {
   .app-sidebar { width: 72px !important; }

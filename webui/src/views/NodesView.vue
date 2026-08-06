@@ -1,7 +1,7 @@
 <script setup>
 import { computed, inject, onBeforeUnmount, onMounted, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { CopyDocument, Edit, Plus, Refresh, RemoveFilled, Search } from '@element-plus/icons-vue'
+import { CopyDocument, Edit, Plus, Refresh, RemoveFilled, Search, Top } from '@element-plus/icons-vue'
 import { api, post, put } from '../api'
 import { formatBytes, formatDateTime, includesText } from '../format'
 import { subscribeLive } from '../live'
@@ -91,6 +91,21 @@ async function revoke(node) {
   await load()
 }
 
+function agentUpdateAvailable(node) {
+  const latest = appState.systemUpdate?.latest_version
+  return Boolean(latest && node.agent_version && node.agent_version !== latest)
+}
+
+async function upgradeAgent(node) {
+  await ElMessageBox.confirm(
+    `将“${node.name}”的 agent 升级到最新版本？升级完成后 agent 会自动重启并重新连接，运行中的代理服务不受影响。`,
+    '升级 Agent',
+    { type: 'warning', confirmButtonText: '开始升级' },
+  )
+  await post(`/nodes/${node.id}/agent/upgrade`, {})
+  ElMessage.success('升级任务已下发，agent 更新完成后会自动重新上线')
+}
+
 function openClientAddress(node) {
   addressNode.value = node
   clientAddress.value = node.client_address || ''
@@ -178,7 +193,12 @@ onBeforeUnmount(() => {
           <el-table-column label="系统" min-width="150">
             <template #default="{ row }">{{ row.os || '—' }} · {{ row.architecture || '—' }}</template>
           </el-table-column>
-          <el-table-column label="Agent 版本" width="120" prop="agent_version" />
+          <el-table-column label="Agent 版本" width="140">
+            <template #default="{ row }">
+              <span>{{ row.agent_version || '—' }}</span>
+              <el-tag v-if="agentUpdateAvailable(row)" type="warning" size="small" style="margin-left: 6px">可升级</el-tag>
+            </template>
+          </el-table-column>
           <el-table-column label="sing-box 版本" width="130" prop="sing_box_version" />
           <el-table-column label="客户端连接地址" min-width="190">
             <template #default="{ row }"><span v-if="row.client_address" class="mono">{{ row.client_address }}</span><el-tag v-else type="warning">未配置</el-tag></template>
@@ -199,10 +219,11 @@ onBeforeUnmount(() => {
             <template #default="{ row }">{{ live.get(row.id)?.connection_count ?? '—' }}</template>
           </el-table-column>
           <el-table-column label="最后在线" width="180"><template #default="{ row }">{{ formatDateTime(row.last_seen_at, '从未') }}</template></el-table-column>
-          <el-table-column label="操作" width="200" fixed="right" class-name="action-column">
+          <el-table-column label="操作" width="250" fixed="right" class-name="action-column">
             <template #default="{ row }">
               <el-button v-if="canWrite" link :icon="Edit" @click="openNodeName(row)">名称</el-button>
               <el-button v-if="canWrite" link :icon="Edit" @click="openClientAddress(row)">地址</el-button>
+              <el-button v-if="isAdmin && agentUpdateAvailable(row)" link type="primary" :icon="Top" @click="upgradeAgent(row)">升级</el-button>
               <el-button v-if="isAdmin" link type="danger" :icon="RemoveFilled" @click="revoke(row)">移除</el-button>
             </template>
           </el-table-column>

@@ -1160,7 +1160,7 @@ func (s *Store) CreateTask(ctx context.Context, task Task) (Task, error) {
 	if len(task.Payload) > 4*1024*1024 || len(task.ResultSummary) > 8*1024 {
 		return Task{}, errors.New("task payload or result exceeds allowed size")
 	}
-	if task.Kind != "singbox.apply_config" && task.Kind != "singbox.install" && task.Kind != "singbox.upgrade" && task.Kind != "nginx.apply_config" && task.Kind != "firewall.apply" && task.Kind != "fail2ban.apply" && task.Kind != "outbound.test" {
+	if task.Kind != "singbox.apply_config" && task.Kind != "singbox.install" && task.Kind != "singbox.upgrade" && task.Kind != "nginx.apply_config" && task.Kind != "firewall.apply" && task.Kind != "fail2ban.apply" && task.Kind != "outbound.test" && task.Kind != "agent.upgrade" {
 		return Task{}, errors.New("unsupported task kind")
 	}
 	if task.OperatorID != "" {

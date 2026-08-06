@@ -11,6 +11,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/sb-control/sb-control/internal/selfupdate"
+	"github.com/sb-control/sb-control/internal/version"
 	"github.com/sb-control/sb-control/internal/wire"
 )
 
@@ -101,13 +103,16 @@ type TaskResult struct {
 	Status         string `json:"status"`
 	Summary        string `json:"summary"`
 	SingBoxVersion string `json:"sing_box_version,omitempty"`
+	// RestartAgent asks the session loop to re-execute the process after the
+	// result has been reported (set by a successful agent.upgrade).
+	RestartAgent bool `json:"-"`
 }
 type TaskHandler func(context.Context, Task) TaskResult
 
 func DefaultStatus(singBoxVersion, dataDir string) Status {
 	singBoxConfigHash, _ := configurationFileHash(managedSingBoxConfig)
 	return Status{
-		AgentVersion:      "dev",
+		AgentVersion:      version.Version,
 		OS:                runtime.GOOS,
 		Architecture:      runtime.GOARCH,
 		SingBox:           singBoxVersion,
@@ -253,6 +258,14 @@ func RunSession(ctx context.Context, conn *wire.Conn, handler TaskHandler, heart
 			}
 			if err := conn.WriteMessage(wire.MsgTaskResult, resBody); err != nil {
 				return err
+			}
+			if result.RestartAgent {
+				// Give the kernel a moment to flush the result to the master
+				// before exec closes the connection.
+				time.Sleep(500 * time.Millisecond)
+				if err := selfupdate.Restart(); err != nil {
+					fmt.Fprintln(os.Stderr, "restart after agent upgrade failed:", err)
+				}
 			}
 		case <-heartbeatTicker.C:
 			if err := sendStatus(); err != nil {

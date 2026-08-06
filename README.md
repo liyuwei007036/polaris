@@ -16,6 +16,7 @@
 - 全局直连、SOCKS5、HTTP 出站管理。
 - 客户端订阅分享链接，以及可下载的 Mihomo YAML 与分流策略。
 - sing-box 配置自动应用，并从官方 GitHub Release 获取最新稳定版、校验摘要后签名安装或升级。
+- sb-control 自身的自动更新：master 打开控制台时检查 GitHub Release，发现新版本后在控制台提示；管理员确认后 master 校验摘要并原地替换重启，各节点 agent 通过签名任务下发升级并自动重连。
 - 同一服务器出现兼容的 TLS TCP 端口重复时，自动生成并发布基于实际 SNI 的端口分配配置。
 - nftables 防火墙和 Fail2Ban 配置发布。
 - Cloudflare DNS 期望状态、发布确认、远端校验和漂移检测。

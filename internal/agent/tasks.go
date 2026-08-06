@@ -27,6 +27,8 @@ import (
 	"time"
 
 	"github.com/sb-control/sb-control/internal/nginxroute"
+	"github.com/sb-control/sb-control/internal/selfupdate"
+	"github.com/sb-control/sb-control/internal/version"
 	"golang.org/x/net/proxy"
 )
 
@@ -117,6 +119,8 @@ func executeTask(ctx context.Context, task Task, options TaskOptions) TaskResult
 		return applyFail2Ban(ctx, task)
 	case "singbox.install", "singbox.upgrade":
 		return installSingBox(ctx, task, options.DataDir)
+	case "agent.upgrade":
+		return upgradeAgent(ctx, task, options.DataDir)
 	case "outbound.test":
 		return testOutbound(ctx, task)
 	default:
@@ -284,6 +288,32 @@ func installSingBox(ctx context.Context, task Task, dataDir string) TaskResult {
 		}
 	}
 	return TaskResult{Status: "failed", Summary: "sing-box service failed after upgrade and rollback did not complete"}
+}
+
+// upgradeAgent replaces the running sb-control binary with a master-signed
+// release. It reuses the sing-box release manifest verification, so the agent
+// still never accepts a bare download URL from the control stream. On success
+// the session loop re-executes the process after the result is reported.
+func upgradeAgent(ctx context.Context, task Task, dataDir string) TaskResult {
+	manifest, err := VerifyReleaseTask(dataDir, task)
+	if err != nil {
+		return TaskResult{Status: "failed", Summary: err.Error()}
+	}
+	if manifest.Architecture != runtime.GOARCH {
+		return TaskResult{Status: "failed", Summary: "signed agent release architecture does not match this agent"}
+	}
+	if manifest.Version == version.Version {
+		return TaskResult{Status: "succeeded", Summary: "agent 已是版本 " + manifest.Version + "，无需更新"}
+	}
+	executable, err := os.Executable()
+	if err != nil {
+		return TaskResult{Status: "failed", Summary: "定位当前可执行文件失败: " + err.Error()}
+	}
+	update := selfupdate.Manifest{Version: manifest.Version, URL: manifest.URL, SHA256: manifest.SHA256, Archive: manifest.Archive}
+	if err := selfupdate.Apply(ctx, update, executable, nil); err != nil {
+		return TaskResult{Status: "failed", Summary: err.Error()}
+	}
+	return TaskResult{Status: "succeeded", Summary: "agent 已更新到版本 " + manifest.Version + "，正在重启", RestartAgent: true}
 }
 
 func extractSingBoxArchive(archivePath, directory string) (string, error) {

@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/sb-control/sb-control/internal/security"
+	"github.com/sb-control/sb-control/internal/selfupdate"
 	"github.com/sb-control/sb-control/internal/wire"
 )
 
@@ -36,6 +37,11 @@ type Server struct {
 	autoInstallMu          sync.Mutex
 	autoInstallChecked     map[string]bool
 	latestSingBoxReleaseFn func(context.Context, string) (SingBoxRelease, error)
+	selfUpdateMu             sync.Mutex
+	sbControlLatest          map[string]sbControlReleaseCacheEntry
+	latestSBControlReleaseFn func(context.Context, string) (SingBoxRelease, error)
+	selfUpdateApplyFn        func(context.Context, selfupdate.Manifest, string, func(context.Context, string) error) error
+	selfUpdateRestartFn      func() error
 	connHub                *connectionsHub
 	liveHub                *liveHub
 	ipLocator              *ipLocator
@@ -170,6 +176,9 @@ func (s *Server) registerBrowserRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/v1/mihomo/subscriptions/{token}", s.mihomoClientSubscription)
 	mux.HandleFunc("POST /api/v1/nodes/{id}/configurations/publish", s.publishNodeConfiguration)
 	mux.HandleFunc("POST /api/v1/nodes/{id}/nginx/publish", s.publishNodeNginx)
+	mux.HandleFunc("GET /api/v1/system/update", s.systemUpdateStatus)
+	mux.HandleFunc("POST /api/v1/system/update/apply", s.applySystemUpdate)
+	mux.HandleFunc("POST /api/v1/nodes/{id}/agent/upgrade", s.upgradeNodeAgent)
 	mux.HandleFunc("GET /api/v1/sing-box/releases", s.listSingBoxReleases)
 	mux.HandleFunc("GET /api/v1/sing-box/latest", s.latestSingBoxRelease)
 	mux.HandleFunc("POST /api/v1/sing-box/releases", s.createSingBoxRelease)

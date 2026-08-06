@@ -18,10 +18,15 @@ import (
 
 	"github.com/sb-control/sb-control/internal/agent"
 	"github.com/sb-control/sb-control/internal/control"
+	"github.com/sb-control/sb-control/internal/version"
 	"github.com/sb-control/sb-control/internal/wire"
 )
 
 func main() {
+	if len(os.Args) == 2 && os.Args[1] == "version" {
+		fmt.Println(version.Version)
+		return
+	}
 	if len(os.Args) < 3 {
 		usage()
 		os.Exit(2)
@@ -270,7 +275,7 @@ func agentRegister(args []string) error {
 		return err
 	}
 	defer conn.Close()
-	ack, err := agent.Register(conn, *token, nodeName, map[string]string{"os": runtime.GOOS, "architecture": runtime.GOARCH, "agent_version": "dev"})
+	ack, err := agent.Register(conn, *token, nodeName, map[string]string{"os": runtime.GOOS, "architecture": runtime.GOARCH, "agent_version": version.Version})
 	if err != nil {
 		return err
 	}
@@ -405,5 +410,5 @@ func warnIfNotRoot() {
 }
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: sb-control master <init-admin|reset-mfa|serve|show-pubkey> ... | sb-control agent <register|serve> ... | sb-control combined serve ...")
+	fmt.Fprintln(os.Stderr, "usage: sb-control master <init-admin|reset-mfa|serve|show-pubkey> ... | sb-control agent <register|serve> ... | sb-control combined serve ... | sb-control version")
 }
