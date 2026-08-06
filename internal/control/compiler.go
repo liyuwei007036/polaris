@@ -118,7 +118,10 @@ func (s *Store) CompileNodeConfig(ctx context.Context, nodeID string) (string, s
 		})
 	}
 	configuration := map[string]any{
-		"log":       map[string]any{"level": "info", "timestamp": true},
+		// sing-box logs to a file rather than only the journal so Fail2Ban has
+		// a log path to watch; a jail whose logpath does not exist refuses to
+		// start, which previously made the whole feature unusable.
+		"log":       map[string]any{"level": "info", "timestamp": true, "output": SingBoxLogPath},
 		"inbounds":  inbounds,
 		"outbounds": outbounds,
 		// Loopback-only Clash API: the agent reads current connections from it

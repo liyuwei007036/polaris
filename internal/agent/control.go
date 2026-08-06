@@ -61,6 +61,7 @@ type ConnectionInfo struct {
 	Rule        string   `json:"rule,omitempty"`
 	RulePayload string   `json:"rule_payload,omitempty"`
 	Chains      []string `json:"chains,omitempty"`
+	InboundTag  string   `json:"inbound_tag,omitempty"`
 }
 
 type Fail2BanReport struct {
@@ -74,6 +75,9 @@ type Fail2BanJailStatus struct {
 	TotalBanned     string   `json:"total_banned,omitempty"`
 	BannedIPs       []string `json:"banned_ips,omitempty"`
 	Error           string   `json:"error,omitempty"`
+	// Managed distinguishes jails sb-control wrote from ones already on the
+	// host, which are reported for visibility but never modified.
+	Managed bool `json:"managed"`
 }
 
 type MetricCapability struct {
@@ -194,12 +198,19 @@ func RunSession(ctx context.Context, conn *wire.Conn, handler TaskHandler, heart
 		}
 		return conn.WriteMessage(wire.MsgStatus, body)
 	}
+	var sampler TrafficSampler
 	sendConnections := func() error {
-		connections, err := CollectConnections(ctx)
-		if err != nil {
-			return nil // best-effort, same as the heartbeat path always was
+		push := wire.ConnectionsPush{CollectedAt: time.Now().UTC().Format(time.RFC3339)}
+		if connections, err := CollectConnections(ctx); err == nil {
+			push.Connections = toWireConnections(connections)
 		}
-		body, err := wire.Encode(wire.ConnectionsPush{CollectedAt: time.Now().UTC().Format(time.RFC3339), Connections: toWireConnections(connections)})
+		if received, sent, ok := NodeTrafficCounters(); ok {
+			push.HasNodeTotals = true
+			push.NodeReceivedBytes = received
+			push.NodeSentBytes = sent
+			push.ReceivedBytesRate, push.SentBytesRate, push.HasNodeRates = sampler.Sample(received, sent, time.Now())
+		}
+		body, err := wire.Encode(push)
 		if err != nil {
 			return err
 		}
@@ -309,7 +320,7 @@ func toWireStatus(local Status) wire.Status {
 		st.Fail2BanAvailable = local.Metrics.Fail2Ban.Available
 		for _, j := range local.Metrics.Fail2Ban.Jails {
 			st.Fail2BanJails = append(st.Fail2BanJails, wire.Fail2BanJailStatus{
-				Name: j.Name, CurrentlyBanned: j.CurrentlyBanned, TotalBanned: j.TotalBanned, BannedIPs: j.BannedIPs, Error: j.Error,
+				Name: j.Name, CurrentlyBanned: j.CurrentlyBanned, TotalBanned: j.TotalBanned, BannedIPs: j.BannedIPs, Error: j.Error, Managed: j.Managed,
 			})
 		}
 	}
@@ -322,7 +333,7 @@ func toWireConnections(in []ConnectionInfo) []wire.ConnectionInfo {
 		out = append(out, wire.ConnectionInfo{
 			ID: c.ID, Inbound: c.Inbound, Network: c.Network, Source: c.Source, Destination: c.Destination,
 			Host: c.Host, Upload: c.Upload, Download: c.Download, StartedAt: c.StartedAt, Outbound: c.Outbound,
-			Rule: c.Rule, RulePayload: c.RulePayload, Chains: c.Chains,
+			Rule: c.Rule, RulePayload: c.RulePayload, Chains: c.Chains, InboundTag: c.InboundTag,
 		})
 	}
 	return out

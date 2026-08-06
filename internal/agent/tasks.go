@@ -38,6 +38,15 @@ var managedNginxMainConfig = managedSystemPath("/etc/nginx/nginx.conf")
 const minimumNginxWorkerConnections = 4096
 const minimumNginxWorkerOpenFiles = 65535
 
+// singBoxLogDirectory holds the log file compiled configurations write to.
+// It must exist before sing-box starts. See control.SingBoxLogPath.
+const singBoxLogDirectory = "/var/log/sing-box"
+
+// The managed firewall keeps its own configuration file and unit so the
+// host's /etc/nftables.conf is never rewritten.
+const managedNftablesConfig = "/etc/sb-control/nftables.conf"
+const managedNftablesUnit = "/etc/systemd/system/sb-control-nftables.service"
+
 var nginxWorkerConnectionsPattern = regexp.MustCompile(`(?m)^([ \t]*worker_connections[ \t]+)([0-9]+)([ \t]*;)`)
 var nginxWorkerOpenFilesPattern = regexp.MustCompile(`(?m)^([ \t]*worker_rlimit_nofile[ \t]+)([0-9]+)([ \t]*;)`)
 
@@ -379,7 +388,15 @@ func applyNftables(ctx context.Context, task Task) TaskResult {
 	if !strings.EqualFold(hex.EncodeToString(digest[:]), task.ExpectedHash) {
 		return TaskResult{Status: "failed", Summary: "nftables configuration SHA-256 does not match task hash"}
 	}
+	if err := ensureNftablesReady(ctx); err != nil {
+		return TaskResult{Status: "failed", Summary: "准备防火墙失败：" + err.Error()}
+	}
 	snapshot, _ := exec.CommandContext(ctx, "nft", "list", "table", "inet", "sb_control").CombinedOutput()
+	// Replacing the table in one script is what makes a re-publish idempotent.
+	// Loading the definition on its own merges into the existing table, so
+	// every publish used to stack another copy of every rule on top of the
+	// last one.
+	script := replaceableNftablesScript(payload.Configuration)
 	nftTemporaryDirectory := managedSystemPath("/tmp")
 	if err := os.MkdirAll(nftTemporaryDirectory, 0o700); err != nil {
 		return TaskResult{Status: "failed", Summary: "create nftables temporary directory: " + err.Error() + permissionHint(err)}
@@ -390,7 +407,7 @@ func applyNftables(ctx context.Context, task Task) TaskResult {
 	}
 	temporaryPath := temporary.Name()
 	defer os.Remove(temporaryPath)
-	if _, err := temporary.WriteString(payload.Configuration); err != nil {
+	if _, err := temporary.WriteString(script); err != nil {
 		temporary.Close()
 		return TaskResult{Status: "failed", Summary: err.Error()}
 	}
@@ -400,24 +417,82 @@ func applyNftables(ctx context.Context, task Task) TaskResult {
 	if output, err := exec.CommandContext(ctx, "nft", "-c", "-f", temporaryPath).CombinedOutput(); err != nil {
 		return TaskResult{Status: "failed", Summary: commandSummary("nft -c", output, err)}
 	}
-	_, _ = exec.CommandContext(ctx, "nft", "delete", "table", "inet", "sb_control").CombinedOutput()
-	if output, err := exec.CommandContext(ctx, "nft", "-f", temporaryPath).CombinedOutput(); err == nil {
-		return TaskResult{Status: "succeeded", Summary: "sb_control nftables table applied"}
-	} else {
+	if output, err := exec.CommandContext(ctx, "nft", "-f", temporaryPath).CombinedOutput(); err != nil {
 		_ = output
-	}
-	if len(snapshot) > 0 {
-		if restore, err := os.CreateTemp(nftTemporaryDirectory, "sb-control-nft-restore-*.nft"); err == nil {
-			restorePath := restore.Name()
-			if _, err := restore.Write(snapshot); err == nil {
-				restore.Close()
-				_, _ = exec.CommandContext(ctx, "nft", "delete", "table", "inet", "sb_control").CombinedOutput()
-				_, _ = exec.CommandContext(ctx, "nft", "-f", restorePath).CombinedOutput()
+		if len(snapshot) > 0 {
+			if restore, restoreErr := os.CreateTemp(nftTemporaryDirectory, "sb-control-nft-restore-*.nft"); restoreErr == nil {
+				restorePath := restore.Name()
+				if _, writeErr := restore.WriteString(replaceableNftablesScript(string(snapshot))); writeErr == nil {
+					restore.Close()
+					_, _ = exec.CommandContext(ctx, "nft", "-f", restorePath).CombinedOutput()
+				}
+				os.Remove(restorePath)
 			}
-			os.Remove(restorePath)
+		}
+		return TaskResult{Status: "rolled_back", Summary: "nftables apply failed; attempted restore of sb_control table"}
+	}
+	if err := persistNftables(ctx, script); err != nil {
+		return TaskResult{Status: "succeeded", Summary: "防火墙规则已生效，但开机自动恢复未能配置：" + err.Error()}
+	}
+	return TaskResult{Status: "succeeded", Summary: "sb_control nftables table applied and persisted across reboots"}
+}
+
+// replaceableNftablesScript wraps a table definition so loading it replaces
+// whatever is there. The empty declaration makes the delete safe when the
+// table does not exist yet.
+func replaceableNftablesScript(configuration string) string {
+	return "table inet sb_control\ndelete table inet sb_control\n" + configuration
+}
+
+func ensureNftablesReady(ctx context.Context) error {
+	if strings.TrimSpace(os.Getenv("SB_CONTROL_E2E_ROOT")) != "" || commandExists("nft") {
+		return nil
+	}
+	return installPackages(ctx, "nftables")
+}
+
+// persistNftables records the managed table in its own file and unit so the
+// rules come back after a reboot. Rules loaded with `nft -f` alone live only
+// in the running kernel, which meant every restart silently dropped the whole
+// firewall. The host's own /etc/nftables.conf is left untouched.
+func persistNftables(ctx context.Context, script string) error {
+	if strings.TrimSpace(os.Getenv("SB_CONTROL_E2E_ROOT")) != "" {
+		return nil
+	}
+	configurationPath := managedSystemPath(managedNftablesConfig)
+	if err := os.MkdirAll(filepath.Dir(configurationPath), 0o755); err != nil {
+		return errors.New("创建防火墙配置目录失败：" + err.Error() + permissionHint(err))
+	}
+	if err := writeFileAtomic(configurationPath, []byte(script), 0o640); err != nil {
+		return errors.New("写入防火墙配置失败：" + err.Error() + permissionHint(err))
+	}
+	if !commandExists("systemctl") {
+		return nil
+	}
+	unitPath := managedSystemPath(managedNftablesUnit)
+	unit := "[Unit]\nDescription=sb-control managed nftables rules\nAfter=network-pre.target\nWants=network-pre.target\n\n" +
+		"[Service]\nType=oneshot\nRemainAfterExit=yes\n" +
+		"ExecStart=/usr/sbin/nft -f " + managedNftablesConfig + "\n" +
+		"ExecStop=/usr/sbin/nft delete table inet sb_control\n\n" +
+		"[Install]\nWantedBy=multi-user.target\n"
+	existing, readErr := os.ReadFile(unitPath)
+	if readErr != nil || string(existing) != unit {
+		if err := os.MkdirAll(filepath.Dir(unitPath), 0o755); err != nil {
+			return errors.New("创建 systemd 目录失败：" + err.Error() + permissionHint(err))
+		}
+		if err := writeFileAtomic(unitPath, []byte(unit), 0o644); err != nil {
+			return errors.New("写入开机恢复配置失败：" + err.Error() + permissionHint(err))
+		}
+		if output, err := exec.CommandContext(ctx, "systemctl", "daemon-reload").CombinedOutput(); err != nil {
+			return errors.New(commandSummary("systemctl daemon-reload", output, err))
 		}
 	}
-	return TaskResult{Status: "rolled_back", Summary: "nftables apply failed; attempted restore of sb_control table"}
+	// enable without --now: the rules are already loaded, and starting the
+	// unit here would only load them a second time.
+	if output, err := exec.CommandContext(ctx, "systemctl", "enable", "sb-control-nftables.service").CombinedOutput(); err != nil {
+		return errors.New(commandSummary("systemctl enable sb-control-nftables.service", output, err))
+	}
+	return nil
 }
 
 func applyNginxConfig(ctx context.Context, task Task, passthrough []NginxPassthroughRoute) TaskResult {
@@ -528,21 +603,18 @@ func ensureNginxReady(ctx context.Context, needed bool) error {
 		if !needed {
 			return nil
 		}
-		var commands [][]string
+		packages := []string{"nginx", "nginx-mod-stream"}
 		packageManager := ""
 		switch {
 		case commandExists("apt-get"):
 			packageManager = "apt"
-			commands = [][]string{{"apt-get", "update"}, {"apt-get", "install", "-y", "nginx", "libnginx-mod-stream"}}
+			packages = []string{"nginx", "libnginx-mod-stream"}
 		case commandExists("dnf"):
 			packageManager = "dnf"
-			commands = [][]string{{"dnf", "install", "-y", "nginx", "nginx-mod-stream"}}
 		case commandExists("yum"):
 			packageManager = "yum"
-			commands = [][]string{{"yum", "install", "-y", "nginx", "nginx-mod-stream"}}
 		case commandExists("apk"):
 			packageManager = "apk"
-			commands = [][]string{{"apk", "add", "nginx", "nginx-mod-stream"}}
 		default:
 			return errors.New("未找到 Nginx，也未识别到受支持的软件包管理器；请先安装带 stream 模块的 Nginx")
 		}
@@ -565,12 +637,9 @@ func ensureNginxReady(ctx context.Context, needed bool) error {
 				_, _ = exec.CommandContext(ctx, "systemctl", "unmask", "nginx.service").CombinedOutput()
 			}
 		}
-		for _, arguments := range commands {
-			output, commandErr := exec.CommandContext(ctx, arguments[0], arguments[1:]...).CombinedOutput()
-			if commandErr != nil {
-				unmask()
-				return errors.New(commandSummary(strings.Join(arguments, " "), output, commandErr))
-			}
+		if err := installPackages(ctx, packages...); err != nil {
+			unmask()
+			return err
 		}
 		installedByUs = true
 		if commandExists("systemctl") {
@@ -612,9 +681,8 @@ func ensureNginxReady(ctx context.Context, needed bool) error {
 	if !strings.Contains(string(mainConfig), "/etc/nginx/modules-enabled/*.conf") {
 		return errors.New("现有 Nginx 主配置未加载 modules-enabled，无法安全加入自动端口分配配置")
 	}
-	versionOutput, err := exec.CommandContext(ctx, "nginx", "-V").CombinedOutput()
-	if err != nil || !strings.Contains(string(versionOutput), "--with-stream") {
-		return errors.New("当前 Nginx 未提供 stream 功能，无法按连接域名自动分配 TCP 端口")
+	if !nginxHasStreamSupport(ctx, string(fullConfig)) {
+		return errors.New("当前 Nginx 未提供 stream 功能，无法按连接域名自动分配 TCP 端口；请安装 stream 模块（Debian/Ubuntu 为 libnginx-mod-stream，RHEL 系为 nginx-mod-stream）后重试")
 	}
 	if err := os.MkdirAll(filepath.Dir(managedNginxModuleConfig), 0o755); err != nil {
 		return errors.New("创建 Nginx 模块配置目录失败: " + err.Error() + permissionHint(err))
@@ -624,6 +692,33 @@ func ensureNginxReady(ctx context.Context, needed bool) error {
 		return errors.New("写入 Nginx 自动端口配置入口失败: " + err.Error() + permissionHint(err))
 	}
 	return nil
+}
+
+// nginxHasStreamSupport reports whether this Nginx can serve a stream block.
+//
+// Checking `nginx -V` for --with-stream only recognises a statically compiled
+// build. Debian and Ubuntu ship stream as a dynamic module, and their nginx
+// binary carries no stream flag at all, so that check rejected hosts where
+// the module was installed and already loaded. The loaded configuration is
+// the authority; the module file on disk is the fallback for a host that has
+// the package but has not enabled it.
+func nginxHasStreamSupport(ctx context.Context, loadedConfiguration string) bool {
+	if strings.Contains(loadedConfiguration, "ngx_stream_module.so") {
+		return true
+	}
+	if output, err := exec.CommandContext(ctx, "nginx", "-V").CombinedOutput(); err == nil && strings.Contains(string(output), "--with-stream") {
+		return true
+	}
+	for _, candidate := range []string{
+		"/usr/lib/nginx/modules/ngx_stream_module.so",
+		"/usr/lib64/nginx/modules/ngx_stream_module.so",
+		"/usr/share/nginx/modules/ngx_stream_module.so",
+	} {
+		if _, err := os.Stat(managedSystemPath(candidate)); err == nil {
+			return true
+		}
+	}
+	return false
 }
 
 func ensureNginxWorkerCapacity(ctx context.Context) (bool, error) {
@@ -762,6 +857,40 @@ func commandExists(name string) bool {
 	return err == nil
 }
 
+// installPackages installs packages with whichever package manager the host
+// has. `apt-get update` is best-effort on purpose: real hosts routinely carry
+// one broken third-party repository, and refusing to continue there meant the
+// wanted package never got installed even though every other repository could
+// still supply it. Only the install itself decides success, and a failed
+// refresh is reported alongside it to explain why.
+func installPackages(ctx context.Context, packages ...string) error {
+	var command []string
+	refresh := false
+	switch {
+	case commandExists("apt-get"):
+		command = append([]string{"apt-get", "install", "-y"}, packages...)
+		refresh = true
+	case commandExists("dnf"):
+		command = append([]string{"dnf", "install", "-y"}, packages...)
+	case commandExists("yum"):
+		command = append([]string{"yum", "install", "-y"}, packages...)
+	case commandExists("apk"):
+		command = append([]string{"apk", "add"}, packages...)
+	default:
+		return fmt.Errorf("未识别到受支持的软件包管理器，请先手动安装：%s", strings.Join(packages, " "))
+	}
+	refreshWarning := ""
+	if refresh {
+		if output, err := exec.CommandContext(ctx, "apt-get", "update").CombinedOutput(); err != nil {
+			refreshWarning = "；软件源刷新有告警：" + commandSummary("apt-get update", output, err)
+		}
+	}
+	if output, err := exec.CommandContext(ctx, command[0], command[1:]...).CombinedOutput(); err != nil {
+		return errors.New(commandSummary(strings.Join(command, " "), output, err) + refreshWarning)
+	}
+	return nil
+}
+
 func applySingBoxConfig(ctx context.Context, task Task) TaskResult {
 	var payload struct {
 		Configuration string `json:"configuration"`
@@ -782,6 +911,11 @@ func applySingBoxConfig(ctx context.Context, task Task) TaskResult {
 	configDir := filepath.Dir(managedSingBoxConfig)
 	if err := os.MkdirAll(configDir, 0o750); err != nil {
 		return TaskResult{Status: "failed", Summary: "create sing-box configuration directory: " + err.Error() + permissionHint(err)}
+	}
+	// Compiled configurations log to a file so Fail2Ban has something to
+	// watch; sing-box refuses to start if that directory does not exist.
+	if err := os.MkdirAll(managedSystemPath(singBoxLogDirectory), 0o755); err != nil {
+		return TaskResult{Status: "failed", Summary: "create sing-box log directory: " + err.Error() + permissionHint(err)}
 	}
 	temporary, err := os.CreateTemp(configDir, ".sb-control-config-*.json")
 	if err != nil {

@@ -137,7 +137,7 @@ test('浏览器页面回归：真实登录，核心工作区 API 使用路由替
     if (request.method() === 'GET' && path === '/api/v1/outbounds') return route.fulfill({ json: { outbounds: [] } })
     if (request.method() === 'GET' && path === '/api/v1/mihomo/proxy-groups') return route.fulfill({ json: { proxy_groups: savedProxyGroups } })
     if (request.method() === 'GET' && path === '/api/v1/mihomo/client-configs') return route.fulfill({ json: { client_configs: savedClientConfig ? [savedClientConfig] : [] } })
-    if (request.method() === 'GET' && path === '/api/v1/listeners/listener-1/endpoints') {
+    if (request.method() === 'GET' && (path === '/api/v1/listeners/listener-1/endpoints' || path === '/api/v1/endpoints')) {
       return route.fulfill({ json: { endpoints: [{ id: 'endpoint-1', listener_id: 'listener-1', name: '默认账号', alias: '测试节点 01', enabled: true, outbound_id: 'direct' }] } })
     }
     if (request.method() === 'PUT' && path === '/api/v1/listeners/listener-1') {

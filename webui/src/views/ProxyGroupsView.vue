@@ -5,6 +5,7 @@ import { Delete, Edit, Plus, Refresh, Search } from '@element-plus/icons-vue'
 import { api, del, post, put } from '../api'
 import { includesText } from '../format'
 import PageHeader from '../components/PageHeader.vue'
+import PagedTable from '../components/PagedTable.vue'
 import { protocolMap } from '../protocols'
 
 const appState = inject('appState')
@@ -52,11 +53,14 @@ async function load() {
   loading.value = true
   try {
     await loadNodes()
-    const [groupResult, listenerResult] = await Promise.all([api('/mihomo/proxy-groups'), api('/listeners')])
+    const [groupResult, listenerResult, endpointResult] = await Promise.all([
+      api('/mihomo/proxy-groups'),
+      api('/listeners'),
+      api('/endpoints').catch(() => ({ endpoints: [] })),
+    ])
     groups.value = groupResult.proxy_groups || []
     listeners.value = listenerResult.listeners || []
-    const results = await Promise.all(listeners.value.map((listener) => api(`/listeners/${listener.id}/endpoints`).catch(() => ({ endpoints: [] }))))
-    endpoints.value = results.flatMap((result) => result.endpoints || [])
+    endpoints.value = endpointResult.endpoints || []
   } finally {
     loading.value = false
   }
@@ -129,7 +133,7 @@ onMounted(load)
         <el-select v-model="selectedStrategy" clearable placeholder="全部策略" style="width: 160px"><el-option v-for="(label, value) in strategyNames" :key="value" :label="label" :value="value" /></el-select>
       </div>
       <div class="table-panel">
-        <el-table :data="filteredGroups">
+        <PagedTable :rows="filteredGroups" :loading="loading" empty-text="还没有代理分组">
           <el-table-column label="分组名称" min-width="180" prop="name" />
           <el-table-column label="策略" width="140"><template #default="{ row }">{{ strategyNames[row.strategy] }}</template></el-table-column>
           <el-table-column label="成员" min-width="340">
@@ -145,7 +149,7 @@ onMounted(load)
               <el-button v-if="isAdmin" link type="danger" :icon="Delete" @click="remove(row)">删除</el-button>
             </template>
           </el-table-column>
-        </el-table>
+        </PagedTable>
       </div>
     </main>
 

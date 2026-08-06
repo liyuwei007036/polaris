@@ -6,6 +6,7 @@ import { api, del, friendlyError, post, put } from '../api'
 import { includesText } from '../format'
 import { waitForTask } from '../live'
 import PageHeader from '../components/PageHeader.vue'
+import PagedTable from '../components/PagedTable.vue'
 
 const canWrite = inject('canWrite')
 const isAdmin = inject('isAdmin')
@@ -96,7 +97,7 @@ onMounted(load)
         <el-select v-model="selectedStatus" clearable placeholder="全部状态" style="width: 140px"><el-option label="启用" value="true" /><el-option label="停用" value="false" /></el-select>
       </div>
       <div class="table-panel">
-        <el-table v-loading="loading" :data="filteredRows">
+        <PagedTable :rows="filteredRows" :loading="loading" empty-text="还没有上网出口">
           <el-table-column label="名称" prop="name" min-width="180" />
           <el-table-column label="类型" width="110"><template #default="{ row }"><el-tag>{{ row.type.toUpperCase() }}</el-tag></template></el-table-column>
           <el-table-column label="服务器" min-width="220"><template #default="{ row }"><span class="mono">{{ row.type === 'direct' ? '服务器直连' : `${row.server}:${row.server_port}` }}</span></template></el-table-column>
@@ -112,7 +113,7 @@ onMounted(load)
               </template>
             </template>
           </el-table-column>
-        </el-table>
+        </PagedTable>
       </div>
     </main>
 

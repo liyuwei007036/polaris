@@ -12,19 +12,29 @@ import (
 // instead of leaving stale entries in the aggregated view forever.
 const connectionsStaleAfter = 15 * time.Second
 
-// nodeConnectionsSnapshot is the latest connection list an agent has reported
-// for one node. It lives in memory only — nothing here is persisted, since
-// only the current state matters for the real-time connections view.
+// nodeConnectionsSnapshot is the latest real-time report an agent has pushed
+// for one node: its open connections plus the host traffic counters and the
+// rate the agent measured between its own two most recent samples. It lives
+// in memory only — nothing here is persisted, since only the current state
+// matters for the real-time views, and writing it to SQLite on every push
+// would mean a full read-modify-write of the metrics blob every few seconds
+// per node.
 type nodeConnectionsSnapshot struct {
-	NodeID      string          `json:"node_id"`
-	CollectedAt string          `json:"collected_at"`
-	Connections json.RawMessage `json:"connections"`
+	NodeID          string          `json:"node_id"`
+	CollectedAt     string          `json:"collected_at"`
+	Connections     json.RawMessage `json:"connections"`
+	ConnectionCount int             `json:"connection_count"`
+	HasTotals       bool            `json:"has_totals"`
+	ReceivedBytes   uint64          `json:"received_bytes"`
+	SentBytes       uint64          `json:"sent_bytes"`
+	HasRates        bool            `json:"has_rates"`
+	ReceivedRate    float64         `json:"received_rate"`
+	SentRate        float64         `json:"sent_rate"`
 }
 
-// connectionsHub fans out real-time connection snapshots from agents to every
-// connected browser over Server-Sent Events. Agents push proactively as
-// connections change (see (*Server).agentPushConnections); the master never
-// polls an agent for this data.
+// connectionsHub fans out real-time snapshots from agents to every connected
+// browser over Server-Sent Events. Agents push proactively as connections
+// change; the master never polls an agent for this data.
 type connectionsHub struct {
 	mu         sync.Mutex
 	latest     map[string]nodeConnectionsSnapshot
@@ -68,6 +78,15 @@ func (h *connectionsHub) snapshot() []nodeConnectionsSnapshot {
 		out = append(out, v)
 	}
 	return out
+}
+
+// node returns one node's last reported snapshot, if it is still fresh.
+func (h *connectionsHub) node(nodeID string) (nodeConnectionsSnapshot, bool) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.pruneLocked(time.Now())
+	snap, ok := h.latest[nodeID]
+	return snap, ok
 }
 
 // update records a freshly pushed snapshot and broadcasts it, plus clears any

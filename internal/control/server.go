@@ -39,6 +39,19 @@ type Server struct {
 	connHub                *connectionsHub
 	liveHub                *liveHub
 	ipLocator              *ipLocator
+	listenerNameMu         sync.Mutex
+	listenerNameCache      map[string]listenerNameEntry
+	reconcileMu            sync.Mutex
+	reconcileState         map[string]reconcileAttempt
+}
+
+// listenerNameCacheTTL bounds how stale a resolved listener name may be in
+// the real-time connections view.
+const listenerNameCacheTTL = 20 * time.Second
+
+type listenerNameEntry struct {
+	names map[string]string
+	at    time.Time
 }
 
 type controlSession struct {
@@ -106,7 +119,10 @@ func (s *Server) registerBrowserRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/v1/nodes", s.listNodes)
 	mux.HandleFunc("PUT /api/v1/nodes/{id}/name", s.setNodeName)
 	mux.HandleFunc("PUT /api/v1/nodes/{id}/client-address", s.setNodeClientAddress)
+	mux.HandleFunc("GET /api/v1/nodes/metrics", s.allNodeMetrics)
 	mux.HandleFunc("GET /api/v1/nodes/{id}/metrics", s.nodeMetrics)
+	mux.HandleFunc("GET /api/v1/firewall/rules", s.listFirewallRules)
+	mux.HandleFunc("GET /api/v1/fail2ban/jails", s.listFail2BanJails)
 	mux.HandleFunc("GET /api/v1/nodes/{id}/firewall/rules", s.listFirewallRules)
 	mux.HandleFunc("POST /api/v1/nodes/{id}/firewall/rules", s.createFirewallRule)
 	mux.HandleFunc("POST /api/v1/nodes/{id}/firewall/publish", s.publishNodeFirewall)
@@ -171,6 +187,7 @@ func (s *Server) registerBrowserRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/v1/outbounds/{id}/enabled", s.setOutboundEnabled)
 	mux.HandleFunc("POST /api/v1/outbounds/{id}/test", s.testOutbound)
 	mux.HandleFunc("DELETE /api/v1/outbounds/{id}", s.deleteOutbound)
+	mux.HandleFunc("GET /api/v1/endpoints", s.listEndpoints)
 	mux.HandleFunc("GET /api/v1/listeners/{id}/endpoints", s.listEndpoints)
 	mux.HandleFunc("POST /api/v1/listeners/{id}/endpoints", s.createEndpoint)
 	mux.HandleFunc("POST /api/v1/listeners/{id}/endpoints/quick", s.createGeneratedEndpoint)
@@ -181,6 +198,7 @@ func (s *Server) registerBrowserRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/v1/ingress-routes", s.createIngressRoute)
 	mux.HandleFunc("PUT /api/v1/ingress-routes/{id}", s.updateIngressRoute)
 	mux.HandleFunc("DELETE /api/v1/ingress-routes/{id}", s.deleteIngressRoute)
+	mux.HandleFunc("GET /api/v1/rules", s.listRouteRules)
 	mux.HandleFunc("GET /api/v1/nodes/{id}/rules", s.listRouteRules)
 	mux.HandleFunc("POST /api/v1/nodes/{id}/rules", s.createRouteRule)
 	mux.HandleFunc("GET /api/v1/nodes/{id}/rules/preview", s.previewRouteRules)
@@ -624,6 +642,9 @@ func (s *Server) DispatchTask(ctx context.Context, task Task) (Task, error) {
 }
 
 func (s *Server) dispatchNodeConfiguration(ctx context.Context, nodeID, operatorID string) (Task, error) {
+	if operatorID != "" {
+		s.clearReconcileState(nodeID)
+	}
 	configuration, hash, err := s.store.CompileNodeConfig(ctx, nodeID)
 	if err != nil {
 		return Task{}, err
@@ -665,6 +686,9 @@ func setAutoApplyTaskHeaders(w http.ResponseWriter, tasks []Task) {
 }
 
 func (s *Server) dispatchNodeNginx(ctx context.Context, nodeID, operatorID string) (Task, error) {
+	if operatorID != "" {
+		s.clearReconcileState(nodeID)
+	}
 	configuration, hash, err := s.store.CompileNodeNginx(ctx, nodeID)
 	if err != nil {
 		return Task{}, err
@@ -986,6 +1010,35 @@ func (s *Server) setNodeName(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, node)
+}
+
+// allNodeMetrics answers with every node's stored report plus whatever
+// real-time traffic the connections hub currently holds, so the console can
+// render the whole server list from a single request.
+func (s *Server) allNodeMetrics(w http.ResponseWriter, r *http.Request) {
+	if _, err := s.operator(r, false); err != nil {
+		writeError(w, err)
+		return
+	}
+	reports, updated, err := s.store.AllNodeMetrics(r.Context())
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	live := map[string]nodeConnectionsSnapshot{}
+	for _, snapshot := range s.connHub.snapshot() {
+		snapshot.Connections = nil
+		live[snapshot.NodeID] = snapshot
+	}
+	nodes := make([]map[string]any, 0, len(reports))
+	for nodeID, report := range reports {
+		entry := map[string]any{"node_id": nodeID, "updated_at": updated[nodeID], "report": report}
+		if snapshot, ok := live[nodeID]; ok {
+			entry["live"] = snapshot
+		}
+		nodes = append(nodes, entry)
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"nodes": nodes})
 }
 
 func (s *Server) nodeMetrics(w http.ResponseWriter, r *http.Request) {

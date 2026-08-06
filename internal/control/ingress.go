@@ -67,7 +67,26 @@ func (s *Store) CreateListenerWithAutomaticPortRouting(ctx context.Context, list
 	if err != nil {
 		return Listener{}, nil, false, err
 	}
-	managed := listener.Enabled && len(existing) > 0
+	// Managed routes are TCP-only (Nginx stream), so a UDP listener never
+	// competes with them even on the same port number.
+	routedAddress, routedSNIs := "", map[string]string{}
+	if listener.Spec.Network == "tcp" {
+		routedAddress, routedSNIs, err = ingressRoutesOnPort(ctx, tx, listener.NodeID, listener.Port)
+		if err != nil {
+			return Listener{}, nil, false, err
+		}
+	}
+	for index := range existing {
+		// A listener in `existing` gets its SNI recomputed below; drop its own
+		// route so it is not mistaken for a competing one.
+		delete(routedSNIs, existing[index].ID)
+	}
+	// The port is contended when another enabled listener already serves it,
+	// or when Nginx already binds it for a managed SNI group. Both cases put
+	// the new listener behind the router regardless of whether it is being
+	// created enabled: a listener left on the public port would collide with
+	// Nginx the moment somebody enables it.
+	managed := len(existing) > 0 || len(routedSNIs) > 0
 	publicAddress := listener.ListenAddr
 	usedPorts, err := occupiedListenerPorts(ctx, tx, listener.NodeID, listener.Spec.Network)
 	if err != nil {
@@ -83,6 +102,12 @@ func (s *Store) CreateListenerWithAutomaticPortRouting(ctx context.Context, list
 			return Listener{}, nil, false, userErrorf("端口 %d 已被使用；如需自动使用同一端口，TCP 接入服务必须启用 TLS 或 Reality，并使用不同的实际 SNI", listener.Port)
 		}
 		seenNames[newName] = struct{}{}
+		for _, sni := range routedSNIs {
+			if _, duplicate := seenNames[sni]; duplicate {
+				return Listener{}, nil, false, userErrorf("实际 SNI %s 已用于端口 %d；请修改连接域名，Reality 接入请修改目标网站", sni, listener.Port)
+			}
+			seenNames[sni] = struct{}{}
+		}
 		for index := range existing {
 			name, nameErr := automaticRouteName(existing[index])
 			if nameErr != nil {
@@ -94,16 +119,10 @@ func (s *Store) CreateListenerWithAutomaticPortRouting(ctx context.Context, list
 			seenNames[name] = struct{}{}
 		}
 
-		for index := range existing {
-			var routeAddress string
-			routeErr := tx.QueryRowContext(ctx, `SELECT listen_address FROM ingress_routes WHERE listener_id = ?`, existing[index].ID).Scan(&routeAddress)
-			if routeErr == nil {
-				publicAddress = routeAddress
-			} else if errors.Is(routeErr, sql.ErrNoRows) && index == 0 {
-				publicAddress = existing[index].ListenAddr
-			} else if routeErr != nil && !errors.Is(routeErr, sql.ErrNoRows) {
-				return Listener{}, nil, false, fmt.Errorf("load automatic port route: %w", routeErr)
-			}
+		if routedAddress != "" {
+			publicAddress = routedAddress
+		} else if len(existing) > 0 {
+			publicAddress = existing[0].ListenAddr
 		}
 		if publicAddress == "127.0.0.1" || publicAddress == "::1" || net.ParseIP(publicAddress) == nil {
 			publicAddress = "0.0.0.0"
@@ -182,6 +201,43 @@ func listenersOnPublicPort(ctx context.Context, tx *sql.Tx, nodeID, network stri
 		listeners = append(listeners, listener)
 	}
 	return listeners, rows.Err()
+}
+
+// ingressRoutesOnPort reports the managed Nginx SNI group already bound to a
+// public port on a node: the address it listens on, and every routed
+// listener's SNI keyed by listener ID.
+func ingressRoutesOnPort(ctx context.Context, tx *sql.Tx, nodeID string, port uint16) (string, map[string]string, error) {
+	rows, err := tx.QueryContext(ctx, `SELECT listener_id, listen_address, sni FROM ingress_routes WHERE node_id = ? AND port = ? AND enabled = 1`, nodeID, port)
+	if err != nil {
+		return "", nil, fmt.Errorf("load automatic port routes: %w", err)
+	}
+	defer rows.Close()
+	address := ""
+	routes := map[string]string{}
+	for rows.Next() {
+		var listenerID, listenAddress, sni string
+		if err := rows.Scan(&listenerID, &listenAddress, &sni); err != nil {
+			return "", nil, err
+		}
+		address = listenAddress
+		routes[listenerID] = sni
+	}
+	return address, routes, rows.Err()
+}
+
+// IngressRoutePortInUse reports whether Nginx already binds a public port on
+// a node for a listener other than the one given. sing-box must never be told
+// to bind that same port, or the two fight over it and neither serves traffic.
+func (s *Store) IngressRoutePortInUse(ctx context.Context, nodeID, exceptListenerID string, port uint16) (bool, error) {
+	var one int
+	err := s.db.QueryRowContext(ctx, `SELECT 1 FROM ingress_routes WHERE node_id = ? AND port = ? AND enabled = 1 AND listener_id <> ? LIMIT 1`, nodeID, port, exceptListenerID).Scan(&one)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("check managed port usage: %w", err)
+	}
+	return true, nil
 }
 
 func occupiedListenerPorts(ctx context.Context, tx *sql.Tx, nodeID, network string) (map[uint16]bool, error) {
@@ -378,7 +434,7 @@ func (s *Store) UpdateIngressRoute(ctx context.Context, route IngressRoute) (Ing
 }
 
 func (s *Store) ListIngressRoutes(ctx context.Context, nodeID string) ([]IngressRoute, error) {
-	query := `SELECT r.id, r.node_id, r.listener_id, r.listen_address, r.port, r.sni, r.enabled, l.listen_address, l.backend_port
+	query := `SELECT r.id, r.node_id, r.listener_id, r.listen_address, r.port, r.sni, r.enabled, l.listen_address, l.backend_port, l.enabled
 		FROM ingress_routes r JOIN listeners l ON l.id = r.listener_id`
 	var arguments []any
 	if nodeID != "" {
@@ -394,7 +450,7 @@ func (s *Store) ListIngressRoutes(ctx context.Context, nodeID string) ([]Ingress
 	var routes []IngressRoute
 	for rows.Next() {
 		var route IngressRoute
-		if err := rows.Scan(&route.ID, &route.NodeID, &route.ListenerID, &route.ListenAddress, &route.Port, &route.SNI, &route.Enabled, &route.BackendAddress, &route.BackendPort); err != nil {
+		if err := rows.Scan(&route.ID, &route.NodeID, &route.ListenerID, &route.ListenAddress, &route.Port, &route.SNI, &route.Enabled, &route.BackendAddress, &route.BackendPort, &route.ListenerEnabled); err != nil {
 			return nil, fmt.Errorf("read ingress route: %w", err)
 		}
 		routes = append(routes, route)
@@ -424,7 +480,10 @@ func (s *Store) CompileNodeNginx(ctx context.Context, nodeID string) (string, st
 	}
 	active := routes[:0]
 	for _, route := range routes {
-		if route.Enabled {
+		// A route whose listener is disabled must be dropped: sing-box no
+		// longer binds that backend port, so keeping the SNI mapping would
+		// make Nginx forward the connection into a closed port.
+		if route.Enabled && route.ListenerEnabled {
 			active = append(active, route)
 		}
 	}

@@ -1074,10 +1074,10 @@ func TestNodeConnectionsAndClashAPICompilation(t *testing.T) {
 		}
 	}
 
-	metrics := `{"collected_at":"2026-07-26T00:00:00Z","connections":[{"id":"c1","inbound":"vless","network":"tcp","source":"198.51.100.7:52011","destination":"203.0.113.5:443","host":"target.example.com","upload":100,"download":2048,"started_at":"2026-07-26T00:00:00Z","outbound":"direct"}],"capabilities":{"connection":{"cumulative_traffic":true,"instant_rate":false,"connection_count":true,"source":"sing-box clash_api http://127.0.0.1:9090","precision":"per_connection"}}}`
-	if err := store.UpdateAgentStatus(t.Context(), nodeID, control.AgentStatus{AgentVersion: "test", OS: "linux", Architecture: "arm64", SingBox: "1.12.0", Capabilities: "{}", Metrics: metrics}); err != nil {
-		t.Fatal(err)
-	}
+	// Connections are real-time, in-memory state pushed by the agent; nothing
+	// about them is persisted, so the push is what the endpoint serves.
+	server.PushConnectionsForTest(nodeID, "2026-07-26T00:00:00Z", json.RawMessage(
+		`[{"id":"c1","inbound":"vless","network":"tcp","source":"198.51.100.7:52011","destination":"203.0.113.5:443","host":"target.example.com","upload":100,"download":2048,"started_at":"2026-07-26T00:00:00Z","outbound":"direct"}]`))
 	response := request(t, http.MethodGet, httpServer.URL+"/api/v1/nodes/"+nodeID+"/connections", nil, session, csrfToken)
 	if response.StatusCode != http.StatusOK {
 		t.Fatalf("node connections: got %d", response.StatusCode)

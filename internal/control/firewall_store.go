@@ -12,22 +12,11 @@ func validateFirewallRule(rule FirewallRule) error {
 	if rule.NodeID == "" {
 		return errors.New("firewall rule node is required")
 	}
-	if rule.Action != "accept" && rule.Action != "drop" {
-		return errors.New("firewall action must be accept or drop")
-	}
-	if rule.Protocol != "tcp" && rule.Protocol != "udp" {
-		return errors.New("firewall protocol must be tcp or udp")
-	}
-	if rule.Port == 0 {
-		return errors.New("firewall port is required")
+	if err := validateFirewallRuleShape(rule); err != nil {
+		return err
 	}
 	if rule.ExpiresAt != 0 && rule.ExpiresAt <= time.Now().UTC().Unix() {
 		return errors.New("firewall expiration must be in the future")
-	}
-	if rule.CIDR != "" {
-		if _, err := CompileNftables([]FirewallRule{{Action: rule.Action, Protocol: rule.Protocol, CIDR: rule.CIDR, Port: rule.Port, Enabled: true}}); err != nil {
-			return err
-		}
 	}
 	return nil
 }

@@ -47,36 +47,12 @@ func CollectMetrics() MetricReport {
 		report.Health.ClashAPIAvailable = true
 	}
 	report.Fail2Ban = CollectFail2BanStatus(ctx)
-	file, err := os.Open("/proc/net/dev")
-	if err != nil {
+	received, sent, ok := NodeTrafficCounters()
+	if !ok {
 		return report
 	}
-	defer file.Close()
-	var received, sent uint64
-	scanner := bufio.NewScanner(file)
-	for scanner.Scan() {
-		parts := strings.SplitN(scanner.Text(), ":", 2)
-		if len(parts) != 2 {
-			continue
-		}
-		name := strings.TrimSpace(parts[0])
-		if name == "lo" {
-			continue
-		}
-		fields := strings.Fields(parts[1])
-		if len(fields) < 9 {
-			continue
-		}
-		rx, rxErr := strconv.ParseUint(fields[0], 10, 64)
-		tx, txErr := strconv.ParseUint(fields[8], 10, 64)
-		if rxErr != nil || txErr != nil {
-			continue
-		}
-		received += rx
-		sent += tx
-	}
 	report.Node = map[string]uint64{"received_bytes": received, "sent_bytes": sent}
-	report.Capabilities["node"] = MetricCapability{CumulativeTraffic: true, InstantRate: false, ConnectionCount: false, Source: "/proc/net/dev non-loopback aggregate", Precision: "host_total"}
+	report.Capabilities["node"] = MetricCapability{CumulativeTraffic: true, InstantRate: true, ConnectionCount: false, Source: "/proc/net/dev non-loopback aggregate", Precision: "host_total"}
 	report.Health.TrafficAvailable = true
 	switch {
 	case report.Health.SingBoxService == "active" && report.Health.ClashAPIAvailable:
@@ -92,6 +68,61 @@ func CollectMetrics() MetricReport {
 		report.Health.Message = "部分运行数据暂时无法获取"
 	}
 	return report
+}
+
+// NodeTrafficCounters reads the host's cumulative non-loopback interface
+// byte counters. ok is false when /proc/net/dev cannot be read at all.
+func NodeTrafficCounters() (received, sent uint64, ok bool) {
+	file, err := os.Open("/proc/net/dev")
+	if err != nil {
+		return 0, 0, false
+	}
+	defer file.Close()
+	scanner := bufio.NewScanner(file)
+	for scanner.Scan() {
+		parts := strings.SplitN(scanner.Text(), ":", 2)
+		if len(parts) != 2 {
+			continue
+		}
+		if strings.TrimSpace(parts[0]) == "lo" {
+			continue
+		}
+		fields := strings.Fields(parts[1])
+		if len(fields) < 9 {
+			continue
+		}
+		rx, rxErr := strconv.ParseUint(fields[0], 10, 64)
+		tx, txErr := strconv.ParseUint(fields[8], 10, 64)
+		if rxErr != nil || txErr != nil {
+			continue
+		}
+		received += rx
+		sent += tx
+	}
+	return received, sent, true
+}
+
+// TrafficSampler turns the host's cumulative counters into an instantaneous
+// rate. The agent samples on its own fixed push interval, so it is the only
+// side that can measure a real rate; the master and browser just display it.
+type TrafficSampler struct {
+	previousReceived uint64
+	previousSent     uint64
+	previousAt       time.Time
+	seeded           bool
+}
+
+// Sample records the counters observed at now and reports the rate since the
+// previous sample. hasRate is false for the first sample, and whenever the
+// counters went backwards (interface reset) so a bogus spike is never shown.
+func (s *TrafficSampler) Sample(received, sent uint64, now time.Time) (receivedRate, sentRate float64, hasRate bool) {
+	previousReceived, previousSent, previousAt, seeded := s.previousReceived, s.previousSent, s.previousAt, s.seeded
+	s.previousReceived, s.previousSent, s.previousAt, s.seeded = received, sent, now, true
+	if !seeded || !now.After(previousAt) || received < previousReceived || sent < previousSent {
+		return 0, 0, false
+	}
+	seconds := now.Sub(previousAt).Seconds()
+	return float64(received-previousReceived) / seconds, float64(sent-previousSent) / seconds, true
 }
 
 func collectSingBoxServiceHealth(ctx context.Context) string {
@@ -177,8 +208,12 @@ func collectConnections(ctx context.Context) ([]ConnectionInfo, error) {
 		if connection.Metadata.DestinationIP != "" || connection.Metadata.DestinationPort != "" {
 			info.Destination = net.JoinHostPort(connection.Metadata.DestinationIP, connection.Metadata.DestinationPort)
 		}
+		// The Clash API orders chains from the final egress outwards to the
+		// entry point: index 0 is the outbound that actually carried the
+		// traffic and the last index is the inbound it arrived on.
 		if len(connection.Chains) > 0 {
-			info.Outbound = connection.Chains[len(connection.Chains)-1]
+			info.Outbound = connection.Chains[0]
+			info.InboundTag = connection.Chains[len(connection.Chains)-1]
 		}
 		connections = append(connections, info)
 	}

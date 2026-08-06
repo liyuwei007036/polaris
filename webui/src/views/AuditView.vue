@@ -11,8 +11,8 @@ const loading = ref(false)
 const tab = ref('tasks')
 const tasks = ref([])
 const events = ref([])
-const taskQuery = reactive({ page: 1, pageSize: 20, total: 0, status: '' })
-const auditQuery = reactive({ page: 1, pageSize: 20, total: 0 })
+const taskQuery = reactive({ page: 1, pageSize: 10, total: 0, status: '' })
+const auditQuery = reactive({ page: 1, pageSize: 10, total: 0 })
 const taskKeyword = ref('')
 const auditKeyword = ref('')
 const nodeNames = computed(() => Object.fromEntries(appState.nodes.map((node) => [node.id, node.name])))
@@ -111,7 +111,7 @@ onMounted(() => { loadTasks(); loadAudit() })
               <el-table-column label="执行结果" min-width="300"><template #default="{ row }">{{ taskResult(row) }}</template></el-table-column>
               <el-table-column label="开始时间" width="180"><template #default="{ row }">{{ formatDateTime(row.created_at) }}</template></el-table-column>
             </el-table>
-            <div class="pagination-bar"><el-pagination v-model:current-page="taskQuery.page" v-model:page-size="taskQuery.pageSize" :total="taskQuery.total" :page-sizes="[20, 50, 100]" layout="total, sizes, prev, pager, next" @change="loadTasks" /></div>
+            <div class="pagination-bar"><el-pagination v-model:current-page="taskQuery.page" v-model:page-size="taskQuery.pageSize" :total="taskQuery.total" :page-sizes="[10, 20, 50, 100]" background layout="total, sizes, prev, pager, next" @change="loadTasks" /></div>
           </el-tab-pane>
           <el-tab-pane v-if="isAdmin" label="管理员修改记录" name="audit">
             <div class="tab-actions tab-actions--start"><el-input v-model="auditKeyword" clearable :prefix-icon="Search" placeholder="搜索操作人、内容或对象" style="width: 280px" /></div>
@@ -121,7 +121,7 @@ onMounted(() => { loadTasks(); loadAudit() })
               <el-table-column label="修改对象" min-width="260"><template #default="{ row }">{{ auditTarget(row) }}</template></el-table-column>
               <el-table-column label="时间" width="180"><template #default="{ row }">{{ formatDateTime(row.created_at) }}</template></el-table-column>
             </el-table>
-            <div class="pagination-bar"><el-pagination v-model:current-page="auditQuery.page" v-model:page-size="auditQuery.pageSize" :total="auditQuery.total" :page-sizes="[20, 50, 100]" layout="total, sizes, prev, pager, next" @change="loadAudit" /></div>
+            <div class="pagination-bar"><el-pagination v-model:current-page="auditQuery.page" v-model:page-size="auditQuery.pageSize" :total="auditQuery.total" :page-sizes="[10, 20, 50, 100]" background layout="total, sizes, prev, pager, next" @change="loadAudit" /></div>
           </el-tab-pane>
         </el-tabs>
       </div>

@@ -5,6 +5,7 @@ import { ArrowDown, ArrowUp, CopyDocument, Delete, Edit, Plus, Refresh, RefreshR
 import { api, del, post, put } from '../api'
 import { formatDateTime, includesText } from '../format'
 import PageHeader from '../components/PageHeader.vue'
+import PagedTable from '../components/PagedTable.vue'
 
 const canWrite = inject('canWrite')
 const isAdmin = inject('isAdmin')
@@ -24,7 +25,7 @@ const accessLogs = ref([])
 const accessLoading = ref(false)
 const keyword = ref('')
 const selectedStatus = ref('')
-const accessQuery = reactive({ page: 1, pageSize: 20, total: 0, config_id: '', ip: '', location: '', user_agent: '' })
+const accessQuery = reactive({ page: 1, pageSize: 10, total: 0, config_id: '', ip: '', location: '', user_agent: '' })
 const form = reactive({ name: '', proxy_group_ids: [], rule_providers: [], rule_mode: 'table', rules: [], raw_rules: '' })
 const strategyNames = { select: '手动选择', 'url-test': '自动测速', fallback: '故障切换' }
 const supportedProtocols = new Set(['vless', 'hysteria2'])
@@ -264,7 +265,7 @@ onMounted(() => { load(); loadAccess() })
               <el-input v-model="keyword" clearable :prefix-icon="Search" placeholder="搜索配置或分组" style="width: 260px" />
               <el-select v-model="selectedStatus" clearable placeholder="全部状态" style="width: 140px"><el-option label="启用" value="true" /><el-option label="停用" value="false" /></el-select>
             </div>
-        <el-table :data="filteredConfigs">
+        <PagedTable :rows="filteredConfigs" empty-text="还没有客户端配置">
           <el-table-column label="配置名称" min-width="180" prop="name" />
           <el-table-column label="引用代理分组" min-width="300">
             <template #default="{ row }">
@@ -289,7 +290,7 @@ onMounted(() => { load(); loadAccess() })
               <el-button v-if="isAdmin" link type="danger" :icon="Delete" @click="remove(row)">删除</el-button>
             </template>
           </el-table-column>
-        </el-table>
+        </PagedTable>
           </el-tab-pane>
           <el-tab-pane label="访问记录" name="access">
             <div class="tab-actions tab-actions--start access-filters">
@@ -306,7 +307,7 @@ onMounted(() => { load(); loadAccess() })
               <el-table-column label="User-Agent" prop="user_agent" min-width="320" show-overflow-tooltip />
               <el-table-column label="访问时间" width="180"><template #default="{ row }">{{ formatDateTime(row.accessed_at) }}</template></el-table-column>
             </el-table>
-            <div class="pagination-bar"><el-pagination v-model:current-page="accessQuery.page" v-model:page-size="accessQuery.pageSize" :total="accessQuery.total" :page-sizes="[20, 50, 100]" layout="total, sizes, prev, pager, next" @change="loadAccess" /></div>
+            <div class="pagination-bar"><el-pagination v-model:current-page="accessQuery.page" v-model:page-size="accessQuery.pageSize" :total="accessQuery.total" :page-sizes="[10, 20, 50, 100]" background layout="total, sizes, prev, pager, next" @change="loadAccess" /></div>
           </el-tab-pane>
         </el-tabs>
       </div>

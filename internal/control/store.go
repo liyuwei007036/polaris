@@ -160,6 +160,9 @@ type Listener struct {
 	Enabled     bool         `json:"enabled"`
 	Spec        ProtocolSpec `json:"spec"`
 	OutboundID  string       `json:"outbound_id,omitempty"`
+	// EndpointCount is filled by ListListeners so the console can show how
+	// many users a service has without one extra request per listener.
+	EndpointCount int `json:"endpoint_count"`
 }
 
 type Endpoint struct {
@@ -985,6 +988,32 @@ func (s *Store) NodeMetrics(ctx context.Context, nodeID string) (json.RawMessage
 	return json.RawMessage(report), time.Unix(updatedAt, 0).UTC().Format(time.RFC3339), nil
 }
 
+// AllNodeMetrics returns the stored report for every node in one query. The
+// console needs all of them at once, and asking per node meant one request
+// and one query per server on every refresh.
+func (s *Store) AllNodeMetrics(ctx context.Context) (map[string]json.RawMessage, map[string]string, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT node_id, report, updated_at FROM node_metrics`)
+	if err != nil {
+		return nil, nil, fmt.Errorf("load node metrics: %w", err)
+	}
+	defer rows.Close()
+	reports := map[string]json.RawMessage{}
+	updated := map[string]string{}
+	for rows.Next() {
+		var nodeID, report string
+		var updatedAt int64
+		if err := rows.Scan(&nodeID, &report, &updatedAt); err != nil {
+			return nil, nil, fmt.Errorf("read node metrics: %w", err)
+		}
+		if !json.Valid([]byte(report)) {
+			continue
+		}
+		reports[nodeID] = json.RawMessage(report)
+		updated[nodeID] = time.Unix(updatedAt, 0).UTC().Format(time.RFC3339)
+	}
+	return reports, updated, rows.Err()
+}
+
 func (s *Store) ListNodes(ctx context.Context) ([]Node, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT id, name, client_address, agent_version, os, architecture, sing_box_version,
 		COALESCE(capabilities, ''), last_seen_at FROM nodes WHERE revoked_at IS NULL ORDER BY name, id`)
@@ -1336,6 +1365,9 @@ func (s *Store) UpdateListener(ctx context.Context, listener Listener) (Listener
 		if !errors.Is(err, sql.ErrNoRows) {
 			return Listener{}, fmt.Errorf("check listener port conflict: %w", err)
 		}
+		if err := s.ensureBackendPortFreeOfNginx(ctx, listener.NodeID, listener.ID, listener.Spec.Network, listener.BackendPort); err != nil {
+			return Listener{}, err
+		}
 	}
 	err = s.db.QueryRowContext(ctx, `SELECT id FROM listeners WHERE node_id = ? AND name = ? AND id <> ?`, listener.NodeID, listener.Name, listener.ID).Scan(&conflict)
 	if err == nil {
@@ -1360,13 +1392,14 @@ func (s *Store) UpdateListener(ctx context.Context, listener Listener) (Listener
 }
 
 func (s *Store) ListListeners(ctx context.Context, nodeID string) ([]Listener, error) {
-	query := `SELECT id, node_id, name, connection_domain, listen_address, port, backend_port, enabled, spec, outbound_id FROM listeners`
+	query := `SELECT l.id, l.node_id, l.name, l.connection_domain, l.listen_address, l.port, l.backend_port, l.enabled, l.spec, l.outbound_id,
+		(SELECT COUNT(*) FROM endpoints e WHERE e.listener_id = l.id) FROM listeners l`
 	args := []any{}
 	if nodeID != "" {
-		query += " WHERE node_id = ?"
+		query += " WHERE l.node_id = ?"
 		args = append(args, nodeID)
 	}
-	query += " ORDER BY node_id, name, id"
+	query += " ORDER BY l.node_id, l.name, l.id"
 	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("list listeners: %w", err)
@@ -1376,7 +1409,7 @@ func (s *Store) ListListeners(ctx context.Context, nodeID string) ([]Listener, e
 	for rows.Next() {
 		var listener Listener
 		var spec string
-		if err := rows.Scan(&listener.ID, &listener.NodeID, &listener.Name, &listener.Domain, &listener.ListenAddr, &listener.Port, &listener.BackendPort, &listener.Enabled, &spec, &listener.OutboundID); err != nil {
+		if err := rows.Scan(&listener.ID, &listener.NodeID, &listener.Name, &listener.Domain, &listener.ListenAddr, &listener.Port, &listener.BackendPort, &listener.Enabled, &spec, &listener.OutboundID, &listener.EndpointCount); err != nil {
 			return nil, fmt.Errorf("read listener: %w", err)
 		}
 		if err := json.Unmarshal([]byte(spec), &listener.Spec); err != nil {
@@ -1385,6 +1418,24 @@ func (s *Store) ListListeners(ctx context.Context, nodeID string) ([]Listener, e
 		listeners = append(listeners, listener)
 	}
 	return listeners, rows.Err()
+}
+
+// ensureBackendPortFreeOfNginx rejects binding a TCP port that the managed
+// Nginx SNI router already owns on that node. Both processes would try to
+// listen on it, so whichever starts second fails and the port serves nothing.
+// UDP listeners are unaffected: the router is TCP-only.
+func (s *Store) ensureBackendPortFreeOfNginx(ctx context.Context, nodeID, listenerID, network string, backendPort uint16) error {
+	if network != "tcp" {
+		return nil
+	}
+	inUse, err := s.IngressRoutePortInUse(ctx, nodeID, listenerID, backendPort)
+	if err != nil {
+		return err
+	}
+	if inUse {
+		return userErrorf("端口 %d 已由该服务器上的自动端口分配占用，请为该接入服务选择其他端口", backendPort)
+	}
+	return nil
 }
 
 func (s *Store) SetListenerEnabled(ctx context.Context, listenerID string, enabled bool) error {
@@ -1403,6 +1454,9 @@ func (s *Store) SetListenerEnabled(ctx context.Context, listenerID string, enabl
 			return ErrConflict
 		}
 		if !errors.Is(err, sql.ErrNoRows) {
+			return err
+		}
+		if err := s.ensureBackendPortFreeOfNginx(ctx, nodeID, listenerID, network, backendPort); err != nil {
 			return err
 		}
 	}
@@ -1652,8 +1706,17 @@ func (s *Store) DeleteEndpoint(ctx context.Context, endpointID string) error {
 	return nil
 }
 
+// ListEndpoints returns one listener's users, or every listener's when
+// listenerID is empty. Credentials are never included either way.
 func (s *Store) ListEndpoints(ctx context.Context, listenerID string) ([]Endpoint, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT id, listener_id, name, alias, enabled, outbound_id FROM endpoints WHERE listener_id = ? ORDER BY name, id`, listenerID)
+	query := `SELECT id, listener_id, name, alias, enabled, outbound_id FROM endpoints`
+	args := []any{}
+	if listenerID != "" {
+		query += " WHERE listener_id = ?"
+		args = append(args, listenerID)
+	}
+	query += " ORDER BY listener_id, name, id"
+	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -1701,8 +1764,17 @@ func (s *Store) CreateRouteRule(ctx context.Context, rule RouteRule) (RouteRule,
 	return rule, nil
 }
 
+// ListRouteRules returns one node's rules, or every node's when nodeID is
+// empty so the console can render the whole list from one request.
 func (s *Store) ListRouteRules(ctx context.Context, nodeID string) ([]RouteRule, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT id, node_id, priority, enabled, domains, domain_suffix, cidrs, port, network, protocol, inbound_tag, endpoint_name, action, outbound_tag FROM route_rules WHERE node_id = ? ORDER BY priority, id`, nodeID)
+	query := `SELECT id, node_id, priority, enabled, domains, domain_suffix, cidrs, port, network, protocol, inbound_tag, endpoint_name, action, outbound_tag FROM route_rules`
+	args := []any{}
+	if nodeID != "" {
+		query += " WHERE node_id = ?"
+		args = append(args, nodeID)
+	}
+	query += " ORDER BY node_id, priority, id"
+	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}

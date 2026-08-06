@@ -6,6 +6,7 @@ import { api, del, post, put } from '../api'
 import { includesText } from '../format'
 import { protocolMap } from '../protocols'
 import PageHeader from '../components/PageHeader.vue'
+import PagedTable from '../components/PagedTable.vue'
 import ListenerFormDialog from '../components/ListenerFormDialog.vue'
 
 const appState = inject('appState')
@@ -31,6 +32,9 @@ const filteredListeners = computed(() => listeners.value.filter((row) => {
   return includesText([nodeNames.value[row.node_id], row.name, row.connection_domain, row.port, row.spec?.protocol, row.spec?.transport?.type, securityLabel(row)], keyword.value)
 }))
 
+// The listener list already reports how many users each service has, so the
+// user lists themselves are fetched only for the service being edited rather
+// than for every row on every refresh.
 async function load() {
   loading.value = true
   try {
@@ -41,16 +45,14 @@ async function load() {
     ])
     listeners.value = listenerResult.listeners || []
     outbounds.value = outboundResult.outbounds || []
-    const pairs = await Promise.all(
-      listeners.value.map(async (listener) => {
-        const result = await api(`/listeners/${listener.id}/endpoints`).catch(() => ({ endpoints: [] }))
-        return [listener.id, result.endpoints || []]
-      }),
-    )
-    endpointMap.value = Object.fromEntries(pairs)
   } finally {
     loading.value = false
   }
+}
+
+async function loadEndpoints(listenerID) {
+  const result = await api(`/listeners/${listenerID}/endpoints`).catch(() => ({ endpoints: [] }))
+  endpointMap.value = { ...endpointMap.value, [listenerID]: result.endpoints || [] }
 }
 
 function securityLabel(listener) {
@@ -64,7 +66,8 @@ function openCreate() {
   formOpen.value = true
 }
 
-function openEdit(listener) {
+async function openEdit(listener) {
+  await loadEndpoints(listener.id)
   editing.value = listener
   formOpen.value = true
 }
@@ -163,7 +166,7 @@ onMounted(load)
         <el-select v-model="selectedStatus" clearable placeholder="全部状态" style="width: 140px"><el-option label="启用" value="true" /><el-option label="停用" value="false" /></el-select>
       </div>
       <div class="table-panel">
-        <el-table v-loading="loading" :data="filteredListeners" row-key="id">
+        <PagedTable :rows="filteredListeners" :loading="loading" empty-text="还没有接入服务">
           <el-table-column label="服务器" min-width="150"><template #default="{ row }">{{ nodeNames[row.node_id] || row.node_id }}</template></el-table-column>
           <el-table-column label="服务名称" min-width="190">
             <template #default="{ row }">
@@ -183,7 +186,7 @@ onMounted(load)
             <template #default="{ row }"><span class="mono">{{ row.connection_domain || '使用服务器地址' }}</span></template>
           </el-table-column>
           <el-table-column label="用户" width="90" align="center">
-            <template #default="{ row }">{{ endpointMap[row.id]?.length || 0 }}</template>
+            <template #default="{ row }">{{ row.endpoint_count ?? 0 }}</template>
           </el-table-column>
           <el-table-column label="状态" width="90">
             <template #default="{ row }">
@@ -197,7 +200,7 @@ onMounted(load)
               <el-button v-if="isAdmin" link type="danger" :icon="Delete" @click="removeListener(row)">删除</el-button>
             </template>
           </el-table-column>
-        </el-table>
+        </PagedTable>
       </div>
     </main>
 

@@ -35,16 +35,24 @@ func (e *taskExecutor) Handle(ctx context.Context, task Task) TaskResult {
 	}
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	if result, found, err := e.completed(task); err != nil {
+	result, found, err := e.completed(task)
+	if err != nil {
 		return TaskResult{Status: "failed", Summary: "read completed task result: " + err.Error()}
-	} else if found {
-		return result
 	}
-	result := executeTask(ctx, task, e.options)
+	if !found {
+		result = executeTask(ctx, task, e.options)
+	}
+	// The recorded desired-state hash must be refreshed even when the task
+	// itself was already applied earlier: it is what the master compares
+	// against to decide the node has converged. Skipping it on the cached
+	// path left the master re-dispatching this task on every heartbeat.
 	if result.Status == "succeeded" && task.Kind == "nginx.apply_config" {
 		if err := saveNginxConfigurationState(e.options.DataDir, task.ExpectedHash); err != nil {
 			result = TaskResult{Status: "failed", Summary: "persist Nginx configuration state: " + err.Error()}
 		}
+	}
+	if found {
+		return result
 	}
 	if err := e.saveCompleted(task, result); err != nil {
 		return TaskResult{Status: "failed", Summary: "persist task result: " + err.Error()}

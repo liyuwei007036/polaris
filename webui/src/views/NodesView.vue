@@ -5,7 +5,9 @@ import { CopyDocument, Edit, Plus, Refresh, RemoveFilled, Search } from '@elemen
 import { api, post, put } from '../api'
 import { formatBytes, formatDateTime, includesText } from '../format'
 import { subscribeLive } from '../live'
+import { connectionSnapshots, subscribeConnections } from '../connections'
 import PageHeader from '../components/PageHeader.vue'
+import PagedTable from '../components/PagedTable.vue'
 
 const appState = inject('appState')
 const isAdmin = inject('isAdmin')
@@ -26,12 +28,11 @@ const nameDialog = ref(false)
 const nameNode = ref(null)
 const nodeName = ref('')
 const nameSaving = ref(false)
-const rates = ref({})
 const refreshing = ref(false)
-const previousCounters = new Map()
 const keyword = ref('')
 const statusFilter = ref('')
 let stopLive
+let stopConnections
 
 const filteredNodes = computed(() => appState.nodes.filter((node) => {
   if (statusFilter.value === 'online' && !node.online) return false
@@ -39,24 +40,9 @@ const filteredNodes = computed(() => appState.nodes.filter((node) => {
   return includesText([node.name, node.client_address, node.os, node.architecture, node.agent_version, node.sing_box_version], keyword.value)
 }))
 const filteredPending = computed(() => pending.value.filter((row) => includesText([row.node_name, row.capabilities], keyword.value)))
-
-function updateRates(nodeID, report) {
-  if (!report?.node || !report.collected_at) return
-  const current = {
-    received: Number(report.node.received_bytes || 0),
-    sent: Number(report.node.sent_bytes || 0),
-    time: Date.parse(report.collected_at),
-  }
-  const previous = previousCounters.get(nodeID)
-  if (previous && current.time > previous.time) {
-    const seconds = (current.time - previous.time) / 1000
-    rates.value[nodeID] = {
-      received: Math.max(0, current.received - previous.received) / seconds,
-      sent: Math.max(0, current.sent - previous.sent) / seconds,
-    }
-  }
-  previousCounters.set(nodeID, current)
-}
+// Rates and connection counts arrive over SSE as the agents measure them, so
+// they update in place instead of being recomputed on every page visit.
+const live = computed(() => connectionSnapshots.value)
 
 async function load(silent = false) {
   if (refreshing.value) return
@@ -64,17 +50,12 @@ async function load(silent = false) {
   if (!silent) loading.value = true
   try {
     await loadNodes()
-    if (isAdmin.value) {
-      pending.value = (await api('/registrations').catch(() => ({ registrations: [] }))).registrations || []
-    }
-    const metricPairs = await Promise.all(
-      appState.nodes.map(async (node) => {
-        const result = await api(`/nodes/${node.id}/metrics`).catch(() => null)
-        return [node.id, result?.report || null]
-      }),
-    )
-    metrics.value = Object.fromEntries(metricPairs)
-    metricPairs.forEach(([nodeID, report]) => updateRates(nodeID, report))
+    const [registrations, metricResult] = await Promise.all([
+      isAdmin.value ? api('/registrations').catch(() => ({ registrations: [] })) : Promise.resolve({ registrations: [] }),
+      api('/nodes/metrics').catch(() => ({ nodes: [] })),
+    ])
+    pending.value = registrations.registrations || []
+    metrics.value = Object.fromEntries((metricResult.nodes || []).map((entry) => [entry.node_id, entry.report]))
   } finally {
     loading.value = false
     refreshing.value = false
@@ -148,6 +129,7 @@ async function saveClientAddress() {
 
 onMounted(() => {
   load()
+  stopConnections = subscribeConnections(() => {})
   stopLive = subscribeLive((event) => {
     if (event.kind === 'node') load(true).catch(() => {})
   })
@@ -155,6 +137,7 @@ onMounted(() => {
 
 onBeforeUnmount(() => {
   stopLive?.()
+  stopConnections?.()
 })
 </script>
 
@@ -172,20 +155,20 @@ onBeforeUnmount(() => {
       <template v-if="pending.length">
         <div class="section-title">等待确认的服务器</div>
         <div class="table-panel" style="margin-bottom: 24px">
-          <el-table :data="filteredPending">
+          <PagedTable :rows="filteredPending" empty-text="没有等待确认的服务器">
             <el-table-column label="服务器名称" min-width="180" prop="node_name" />
             <el-table-column label="支持的功能" min-width="260" prop="capabilities" show-overflow-tooltip />
             <el-table-column label="接入时间" width="180"><template #default="{ row }">{{ formatDateTime(row.created_at) }}</template></el-table-column>
             <el-table-column label="操作" width="90" class-name="action-column">
               <template #default="{ row }"><el-button type="primary" link @click="approve(row)">接入</el-button></template>
             </el-table-column>
-          </el-table>
+          </PagedTable>
         </div>
       </template>
 
       <div class="section-title">已接入服务器</div>
       <div class="table-panel">
-        <el-table :data="filteredNodes">
+        <PagedTable :rows="filteredNodes" empty-text="尚未接入任何服务器">
           <el-table-column label="服务器" min-width="180">
             <template #default="{ row }">
               <span class="status-dot" :class="row.online ? 'online' : 'offline'" />
@@ -202,8 +185,8 @@ onBeforeUnmount(() => {
           </el-table-column>
           <el-table-column label="当前下载 / 上传" min-width="180">
             <template #default="{ row }">
-              <span v-if="rates[row.id]" class="mono">↓ {{ formatBytes(rates[row.id].received, '/s') }} · ↑ {{ formatBytes(rates[row.id].sent, '/s') }}</span>
-              <span v-else class="subtle">正在计算</span>
+              <span v-if="live.get(row.id)?.has_rates" class="mono">↓ {{ formatBytes(live.get(row.id).received_rate, '/s') }} · ↑ {{ formatBytes(live.get(row.id).sent_rate, '/s') }}</span>
+              <span v-else class="subtle">{{ row.online ? '正在测量' : '离线' }}</span>
             </template>
           </el-table-column>
           <el-table-column label="累计下载 / 上传" min-width="190">
@@ -213,7 +196,7 @@ onBeforeUnmount(() => {
             </template>
           </el-table-column>
           <el-table-column label="连接数" width="90">
-            <template #default="{ row }">{{ metrics[row.id]?.connections?.length ?? '—' }}</template>
+            <template #default="{ row }">{{ live.get(row.id)?.connection_count ?? '—' }}</template>
           </el-table-column>
           <el-table-column label="最后在线" width="180"><template #default="{ row }">{{ formatDateTime(row.last_seen_at, '从未') }}</template></el-table-column>
           <el-table-column label="操作" width="200" fixed="right" class-name="action-column">
@@ -223,7 +206,7 @@ onBeforeUnmount(() => {
               <el-button v-if="isAdmin" link type="danger" :icon="RemoveFilled" @click="revoke(row)">移除</el-button>
             </template>
           </el-table-column>
-        </el-table>
+        </PagedTable>
       </div>
     </main>
 

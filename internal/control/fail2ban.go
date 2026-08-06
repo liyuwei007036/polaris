@@ -26,6 +26,10 @@ var fail2banNamePattern = regexp.MustCompile(`^[a-zA-Z0-9_-]{1,64}$`)
 
 const fail2banFilterPrefix = "sb-control-"
 
+// SingBoxLogPath is where compiled configurations tell sing-box to write its
+// log. Fail2Ban jails watch this file, so both sides must agree on it.
+const SingBoxLogPath = "/var/log/sing-box/sing-box.log"
+
 func validateFail2BanJail(jail Fail2BanJail) error {
 	if !fail2banNamePattern.MatchString(jail.Name) {
 		return errors.New("invalid fail2ban jail name")

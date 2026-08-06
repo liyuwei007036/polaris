@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -15,9 +16,18 @@ import (
 var managedFail2BanJail = managedSystemPath("/etc/fail2ban/jail.d/sb-control.local")
 var managedFail2BanFilterDir = managedSystemPath("/etc/fail2ban/filter.d")
 
+// logPathPattern extracts the log files a compiled jail watches. Fail2Ban
+// refuses to start a jail whose logpath does not exist, so the agent creates
+// each one before validating the configuration.
+var logPathPattern = regexp.MustCompile(`(?m)^logpath\s*=\s*(\S+)\s*$`)
+
 // managedFilterPattern accepts only master-compiled filter file names inside
 // the sb-control namespace; anything else is rejected before touching disk.
 var managedFilterPattern = regexp.MustCompile(`^sb-control-[a-zA-Z0-9_-]{1,64}\.conf$`)
+
+// fail2banManagedPrefix marks the jails sb-control owns. Everything outside
+// it belongs to the operator and is only ever read, never written.
+const fail2banManagedPrefix = "sb-control-"
 
 type fail2banBackup struct {
 	path     string
@@ -42,6 +52,9 @@ func applyFail2Ban(ctx context.Context, task Task) TaskResult {
 		if !managedFilterPattern.MatchString(name) {
 			return TaskResult{Status: "failed", Summary: "fail2ban filter name is outside the managed namespace"}
 		}
+	}
+	if err := ensureFail2BanReady(ctx, payload.Jail); err != nil {
+		return TaskResult{Status: "failed", Summary: "准备自动封禁服务失败：" + err.Error()}
 	}
 
 	// Snapshot every file this task may change so a failed reload can restore
@@ -149,6 +162,67 @@ func applyFail2Ban(ctx context.Context, task Task) TaskResult {
 	return TaskResult{Status: "succeeded", Summary: "fail2ban configuration validated, applied, and fail2ban.service is active"}
 }
 
+// ensureFail2BanReady installs Fail2Ban when it is missing and creates every
+// log file the jail configuration watches. Without this the very first
+// publish failed at `fail2ban-client -t` on any host that had never installed
+// Fail2Ban, or on any jail whose log file sing-box had not created yet.
+func ensureFail2BanReady(ctx context.Context, jailConfiguration string) error {
+	if strings.TrimSpace(os.Getenv("SB_CONTROL_E2E_ROOT")) != "" {
+		return nil
+	}
+	if strings.TrimSpace(jailConfiguration) == "" {
+		// Clearing every jail needs no service and no log files.
+		return nil
+	}
+	// An install is attempted only when Fail2Ban is genuinely absent. A host
+	// that already runs it — very often with the operator's own jails in
+	// jail.d — must be left exactly as it is: reinstalling could restart the
+	// service and disrupt protection that is already working.
+	if err := installFail2BanIfMissing(ctx); err != nil {
+		return err
+	}
+	for _, match := range logPathPattern.FindAllStringSubmatch(jailConfiguration, -1) {
+		if err := ensureLogFile(managedSystemPath(match[1])); err != nil {
+			return err
+		}
+	}
+	if commandExists("systemctl") {
+		// Only arm it for boot here. Starting the service is left to the
+		// reload-or-restart that follows the configuration write, so a host
+		// whose existing configuration is currently broken does not fail this
+		// step before sb-control has had a chance to write its own files.
+		if output, err := exec.CommandContext(ctx, "systemctl", "enable", "fail2ban.service").CombinedOutput(); err != nil {
+			return errors.New(commandSummary("systemctl enable fail2ban.service", output, err))
+		}
+	}
+	return nil
+}
+
+func installFail2BanIfMissing(ctx context.Context) error {
+	if commandExists("fail2ban-client") {
+		return nil
+	}
+	return installPackages(ctx, "fail2ban")
+}
+
+// ensureLogFile creates a watched log file and its directory if absent,
+// leaving an existing file untouched.
+func ensureLogFile(path string) error {
+	if _, err := os.Stat(path); err == nil {
+		return nil
+	} else if !os.IsNotExist(err) {
+		return errors.New("检查日志文件 " + path + " 失败：" + err.Error())
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return errors.New("创建日志目录失败：" + err.Error() + permissionHint(err))
+	}
+	file, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o640)
+	if err != nil {
+		return errors.New("创建日志文件 " + path + " 失败：" + err.Error() + permissionHint(err))
+	}
+	return file.Close()
+}
+
 func writeFileAtomic(path string, content []byte, mode os.FileMode) error {
 	directory := filepath.Dir(path)
 	temporary, err := os.CreateTemp(directory, ".sb-control-*")
@@ -190,10 +264,15 @@ func CollectFail2BanStatus(ctx context.Context) *Fail2BanReport {
 		names := strings.Split(strings.TrimSpace(strings.SplitN(line, "Jail list:", 2)[1]), ",")
 		for _, name := range names {
 			name = strings.TrimSpace(name)
-			if !strings.HasPrefix(name, "sb-control-") {
+			if name == "" {
 				continue
 			}
-			report.Jails = append(report.Jails, collectJailStatus(ctx, name))
+			// Jails the operator set up outside sb-control are reported too,
+			// marked as unmanaged, so the console can show what a host is
+			// already protected by instead of pretending nothing is there.
+			status := collectJailStatus(ctx, name)
+			status.Managed = strings.HasPrefix(name, fail2banManagedPrefix)
+			report.Jails = append(report.Jails, status)
 		}
 	}
 	return report

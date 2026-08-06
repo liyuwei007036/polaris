@@ -1,5 +1,5 @@
 <script setup>
-import { computed, onBeforeUnmount, onMounted, provide, reactive, ref } from 'vue'
+import { computed, defineAsyncComponent, onBeforeUnmount, onMounted, provide, reactive, ref } from 'vue'
 import {
   Aim,
   Connection,
@@ -19,20 +19,9 @@ import {
 } from '@element-plus/icons-vue'
 import { api, post, setCsrfToken } from './api'
 import { closeLiveEvents, liveStatus, subscribeLive } from './live'
+import { closeConnectionEvents } from './connections'
 import LoginView from './views/LoginView.vue'
 import PasswordChangeView from './views/PasswordChangeView.vue'
-import DashboardView from './views/DashboardView.vue'
-import NodesView from './views/NodesView.vue'
-import InboundsView from './views/InboundsView.vue'
-import OutboundsView from './views/OutboundsView.vue'
-import SubscriptionsView from './views/SubscriptionsView.vue'
-import ProxyGroupsView from './views/ProxyGroupsView.vue'
-import RoutesView from './views/RoutesView.vue'
-import ConnectionsView from './views/ConnectionsView.vue'
-import SecurityView from './views/SecurityView.vue'
-import CloudflareView from './views/CloudflareView.vue'
-import AuditView from './views/AuditView.vue'
-import SettingsView from './views/SettingsView.vue'
 
 const authenticated = ref(false)
 const checking = ref(true)
@@ -82,22 +71,25 @@ const groups = [
   },
 ]
 
+// Views load on demand. Bundling them together meant every visitor
+// downloaded the charting and QR-code libraries before the first page could
+// render, which is most of what made the console slow to open.
 const views = {
-  dashboard: DashboardView,
-  nodes: NodesView,
-  inbounds: InboundsView,
-  'proxy-groups': ProxyGroupsView,
-  subscriptions: SubscriptionsView,
-  routes: RoutesView,
-  outbounds: OutboundsView,
-  connections: ConnectionsView,
-  security: SecurityView,
-  cloudflare: CloudflareView,
-  audit: AuditView,
-  settings: SettingsView,
+  dashboard: defineAsyncComponent(() => import('./views/DashboardView.vue')),
+  nodes: defineAsyncComponent(() => import('./views/NodesView.vue')),
+  inbounds: defineAsyncComponent(() => import('./views/InboundsView.vue')),
+  'proxy-groups': defineAsyncComponent(() => import('./views/ProxyGroupsView.vue')),
+  subscriptions: defineAsyncComponent(() => import('./views/SubscriptionsView.vue')),
+  routes: defineAsyncComponent(() => import('./views/RoutesView.vue')),
+  outbounds: defineAsyncComponent(() => import('./views/OutboundsView.vue')),
+  connections: defineAsyncComponent(() => import('./views/ConnectionsView.vue')),
+  security: defineAsyncComponent(() => import('./views/SecurityView.vue')),
+  cloudflare: defineAsyncComponent(() => import('./views/CloudflareView.vue')),
+  audit: defineAsyncComponent(() => import('./views/AuditView.vue')),
+  settings: defineAsyncComponent(() => import('./views/SettingsView.vue')),
 }
 
-const activeComponent = computed(() => views[currentView.value] || DashboardView)
+const activeComponent = computed(() => views[currentView.value] || views.dashboard)
 const roleLabel = computed(() => ({ admin: '管理员', operator: '运维人员', viewer: '只读用户' })[appState.role] || appState.role)
 const canWrite = computed(() => appState.role === 'admin' || appState.role === 'operator')
 const isAdmin = computed(() => appState.role === 'admin')
@@ -149,6 +141,7 @@ function clearSession() {
   stopAppLive?.()
   stopAppLive = undefined
   closeLiveEvents()
+  closeConnectionEvents()
 }
 
 async function logout() {

@@ -6,6 +6,7 @@ import QRCode from 'qrcode'
 import { api, post, put } from '../api'
 import { formatDateTime, includesText } from '../format'
 import PageHeader from '../components/PageHeader.vue'
+import PagedTable from '../components/PagedTable.vue'
 
 const appState = inject('appState')
 const isAdmin = inject('isAdmin')
@@ -124,14 +125,14 @@ onMounted(load)
 
           <el-tab-pane v-if="isAdmin" label="管理账户" name="operators">
             <div class="tab-actions tab-actions--start"><el-input v-model="operatorKeyword" clearable :prefix-icon="Search" placeholder="搜索用户名或权限" style="width: 250px" /><el-select v-model="operatorStatus" clearable placeholder="全部状态" style="width: 140px"><el-option label="启用" value="true" /><el-option label="停用" value="false" /></el-select><span class="toolbar__spacer" /><el-button type="primary" :icon="Plus" @click="open('operator')">新建</el-button></div>
-            <el-table v-loading="loading" :data="filteredOperators">
+            <PagedTable :rows="filteredOperators" :loading="loading" empty-text="还没有管理账户">
               <el-table-column label="用户名" prop="username" min-width="180" />
               <el-table-column label="权限" width="130"><template #default="{ row }"><el-select v-model="row.role" size="small" @change="put(`/operators/${row.id}`, { role: row.role, enabled: row.enabled })"><el-option label="管理员" value="admin" /><el-option label="运维人员" value="operator" /><el-option label="只读用户" value="viewer" /></el-select></template></el-table-column>
               <el-table-column label="登录安全" width="150"><template #default="{ row }"><el-tag v-if="row.must_change_password" type="warning">等待修改密码</el-tag><el-tag v-else-if="row.totp_enabled" type="success">两步验证已启用</el-tag><el-tag v-else type="info">密码登录</el-tag></template></el-table-column>
               <el-table-column label="状态" width="100"><template #default="{ row }"><el-tag :type="row.enabled ? 'success' : 'info'">{{ row.enabled ? '启用' : '停用' }}</el-tag></template></el-table-column>
               <el-table-column label="最近登录" min-width="180"><template #default="{ row }">{{ formatDateTime(row.last_login_at) }}</template></el-table-column>
               <el-table-column label="操作" width="220" class-name="action-column"><template #default="{ row }"><el-button link @click="setOperatorState(row)">{{ row.enabled ? '停用' : '启用' }}</el-button><el-button link @click="resetPassword(row)">改密</el-button><el-button v-if="row.totp_enabled" link @click="disableOperatorTOTP(row)">关 2FA</el-button></template></el-table-column>
-            </el-table>
+            </PagedTable>
           </el-tab-pane>
 
         </el-tabs>

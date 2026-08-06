@@ -237,6 +237,9 @@ func (s *Server) handleAgentMessage(ctx context.Context, node Node, msgType byte
 		}
 		if err := s.mergeNodeMetrics(ctx, node.ID, func(m *storedMetrics) {
 			m.CollectedAt = st.CollectedAt
+			// Connections are real-time only and live in connectionsHub; drop
+			// any list an older build persisted so nothing stale is served.
+			m.Connections = nil
 			if st.HasNodeTotals {
 				m.Node = map[string]uint64{"received_bytes": st.NodeReceivedBytes, "sent_bytes": st.NodeSentBytes}
 			}
@@ -277,18 +280,20 @@ func (s *Server) handleAgentMessage(ctx context.Context, node Node, msgType byte
 		if err := wire.Decode(body, &push); err != nil {
 			return false
 		}
-		connections := s.convertConnections(push.Connections)
+		connections := s.convertConnections(ctx, node.ID, push.Connections)
 		connJSON, err := json.Marshal(connections)
 		if err != nil {
 			return false
 		}
-		s.connHub.update(nodeConnectionsSnapshot{NodeID: node.ID, CollectedAt: push.CollectedAt, Connections: connJSON})
-		if err := s.mergeNodeMetrics(ctx, node.ID, func(m *storedMetrics) {
-			m.Connections = connections
-		}); err != nil {
-			return false
-		}
-		s.liveHub.publish(liveEvent{Kind: "connections", NodeID: node.ID})
+		// Real-time state stays in memory and reaches browsers over SSE. It is
+		// deliberately not persisted: this arrives every couple of seconds per
+		// node, and a SQLite read-modify-write of the whole metrics blob at
+		// that cadence was the single largest source of load on the master.
+		s.connHub.update(nodeConnectionsSnapshot{
+			NodeID: node.ID, CollectedAt: push.CollectedAt, Connections: connJSON, ConnectionCount: len(connections),
+			HasTotals: push.HasNodeTotals, ReceivedBytes: push.NodeReceivedBytes, SentBytes: push.NodeSentBytes,
+			HasRates: push.HasNodeRates, ReceivedRate: push.ReceivedBytesRate, SentRate: push.SentBytesRate,
+		})
 	case wire.MsgKeepalive:
 		// no-op
 	default:
@@ -297,12 +302,60 @@ func (s *Server) handleAgentMessage(ctx context.Context, node Node, msgType byte
 	return true
 }
 
+// reconcileBackoff spaces out repeated attempts to push the same desired
+// state at a node that keeps reporting something else. Every entry doubles
+// the wait, capped at the last value.
+var reconcileBackoff = []time.Duration{0, 2 * time.Minute, 5 * time.Minute, 15 * time.Minute, time.Hour}
+
+type reconcileAttempt struct {
+	hash     string
+	attempts int
+	lastAt   time.Time
+}
+
+// shouldReconcile reports whether a desired-state task for kind should be
+// dispatched now. A node that never converges — a permanently failing apply,
+// or a hash the agent can never reproduce — would otherwise produce a brand
+// new task on every single heartbeat, which floods the task table, the live
+// event stream and every open browser. A genuinely new desired hash always
+// dispatches immediately; a repeat of the same hash backs off.
+func (s *Server) shouldReconcile(nodeID, kind, desiredHash string) bool {
+	key := nodeID + "/" + kind
+	now := time.Now()
+	s.reconcileMu.Lock()
+	defer s.reconcileMu.Unlock()
+	if s.reconcileState == nil {
+		s.reconcileState = map[string]reconcileAttempt{}
+	}
+	previous, seen := s.reconcileState[key]
+	if !seen || !strings.EqualFold(previous.hash, desiredHash) {
+		s.reconcileState[key] = reconcileAttempt{hash: desiredHash, attempts: 1, lastAt: now}
+		return true
+	}
+	wait := reconcileBackoff[min(previous.attempts, len(reconcileBackoff)-1)]
+	if now.Sub(previous.lastAt) < wait {
+		return false
+	}
+	s.reconcileState[key] = reconcileAttempt{hash: desiredHash, attempts: previous.attempts + 1, lastAt: now}
+	return true
+}
+
+// clearReconcileState forgets a node's backoff so the next desired-state
+// change is pushed without delay. Called whenever an operator edits
+// something, since that is a deliberate action and must feel immediate.
+func (s *Server) clearReconcileState(nodeID string) {
+	s.reconcileMu.Lock()
+	defer s.reconcileMu.Unlock()
+	delete(s.reconcileState, nodeID+"/singbox")
+	delete(s.reconcileState, nodeID+"/nginx")
+}
+
 func (s *Server) reconcileNodeDesiredState(ctx context.Context, nodeID, singBoxVersion, singBoxConfigHash, nginxConfigHash string) {
 	if singBoxVersion != "" {
 		_, desiredHash, err := s.store.CompileNodeConfig(ctx, nodeID)
 		if err != nil {
 			log.Printf("compile desired sing-box configuration for node %s: %v", nodeID, err)
-		} else if !strings.EqualFold(desiredHash, singBoxConfigHash) {
+		} else if !strings.EqualFold(desiredHash, singBoxConfigHash) && s.shouldReconcile(nodeID, "singbox", desiredHash) {
 			if _, err := s.dispatchNodeConfiguration(ctx, nodeID, ""); err != nil {
 				log.Printf("reconcile sing-box configuration for node %s: %v", nodeID, err)
 			}
@@ -311,7 +364,7 @@ func (s *Server) reconcileNodeDesiredState(ctx context.Context, nodeID, singBoxV
 	_, desiredNginxHash, err := s.store.CompileNodeNginx(ctx, nodeID)
 	if err != nil {
 		log.Printf("compile desired Nginx configuration for node %s: %v", nodeID, err)
-	} else if !strings.EqualFold(desiredNginxHash, nginxConfigHash) {
+	} else if !strings.EqualFold(desiredNginxHash, nginxConfigHash) && s.shouldReconcile(nodeID, "nginx", desiredNginxHash) {
 		if _, err := s.dispatchNodeNginx(ctx, nodeID, ""); err != nil {
 			log.Printf("reconcile Nginx configuration for node %s: %v", nodeID, err)
 		}
@@ -406,6 +459,9 @@ type storedConnection struct {
 	Rule           string   `json:"rule,omitempty"`
 	RulePayload    string   `json:"rule_payload,omitempty"`
 	Chains         []string `json:"chains,omitempty"`
+	// ListenerName is the human-readable inbound the connection arrived on,
+	// resolved from the agent's sing-box inbound tag.
+	ListenerName string `json:"listener_name,omitempty"`
 }
 
 type storedFail2BanJail struct {
@@ -414,6 +470,7 @@ type storedFail2BanJail struct {
 	TotalBanned     string   `json:"total_banned,omitempty"`
 	BannedIPs       []string `json:"banned_ips,omitempty"`
 	Error           string   `json:"error,omitempty"`
+	Managed         bool     `json:"managed"`
 }
 
 type storedFail2Ban struct {
@@ -421,7 +478,8 @@ type storedFail2Ban struct {
 	Jails     []storedFail2BanJail `json:"jails"`
 }
 
-func (s *Server) convertConnections(in []wire.ConnectionInfo) []storedConnection {
+func (s *Server) convertConnections(ctx context.Context, nodeID string, in []wire.ConnectionInfo) []storedConnection {
+	names := s.listenerNames(ctx, nodeID)
 	out := make([]storedConnection, 0, len(in))
 	for _, c := range in {
 		ip := addressIP(c.Source)
@@ -429,15 +487,52 @@ func (s *Server) convertConnections(in []wire.ConnectionInfo) []storedConnection
 			ID: c.ID, Inbound: c.Inbound, Network: c.Network, Source: c.Source, Destination: c.Destination,
 			SourceIP: ip, SourceLocation: s.ipLocator.Locate(ip), Host: c.Host, Upload: c.Upload, Download: c.Download,
 			StartedAt: c.StartedAt, Outbound: c.Outbound, Rule: c.Rule, RulePayload: c.RulePayload, Chains: c.Chains,
+			ListenerName: names[strings.TrimPrefix(c.InboundTag, "listener-")],
 		})
 	}
 	return out
 }
 
+// listenerNames maps a node's listener IDs to their display names so a
+// sing-box inbound tag can be shown as the service an operator configured.
+// Results are cached briefly: connection pushes arrive every few seconds per
+// node, and listener names change far more rarely than that.
+func (s *Server) listenerNames(ctx context.Context, nodeID string) map[string]string {
+	s.listenerNameMu.Lock()
+	cached, ok := s.listenerNameCache[nodeID]
+	s.listenerNameMu.Unlock()
+	if ok && time.Since(cached.at) < listenerNameCacheTTL {
+		return cached.names
+	}
+	names := map[string]string{}
+	rows, err := s.store.db.QueryContext(ctx, `SELECT id, name FROM listeners WHERE node_id = ?`, nodeID)
+	if err != nil {
+		return names
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id, name string
+		if err := rows.Scan(&id, &name); err != nil {
+			return names
+		}
+		names[id] = name
+	}
+	if rows.Err() != nil {
+		return names
+	}
+	s.listenerNameMu.Lock()
+	if s.listenerNameCache == nil {
+		s.listenerNameCache = map[string]listenerNameEntry{}
+	}
+	s.listenerNameCache[nodeID] = listenerNameEntry{names: names, at: time.Now()}
+	s.listenerNameMu.Unlock()
+	return names
+}
+
 func convertFail2BanJails(in []wire.Fail2BanJailStatus) []storedFail2BanJail {
 	out := make([]storedFail2BanJail, 0, len(in))
 	for _, j := range in {
-		out = append(out, storedFail2BanJail{Name: j.Name, CurrentlyBanned: j.CurrentlyBanned, TotalBanned: j.TotalBanned, BannedIPs: j.BannedIPs, Error: j.Error})
+		out = append(out, storedFail2BanJail{Name: j.Name, CurrentlyBanned: j.CurrentlyBanned, TotalBanned: j.TotalBanned, BannedIPs: j.BannedIPs, Error: j.Error, Managed: j.Managed})
 	}
 	return out
 }

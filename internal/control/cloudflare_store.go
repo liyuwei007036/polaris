@@ -29,6 +29,12 @@ type ManagedCloudflareRecord struct {
 	LastError  string `json:"last_error,omitempty"`
 	Observed   string `json:"observed,omitempty"`
 	ObservedAt string `json:"observed_at,omitempty"`
+	// NodeName and ListenerName resolve the bindings above to what an
+	// operator recognizes, so the DNS list shows which server and which
+	// access service a record actually points at.
+	NodeName     string `json:"node_name,omitempty"`
+	ListenerName string `json:"listener_name,omitempty"`
+	ListenerPort uint16 `json:"listener_port,omitempty"`
 }
 
 type CloudflareSettingsView struct {
@@ -235,15 +241,19 @@ func (s *Store) UpdateCloudflareRecord(ctx context.Context, record ManagedCloudf
 }
 
 func (s *Store) ListCloudflareRecords(ctx context.Context) ([]ManagedCloudflareRecord, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT id,remote_id,name,type,content,ttl,proxied,COALESCE(node_id,''),COALESCE(listener_id,''),status,last_error,observed,COALESCE(observed_at,0)
-		FROM cloudflare_records ORDER BY name,type,id`)
+	rows, err := s.db.QueryContext(ctx, `SELECT r.id,r.remote_id,r.name,r.type,r.content,r.ttl,r.proxied,COALESCE(r.node_id,''),COALESCE(r.listener_id,''),
+		r.status,r.last_error,r.observed,COALESCE(r.observed_at,0),COALESCE(n.name,''),COALESCE(l.name,''),COALESCE(l.port,0)
+		FROM cloudflare_records r
+		LEFT JOIN nodes n ON n.id = r.node_id
+		LEFT JOIN listeners l ON l.id = r.listener_id
+		ORDER BY r.name,r.type,r.id`)
 	if err != nil {
 		return nil, fmt.Errorf("list Cloudflare records: %w", err)
 	}
 	defer rows.Close()
 	var records []ManagedCloudflareRecord
 	for rows.Next() {
-		record, err := scanCloudflareRecord(rows.Scan)
+		record, err := scanCloudflareRecordWithBindings(rows.Scan)
 		if err != nil {
 			return nil, err
 		}
@@ -261,6 +271,20 @@ func (s *Store) CloudflareRecordByID(ctx context.Context, recordID string) (Mana
 	}
 	if err != nil {
 		return ManagedCloudflareRecord{}, fmt.Errorf("load Cloudflare record: %w", err)
+	}
+	return record, nil
+}
+
+func scanCloudflareRecordWithBindings(scan func(...any) error) (ManagedCloudflareRecord, error) {
+	var record ManagedCloudflareRecord
+	var observedAt int64
+	if err := scan(&record.ID, &record.RemoteID, &record.Name, &record.Type, &record.Content, &record.TTL, &record.Proxied,
+		&record.NodeID, &record.ListenerID, &record.Status, &record.LastError, &record.Observed, &observedAt,
+		&record.NodeName, &record.ListenerName, &record.ListenerPort); err != nil {
+		return ManagedCloudflareRecord{}, err
+	}
+	if observedAt != 0 {
+		record.ObservedAt = time.Unix(observedAt, 0).UTC().Format(time.RFC3339)
 	}
 	return record, nil
 }

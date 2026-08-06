@@ -55,6 +55,9 @@ type ConnectionInfo struct {
 	Rule        string
 	RulePayload string
 	Chains      []string
+	// InboundTag is the sing-box inbound tag the connection entered through,
+	// which the master resolves back to the listener that owns it.
+	InboundTag string
 }
 
 // Fail2BanJailStatus mirrors one jail's status.
@@ -64,6 +67,7 @@ type Fail2BanJailStatus struct {
 	TotalBanned     string
 	BannedIPs       []string
 	Error           string
+	Managed         bool
 }
 
 // Status is the heartbeat-cadence identity/build/metrics report (everything
@@ -91,10 +95,19 @@ type Status struct {
 }
 
 // ConnectionsPush is the fast-cadence, independent real-time connections
-// report (agent pushes proactively; master never polls for it).
+// report (agent pushes proactively; master never polls for it). It also
+// carries host traffic counters and the instantaneous rate the agent derived
+// from them: the agent is the only side sampling on a fixed interval, so it
+// is the only side that can measure a rate rather than guess one.
 type ConnectionsPush struct {
-	CollectedAt string
-	Connections []ConnectionInfo
+	CollectedAt       string
+	Connections       []ConnectionInfo
+	HasNodeTotals     bool
+	NodeReceivedBytes uint64
+	NodeSentBytes     uint64
+	HasNodeRates      bool
+	ReceivedBytesRate float64
+	SentBytesRate     float64
 }
 
 // Task is the subset of the master's internal task record the agent needs to

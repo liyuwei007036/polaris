@@ -5,6 +5,7 @@ import { Delete, Edit, Plus, Refresh, Search } from '@element-plus/icons-vue'
 import { api, del, post, put } from '../api'
 import { includesText } from '../format'
 import PageHeader from '../components/PageHeader.vue'
+import PagedTable from '../components/PagedTable.vue'
 
 const appState = inject('appState')
 const canWrite = inject('canWrite')
@@ -29,36 +30,44 @@ const accountOptions = computed(() => listeners.value
   .flatMap((listener) => endpoints.value
     .filter((endpoint) => endpoint.listener_id === listener.id && endpoint.enabled)
     .map((endpoint) => ({ value: endpoint.name, label: `${endpoint.name} · ${listener.name}` }))))
+const nodeNames = computed(() => Object.fromEntries(appState.nodes.map((node) => [node.id, node.name])))
 const filteredRows = computed(() => rows.value.filter((row) => {
   if (selectedNode.value && row.node_id !== selectedNode.value) return false
   if (selectedAction.value && row.action !== selectedAction.value) return false
-  return includesText([row.node_name, matchText(row), actionText(row), row.priority], keyword.value)
+  return includesText([nodeNames.value[row.node_id], matchText(row), actionText(row), row.priority], keyword.value)
 }))
 
 async function load() {
   loading.value = true
   try {
-    const [ruleResults, outboundResult, listenerResult] = await Promise.all([
-      Promise.all(appState.nodes.map(async (node) => ({ node, result: await api(`/nodes/${node.id}/rules`).catch(() => ({ rules: [] })) }))),
+    const [ruleResult, outboundResult, listenerResult] = await Promise.all([
+      api('/rules').catch(() => ({ rules: [] })),
       api('/outbounds').catch(() => ({ outbounds: [] })),
       api('/listeners').catch(() => ({ listeners: [] })),
     ])
-    rows.value = ruleResults.flatMap(({ node, result }) => (result.rules || []).map((rule) => ({ ...rule, node_name: node.name })))
+    rows.value = ruleResult.rules || []
     outbounds.value = outboundResult.outbounds || []
     listeners.value = listenerResult.listeners || []
-    const endpointResults = await Promise.all(listeners.value.map((listener) => api(`/listeners/${listener.id}/endpoints`).catch(() => ({ endpoints: [] }))))
-    endpoints.value = endpointResults.flatMap((result) => result.endpoints || [])
   } finally { loading.value = false }
+}
+
+// Account names are only needed by the advanced matcher in the dialog, so
+// they are fetched when it opens rather than on every list refresh.
+async function loadAccounts(nodeID) {
+  const forNode = listeners.value.filter((listener) => listener.node_id === nodeID && listener.endpoint_count > 0)
+  const results = await Promise.all(forNode.map((listener) => api(`/listeners/${listener.id}/endpoints`).catch(() => ({ endpoints: [] }))))
+  endpoints.value = results.flatMap((result) => result.endpoints || [])
 }
 function resetForm() {
   Object.assign(form, { node_id: appState.nodes[0]?.id || '', priority: 100, enabled: true, network: '', protocol: '', inbound_tag: '', endpoint_name: '', port: 0, action: 'route', outbound_tag: 'direct' })
   matchKind.value = 'domain_suffix'
   values.value = []
 }
-function openCreate() { editing.value = null; resetForm(); dialogOpen.value = true }
+function openCreate() { editing.value = null; resetForm(); loadAccounts(form.node_id); dialogOpen.value = true }
 function openEdit(row) {
   editing.value = row
   Object.assign(form, row)
+  loadAccounts(row.node_id)
   form.outbound_tag = row.action === 'reject' ? 'block' : row.action === 'direct' ? 'direct' : row.outbound_tag
   const candidates = [['domains', 'domains'], ['domain_suffix', 'domain_suffix'], ['cidrs', 'cidrs']]
   const selected = candidates.find(([field]) => row[field]?.length)
@@ -118,14 +127,14 @@ onMounted(load)
         <el-select v-model="selectedAction" clearable placeholder="全部处理方式" style="width: 160px"><el-option label="服务器直连" value="direct" /><el-option label="使用出口" value="outbound" /><el-option label="阻断连接" value="reject" /></el-select>
       </div>
       <div class="table-panel">
-        <el-table v-loading="loading" :data="filteredRows">
-          <el-table-column label="服务器" prop="node_name" min-width="150" />
+        <PagedTable :rows="filteredRows" :loading="loading" empty-text="还没有访问规则">
+          <el-table-column label="服务器" min-width="150"><template #default="{ row }">{{ nodeNames[row.node_id] || row.node_id }}</template></el-table-column>
           <el-table-column label="优先级" prop="priority" width="90" />
           <el-table-column label="匹配条件" min-width="340"><template #default="{ row }"><strong>{{ matchText(row) }}</strong></template></el-table-column>
           <el-table-column label="处理方式" min-width="180"><template #default="{ row }"><el-tag :type="row.action === 'reject' ? 'danger' : 'primary'">{{ actionText(row) }}</el-tag></template></el-table-column>
           <el-table-column label="状态" width="90"><template #default="{ row }"><el-tag :type="row.enabled ? 'success' : 'info'">{{ row.enabled ? '启用' : '停用' }}</el-tag></template></el-table-column>
           <el-table-column label="操作" width="200" fixed="right" class-name="action-column"><template #default="{ row }"><el-button v-if="canWrite" link :icon="Edit" @click="openEdit(row)">编辑</el-button><el-button v-if="canWrite" link @click="toggle(row)">{{ row.enabled ? '停用' : '启用' }}</el-button><el-button v-if="isAdmin" link type="danger" :icon="Delete" @click="remove(row)">删除</el-button></template></el-table-column>
-        </el-table>
+        </PagedTable>
       </div>
     </main>
 

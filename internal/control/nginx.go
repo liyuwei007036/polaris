@@ -17,6 +17,9 @@ type IngressRoute struct {
 	BackendAddress string `json:"backend_address"`
 	BackendPort    uint16 `json:"backend_port"`
 	Enabled        bool   `json:"enabled"`
+	// ListenerEnabled mirrors the backing listener's state. A route reaches
+	// the compiled Nginx configuration only when both are enabled.
+	ListenerEnabled bool `json:"listener_enabled"`
 }
 
 // CompileNginxStream produces an isolated stream block. The system Nginx
