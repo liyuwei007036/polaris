@@ -2,6 +2,7 @@
 import { computed, defineAsyncComponent, onBeforeUnmount, onMounted, provide, reactive, ref } from 'vue'
 import {
   Aim,
+  Collection,
   Connection,
   DataAnalysis,
   Document,
@@ -51,6 +52,7 @@ const groups = [
     items: [
       { id: 'inbounds', label: '接入服务', icon: Aim },
       { id: 'proxy-groups', label: '代理分组', icon: Share },
+      { id: 'rule-providers', label: '规则供应商', icon: Collection },
       { id: 'subscriptions', label: '客户端配置', icon: Link },
       { id: 'routes', label: '服务器访问规则', icon: Operation },
       { id: 'outbounds', label: '上网出口', icon: Connection },
@@ -81,6 +83,7 @@ const views = {
   nodes: defineAsyncComponent(() => import('./views/NodesView.vue')),
   inbounds: defineAsyncComponent(() => import('./views/InboundsView.vue')),
   'proxy-groups': defineAsyncComponent(() => import('./views/ProxyGroupsView.vue')),
+  'rule-providers': defineAsyncComponent(() => import('./views/RuleProvidersView.vue')),
   subscriptions: defineAsyncComponent(() => import('./views/SubscriptionsView.vue')),
   routes: defineAsyncComponent(() => import('./views/RoutesView.vue')),
   outbounds: defineAsyncComponent(() => import('./views/OutboundsView.vue')),

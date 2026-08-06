@@ -52,6 +52,7 @@ func CollectMetrics() MetricReport {
 		}
 	}
 	report.Fail2Ban = CollectFail2BanStatus(ctx)
+	report.Firewall = CollectFirewallStatus(ctx)
 	received, sent, ok := NodeTrafficCounters()
 	if !ok {
 		return report
@@ -155,6 +156,15 @@ type ProxyTraffic struct {
 	Available     bool
 }
 
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return value
+		}
+	}
+	return ""
+}
+
 // CollectConnections independently polls the local Clash API for the current
 // connection list. It is used by the fast real-time push loop, which runs on
 // its own short interval decoupled from the slower heartbeat.
@@ -198,6 +208,10 @@ func collectConnectionsAndTraffic(ctx context.Context) ([]ConnectionInfo, ProxyT
 				DestinationIP   string `json:"destinationIP"`
 				DestinationPort string `json:"destinationPort"`
 				Host            string `json:"host"`
+				// sing-box names the authenticated inbound account
+				// inboundUser; Clash-compatible builds call it user.
+				InboundUser string `json:"inboundUser"`
+				User        string `json:"user"`
 			} `json:"metadata"`
 			Upload      int64    `json:"upload"`
 			Download    int64    `json:"download"`
@@ -228,6 +242,7 @@ func collectConnectionsAndTraffic(ctx context.Context) ([]ConnectionInfo, ProxyT
 			Rule:        connection.Rule,
 			RulePayload: connection.RulePayload,
 			Chains:      append([]string(nil), connection.Chains...),
+			User:        firstNonEmpty(connection.Metadata.InboundUser, connection.Metadata.User),
 		}
 		if connection.Metadata.SourceIP != "" {
 			info.Source = net.JoinHostPort(connection.Metadata.SourceIP, connection.Metadata.SourcePort)

@@ -28,6 +28,10 @@ const connectionChart = ref()
 const networkChart = ref()
 const proxyChart = ref()
 const charts = []
+const protocolColors = { TCP: '#38b2ac', UDP: '#93b25f', 其他: '#667085' }
+// How far back "recently" reaches when ranking the busiest nodes.
+const nodeWindowMinutes = 10
+const nodeActivity = new Map()
 let stopLive
 let stopConnections
 let refreshTimer
@@ -36,7 +40,9 @@ let renderQueued = false
 
 const online = computed(() => appState.nodes.filter((node) => node.online).length)
 const offline = computed(() => appState.nodes.length - online.value)
-const connections = computed(() => [...connectionSnapshots.value.values()].flatMap((item) => item.connections || []))
+const connections = computed(() => [...connectionSnapshots.value.values()].flatMap(
+  (item) => (item.connections || []).map((connection) => ({ ...connection, node_id: item.node_id })),
+))
 const activeConnections = computed(() => connections.value.length)
 // Rates come from the agents, which are the only side sampling the counters
 // on a fixed interval. The browser never derives a rate from two page loads.
@@ -129,32 +135,32 @@ function renderCharts() {
     yAxis: { ...axis, type: 'value', minInterval: 1 },
     series: [{ name: '连接数', type: 'line', data: connectionHistory.value.map((item) => item.count), showSymbol: false, smooth: 0.25, lineStyle: { width: 2, color: '#d46b5f' }, areaStyle: { color: 'rgba(212,107,95,.09)' } }],
   }, true)
-  const networkCounts = Object.entries(connections.value.reduce((result, row) => {
-    const key = (row.network || '未知').toUpperCase()
+  // sing-box reports the transport protocol a connection uses, so this counts
+  // TCP against UDP rather than inventing categories of its own.
+  const protocolCounts = Object.entries(connections.value.reduce((result, row) => {
+    const network = String(row.network || '').toLowerCase()
+    const key = network === 'tcp' || network === 'udp' ? network.toUpperCase() : '其他'
     result[key] = (result[key] || 0) + 1
     return result
   }, {}))
   charts[3].setOption({
     animation: false,
-    title: chartBase('网络类型').title,
-    tooltip: { trigger: 'item', formatter: ({ name, value, percent }) => `${name}<br>${value} 条连接（${percent}%）` },
-    legend: { bottom: 10, show: networkCounts.length > 0 },
-    series: [{ type: 'pie', radius: ['48%', '70%'], center: ['50%', '49%'], label: { show: false }, data: networkCounts.length
-      ? networkCounts.map(([name, value], index) => ({ name, value, itemStyle: { color: ['#38b2ac', '#93b25f', '#d46b5f', '#667085'][index % 4] } }))
+    title: chartBase('传输协议').title,
+    tooltip: {
+      trigger: 'item',
+      formatter: ({ name, value, percent }) => (protocolCounts.length ? `${name}<br>${value} 条连接（${percent}%）` : name),
+    },
+    legend: { bottom: 10, show: protocolCounts.length > 0 },
+    series: [{ type: 'pie', radius: ['48%', '70%'], center: ['50%', '49%'], label: { show: false }, data: protocolCounts.length
+      ? protocolCounts.map(([name, value]) => ({ name, value, itemStyle: { color: protocolColors[name] || '#667085' } }))
       : [{ name: '暂无连接', value: 1, itemStyle: { color: '#e4e7ec' } }] }],
   }, true)
-  // chains[0] is the outbound that actually carried the traffic; anything
-  // further along the chain is the entry point, not the proxy in use.
-  const popular = Object.entries(connections.value.reduce((result, row) => {
-    const name = row.outbound || row.chains?.[0] || 'DIRECT'
-    result[name] = (result[name] || 0) + Number(row.upload || 0) + Number(row.download || 0)
-    return result
-  }, {})).sort((left, right) => right[1] - left[1]).slice(0, 5)
+  const popular = popularNodes()
   charts[4].setOption({
-    ...chartBase('热门出口'),
+    ...chartBase(`热门节点（最近 ${nodeWindowMinutes} 分钟）`),
     grid: { left: 112, right: 28, top: 58, bottom: 24 },
-    tooltip: { trigger: 'axis', formatter: (items) => `${items[0].name}<br>${formatBytes(items[0].value)}` },
-    xAxis: { ...axis, type: 'value', axisLabel: { ...axis.axisLabel, formatter: (value) => formatBytes(value) } },
+    tooltip: { trigger: 'axis', formatter: (items) => `${items[0].name}<br>${items[0].value} 次连接` },
+    xAxis: { ...axis, type: 'value', minInterval: 1 },
     yAxis: { ...axis, type: 'category', inverse: true, data: popular.map(([name]) => name), axisLabel: { ...axis.axisLabel, width: 92, overflow: 'truncate' } },
     series: [{ type: 'bar', data: popular.map(([, value]) => value), barMaxWidth: 18, itemStyle: { color: '#4d90a6', borderRadius: 2 } }],
   }, true)
@@ -167,7 +173,30 @@ function appendSamples() {
   const now = Date.now()
   trafficHistory.value = [...trafficHistory.value, { time: now, ...liveRates.value }].slice(-30)
   connectionHistory.value = [...connectionHistory.value, { time: now, count: activeConnections.value }].slice(-30)
+  recordNodeActivity(now)
   scheduleRender()
+}
+
+// Nodes are ranked by how often clients connected through them recently, not
+// by how many connections happen to be open at this instant: a node that
+// carried a hundred short requests a minute ago matters more than one holding
+// a single idle connection. Each connection is counted once, when it is first
+// seen, and drops out of the ranking when it ages past the window.
+function recordNodeActivity(now) {
+  for (const row of connections.value) {
+    const key = `${row.node_id}/${row.id}`
+    if (!row.id || nodeActivity.has(key)) continue
+    nodeActivity.set(key, { label: row.user || row.listener_name || '未知节点', at: now })
+  }
+  for (const [key, entry] of nodeActivity) {
+    if (now - entry.at > nodeWindowMinutes * 60_000) nodeActivity.delete(key)
+  }
+}
+
+function popularNodes() {
+  const counts = {}
+  for (const entry of nodeActivity.values()) counts[entry.label] = (counts[entry.label] || 0) + 1
+  return Object.entries(counts).sort((left, right) => right[1] - left[1]).slice(0, 5)
 }
 
 async function load(silent = false) {

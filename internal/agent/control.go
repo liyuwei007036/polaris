@@ -39,6 +39,7 @@ type MetricReport struct {
 	Capabilities map[string]MetricCapability `json:"capabilities"`
 	Connections  []ConnectionInfo            `json:"connections,omitempty"`
 	Fail2Ban     *Fail2BanReport             `json:"fail2ban,omitempty"`
+	Firewall     *FirewallReport             `json:"firewall,omitempty"`
 	Health       NodeHealth                  `json:"health"`
 }
 
@@ -67,6 +68,9 @@ type ConnectionInfo struct {
 	RulePayload string   `json:"rule_payload,omitempty"`
 	Chains      []string `json:"chains,omitempty"`
 	InboundTag  string   `json:"inbound_tag,omitempty"`
+	// User is the inbound account sing-box authenticated the connection as,
+	// which the master resolves back to the access user that owns it.
+	User string `json:"user,omitempty"`
 }
 
 type Fail2BanReport struct {
@@ -79,10 +83,39 @@ type Fail2BanJailStatus struct {
 	CurrentlyBanned string   `json:"currently_banned,omitempty"`
 	TotalBanned     string   `json:"total_banned,omitempty"`
 	BannedIPs       []string `json:"banned_ips,omitempty"`
-	Error           string   `json:"error,omitempty"`
+	// Banned carries the same addresses with the times Fail2Ban recorded for
+	// them, which the plain status output does not include.
+	Banned []Fail2BanBan `json:"banned,omitempty"`
+	Error  string        `json:"error,omitempty"`
 	// Managed distinguishes jails sb-control wrote from ones already on the
 	// host, which are reported for visibility but never modified.
 	Managed bool `json:"managed"`
+}
+
+// Fail2BanBan is one currently banned address. Times are RFC 3339 in UTC so
+// the console can render them in the visitor's own time zone; they are absent
+// when the local Fail2Ban is too old to report them.
+type Fail2BanBan struct {
+	IP       string `json:"ip"`
+	BannedAt string `json:"banned_at,omitempty"`
+	UnbanAt  string `json:"unban_at,omitempty"`
+}
+
+// FirewallReport lists the firewall rules already present on the host that
+// sb-control did not write. They are read-only: the console shows them so an
+// operator can see what a server is already protected by.
+type FirewallReport struct {
+	Available bool                `json:"available"`
+	Tool      string              `json:"tool,omitempty"`
+	Rules     []FirewallRuleEntry `json:"rules,omitempty"`
+	Truncated bool                `json:"truncated,omitempty"`
+	Error     string              `json:"error,omitempty"`
+}
+
+type FirewallRuleEntry struct {
+	Table string `json:"table,omitempty"`
+	Chain string `json:"chain,omitempty"`
+	Rule  string `json:"rule"`
 }
 
 type MetricCapability struct {
@@ -345,9 +378,22 @@ func toWireStatus(local Status) wire.Status {
 	if local.Metrics.Fail2Ban != nil {
 		st.Fail2BanAvailable = local.Metrics.Fail2Ban.Available
 		for _, j := range local.Metrics.Fail2Ban.Jails {
+			bans := make([]wire.Fail2BanBan, 0, len(j.Banned))
+			for _, ban := range j.Banned {
+				bans = append(bans, wire.Fail2BanBan{IP: ban.IP, BannedAt: ban.BannedAt, UnbanAt: ban.UnbanAt})
+			}
 			st.Fail2BanJails = append(st.Fail2BanJails, wire.Fail2BanJailStatus{
-				Name: j.Name, CurrentlyBanned: j.CurrentlyBanned, TotalBanned: j.TotalBanned, BannedIPs: j.BannedIPs, Error: j.Error, Managed: j.Managed,
+				Name: j.Name, CurrentlyBanned: j.CurrentlyBanned, TotalBanned: j.TotalBanned, BannedIPs: j.BannedIPs, Banned: bans, Error: j.Error, Managed: j.Managed,
 			})
+		}
+	}
+	if local.Metrics.Firewall != nil {
+		st.FirewallAvailable = local.Metrics.Firewall.Available
+		st.FirewallTool = local.Metrics.Firewall.Tool
+		st.FirewallTruncated = local.Metrics.Firewall.Truncated
+		st.FirewallError = local.Metrics.Firewall.Error
+		for _, rule := range local.Metrics.Firewall.Rules {
+			st.FirewallRules = append(st.FirewallRules, wire.FirewallRuleEntry{Table: rule.Table, Chain: rule.Chain, Rule: rule.Rule})
 		}
 	}
 	return st
@@ -359,7 +405,7 @@ func toWireConnections(in []ConnectionInfo) []wire.ConnectionInfo {
 		out = append(out, wire.ConnectionInfo{
 			ID: c.ID, Inbound: c.Inbound, Network: c.Network, Source: c.Source, Destination: c.Destination,
 			Host: c.Host, Upload: c.Upload, Download: c.Download, StartedAt: c.StartedAt, Outbound: c.Outbound,
-			Rule: c.Rule, RulePayload: c.RulePayload, Chains: c.Chains, InboundTag: c.InboundTag,
+			Rule: c.Rule, RulePayload: c.RulePayload, Chains: c.Chains, InboundTag: c.InboundTag, User: c.User,
 		})
 	}
 	return out

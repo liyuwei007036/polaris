@@ -6,11 +6,13 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strings"
+	"time"
 )
 
 var managedFail2BanJail = managedSystemPath("/etc/fail2ban/jail.d/sb-control.local")
@@ -307,5 +309,100 @@ func collectJailStatus(ctx context.Context, jail string) Fail2BanJailStatus {
 			}
 		}
 	}
+	status.Banned = collectJailBans(ctx, jail, status.BannedIPs)
 	return status
 }
+
+// banTimeLayout is how Fail2Ban prints ban and unban times: local wall clock
+// with no zone, which is why they are converted to UTC here rather than being
+// passed along as text.
+const banTimeLayout = "2006-01-02 15:04:05"
+
+// collectJailBans asks Fail2Ban for the ban times of the addresses a jail
+// currently holds. Older Fail2Ban releases do not support the flag; the
+// addresses from the plain status output are then reported without times
+// rather than not at all.
+func collectJailBans(ctx context.Context, jail string, bannedIPs []string) []Fail2BanBan {
+	output, err := exec.CommandContext(ctx, "fail2ban-client", "get", jail, "banip", "--with-time").CombinedOutput()
+	if err != nil {
+		return bansWithoutTimes(bannedIPs)
+	}
+	bans := make([]Fail2BanBan, 0, len(bannedIPs))
+	for _, line := range strings.Split(string(output), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		// `IP<tab>2024-01-01 10:00:00 + 3600 = 2024-01-01 11:00:00`
+		fields := strings.Fields(line)
+		if len(fields) == 0 {
+			continue
+		}
+		ban := Fail2BanBan{IP: fields[0]}
+		if len(fields) >= 3 {
+			ban.BannedAt = parseBanTime(fields[1] + " " + fields[2])
+		}
+		if len(fields) >= 8 {
+			ban.UnbanAt = parseBanTime(fields[6] + " " + fields[7])
+		}
+		bans = append(bans, ban)
+	}
+	if len(bans) == 0 {
+		return bansWithoutTimes(bannedIPs)
+	}
+	return bans
+}
+
+func bansWithoutTimes(bannedIPs []string) []Fail2BanBan {
+	if len(bannedIPs) == 0 {
+		return nil
+	}
+	bans := make([]Fail2BanBan, 0, len(bannedIPs))
+	for _, ip := range bannedIPs {
+		bans = append(bans, Fail2BanBan{IP: ip})
+	}
+	return bans
+}
+
+func parseBanTime(value string) string {
+	parsed, err := time.ParseInLocation(banTimeLayout, strings.TrimSpace(value), time.Local)
+	if err != nil {
+		return ""
+	}
+	return parsed.UTC().Format(time.RFC3339)
+}
+
+// unbanAddress releases one address from one jail. Both values are checked
+// before use so a malformed task can never turn into an unexpected
+// fail2ban-client invocation.
+func unbanAddress(ctx context.Context, task Task) TaskResult {
+	var payload struct {
+		Jail string `json:"jail"`
+		IP   string `json:"ip"`
+	}
+	if err := json.Unmarshal([]byte(task.Payload), &payload); err != nil {
+		return TaskResult{Status: "failed", Summary: "invalid fail2ban unban payload"}
+	}
+	digest := sha256.Sum256([]byte(task.Payload))
+	if !strings.EqualFold(hex.EncodeToString(digest[:]), task.ExpectedHash) {
+		return TaskResult{Status: "failed", Summary: "fail2ban unban payload SHA-256 does not match task hash"}
+	}
+	if !jailNamePattern.MatchString(payload.Jail) {
+		return TaskResult{Status: "failed", Summary: "封禁规则名称无效"}
+	}
+	if net.ParseIP(payload.IP) == nil {
+		return TaskResult{Status: "failed", Summary: "要解封的 IP 地址无效"}
+	}
+	if !commandExists("fail2ban-client") {
+		return TaskResult{Status: "failed", Summary: "该服务器未安装 Fail2Ban，无法解封"}
+	}
+	output, err := exec.CommandContext(ctx, "fail2ban-client", "set", payload.Jail, "unbanip", payload.IP).CombinedOutput()
+	if err != nil {
+		return TaskResult{Status: "failed", Summary: commandSummary("fail2ban-client set "+payload.Jail+" unbanip", output, err)}
+	}
+	return TaskResult{Status: "succeeded", Summary: "已解封 " + payload.IP}
+}
+
+// jailNamePattern accepts the jail names Fail2Ban itself allows, covering both
+// sb-control's own jails and the operator's.
+var jailNamePattern = regexp.MustCompile(`^[a-zA-Z0-9_.-]{1,128}$`)

@@ -58,6 +58,8 @@ type ConnectionInfo struct {
 	// InboundTag is the sing-box inbound tag the connection entered through,
 	// which the master resolves back to the listener that owns it.
 	InboundTag string
+	// User is the inbound account sing-box authenticated the connection as.
+	User string
 }
 
 // Fail2BanJailStatus mirrors one jail's status.
@@ -66,8 +68,25 @@ type Fail2BanJailStatus struct {
 	CurrentlyBanned string
 	TotalBanned     string
 	BannedIPs       []string
+	Banned          []Fail2BanBan
 	Error           string
 	Managed         bool
+}
+
+// Fail2BanBan is one currently banned address with the times Fail2Ban recorded
+// for it, in RFC 3339 UTC.
+type Fail2BanBan struct {
+	IP       string
+	BannedAt string
+	UnbanAt  string
+}
+
+// FirewallRuleEntry is one firewall rule already present on the host that
+// sb-control did not write.
+type FirewallRuleEntry struct {
+	Table string
+	Chain string
+	Rule  string
 }
 
 // Status is the heartbeat-cadence identity/build/metrics report (everything
@@ -97,6 +116,13 @@ type Status struct {
 	TrafficAvailable  bool
 	Fail2BanAvailable bool
 	Fail2BanJails     []Fail2BanJailStatus
+	// The firewall fields describe what the host already enforces outside
+	// sb-control's own managed table.
+	FirewallAvailable bool
+	FirewallTool      string
+	FirewallRules     []FirewallRuleEntry
+	FirewallTruncated bool
+	FirewallError     string
 }
 
 // ConnectionsPush is the fast-cadence, independent real-time connections

@@ -1,7 +1,7 @@
 <script setup>
 import { computed, inject, onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { ArrowDown, ArrowUp, CopyDocument, Delete, Edit, Plus, Refresh, RefreshRight, Search } from '@element-plus/icons-vue'
+import { ArrowDown, ArrowUp, CopyDocument, Delete, DocumentCopy, Edit, Plus, Refresh, RefreshRight, Search } from '@element-plus/icons-vue'
 import { api, del, post, put } from '../api'
 import { formatDateTime, includesText } from '../format'
 import PageHeader from '../components/PageHeader.vue'
@@ -18,6 +18,7 @@ const dialogVisible = ref(false)
 const editing = ref(null)
 const configs = ref([])
 const proxyGroups = ref([])
+const ruleProviders = ref([])
 const listeners = ref([])
 const endpoints = ref([])
 const tab = ref('configs')
@@ -26,7 +27,7 @@ const accessLoading = ref(false)
 const keyword = ref('')
 const selectedStatus = ref('')
 const accessQuery = reactive({ page: 1, pageSize: 10, total: 0, config_id: '', ip: '', location: '', user_agent: '' })
-const form = reactive({ name: '', proxy_group_ids: [], rule_providers: [], rule_mode: 'table', rules: [], raw_rules: '' })
+const form = reactive({ name: '', proxy_group_ids: [], rule_provider_ids: [], rule_mode: 'table', rules: [], raw_rules: '' })
 const strategyNames = { select: '手动选择', 'url-test': '自动测速', fallback: '故障切换' }
 const supportedProtocols = new Set(['vless', 'hysteria2'])
 const ruleTypes = [
@@ -55,13 +56,14 @@ const selectedNodeNames = computed(() => endpoints.value
   })
   .filter(Boolean))
 const ruleActions = computed(() => [...selectedNodeNames.value, ...selectedGroups.value.map((group) => group.name), 'DIRECT', 'REJECT'])
-const providerProxies = computed(() => [...selectedNodeNames.value, ...selectedGroups.value.map((group) => group.name), 'DIRECT'])
-const providerNames = computed(() => new Set(form.rule_providers.map((provider) => provider.name.trim()).filter(Boolean)))
-const providerNameKeys = computed(() => new Set([...providerNames.value].map((name) => name.toLocaleUpperCase())))
+// Providers are maintained under their own menu; a configuration only picks
+// which of them it uses.
+const selectedProviders = computed(() => form.rule_provider_ids
+  .map((id) => ruleProviders.value.find((provider) => provider.id === id))
+  .filter(Boolean))
+const providerNames = computed(() => new Set(selectedProviders.value.map((provider) => provider.name)))
 const formValid = computed(() => {
   if (!form.name.trim() || !form.proxy_group_ids.length) return false
-  if (!form.rule_providers.every((provider) => provider.name.trim() && provider.behavior && provider.format && provider.url.trim() && provider.path.trim() && provider.interval > 0 && provider.proxy)) return false
-  if (providerNameKeys.value.size !== form.rule_providers.length) return false
   if (form.rule_mode === 'text') return Boolean(form.raw_rules.trim())
   return Boolean(form.rules.length && form.rules.at(-1)?.type === 'MATCH' && form.rules.every((rule) => rule.action && (rule.type === 'MATCH' || (rule.value.trim() && (rule.type !== 'RULE-SET' || providerNames.value.has(rule.value))))))
 })
@@ -85,9 +87,15 @@ async function load() {
   loading.value = true
   try {
     await loadNodes()
-    const [configResult, groupResult, listenerResult] = await Promise.all([api('/mihomo/client-configs'), api('/mihomo/proxy-groups'), api('/listeners')])
+    const [configResult, groupResult, providerResult, listenerResult] = await Promise.all([
+      api('/mihomo/client-configs'),
+      api('/mihomo/proxy-groups'),
+      api('/mihomo/rule-providers').catch(() => ({ rule_providers: [] })),
+      api('/listeners'),
+    ])
     configs.value = configResult.client_configs || []
     proxyGroups.value = groupResult.proxy_groups || []
+    ruleProviders.value = providerResult.rule_providers || []
     listeners.value = listenerResult.listeners || []
     const endpointResults = await Promise.all(listeners.value.map((listener) => api(`/listeners/${listener.id}/endpoints`).catch(() => ({ endpoints: [] }))))
     endpoints.value = endpointResults.flatMap((result) => result.endpoints || [])
@@ -119,7 +127,7 @@ function resetForm(config = null) {
   Object.assign(form, config ? {
     name: config.name,
     proxy_group_ids: [...(config.proxy_group_ids || [])],
-    rule_providers: (config.rule_providers || []).map((provider) => ({ ...provider })),
+    rule_provider_ids: [...(config.rule_provider_ids || [])],
     rule_mode: config.rule_mode || 'table',
     rules: (config.rules || []).map((rule) => ({
       type: rule.type,
@@ -128,7 +136,7 @@ function resetForm(config = null) {
       no_resolve: Boolean(rule.no_resolve),
     })),
     raw_rules: config.raw_rules || '',
-  } : { name: '', proxy_group_ids: [], rule_providers: [], rule_mode: 'table', rules: [], raw_rules: '' })
+  } : { name: '', proxy_group_ids: [], rule_provider_ids: [], rule_mode: 'table', rules: [], raw_rules: '' })
   dialogVisible.value = true
 }
 
@@ -136,19 +144,10 @@ function addRule() {
   form.rules.push({ type: 'DOMAIN-SUFFIX', value: '', action: '', no_resolve: false })
 }
 
-function addRuleProvider() {
-  form.rule_providers.push({ name: '', behavior: 'domain', format: 'mrs', url: '', path: '', interval: 86400, proxy: 'DIRECT' })
-}
-
-function setProviderBehavior(provider, behavior) {
-  provider.behavior = behavior
-  if (behavior === 'classical' && provider.format === 'mrs') provider.format = 'yaml'
-}
-
 function setRuleType(rule, type) {
   rule.type = type
   if (type === 'MATCH') rule.value = ''
-  if (type === 'RULE-SET' && !providerNames.value.has(rule.value)) rule.value = form.rule_providers[0]?.name || ''
+  if (type === 'RULE-SET' && !providerNames.value.has(rule.value)) rule.value = selectedProviders.value[0]?.name || ''
   if (!noResolveTypes.has(type)) rule.no_resolve = false
 }
 
@@ -165,15 +164,7 @@ async function save() {
     const payload = {
       name: form.name.trim(),
       proxy_group_ids: [...form.proxy_group_ids],
-      rule_providers: form.rule_providers.map((provider) => ({
-        name: provider.name.trim(),
-        behavior: provider.behavior,
-        format: provider.format,
-        url: provider.url.trim(),
-        path: provider.path.trim(),
-        interval: Number(provider.interval),
-        proxy: provider.proxy,
-      })),
+      rule_provider_ids: [...form.rule_provider_ids],
       rule_mode: form.rule_mode,
       rules: form.rule_mode === 'table' ? form.rules.map((rule) => ({
         type: rule.type,
@@ -188,9 +179,31 @@ async function save() {
     ElMessage.success(editing.value ? '客户端配置已保存' : '客户端配置已创建')
     dialogVisible.value = false
     await load()
+  } catch (error) {
+    ElMessage.error(error instanceof Error ? error.message : '客户端配置保存失败')
   } finally {
     saving.value = false
   }
+}
+
+// Copying produces an independent configuration with its own update address:
+// the copy is meant to be edited, not to mirror the original.
+async function copyConfig(config) {
+  const result = await ElMessageBox.prompt('新配置的名称', `复制“${config.name}”`, {
+    inputValue: `${config.name} 副本`,
+    inputPattern: /\S/,
+    inputErrorMessage: '请填写配置名称',
+    confirmButtonText: '复制',
+  }).catch(() => null)
+  if (!result) return
+  try {
+    await post(`/mihomo/client-configs/${config.id}/copy`, { name: result.value.trim() })
+  } catch (error) {
+    ElMessage.error(error instanceof Error ? error.message : '客户端配置复制失败')
+    return
+  }
+  ElMessage.success('客户端配置已复制')
+  await load()
 }
 
 function absoluteSubscription(config) {
@@ -282,9 +295,10 @@ onMounted(() => { load(); loadAccess() })
               <el-switch :model-value="row.enabled" inline-prompt active-text="启用" inactive-text="停用" :loading="changingState === row.id" :disabled="changingState === row.id || !canWrite" @change="setEnabled(row, $event)" />
             </template>
           </el-table-column>
-          <el-table-column label="操作" width="230" fixed="right" class-name="action-column">
+          <el-table-column label="操作" width="300" fixed="right" class-name="action-column">
             <template #default="{ row }">
               <el-button link :icon="CopyDocument" @click="copySubscription(row)">复制</el-button>
+              <el-button v-if="canWrite" link :icon="DocumentCopy" @click="copyConfig(row)">复制配置</el-button>
               <el-button v-if="canWrite" link :icon="RefreshRight" @click="rotateSubscription(row)">更换</el-button>
               <el-button v-if="canWrite" link :icon="Edit" @click="resetForm(row)">编辑</el-button>
               <el-button v-if="isAdmin" link type="danger" :icon="Delete" @click="remove(row)">删除</el-button>
@@ -322,32 +336,14 @@ onMounted(() => { load(); loadAccess() })
           </el-select>
         </el-form-item>
 
-        <section class="provider-section">
-          <div class="section-heading">
-            <div><h3>规则供应商</h3></div>
-            <el-button :icon="Plus" @click="addRuleProvider">添加供应商</el-button>
+        <el-form-item label="规则供应商">
+          <el-select v-model="form.rule_provider_ids" multiple filterable style="width: 100%" aria-label="引用规则供应商" placeholder="选择需要引用的规则供应商（可多选）">
+            <el-option v-for="provider in ruleProviders" :key="provider.id" :label="`${provider.name} · ${provider.url}`" :value="provider.id" />
+          </el-select>
+          <div class="subtle" style="margin-top: 6px">
+            供应商在左侧“规则供应商”菜单中维护，这里选择后即可在下方的 RULE-SET 规则中使用。
           </div>
-          <div v-for="(provider, index) in form.rule_providers" :key="index" class="provider-row">
-            <el-form-item label="名称" required><el-input v-model="provider.name" aria-label="供应商名称" maxlength="128" /></el-form-item>
-            <el-form-item label="行为" required>
-              <el-select :model-value="provider.behavior" aria-label="供应商行为" @update:model-value="setProviderBehavior(provider, $event)">
-                <el-option label="域名" value="domain" /><el-option label="IP 网段" value="ipcidr" /><el-option label="经典规则" value="classical" />
-              </el-select>
-            </el-form-item>
-            <el-form-item label="格式" required>
-              <el-select v-model="provider.format" aria-label="供应商格式">
-                <el-option label="MRS" value="mrs" :disabled="provider.behavior === 'classical'" /><el-option label="YAML" value="yaml" /><el-option label="Text" value="text" />
-              </el-select>
-            </el-form-item>
-            <el-form-item label="更新间隔（秒）" required><el-input-number v-model="provider.interval" aria-label="供应商更新间隔" :min="1" :max="31536000" controls-position="right" /></el-form-item>
-            <el-form-item label="下载代理" required>
-              <el-select v-model="provider.proxy" aria-label="供应商下载代理" filterable><el-option v-for="proxy in providerProxies" :key="proxy" :label="proxy" :value="proxy" /></el-select>
-            </el-form-item>
-            <el-form-item class="provider-url" label="规则地址" required><el-input v-model="provider.url" aria-label="供应商规则地址" placeholder="https://example.com/rules.mrs" /></el-form-item>
-            <el-form-item class="provider-path" label="保存路径" required><el-input v-model="provider.path" aria-label="供应商保存路径" placeholder="./ruleset/rules.mrs" /></el-form-item>
-            <div class="provider-remove"><el-tooltip content="删除供应商"><el-button :icon="Delete" text type="danger" aria-label="删除供应商" @click="form.rule_providers.splice(index, 1)" /></el-tooltip></div>
-          </div>
-        </section>
+        </el-form-item>
 
         <section class="rules-section">
           <div class="section-heading">
@@ -365,7 +361,7 @@ onMounted(() => { load(); loadAccess() })
                   <tr v-for="(rule, index) in form.rules" :key="index">
                     <td data-label="类型"><el-select :model-value="rule.type" aria-label="规则类型" filterable @update:model-value="setRuleType(rule, $event)"><el-option v-for="type in ruleTypes" :key="type" :label="type" :value="type" /></el-select></td>
                     <td data-label="匹配值">
-                      <el-select v-if="rule.type === 'RULE-SET'" v-model="rule.value" aria-label="规则供应商" filterable><el-option v-for="provider in form.rule_providers" :key="provider.name" :label="provider.name || '未命名供应商'" :value="provider.name" :disabled="!provider.name" /></el-select>
+                      <el-select v-if="rule.type === 'RULE-SET'" v-model="rule.value" aria-label="规则供应商" filterable><el-option v-for="provider in selectedProviders" :key="provider.id" :label="provider.name" :value="provider.name" /></el-select>
                       <el-input v-else v-model="rule.value" aria-label="规则匹配值" :disabled="rule.type === 'MATCH'" />
                     </td>
                     <td data-label="动作"><el-select v-model="rule.action" aria-label="规则动作" filterable><el-option v-for="action in ruleActions" :key="action" :label="action" :value="action" /></el-select></td>
@@ -394,16 +390,7 @@ onMounted(() => { load(); loadAccess() })
 
 <style scoped>
 .group-tag { margin: 3px 6px 3px 0; }
-.provider-section, .rules-section { padding-top: 20px; border-top: 1px solid var(--el-border-color-lighter); }
-.provider-section { margin-top: 4px; }
-.provider-row { display: grid; grid-template-columns: 1.4fr 1fr 0.9fr 1.25fr 1.2fr 40px; gap: 0 12px; padding: 14px 0 2px; border-top: 1px solid var(--el-border-color-lighter); }
-.provider-row:first-of-type { border-top: 0; }
-.provider-row :deep(.el-form-item) { margin-bottom: 12px; }
-.provider-row :deep(.el-select), .provider-row :deep(.el-input-number) { width: 100%; }
-.provider-url { grid-column: span 3; }
-.provider-path { grid-column: span 2; }
-.provider-remove { display: flex; align-items: center; justify-content: center; padding-top: 18px; }
-.rules-section { margin-top: 8px; }
+.rules-section { margin-top: 8px; padding-top: 20px; border-top: 1px solid var(--el-border-color-lighter); }
 .section-heading { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 14px; }
 .section-heading h3 { margin: 0 0 3px; font-size: 16px; }
 .section-heading span { color: var(--sb-muted); font-size: 12px; }
@@ -421,9 +408,6 @@ onMounted(() => { load(); loadAccess() })
 .add-rule { margin-top: 12px; }
 @media (max-width: 640px) { .section-heading { align-items: flex-start; flex-direction: column; } }
 @media (max-width: 720px) {
-  .provider-row { grid-template-columns: 1fr 1fr; }
-  .provider-url, .provider-path { grid-column: 1 / -1; }
-  .provider-remove { grid-column: 2; justify-content: flex-end; padding-top: 0; }
   .rule-table, .rule-table tbody, .rule-table tr, .rule-table td { display: block; width: 100%; }
   .rule-table thead { display: none; }
   .rule-table tr { padding: 10px 0; border-top: 1px solid var(--el-border-color-lighter); }

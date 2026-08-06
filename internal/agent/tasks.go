@@ -117,6 +117,8 @@ func executeTask(ctx context.Context, task Task, options TaskOptions) TaskResult
 		return applyNftables(ctx, task)
 	case "fail2ban.apply":
 		return applyFail2Ban(ctx, task)
+	case "fail2ban.unban":
+		return unbanAddress(ctx, task)
 	case "singbox.install", "singbox.upgrade":
 		return installSingBox(ctx, task, options.DataDir)
 	case "agent.upgrade":

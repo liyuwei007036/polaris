@@ -14,6 +14,9 @@ import (
 )
 
 type mihomoClientRulesV3 struct {
+	RuleProviderIDs []string `json:"rule_provider_ids,omitempty"`
+	// RuleProviders is only still decoded so rows written before providers
+	// became standalone records can be migrated; new rows never carry it.
 	RuleProviders []MihomoRuleProvider `json:"rule_providers,omitempty"`
 	Rules         []MihomoRule         `json:"rules"`
 	RawRules      string               `json:"raw_rules"`
@@ -95,52 +98,64 @@ func parseMihomoClientRawRules(raw string, actions, providers map[string]string)
 	return rules, nil
 }
 
+// validateMihomoRuleProviderFields checks everything about a provider that can
+// be judged on its own. The download proxy is only checked for shape here:
+// whether the name resolves depends on which client configuration is using it,
+// which is decided in normalizeMihomoRuleProviders.
+func validateMihomoRuleProviderFields(provider *MihomoRuleProvider) error {
+	provider.Name = strings.TrimSpace(provider.Name)
+	if err := validateMihomoName(provider.Name); err != nil {
+		return fmt.Errorf("rule provider: %w", err)
+	}
+	provider.Behavior = strings.ToLower(strings.TrimSpace(provider.Behavior))
+	switch provider.Behavior {
+	case "domain", "ipcidr", "classical":
+	default:
+		return fmt.Errorf("rule provider %q has an unsupported behavior", provider.Name)
+	}
+	provider.Format = strings.ToLower(strings.TrimSpace(provider.Format))
+	switch provider.Format {
+	case "yaml", "text", "mrs":
+	default:
+		return fmt.Errorf("rule provider %q has an unsupported format", provider.Name)
+	}
+	if provider.Format == "mrs" && provider.Behavior == "classical" {
+		return fmt.Errorf("rule provider %q cannot use mrs format with classical behavior", provider.Name)
+	}
+	provider.URL = strings.TrimSpace(provider.URL)
+	parsedURL, err := url.ParseRequestURI(provider.URL)
+	if err != nil || parsedURL.Host == "" || (parsedURL.Scheme != "http" && parsedURL.Scheme != "https") {
+		return fmt.Errorf("rule provider %q requires a valid HTTP or HTTPS URL", provider.Name)
+	}
+	provider.Path = strings.TrimSpace(provider.Path)
+	if provider.Path == "" || strings.ContainsAny(provider.Path, "\r\n") {
+		return fmt.Errorf("rule provider %q requires a path without line breaks", provider.Name)
+	}
+	if provider.Interval <= 0 {
+		return fmt.Errorf("rule provider %q requires a positive update interval", provider.Name)
+	}
+	provider.Proxy = strings.TrimSpace(provider.Proxy)
+	if provider.Proxy == "" {
+		provider.Proxy = "DIRECT"
+	}
+	if strings.EqualFold(provider.Proxy, "REJECT") || strings.ContainsAny(provider.Proxy, "\r\n") {
+		return fmt.Errorf("rule provider %q download proxy must be DIRECT or a proxy group name", provider.Name)
+	}
+	return nil
+}
+
 func normalizeMihomoRuleProviders(ruleProviders []MihomoRuleProvider, actions map[string]string) ([]MihomoRuleProvider, map[string]string, error) {
 	providers := make(map[string]string, len(ruleProviders))
 	for index := range ruleProviders {
 		provider := &ruleProviders[index]
-		provider.Name = strings.TrimSpace(provider.Name)
-		if err := validateMihomoName(provider.Name); err != nil {
-			return nil, nil, fmt.Errorf("rule provider: %w", err)
+		if err := validateMihomoRuleProviderFields(provider); err != nil {
+			return nil, nil, err
 		}
 		upperName := strings.ToUpper(provider.Name)
 		if _, exists := providers[upperName]; exists {
 			return nil, nil, fmt.Errorf("rule provider name %q is duplicated", provider.Name)
 		}
 		providers[upperName] = provider.Name
-
-		provider.Behavior = strings.ToLower(strings.TrimSpace(provider.Behavior))
-		switch provider.Behavior {
-		case "domain", "ipcidr", "classical":
-		default:
-			return nil, nil, fmt.Errorf("rule provider %q has an unsupported behavior", provider.Name)
-		}
-		provider.Format = strings.ToLower(strings.TrimSpace(provider.Format))
-		switch provider.Format {
-		case "yaml", "text", "mrs":
-		default:
-			return nil, nil, fmt.Errorf("rule provider %q has an unsupported format", provider.Name)
-		}
-		if provider.Format == "mrs" && provider.Behavior == "classical" {
-			return nil, nil, fmt.Errorf("rule provider %q cannot use mrs format with classical behavior", provider.Name)
-		}
-
-		provider.URL = strings.TrimSpace(provider.URL)
-		parsedURL, err := url.ParseRequestURI(provider.URL)
-		if err != nil || parsedURL.Host == "" || (parsedURL.Scheme != "http" && parsedURL.Scheme != "https") {
-			return nil, nil, fmt.Errorf("rule provider %q requires a valid HTTP or HTTPS URL", provider.Name)
-		}
-		provider.Path = strings.TrimSpace(provider.Path)
-		if provider.Path == "" || strings.ContainsAny(provider.Path, "\r\n") {
-			return nil, nil, fmt.Errorf("rule provider %q requires a path without line breaks", provider.Name)
-		}
-		if provider.Interval <= 0 {
-			return nil, nil, fmt.Errorf("rule provider %q requires a positive update interval", provider.Name)
-		}
-		provider.Proxy = strings.TrimSpace(provider.Proxy)
-		if provider.Proxy == "" {
-			provider.Proxy = "DIRECT"
-		}
 		proxy, exists := actions[strings.ToUpper(provider.Proxy)]
 		if !exists || proxy == "REJECT" {
 			return nil, nil, fmt.Errorf("rule provider %q download proxy must be DIRECT or a configured node or proxy group", provider.Name)
@@ -320,8 +335,27 @@ func (s *Store) normalizeMihomoClientConfigV3(ctx context.Context, config *Mihom
 	for upper, endpointID := range endpointIDsByName {
 		actions[upper] = endpointNamesByID[endpointID]
 	}
+	// Rule providers are optional, so an empty selection is normal here.
+	providerIDs := make([]string, 0, len(config.RuleProviderIDs))
+	seenProviders := map[string]struct{}{}
+	for _, id := range config.RuleProviderIDs {
+		id = strings.TrimSpace(id)
+		if id == "" {
+			continue
+		}
+		if _, exists := seenProviders[id]; exists {
+			continue
+		}
+		seenProviders[id] = struct{}{}
+		providerIDs = append(providerIDs, id)
+	}
+	config.RuleProviderIDs = providerIDs
+	resolvedProviders, err := s.resolveMihomoRuleProviders(ctx, providerIDs)
+	if err != nil {
+		return err
+	}
 	var providers map[string]string
-	config.RuleProviders, providers, err = normalizeMihomoRuleProviders(config.RuleProviders, actions)
+	config.RuleProviders, providers, err = normalizeMihomoRuleProviders(resolvedProviders, actions)
 	if err != nil {
 		return err
 	}
@@ -358,7 +392,7 @@ func encodeMihomoClientConfigV3(config MihomoClientConfig) (string, string, erro
 	if err != nil {
 		return "", "", err
 	}
-	rules, err := json.Marshal(mihomoClientRulesV3{RuleProviders: config.RuleProviders, Rules: config.Rules, RawRules: config.RawRules})
+	rules, err := json.Marshal(mihomoClientRulesV3{RuleProviderIDs: config.RuleProviderIDs, Rules: config.Rules, RawRules: config.RawRules})
 	if err != nil {
 		return "", "", err
 	}
@@ -380,7 +414,10 @@ func scanMihomoClientConfig(scanner interface{ Scan(...any) error }, masterKey [
 	if err := json.Unmarshal([]byte(rulesJSON), &rules); err != nil {
 		return MihomoClientConfig{}, err
 	}
-	config.RuleProviders, config.Rules, config.RawRules = rules.RuleProviders, rules.Rules, rules.RawRules
+	config.RuleProviderIDs, config.Rules, config.RawRules = rules.RuleProviderIDs, rules.Rules, rules.RawRules
+	if config.RuleProviderIDs == nil {
+		config.RuleProviderIDs = []string{}
+	}
 	config.CreatedAt, config.UpdatedAt = unixTimeString(created), unixTimeString(updated)
 	token, err := security.Decrypt(masterKey, encryptedToken)
 	if err != nil {
@@ -426,6 +463,28 @@ func (s *Store) CreateMihomoClientConfig(ctx context.Context, config MihomoClien
 	return config, nil
 }
 
+// CopyMihomoClientConfig creates an independent duplicate of a configuration:
+// same groups, rule providers and rules, its own update address.
+func (s *Store) CopyMihomoClientConfig(ctx context.Context, configID, name string) (MihomoClientConfig, error) {
+	source, err := s.mihomoClientConfigByID(ctx, configID)
+	if err != nil {
+		return MihomoClientConfig{}, err
+	}
+	name = strings.TrimSpace(name)
+	if name == "" {
+		name = source.Name + " 副本"
+	}
+	copied := MihomoClientConfig{
+		Name:            name,
+		ProxyGroupIDs:   append([]string(nil), source.ProxyGroupIDs...),
+		RuleProviderIDs: append([]string(nil), source.RuleProviderIDs...),
+		RuleMode:        source.RuleMode,
+		Rules:           append([]MihomoRule(nil), source.Rules...),
+		RawRules:        source.RawRules,
+	}
+	return s.CreateMihomoClientConfig(ctx, copied)
+}
+
 func (s *Store) UpdateMihomoClientConfig(ctx context.Context, config MihomoClientConfig) (MihomoClientConfig, error) {
 	if config.ID == "" {
 		return MihomoClientConfig{}, errors.New("client config ID is required")
@@ -457,7 +516,26 @@ func (s *Store) mihomoClientConfigByID(ctx context.Context, id string) (MihomoCl
 	if errors.Is(err, sql.ErrNoRows) {
 		return MihomoClientConfig{}, ErrNotFound
 	}
-	return config, err
+	if err != nil {
+		return MihomoClientConfig{}, err
+	}
+	config.RuleProviders = s.describeMihomoRuleProviders(ctx, config.RuleProviderIDs)
+	return config, nil
+}
+
+// describeMihomoRuleProviders fills in the referenced providers for display.
+// A reference that no longer resolves is skipped rather than failing the read:
+// the console still has to be able to show and repair such a configuration.
+func (s *Store) describeMihomoRuleProviders(ctx context.Context, ids []string) []MihomoRuleProvider {
+	providers := make([]MihomoRuleProvider, 0, len(ids))
+	for _, id := range ids {
+		provider, err := s.mihomoRuleProviderByID(ctx, id)
+		if err != nil {
+			continue
+		}
+		providers = append(providers, provider)
+	}
+	return providers
 }
 
 func (s *Store) ListMihomoClientConfigs(ctx context.Context) ([]MihomoClientConfig, error) {
@@ -465,16 +543,29 @@ func (s *Store) ListMihomoClientConfigs(ctx context.Context) ([]MihomoClientConf
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
 	configs := []MihomoClientConfig{}
 	for rows.Next() {
 		config, err := scanMihomoClientConfig(rows, s.masterKey)
 		if err != nil {
+			rows.Close()
 			return nil, err
 		}
 		configs = append(configs, config)
 	}
-	return configs, rows.Err()
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return nil, err
+	}
+	// The connection has to be released before the per-config provider lookups
+	// run: the store keeps a single SQLite connection, so querying while these
+	// rows are still open would wait on itself.
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	for index := range configs {
+		configs[index].RuleProviders = s.describeMihomoRuleProviders(ctx, configs[index].RuleProviderIDs)
+	}
+	return configs, nil
 }
 
 func (s *Store) SetMihomoClientConfigEnabled(ctx context.Context, configID string, enabled bool) error {

@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
+	"time"
 
 	"github.com/sb-control/sb-control/internal/security"
 )
@@ -24,6 +26,10 @@ type Outbound struct {
 	Username   string `json:"username,omitempty"`
 	Password   string `json:"password,omitempty"` // write-only: accepted on create/update, never returned
 	Enabled    bool   `json:"enabled"`
+	// ExpiresAt records when the upstream account the outbound uses runs out.
+	// It is recorded for the operator's benefit only: nothing in the system
+	// disables or hides an outbound when the date passes.
+	ExpiresAt string `json:"expires_at,omitempty"`
 }
 
 type outboundSecret struct {
@@ -55,6 +61,28 @@ func normalizeOutbound(o *Outbound) {
 		o.Username = ""
 		o.Password = ""
 	}
+	o.ExpiresAt = strings.TrimSpace(o.ExpiresAt)
+}
+
+// outboundExpiry converts the submitted expiry into the nullable column value.
+// An empty value clears the date; anything else must be a full timestamp so
+// the console can render it in the visitor's own time zone.
+func outboundExpiry(value string) (sql.NullInt64, error) {
+	if value == "" {
+		return sql.NullInt64{}, nil
+	}
+	parsed, err := time.Parse(time.RFC3339, value)
+	if err != nil {
+		return sql.NullInt64{}, errors.New("outbound expiry must be an RFC 3339 timestamp")
+	}
+	return sql.NullInt64{Int64: parsed.UTC().Unix(), Valid: true}, nil
+}
+
+func outboundExpiryString(value sql.NullInt64) string {
+	if !value.Valid {
+		return ""
+	}
+	return time.Unix(value.Int64, 0).UTC().Format(time.RFC3339)
 }
 
 func (s *Store) CreateOutbound(ctx context.Context, o Outbound) (Outbound, error) {
@@ -72,12 +100,16 @@ func (s *Store) CreateOutbound(ctx context.Context, o Outbound) (Outbound, error
 	if err != nil {
 		return Outbound{}, err
 	}
+	expiry, err := outboundExpiry(o.ExpiresAt)
+	if err != nil {
+		return Outbound{}, err
+	}
 	o.ID, err = newID()
 	if err != nil {
 		return Outbound{}, err
 	}
-	_, err = s.db.ExecContext(ctx, `INSERT INTO outbounds (id, name, type, server, server_port, username, credentials, enabled, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, o.ID, o.Name, o.Type, o.Server, o.ServerPort, o.Username, encrypted, o.Enabled, nowUnix(), nowUnix())
+	_, err = s.db.ExecContext(ctx, `INSERT INTO outbounds (id, name, type, server, server_port, username, credentials, enabled, expires_at, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, o.ID, o.Name, o.Type, o.Server, o.ServerPort, o.Username, encrypted, o.Enabled, expiry, nowUnix(), nowUnix())
 	if err != nil {
 		return Outbound{}, fmt.Errorf("create outbound: %w", err)
 	}
@@ -118,17 +150,21 @@ func (s *Store) UpdateOutbound(ctx context.Context, o Outbound) (Outbound, error
 	if !errors.Is(err, sql.ErrNoRows) {
 		return Outbound{}, fmt.Errorf("check outbound name conflict: %w", err)
 	}
+	expiry, err := outboundExpiry(o.ExpiresAt)
+	if err != nil {
+		return Outbound{}, err
+	}
 	// A blank password on update keeps the stored secret; supplying one replaces it.
 	if o.Password == "" && o.Type != "direct" {
-		_, err = s.db.ExecContext(ctx, `UPDATE outbounds SET name = ?, type = ?, server = ?, server_port = ?, username = ?, enabled = ?, updated_at = ? WHERE id = ?`,
-			o.Name, o.Type, o.Server, o.ServerPort, o.Username, o.Enabled, nowUnix(), o.ID)
+		_, err = s.db.ExecContext(ctx, `UPDATE outbounds SET name = ?, type = ?, server = ?, server_port = ?, username = ?, enabled = ?, expires_at = ?, updated_at = ? WHERE id = ?`,
+			o.Name, o.Type, o.Server, o.ServerPort, o.Username, o.Enabled, expiry, nowUnix(), o.ID)
 	} else {
 		encrypted, encErr := s.encryptOutboundSecret(o.Password)
 		if encErr != nil {
 			return Outbound{}, encErr
 		}
-		_, err = s.db.ExecContext(ctx, `UPDATE outbounds SET name = ?, type = ?, server = ?, server_port = ?, username = ?, credentials = ?, enabled = ?, updated_at = ? WHERE id = ?`,
-			o.Name, o.Type, o.Server, o.ServerPort, o.Username, encrypted, o.Enabled, nowUnix(), o.ID)
+		_, err = s.db.ExecContext(ctx, `UPDATE outbounds SET name = ?, type = ?, server = ?, server_port = ?, username = ?, credentials = ?, enabled = ?, expires_at = ?, updated_at = ? WHERE id = ?`,
+			o.Name, o.Type, o.Server, o.ServerPort, o.Username, encrypted, o.Enabled, expiry, nowUnix(), o.ID)
 	}
 	if err != nil {
 		return Outbound{}, fmt.Errorf("update outbound: %w", err)
@@ -141,7 +177,7 @@ func (s *Store) UpdateOutbound(ctx context.Context, o Outbound) (Outbound, error
 // a node) without decrypting secrets; passwords are never exposed through the
 // API.
 func (s *Store) ListOutbounds(ctx context.Context) ([]Outbound, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT id, name, type, server, server_port, username, enabled FROM outbounds ORDER BY name, id`)
+	rows, err := s.db.QueryContext(ctx, `SELECT id, name, type, server, server_port, username, enabled, expires_at FROM outbounds ORDER BY name, id`)
 	if err != nil {
 		return nil, fmt.Errorf("list outbounds: %w", err)
 	}
@@ -149,9 +185,11 @@ func (s *Store) ListOutbounds(ctx context.Context) ([]Outbound, error) {
 	var outbounds []Outbound
 	for rows.Next() {
 		var o Outbound
-		if err := rows.Scan(&o.ID, &o.Name, &o.Type, &o.Server, &o.ServerPort, &o.Username, &o.Enabled); err != nil {
+		var expiry sql.NullInt64
+		if err := rows.Scan(&o.ID, &o.Name, &o.Type, &o.Server, &o.ServerPort, &o.Username, &o.Enabled, &expiry); err != nil {
 			return nil, fmt.Errorf("read outbound: %w", err)
 		}
+		o.ExpiresAt = outboundExpiryString(expiry)
 		outbounds = append(outbounds, o)
 	}
 	return outbounds, rows.Err()

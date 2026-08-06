@@ -275,6 +275,12 @@ func (s *Server) handleAgentMessage(ctx context.Context, node Node, msgType byte
 			if st.Fail2BanAvailable || len(st.Fail2BanJails) > 0 {
 				m.Fail2Ban = &storedFail2Ban{Available: st.Fail2BanAvailable, Jails: convertFail2BanJails(st.Fail2BanJails)}
 			}
+			if st.FirewallAvailable {
+				m.Firewall = &storedFirewall{
+					Available: st.FirewallAvailable, Tool: st.FirewallTool, Truncated: st.FirewallTruncated,
+					Error: st.FirewallError, Rules: convertFirewallRules(st.FirewallRules),
+				}
+			}
 		}); err != nil {
 			return false
 		}
@@ -461,7 +467,24 @@ type storedMetrics struct {
 	Proxy       map[string]uint64  `json:"proxy,omitempty"`
 	Connections []storedConnection `json:"connections,omitempty"`
 	Fail2Ban    *storedFail2Ban    `json:"fail2ban,omitempty"`
+	Firewall    *storedFirewall    `json:"firewall,omitempty"`
 	Health      *storedHealth      `json:"health,omitempty"`
+}
+
+// storedFirewall carries the host's own firewall rules — the ones sb-control
+// did not write — so the console can show what a server already enforces.
+type storedFirewall struct {
+	Available bool                 `json:"available"`
+	Tool      string               `json:"tool,omitempty"`
+	Rules     []storedFirewallRule `json:"rules,omitempty"`
+	Truncated bool                 `json:"truncated,omitempty"`
+	Error     string               `json:"error,omitempty"`
+}
+
+type storedFirewallRule struct {
+	Table string `json:"table,omitempty"`
+	Chain string `json:"chain,omitempty"`
+	Rule  string `json:"rule"`
 }
 
 type storedHealth struct {
@@ -491,15 +514,25 @@ type storedConnection struct {
 	// ListenerName is the human-readable inbound the connection arrived on,
 	// resolved from the agent's sing-box inbound tag.
 	ListenerName string `json:"listener_name,omitempty"`
+	// User is the access user sing-box authenticated the connection as, which
+	// is what the overview counts when it ranks the busiest nodes.
+	User string `json:"user,omitempty"`
 }
 
 type storedFail2BanJail struct {
-	Name            string   `json:"name"`
-	CurrentlyBanned string   `json:"currently_banned,omitempty"`
-	TotalBanned     string   `json:"total_banned,omitempty"`
-	BannedIPs       []string `json:"banned_ips,omitempty"`
-	Error           string   `json:"error,omitempty"`
-	Managed         bool     `json:"managed"`
+	Name            string              `json:"name"`
+	CurrentlyBanned string              `json:"currently_banned,omitempty"`
+	TotalBanned     string              `json:"total_banned,omitempty"`
+	BannedIPs       []string            `json:"banned_ips,omitempty"`
+	Banned          []storedFail2BanBan `json:"banned,omitempty"`
+	Error           string              `json:"error,omitempty"`
+	Managed         bool                `json:"managed"`
+}
+
+type storedFail2BanBan struct {
+	IP       string `json:"ip"`
+	BannedAt string `json:"banned_at,omitempty"`
+	UnbanAt  string `json:"unban_at,omitempty"`
 }
 
 type storedFail2Ban struct {
@@ -509,17 +542,62 @@ type storedFail2Ban struct {
 
 func (s *Server) convertConnections(ctx context.Context, nodeID string, in []wire.ConnectionInfo) []storedConnection {
 	names := s.listenerNames(ctx, nodeID)
+	aliases := s.endpointAliases(ctx, nodeID)
 	out := make([]storedConnection, 0, len(in))
 	for _, c := range in {
 		ip := addressIP(c.Source)
+		listenerID := strings.TrimPrefix(c.InboundTag, "listener-")
+		// sing-box reports the account name it authenticated; the console
+		// shows the alias an operator gave that node where there is one.
+		user := c.User
+		if alias, ok := aliases[listenerID+"\x00"+c.User]; ok && alias != "" {
+			user = alias
+		}
 		out = append(out, storedConnection{
 			ID: c.ID, Inbound: c.Inbound, Network: c.Network, Source: c.Source, Destination: c.Destination,
 			SourceIP: ip, SourceLocation: s.ipLocator.Locate(ip), Host: c.Host, Upload: c.Upload, Download: c.Download,
 			StartedAt: c.StartedAt, Outbound: c.Outbound, Rule: c.Rule, RulePayload: c.RulePayload, Chains: c.Chains,
-			ListenerName: names[strings.TrimPrefix(c.InboundTag, "listener-")],
+			ListenerName: names[listenerID], User: user,
 		})
 	}
 	return out
+}
+
+// endpointAliases maps a node's "listener ID + account name" to the alias an
+// operator gave that access node, sharing the listener name cache's lifetime
+// for the same reason: pushes are frequent, these names are not.
+func (s *Server) endpointAliases(ctx context.Context, nodeID string) map[string]string {
+	s.listenerNameMu.Lock()
+	cached, ok := s.listenerNameCache[nodeID]
+	s.listenerNameMu.Unlock()
+	if ok && time.Since(cached.at) < listenerNameCacheTTL && cached.aliases != nil {
+		return cached.aliases
+	}
+	aliases := map[string]string{}
+	rows, err := s.store.db.QueryContext(ctx, `SELECT e.listener_id, e.name, e.alias FROM endpoints e JOIN listeners l ON l.id = e.listener_id WHERE l.node_id = ?`, nodeID)
+	if err != nil {
+		return aliases
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var listenerID, name, alias string
+		if err := rows.Scan(&listenerID, &name, &alias); err != nil {
+			return aliases
+		}
+		aliases[listenerID+"\x00"+name] = alias
+	}
+	if rows.Err() != nil {
+		return aliases
+	}
+	s.listenerNameMu.Lock()
+	if s.listenerNameCache == nil {
+		s.listenerNameCache = map[string]listenerNameEntry{}
+	}
+	entry := s.listenerNameCache[nodeID]
+	entry.aliases = aliases
+	s.listenerNameCache[nodeID] = entry
+	s.listenerNameMu.Unlock()
+	return aliases
 }
 
 // listenerNames maps a node's listener IDs to their display names so a
@@ -561,7 +639,19 @@ func (s *Server) listenerNames(ctx context.Context, nodeID string) map[string]st
 func convertFail2BanJails(in []wire.Fail2BanJailStatus) []storedFail2BanJail {
 	out := make([]storedFail2BanJail, 0, len(in))
 	for _, j := range in {
-		out = append(out, storedFail2BanJail{Name: j.Name, CurrentlyBanned: j.CurrentlyBanned, TotalBanned: j.TotalBanned, BannedIPs: j.BannedIPs, Error: j.Error, Managed: j.Managed})
+		bans := make([]storedFail2BanBan, 0, len(j.Banned))
+		for _, ban := range j.Banned {
+			bans = append(bans, storedFail2BanBan{IP: ban.IP, BannedAt: ban.BannedAt, UnbanAt: ban.UnbanAt})
+		}
+		out = append(out, storedFail2BanJail{Name: j.Name, CurrentlyBanned: j.CurrentlyBanned, TotalBanned: j.TotalBanned, BannedIPs: j.BannedIPs, Banned: bans, Error: j.Error, Managed: j.Managed})
+	}
+	return out
+}
+
+func convertFirewallRules(in []wire.FirewallRuleEntry) []storedFirewallRule {
+	out := make([]storedFirewallRule, 0, len(in))
+	for _, rule := range in {
+		out = append(out, storedFirewallRule{Table: rule.Table, Chain: rule.Chain, Rule: rule.Rule})
 	}
 	return out
 }

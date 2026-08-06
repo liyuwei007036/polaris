@@ -172,6 +172,7 @@ func serveCombined(ctx context.Context, masterConfiguration masterConfig, agentC
 	defer browserServer.Close()
 	combinedContext, cancel := context.WithCancel(ctx)
 	defer cancel()
+	server.StartMaintenance(combinedContext)
 	go func() {
 		<-combinedContext.Done()
 		_ = agentListener.Close()

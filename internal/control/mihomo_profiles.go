@@ -46,13 +46,16 @@ type MihomoRule struct {
 }
 
 type MihomoRuleProvider struct {
-	Name     string `json:"name"`
-	Behavior string `json:"behavior"`
-	Format   string `json:"format"`
-	URL      string `json:"url"`
-	Path     string `json:"path"`
-	Interval int    `json:"interval"`
-	Proxy    string `json:"proxy"`
+	ID        string `json:"id,omitempty"`
+	Name      string `json:"name"`
+	Behavior  string `json:"behavior"`
+	Format    string `json:"format"`
+	URL       string `json:"url"`
+	Path      string `json:"path"`
+	Interval  int    `json:"interval"`
+	Proxy     string `json:"proxy"`
+	CreatedAt string `json:"created_at,omitempty"`
+	UpdatedAt string `json:"updated_at,omitempty"`
 }
 
 type MihomoClientConfig struct {
@@ -65,6 +68,9 @@ type MihomoClientConfig struct {
 	EndpointIDs      []string             `json:"endpoint_ids,omitempty"`
 	Strategy         string               `json:"strategy,omitempty"`
 	RulePreset       string               `json:"rule_preset,omitempty"`
+	RuleProviderIDs  []string             `json:"rule_provider_ids"`
+	// RuleProviders is resolved from RuleProviderIDs for display and
+	// compilation; it is never accepted as input.
 	RuleProviders    []MihomoRuleProvider `json:"rule_providers,omitempty"`
 	Rules            []MihomoRule         `json:"rules,omitempty"`
 	RawRules         string               `json:"raw_rules,omitempty"`

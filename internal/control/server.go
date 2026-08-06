@@ -13,6 +13,7 @@ import (
 	"mime"
 	"net/http"
 	"net/url"
+	"os"
 	"path"
 	"strings"
 	"sync"
@@ -56,8 +57,9 @@ type Server struct {
 const listenerNameCacheTTL = 20 * time.Second
 
 type listenerNameEntry struct {
-	names map[string]string
-	at    time.Time
+	names   map[string]string
+	aliases map[string]string
+	at      time.Time
 }
 
 type controlSession struct {
@@ -80,6 +82,26 @@ func NewServer(store *Store, secureCookies bool) (*Server, error) {
 		latestSingBoxReleaseFn: LatestOfficialSingBoxRelease,
 		connHub:                newConnectionsHub(), liveHub: newLiveHub(), ipLocator: ipLocator,
 	}, nil
+}
+
+// StartMaintenance runs the periodic housekeeping the master owns: today that
+// is trimming operation records to the retention window. It returns as soon as
+// the loop is running in the background and stops with ctx.
+func (s *Server) StartMaintenance(ctx context.Context) {
+	go func() {
+		ticker := time.NewTicker(time.Hour)
+		defer ticker.Stop()
+		for {
+			if err := s.store.PurgeExpiredOperationRecords(ctx); err != nil && ctx.Err() == nil {
+				fmt.Fprintln(os.Stderr, "purge operation records:", err)
+			}
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+			}
+		}
+	}()
 }
 
 // NoisePublicKey returns the master's static public key, base64-encoded, for
@@ -135,6 +157,8 @@ func (s *Server) registerBrowserRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/v1/nodes/{id}/firewall/publish", s.publishNodeFirewall)
 	mux.HandleFunc("POST /api/v1/firewall/rules/{id}/enabled", s.setFirewallRuleEnabled)
 	mux.HandleFunc("DELETE /api/v1/firewall/rules/{id}", s.deleteFirewallRule)
+	mux.HandleFunc("GET /api/v1/fail2ban/banned", s.listBannedAddresses)
+	mux.HandleFunc("POST /api/v1/nodes/{id}/fail2ban/unban", s.unbanAddress)
 	mux.HandleFunc("GET /api/v1/nodes/{id}/fail2ban/jails", s.listFail2BanJails)
 	mux.HandleFunc("POST /api/v1/nodes/{id}/fail2ban/jails", s.createFail2BanJail)
 	mux.HandleFunc("POST /api/v1/nodes/{id}/fail2ban/publish", s.publishNodeFail2Ban)
@@ -167,7 +191,12 @@ func (s *Server) registerBrowserRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/v1/mihomo/proxy-groups", s.createMihomoProxyGroup)
 	mux.HandleFunc("PUT /api/v1/mihomo/proxy-groups/{id}", s.updateMihomoProxyGroup)
 	mux.HandleFunc("DELETE /api/v1/mihomo/proxy-groups/{id}", s.deleteMihomoProxyGroup)
+	mux.HandleFunc("GET /api/v1/mihomo/rule-providers", s.listMihomoRuleProviders)
+	mux.HandleFunc("POST /api/v1/mihomo/rule-providers", s.createMihomoRuleProvider)
+	mux.HandleFunc("PUT /api/v1/mihomo/rule-providers/{id}", s.updateMihomoRuleProvider)
+	mux.HandleFunc("DELETE /api/v1/mihomo/rule-providers/{id}", s.deleteMihomoRuleProvider)
 	mux.HandleFunc("GET /api/v1/mihomo/client-configs", s.listMihomoClientConfigs)
+	mux.HandleFunc("POST /api/v1/mihomo/client-configs/{id}/copy", s.copyMihomoClientConfig)
 	mux.HandleFunc("GET /api/v1/mihomo/subscription-access", s.listMihomoSubscriptionAccess)
 	mux.HandleFunc("POST /api/v1/mihomo/client-configs", s.createMihomoClientConfig)
 	mux.HandleFunc("PUT /api/v1/mihomo/client-configs/{id}", s.updateMihomoClientConfig)

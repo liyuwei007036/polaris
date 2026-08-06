@@ -77,15 +77,19 @@ func TestStoredMihomoConfigReferencesNestedGroupsRulesAndAliases(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	provider, err := store.CreateMihomoRuleProvider(t.Context(), control.MihomoRuleProvider{
+		Name: "远程代理规则", Behavior: "domain", Format: "mrs",
+		URL: "https://rules.example.com/proxy.mrs", Path: "./ruleset/proxy.mrs",
+		Interval: 86400, Proxy: "自动选择",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
 	config, err := store.CreateMihomoClientConfig(t.Context(), control.MihomoClientConfig{
-		Name:          "手机配置",
-		ProxyGroupIDs: []string{allGroup.ID},
-		RuleMode:      "table",
-		RuleProviders: []control.MihomoRuleProvider{{
-			Name: "远程代理规则", Behavior: "domain", Format: "mrs",
-			URL: "https://rules.example.com/proxy.mrs", Path: "./ruleset/proxy.mrs",
-			Interval: 86400, Proxy: "自动选择",
-		}},
+		Name:            "手机配置",
+		ProxyGroupIDs:   []string{allGroup.ID},
+		RuleMode:        "table",
+		RuleProviderIDs: []string{provider.ID},
 		Rules: []control.MihomoRule{
 			{Type: "RULE-SET", Value: "远程代理规则", Action: "自动选择"},
 			{Type: "DOMAIN-SUFFIX", Value: "youtube.com", Action: "洛杉矶 01"},

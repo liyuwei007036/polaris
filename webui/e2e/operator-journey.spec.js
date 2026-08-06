@@ -68,6 +68,7 @@ test('浏览器页面回归：真实登录，核心工作区 API 使用路由替
     ['服务器', '服务器'],
     ['接入服务', '接入服务'],
     ['代理分组', '代理分组'],
+    ['规则供应商', '规则供应商'],
     ['客户端配置', '客户端配置'],
     ['服务器访问规则', '服务器访问规则'],
     ['上网出口', '上网出口'],
@@ -145,6 +146,7 @@ test('浏览器页面回归：真实登录，核心工作区 API 使用路由替
   let proxyGroupSequence = 0
   let rejectFirstProxyGroup = true
   const savedProxyGroups = []
+  const savedRuleProviders = []
   const listener = {
     id: 'listener-1', node_id: 'node-1', name: 'WebSocket 接入', connection_domain: 'ws.example.com', listen_address: '0.0.0.0',
     port: 18444, backend_port: 18444, enabled: true, outbound_id: '',
@@ -162,6 +164,12 @@ test('浏览器页面回归：真实登录，核心工作区 API 使用路由替
     if (request.method() === 'GET' && path === '/api/v1/listeners') return route.fulfill({ json: { listeners: [listener] } })
     if (request.method() === 'GET' && path === '/api/v1/outbounds') return route.fulfill({ json: { outbounds: [] } })
     if (request.method() === 'GET' && path === '/api/v1/mihomo/proxy-groups') return route.fulfill({ json: { proxy_groups: savedProxyGroups } })
+    if (request.method() === 'GET' && path === '/api/v1/mihomo/rule-providers') return route.fulfill({ json: { rule_providers: savedRuleProviders } })
+    if (request.method() === 'POST' && path === '/api/v1/mihomo/rule-providers') {
+      const provider = { id: `provider-${savedRuleProviders.length + 1}`, ...request.postDataJSON() }
+      savedRuleProviders.push(provider)
+      return route.fulfill({ status: 201, json: provider })
+    }
     if (request.method() === 'GET' && path === '/api/v1/mihomo/client-configs') return route.fulfill({ json: { client_configs: savedClientConfig ? [savedClientConfig] : [] } })
     if (request.method() === 'GET' && (path === '/api/v1/listeners/listener-1/endpoints' || path === '/api/v1/endpoints')) {
       return route.fulfill({ json: { endpoints: [{ id: 'endpoint-1', listener_id: 'listener-1', name: '默认账号', alias: '测试节点 01', enabled: true, outbound_id: 'direct' }] } })
@@ -242,6 +250,21 @@ test('浏览器页面回归：真实登录，核心工作区 API 使用路由替
   expect(updatedAccount).toMatchObject({ name: '修改后的用户', alias: '测试节点 01', enabled: true, outbound_id: 'direct' })
   expect(createdAccount).toEqual({ name: '新增用户', alias: '测试节点 02', outbound_id: 'direct' })
 
+  // Copying an access service only fills in the create form: the operator
+  // still chooses the target server and saves.
+  await page.getByRole('button', { name: '复制', exact: true }).click()
+  const copyDialog = page.getByRole('dialog', { name: '复制接入服务', exact: true })
+  await expect(copyDialog.getByRole('textbox', { name: '服务名称' })).toHaveValue('WebSocket 接入 副本')
+  await expect(copyDialog.getByRole('textbox', { name: '连接域名' })).toHaveValue('ws.example.com')
+  await expect(copyDialog.getByRole('textbox', { name: '用户名称' })).toHaveValue('默认账号')
+  await expect(copyDialog.getByRole('textbox', { name: '客户端节点别名' })).toHaveValue('测试节点 01 副本')
+  await copyDialog.getByRole('button', { name: '创建', exact: true }).click()
+  await expect(page.getByText('测试校验错误：请检查接入服务参数', { exact: true })).toBeVisible()
+  expect(quickListenerPayload.listener).toMatchObject({ name: 'WebSocket 接入 副本', connection_domain: 'ws.example.com', port: 18444 })
+  expect(quickListenerPayload.listener.spec.transport).toMatchObject({ type: 'ws' })
+  expect(quickListenerPayload.accounts[0]).toMatchObject({ name: '默认账号', alias: '测试节点 01 副本' })
+  await copyDialog.getByRole('button', { name: '取消', exact: true }).click()
+
   await page.getByRole('button', { name: '代理分组', exact: true }).click()
   // Wait for the page itself before pressing a button that exists on several
   // pages, otherwise the click can still land on the one being left behind.
@@ -277,6 +300,23 @@ test('浏览器页面回归：真实登录，核心工作区 API 使用路由替
   await expect(editGroupDialog.locator('.el-select__selected-item').filter({ hasText: '测试节点 01' })).toBeVisible()
   await editGroupDialog.getByRole('button', { name: '取消', exact: true }).click()
 
+  // Rule providers are maintained on their own page and referenced from a
+  // client configuration, rather than being retyped inside every one of them.
+  await page.getByRole('button', { name: '规则供应商', exact: true }).click()
+  await expect(page.getByRole('heading', { name: '规则供应商', exact: true })).toBeVisible()
+  await page.getByRole('button', { name: '新建', exact: true }).click()
+  const providerDialog = page.getByRole('dialog', { name: '新建规则供应商', exact: true })
+  await providerDialog.getByRole('textbox', { name: '供应商名称' }).fill('远程代理规则')
+  await providerDialog.getByRole('textbox', { name: '供应商规则地址' }).fill('https://rules.example.com/proxy.mrs')
+  await providerDialog.getByRole('textbox', { name: '供应商保存路径' }).fill('./ruleset/proxy.mrs')
+  await providerDialog.getByRole('button', { name: '保存', exact: true }).click()
+  await expect(providerDialog).toBeHidden()
+  expect(savedRuleProviders[0]).toMatchObject({
+    name: '远程代理规则', behavior: 'domain', format: 'mrs',
+    url: 'https://rules.example.com/proxy.mrs', path: './ruleset/proxy.mrs',
+    interval: 86400, proxy: 'DIRECT',
+  })
+
   await page.getByRole('button', { name: '客户端配置', exact: true }).click()
   await expect(page.getByRole('heading', { name: '客户端配置', exact: true })).toBeVisible()
   await expect(page.getByRole('button', { name: '新建', exact: true })).toBeVisible()
@@ -291,14 +331,13 @@ test('浏览器页面回归：真实登录，核心工作区 API 使用路由替
   await clientDialog.locator('.el-form-item').nth(1).locator('.el-select').click()
   await page.getByRole('option', { name: '组合策略 · 手动选择', exact: true }).click()
   await page.keyboard.press('Escape')
-  await clientDialog.getByRole('button', { name: '添加供应商', exact: true }).click()
-  await clientDialog.getByRole('textbox', { name: '供应商名称' }).fill('远程代理规则')
-  await clientDialog.getByRole('textbox', { name: '供应商规则地址' }).fill('https://rules.example.com/proxy.mrs')
-  await clientDialog.getByRole('textbox', { name: '供应商保存路径' }).fill('./ruleset/proxy.mrs')
+  await clientDialog.locator('.el-form-item').nth(2).locator('.el-select').click()
+  await page.getByRole('option', { name: '远程代理规则 · https://rules.example.com/proxy.mrs', exact: true }).click()
+  await page.keyboard.press('Escape')
   await clientDialog.getByRole('button', { name: '添加', exact: true }).click()
   await clientDialog.locator('.rule-table tbody tr').nth(0).locator('td').nth(0).locator('.el-select').click()
   await page.getByRole('option', { name: 'RULE-SET', exact: true }).click()
-  await expect(clientDialog.getByLabel('规则供应商')).toBeVisible()
+  await expect(clientDialog.getByLabel('规则供应商', { exact: true })).toBeVisible()
   await clientDialog.locator('.rule-table tbody tr').nth(0).locator('td').nth(2).locator('.el-select').click()
   await page.getByRole('option', { name: '组合策略', exact: true }).click()
   await clientDialog.getByRole('button', { name: '添加', exact: true }).click()
@@ -320,11 +359,7 @@ test('浏览器页面回归：真实登录，核心工作区 API 使用路由替
   expect(savedClientConfig).toMatchObject({
     name: '组合分组配置',
     proxy_group_ids: [savedProxyGroups[1].id],
-    rule_providers: [{
-      name: '远程代理规则', behavior: 'domain', format: 'mrs',
-      url: 'https://rules.example.com/proxy.mrs', path: './ruleset/proxy.mrs',
-      interval: 86400, proxy: 'DIRECT',
-    }],
+    rule_provider_ids: [savedRuleProviders[0].id],
     rule_mode: 'table',
     rules: [
       { type: 'RULE-SET', value: '远程代理规则', action: '组合策略', no_resolve: false },
@@ -353,9 +388,8 @@ test('浏览器页面回归：真实登录，核心工作区 API 使用路由替
   const editClientDialog = page.getByRole('dialog', { name: '编辑客户端配置', exact: true })
   await expect(editClientDialog).toBeVisible()
   await expect(editClientDialog.getByRole('textbox', { name: '配置名称' })).toHaveValue('组合分组配置')
-  await expect(editClientDialog.getByRole('textbox', { name: '供应商名称' })).toHaveValue('远程代理规则')
-  await expect(editClientDialog.getByRole('textbox', { name: '供应商规则地址' })).toHaveValue('https://rules.example.com/proxy.mrs')
-  await expect(editClientDialog.getByLabel('规则供应商')).toBeVisible()
+  await expect(editClientDialog.locator('.el-form-item').nth(2).locator('.el-select__selected-item').first()).toContainText('远程代理规则')
+  await expect(editClientDialog.getByLabel('规则供应商', { exact: true })).toBeVisible()
   await expect(editClientDialog.locator('.rule-table tbody tr')).toHaveCount(3)
   await page.setViewportSize({ width: 390, height: 844 })
   await expect.poll(() => editClientDialog.evaluate((element) => element.scrollWidth <= element.clientWidth)).toBe(true)
@@ -370,8 +404,9 @@ test('浏览器页面回归：真实登录，核心工作区 API 使用路由替
   await expect.poll(async () => await page.evaluate(() => getComputedStyle(document.querySelector('.page-content')).scrollbarWidth)).toBe('none')
 
   expect(consoleErrors).toEqual([])
-  expect(httpErrors).toHaveLength(2)
-  expect(httpErrors.some((entry) => /400 .*\/api\/v1\/listeners\/quick$/.test(entry))).toBe(true)
+  // Two of these are the deliberately rejected create and copy attempts.
+  expect(httpErrors).toHaveLength(3)
+  expect(httpErrors.filter((entry) => /400 .*\/api\/v1\/listeners\/quick$/.test(entry))).toHaveLength(2)
   expect(httpErrors.some((entry) => /400 .*\/api\/v1\/mihomo\/proxy-groups$/.test(entry))).toBe(true)
 })
 

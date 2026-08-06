@@ -3,7 +3,8 @@ import { computed, inject, onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Delete, Plus, Refresh, Search } from '@element-plus/icons-vue'
 import { api, del, post } from '../api'
-import { includesText } from '../format'
+import { formatDateTime, includesText } from '../format'
+import { waitForTask } from '../live'
 import PageHeader from '../components/PageHeader.vue'
 import PagedTable from '../components/PagedTable.vue'
 
@@ -11,15 +12,39 @@ const appState = inject('appState')
 const isAdmin = inject('isAdmin')
 const loading = ref(false)
 const publishing = ref(false)
+const unbanning = ref('')
 const tab = ref('firewall')
 const firewallRules = ref([])
 const jails = ref([])
 const jailStatus = ref({})
+const hostFirewall = ref({})
+const banned = ref([])
 const selectedNode = ref('')
 const selectedStatus = ref('')
 const keyword = ref('')
 
 const nodeNames = computed(() => Object.fromEntries(appState.nodes.map((node) => [node.id, node.name])))
+// Rules the operator set up outside this platform are read-only: showing them
+// is what keeps somebody from configuring a second rule for protection the
+// server already has.
+const existingFirewallRules = computed(() => appState.nodes.flatMap((node) => {
+  const report = hostFirewall.value[node.id]
+  if (!report?.rules?.length) return []
+  return report.rules.map((rule, index) => ({ ...rule, id: `${node.id}-${index}`, node_id: node.id, tool: report.tool }))
+}).filter((row) => {
+  if (selectedNode.value && row.node_id !== selectedNode.value) return false
+  return includesText([nodeNames.value[row.node_id], row.table, row.chain, row.rule], keyword.value)
+}))
+const existingJails = computed(() => appState.nodes.flatMap((node) => unmanagedJails(node.id)
+  .map((jail) => ({ ...jail, id: `${node.id}-${jail.name}`, node_id: node.id })))
+  .filter((row) => {
+    if (selectedNode.value && row.node_id !== selectedNode.value) return false
+    return includesText([nodeNames.value[row.node_id], row.name], keyword.value)
+  }))
+const filteredBanned = computed(() => banned.value.filter((row) => {
+  if (selectedNode.value && row.node_id !== selectedNode.value) return false
+  return includesText([nodeNames.value[row.node_id], row.ip, row.rule_name, row.jail], keyword.value)
+}))
 const filteredFirewallRules = computed(() => firewallRules.value.filter((row) => {
   if (selectedNode.value && row.node_id !== selectedNode.value) return false
   if (selectedStatus.value && String(row.enabled) !== selectedStatus.value) return false
@@ -102,20 +127,50 @@ function applyTemplate(key) {
 async function load() {
   loading.value = true
   try {
-    const [firewallResult, jailResult, metricResult] = await Promise.all([
+    const [firewallResult, jailResult, metricResult, bannedResult] = await Promise.all([
       api('/firewall/rules').catch(() => ({ rules: [] })),
       api('/fail2ban/jails').catch(() => ({ jails: [] })),
       api('/nodes/metrics').catch(() => ({ nodes: [] })),
+      api('/fail2ban/banned').catch(() => ({ banned: [] })),
     ])
     firewallRules.value = firewallResult.rules || []
     jails.value = jailResult.jails || []
+    banned.value = bannedResult.banned || []
     // Agents report every jail a host runs, including ones the operator set
     // up outside this console. Showing them prevents configuring a duplicate
     // rule for protection that is already in place.
     jailStatus.value = Object.fromEntries((metricResult.nodes || []).map(
       (entry) => [entry.node_id, entry.report?.fail2ban || null],
     ))
+    hostFirewall.value = Object.fromEntries((metricResult.nodes || []).map(
+      (entry) => [entry.node_id, entry.report?.firewall || null],
+    ))
   } finally { loading.value = false }
+}
+
+// Releasing an address is a runtime action on the server rather than a change
+// to the saved rules, so it needs no publish afterwards.
+async function unban(row) {
+  await ElMessageBox.confirm(
+    `解封后 ${row.ip} 可以立即重新连接 ${nodeNames.value[row.node_id] || row.node_id}。如果它再次触发规则，仍会被自动封禁。`,
+    '解封 IP',
+    { type: 'warning', confirmButtonText: '确认解封' },
+  )
+  unbanning.value = `${row.node_id}-${row.jail}-${row.ip}`
+  try {
+    const task = await post(`/nodes/${row.node_id}/fail2ban/unban`, { jail: row.jail, ip: row.ip })
+    const result = await waitForTask(task.id, 30000)
+    if (result.status !== 'succeeded') {
+      ElMessage.error(result.result_summary || '解封未完成，请稍后重试')
+      return
+    }
+    ElMessage.success(`已解封 ${row.ip}`)
+    await load()
+  } catch (error) {
+    ElMessage.error(error instanceof Error ? error.message : '解封未完成，请稍后重试')
+  } finally {
+    unbanning.value = ''
+  }
 }
 
 function unmanagedJails(nodeID) {
@@ -238,13 +293,19 @@ onMounted(load)
               <el-table-column label="操作" width="140" class-name="action-column"><template #default="{ row }"><el-button v-if="isAdmin" link @click="toggleFirewall(row)">{{ row.enabled ? '停用' : '启用' }}</el-button><el-button v-if="isAdmin" link type="danger" :icon="Delete" @click="removeFirewall(row)">删除</el-button></template></el-table-column>
             </PagedTable>
           </el-tab-pane>
+          <el-tab-pane :label="`服务器已有规则（${existingFirewallRules.length}）`" name="existing-firewall">
+            <el-alert
+              title="以下是服务器上本平台之外已经存在的防火墙规则，仅供查看，本平台不会修改或删除它们。"
+              type="info" show-icon :closable="false" style="margin: 12px 16px 0" />
+            <PagedTable :rows="existingFirewallRules" :loading="loading" empty-text="服务器上没有其他防火墙规则，或服务器尚未上报">
+              <el-table-column label="服务器" min-width="150"><template #default="{ row }">{{ nodeNames[row.node_id] || row.node_id }}</template></el-table-column>
+              <el-table-column label="来源" width="120"><template #default="{ row }">{{ row.tool || '—' }}</template></el-table-column>
+              <el-table-column label="表" min-width="140"><template #default="{ row }">{{ row.table || '—' }}</template></el-table-column>
+              <el-table-column label="链" min-width="140"><template #default="{ row }">{{ row.chain || '—' }}</template></el-table-column>
+              <el-table-column label="规则内容" min-width="360" show-overflow-tooltip><template #default="{ row }"><span class="mono">{{ row.rule }}</span></template></el-table-column>
+            </PagedTable>
+          </el-tab-pane>
           <el-tab-pane label="自动封禁" name="fail2ban">
-            <div v-for="node in appState.nodes" :key="node.id">
-              <el-alert
-                v-if="unmanagedJails(node.id).length"
-                :title="`${node.name} 上已有 ${unmanagedJails(node.id).length} 条本平台之外的封禁规则：${unmanagedJails(node.id).map((jail) => jail.name).join('、')}。这些规则不会被本平台修改或删除。`"
-                type="info" show-icon :closable="false" style="margin: 12px 16px 0" />
-            </div>
             <div class="tab-actions"><el-button v-if="isAdmin" type="primary" :icon="Plus" :disabled="!appState.nodes.length" @click="addJail">添加</el-button></div>
             <PagedTable :rows="filteredJails" :loading="loading" empty-text="还没有自动封禁规则">
               <el-table-column label="服务器" min-width="150"><template #default="{ row }">{{ nodeNames[row.node_id] || row.node_id }}</template></el-table-column>
@@ -258,6 +319,45 @@ onMounted(load)
                 <template #default="{ row }"><el-tag :type="jailRuntime(row).type" effect="plain">{{ jailRuntime(row).text }}</el-tag></template>
               </el-table-column>
               <el-table-column label="操作" width="140" class-name="action-column"><template #default="{ row }"><el-button v-if="isAdmin" link @click="toggleJail(row)">{{ row.enabled ? '停用' : '启用' }}</el-button><el-button v-if="isAdmin" link type="danger" :icon="Delete" @click="removeJail(row)">删除</el-button></template></el-table-column>
+            </PagedTable>
+          </el-tab-pane>
+          <el-tab-pane :label="`服务器已有封禁规则（${existingJails.length}）`" name="existing-fail2ban">
+            <el-alert
+              title="以下是服务器上本平台之外已经存在的自动封禁规则，仅供查看，本平台不会修改或删除它们。"
+              type="info" show-icon :closable="false" style="margin: 12px 16px 0" />
+            <PagedTable :rows="existingJails" :loading="loading" empty-text="服务器上没有其他自动封禁规则，或服务器尚未上报">
+              <el-table-column label="服务器" min-width="150"><template #default="{ row }">{{ nodeNames[row.node_id] || row.node_id }}</template></el-table-column>
+              <el-table-column label="规则名称" prop="name" min-width="200" />
+              <el-table-column label="当前封禁" width="120"><template #default="{ row }">{{ row.currently_banned || '0' }}</template></el-table-column>
+              <el-table-column label="累计封禁" width="120"><template #default="{ row }">{{ row.total_banned || '0' }}</template></el-table-column>
+              <el-table-column label="运行情况" min-width="220"><template #default="{ row }"><el-tag :type="row.error ? 'danger' : 'success'" effect="plain">{{ row.error || '运行中' }}</el-tag></template></el-table-column>
+            </PagedTable>
+          </el-tab-pane>
+          <el-tab-pane :label="`已封禁 IP（${banned.length}）`" name="banned">
+            <el-alert
+              title="以下 IP 正被服务器防火墙拒绝。封禁到期后会自动解除，也可以在这里立即解封。"
+              type="info" show-icon :closable="false" style="margin: 12px 16px 0" />
+            <PagedTable :rows="filteredBanned" :loading="loading" empty-text="当前没有被封禁的 IP">
+              <el-table-column label="服务器" min-width="150"><template #default="{ row }">{{ nodeNames[row.node_id] || row.node_id }}</template></el-table-column>
+              <el-table-column label="IP 地址" min-width="170"><template #default="{ row }"><span class="mono">{{ row.ip }}</span></template></el-table-column>
+              <el-table-column label="触发的规则" min-width="200">
+                <template #default="{ row }">
+                  <div>{{ row.rule_name || row.jail }}</div>
+                  <div class="subtle">{{ row.managed ? '本平台规则' : '服务器已有规则' }}</div>
+                </template>
+              </el-table-column>
+              <el-table-column label="封禁时间" width="180"><template #default="{ row }">{{ formatDateTime(row.banned_at, '未知') }}</template></el-table-column>
+              <el-table-column label="解封时间" width="180"><template #default="{ row }">{{ formatDateTime(row.unban_at, '未知') }}</template></el-table-column>
+              <el-table-column label="操作" width="110" class-name="action-column">
+                <template #default="{ row }">
+                  <el-button
+                    v-if="isAdmin" link type="primary"
+                    :loading="unbanning === `${row.node_id}-${row.jail}-${row.ip}`"
+                    :disabled="Boolean(unbanning)"
+                    @click="unban(row)"
+                  >解封</el-button>
+                </template>
+              </el-table-column>
             </PagedTable>
           </el-tab-pane>
         </el-tabs>

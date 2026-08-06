@@ -1205,7 +1205,7 @@ func (s *Store) CreateTask(ctx context.Context, task Task) (Task, error) {
 	if len(task.Payload) > 4*1024*1024 || len(task.ResultSummary) > 8*1024 {
 		return Task{}, errors.New("task payload or result exceeds allowed size")
 	}
-	if task.Kind != "singbox.apply_config" && task.Kind != "singbox.install" && task.Kind != "singbox.upgrade" && task.Kind != "nginx.apply_config" && task.Kind != "firewall.apply" && task.Kind != "fail2ban.apply" && task.Kind != "outbound.test" && task.Kind != "agent.upgrade" {
+	if task.Kind != "singbox.apply_config" && task.Kind != "singbox.install" && task.Kind != "singbox.upgrade" && task.Kind != "nginx.apply_config" && task.Kind != "firewall.apply" && task.Kind != "fail2ban.apply" && task.Kind != "fail2ban.unban" && task.Kind != "outbound.test" && task.Kind != "agent.upgrade" {
 		return Task{}, errors.New("unsupported task kind")
 	}
 	if task.OperatorID != "" {
@@ -2065,6 +2065,25 @@ func (s *Store) AppendAudit(ctx context.Context, operatorID, action, targetType,
 	return nil
 }
 
+// OperationRecordRetention is how long the console keeps operation records.
+// Anything older is removed: the two record lists are an operational log, not
+// an archive, and an unbounded history only makes the console slower to read.
+const OperationRecordRetention = 7 * 24 * time.Hour
+
+// PurgeExpiredOperationRecords removes finished tasks and audit events older
+// than the retention window. Tasks that have not finished are kept regardless
+// of age: an agent may still report their result.
+func (s *Store) PurgeExpiredOperationRecords(ctx context.Context) error {
+	cutoff := time.Now().UTC().Add(-OperationRecordRetention).Unix()
+	if _, err := s.db.ExecContext(ctx, `DELETE FROM tasks WHERE created_at < ? AND status IN ('succeeded','failed','rolled_back')`, cutoff); err != nil {
+		return fmt.Errorf("purge expired tasks: %w", err)
+	}
+	if _, err := s.db.ExecContext(ctx, `DELETE FROM audit_events WHERE created_at < ?`, cutoff); err != nil {
+		return fmt.Errorf("purge expired audit events: %w", err)
+	}
+	return nil
+}
+
 func (s *Store) ListAudit(ctx context.Context, page, pageSize int) ([]AuditEvent, int, error) {
 	var total int
 	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM audit_events`).Scan(&total); err != nil {
@@ -2155,7 +2174,7 @@ CREATE TABLE IF NOT EXISTS endpoints (
 CREATE TABLE IF NOT EXISTS outbounds (
   id TEXT PRIMARY KEY, name TEXT NOT NULL UNIQUE, type TEXT NOT NULL,
   server TEXT NOT NULL DEFAULT '', server_port INTEGER NOT NULL DEFAULT 0, username TEXT NOT NULL DEFAULT '',
-  credentials BLOB, enabled INTEGER NOT NULL, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL
+  credentials BLOB, enabled INTEGER NOT NULL, expires_at INTEGER, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL
 );
 CREATE TABLE IF NOT EXISTS route_rules (
   id TEXT PRIMARY KEY, node_id TEXT NOT NULL REFERENCES nodes(id), priority INTEGER NOT NULL, enabled INTEGER NOT NULL,
@@ -2211,6 +2230,13 @@ CREATE TABLE IF NOT EXISTS mihomo_client_configs_v3 (
   rule_mode TEXT NOT NULL, rules_json TEXT NOT NULL,
   subscription_token_hash BLOB NOT NULL UNIQUE, subscription_token_encrypted BLOB NOT NULL,
   enabled INTEGER NOT NULL DEFAULT 1,
+  created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL
+);
+-- Rule providers are shared, standalone rule sources: several client configs
+-- may reference the same provider instead of each carrying its own copy.
+CREATE TABLE IF NOT EXISTS mihomo_rule_providers (
+  id TEXT PRIMARY KEY, name TEXT NOT NULL UNIQUE, behavior TEXT NOT NULL, format TEXT NOT NULL,
+  url TEXT NOT NULL, path TEXT NOT NULL, interval INTEGER NOT NULL, proxy TEXT NOT NULL,
   created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL
 );
 CREATE TABLE IF NOT EXISTS subscription_access_logs (
@@ -2349,6 +2375,12 @@ CREATE INDEX IF NOT EXISTS idx_cloudflare_records_binding ON cloudflare_records(
 	if err := s.migrateEmbeddedMihomoClientGroups(ctx); err != nil {
 		return err
 	}
+	if err := s.addOutboundColumn(ctx, "expires_at INTEGER"); err != nil {
+		return err
+	}
+	if err := s.migrateEmbeddedMihomoRuleProviders(ctx); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -2428,6 +2460,14 @@ func (s *Store) addListenerColumn(ctx context.Context, definition string) error 
 		return nil
 	}
 	return fmt.Errorf("migrate listeners table: %w", err)
+}
+
+func (s *Store) addOutboundColumn(ctx context.Context, definition string) error {
+	_, err := s.db.ExecContext(ctx, "ALTER TABLE outbounds ADD COLUMN "+definition)
+	if err == nil || strings.Contains(err.Error(), "duplicate column name") {
+		return nil
+	}
+	return fmt.Errorf("migrate outbounds table: %w", err)
 }
 
 func (s *Store) addFail2BanJailColumn(ctx context.Context, definition string) error {

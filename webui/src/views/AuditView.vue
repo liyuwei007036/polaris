@@ -2,7 +2,7 @@
 import { computed, inject, onMounted, reactive, ref } from 'vue'
 import { Refresh, Search } from '@element-plus/icons-vue'
 import { api } from '../api'
-import { formatDateTime, includesText } from '../format'
+import { formatDateTime, includesText, localTimeZoneLabel } from '../format'
 import PageHeader from '../components/PageHeader.vue'
 
 const appState = inject('appState')
@@ -16,6 +16,7 @@ const auditQuery = reactive({ page: 1, pageSize: 10, total: 0 })
 const taskKeyword = ref('')
 const auditKeyword = ref('')
 const nodeNames = computed(() => Object.fromEntries(appState.nodes.map((node) => [node.id, node.name])))
+const timeZoneLabel = localTimeZoneLabel()
 const taskKinds = {
   'singbox.apply_config': '更新连接服务配置',
   'singbox.install': '安装连接服务',
@@ -24,6 +25,7 @@ const taskKinds = {
   'fail2ban.apply': '更新自动封禁设置',
   'nginx.apply_config': '更新接入端口分配',
   'outbound.test': '检测上网出口',
+  'fail2ban.unban': '解封 IP',
 }
 const taskStatuses = {
   queued: ['等待处理', 'info'], dispatched: ['正在处理', 'warning'],
@@ -38,6 +40,7 @@ const targetNames = {
   ingress_route: '接入端口分配', route_rule: '服务器访问规则', task: '系统操作', cloudflare: '域名解析设置',
   cloudflare_record: '域名解析记录', fail2ban_jail: '自动封禁规则', mihomo_proxy_group: '代理分组',
   mihomo_routing_profile: '客户端访问规则', mihomo_client_config: '客户端配置',
+  mihomo_rule_provider: '规则供应商',
 }
 const actionNames = {
   created: '已创建', updated: '已修改', deleted: '已删除', replaced: '已更换', state_changed: '状态已修改',
@@ -92,6 +95,7 @@ onMounted(() => { loadTasks(); loadAudit() })
 <template>
   <div class="page-shell">
     <PageHeader title="操作记录">
+      <span class="subtle" style="margin-right: 12px">仅保留最近 7 天的记录（时间按本机时区 {{ timeZoneLabel }} 显示）</span>
       <el-button :icon="Refresh" @click="tab === 'tasks' ? loadTasks() : loadAudit()">刷新</el-button>
     </PageHeader>
     <main class="page-content">

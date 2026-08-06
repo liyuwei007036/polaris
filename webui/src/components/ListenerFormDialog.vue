@@ -14,6 +14,10 @@ import {
 const props = defineProps({
   modelValue: { type: Boolean, required: true },
   listener: { type: Object, default: null },
+  // template prefills the form for a new service copied from an existing one.
+  // Nothing is written until the operator saves, so the target server, name
+  // and users can all still be changed first.
+  template: { type: Object, default: null },
   nodes: { type: Array, default: () => [] },
   outbounds: { type: Array, default: () => [] },
   endpoints: { type: Array, default: () => [] },
@@ -60,16 +64,21 @@ watch(
   () => props.modelValue,
   async (open) => {
     if (!open) return
-    model.value = createListenerModel(props.listener, props.nodes[0]?.id || '')
-    accounts.value = props.listener
+    model.value = createListenerModel(props.listener || props.template, props.nodes[0]?.id || '')
+    // A copy reuses the source's users as new ones: their IDs are dropped so
+    // saving creates fresh accounts with their own credentials.
+    accounts.value = props.listener || props.template
       ? props.endpoints.map((endpoint) => ({
-          id: endpoint.id,
+          id: props.listener ? endpoint.id : '',
           name: endpoint.name,
-          alias: endpoint.alias || '',
+          alias: props.listener ? endpoint.alias || '' : `${endpoint.alias || endpoint.name} 副本`,
           enabled: endpoint.enabled,
           outbound_id: endpoint.outbound_id || 'direct',
         }))
-      : [{ id: '', name: randomAccountName(), alias: '', enabled: true, outbound_id: 'direct' }]
+      : []
+    if (!accounts.value.length) {
+      accounts.value = [{ id: '', name: randomAccountName(), alias: '', enabled: true, outbound_id: 'direct' }]
+    }
     normalizeProfile()
     await nextTick()
     formRef.value?.clearValidate()
@@ -91,7 +100,7 @@ function normalizeProfile() {
   model.value.network = protocol.network
   model.value.security = profile.security
   model.value.transport_type = profile.transport
-  if (!props.listener) {
+  if (!props.listener && !props.template) {
     model.value.name = `${profile.label} 接入服务`
     model.value.port = protocol.defaultPort || 443
   }
@@ -141,12 +150,16 @@ async function save() {
 <template>
   <el-dialog
     :model-value="modelValue"
-    :title="listener ? '修改接入服务' : '新建接入服务'"
+    :title="listener ? '修改接入服务' : template ? '复制接入服务' : '新建接入服务'"
     width="min(1040px, 96vw)"
     destroy-on-close
     @close="close"
   >
     <div class="listener-dialog-body">
+      <el-alert
+        v-if="template"
+        title="已带入原接入服务的配置，请选择目标服务器并确认端口、域名和用户后保存。用户会重新生成连接凭据，Reality 密钥也会重新生成。"
+        type="info" show-icon :closable="false" style="margin-bottom: 14px" />
       <div class="form-section">
         <div class="form-section__head">选择连接协议</div>
         <div class="protocol-select">

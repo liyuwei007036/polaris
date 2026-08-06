@@ -1,7 +1,7 @@
 <script setup>
 import { computed, inject, onMounted, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Delete, Edit, Plus, Refresh, Search } from '@element-plus/icons-vue'
+import { Delete, DocumentCopy, Edit, Plus, Refresh, Search } from '@element-plus/icons-vue'
 import { api, del, post, put } from '../api'
 import { includesText } from '../format'
 import { protocolMap } from '../protocols'
@@ -21,11 +21,17 @@ const outbounds = ref([])
 const endpointMap = ref({})
 const formOpen = ref(false)
 const editing = ref(null)
+const copying = ref(null)
+const copySourceID = ref('')
 const keyword = ref('')
 const selectedNode = ref('')
 const selectedStatus = ref('')
 
 const nodeNames = computed(() => Object.fromEntries(appState.nodes.map((item) => [item.id, item.name])))
+const formEndpoints = computed(() => {
+  const source = editing.value?.id || copySourceID.value
+  return source ? endpointMap.value[source] || [] : []
+})
 const filteredListeners = computed(() => listeners.value.filter((row) => {
   if (selectedNode.value && row.node_id !== selectedNode.value) return false
   if (selectedStatus.value && String(row.enabled) !== selectedStatus.value) return false
@@ -63,12 +69,32 @@ function securityLabel(listener) {
 
 function openCreate() {
   editing.value = null
+  copying.value = null
+  copySourceID.value = ''
   formOpen.value = true
 }
 
 async function openEdit(listener) {
   await loadEndpoints(listener.id)
   editing.value = listener
+  copying.value = null
+  copySourceID.value = ''
+  formOpen.value = true
+}
+
+// Copying only fills in the form. Nothing is created until the operator picks
+// the target server and saves, so a copy can be adjusted first.
+async function openCopy(listener) {
+  await loadEndpoints(listener.id)
+  editing.value = null
+  copySourceID.value = listener.id
+  copying.value = {
+    ...listener,
+    id: '',
+    name: `${listener.name} 副本`,
+    listen_address: '0.0.0.0',
+    backend_port: 0,
+  }
   formOpen.value = true
 }
 
@@ -82,8 +108,10 @@ async function saveListener(payload) {
       const accounts = payload.accounts.map(({ name, alias, enabled, outbound_id }) => ({ name, alias, enabled, outbound_id }))
       await post('/listeners/quick', { listener: payload.listener, accounts })
     }
-    ElMessage.success(editing.value ? '接入服务已保存，正在自动应用' : '接入服务已创建，正在自动应用')
+    ElMessage.success(editing.value ? '接入服务已保存，正在自动应用' : copying.value ? '接入服务已复制并创建，正在自动应用' : '接入服务已创建，正在自动应用')
     formOpen.value = false
+    copying.value = null
+    copySourceID.value = ''
     await load()
   } catch (error) {
     ElMessage.error(error instanceof Error ? error.message : '接入服务保存失败，请检查填写内容后重试')
@@ -193,9 +221,10 @@ onMounted(load)
               <el-tag :type="row.enabled ? 'success' : 'info'">{{ row.enabled ? '启用' : '停用' }}</el-tag>
             </template>
           </el-table-column>
-          <el-table-column label="操作" width="190" fixed="right" class-name="action-column">
+          <el-table-column label="操作" width="250" fixed="right" class-name="action-column">
             <template #default="{ row }">
               <el-button v-if="canWrite" link :icon="Edit" @click="openEdit(row)">编辑</el-button>
+              <el-button v-if="canWrite" link :icon="DocumentCopy" @click="openCopy(row)">复制</el-button>
               <el-button v-if="canWrite" link @click="toggle(row)">{{ row.enabled ? '停用' : '启用' }}</el-button>
               <el-button v-if="isAdmin" link type="danger" :icon="Delete" @click="removeListener(row)">删除</el-button>
             </template>
@@ -207,9 +236,10 @@ onMounted(load)
     <ListenerFormDialog
       v-model="formOpen"
       :listener="editing"
+      :template="copying"
       :nodes="appState.nodes"
       :outbounds="outbounds"
-      :endpoints="editing ? endpointMap[editing.id] || [] : []"
+      :endpoints="formEndpoints"
       :saving="saving"
       @save="saveListener"
     />

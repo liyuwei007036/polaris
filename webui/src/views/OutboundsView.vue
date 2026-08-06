@@ -3,7 +3,7 @@ import { computed, inject, onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Connection, Delete, Edit, Loading, Plus, Refresh, Search } from '@element-plus/icons-vue'
 import { api, del, friendlyError, post, put } from '../api'
-import { includesText } from '../format'
+import { formatDateTime, includesText, parseServerTime } from '../format'
 import { waitForTask } from '../live'
 import PageHeader from '../components/PageHeader.vue'
 import PagedTable from '../components/PagedTable.vue'
@@ -21,7 +21,7 @@ const testDialog = ref(false)
 const testing = ref(false)
 const testTarget = ref(null)
 const testResults = ref([])
-const form = reactive({ name: '', type: 'socks', server: '', server_port: 1080, username: '', password: '', enabled: true })
+const form = reactive({ name: '', type: 'socks', server: '', server_port: 1080, username: '', password: '', enabled: true, expires_at: '' })
 const keyword = ref('')
 const selectedType = ref('')
 const selectedStatus = ref('')
@@ -35,25 +35,40 @@ async function load() {
   loading.value = true
   try { rows.value = (await api('/outbounds')).outbounds || [] } finally { loading.value = false }
 }
+// The date is recorded for the operator's benefit only: nothing stops using an
+// expired outbound, so it is marked rather than hidden.
+function isExpired(row) {
+  const expiry = parseServerTime(row.expires_at)
+  return Boolean(expiry) && expiry.getTime() < Date.now()
+}
 function openCreate() {
   editing.value = null
-  Object.assign(form, { name: '', type: 'socks', server: '', server_port: 1080, username: '', password: '', enabled: true })
+  Object.assign(form, { name: '', type: 'socks', server: '', server_port: 1080, username: '', password: '', enabled: true, expires_at: '' })
   dialogOpen.value = true
 }
 function openEdit(row) {
   editing.value = row
-  Object.assign(form, { ...row, password: '' })
+  // The picker works in the visitor's own time zone; the value sent back is
+  // the UTC instant that time represents.
+  Object.assign(form, { ...row, password: '', expires_at: row.expires_at ? parseServerTime(row.expires_at) : '' })
   dialogOpen.value = true
 }
 async function save() {
   saving.value = true
   try {
-    const payload = { ...form, server_port: Number(form.server_port) }
+    const expiry = form.expires_at ? new Date(form.expires_at) : null
+    const payload = {
+      ...form,
+      server_port: Number(form.server_port),
+      expires_at: expiry && !Number.isNaN(expiry.getTime()) ? expiry.toISOString() : '',
+    }
     if (editing.value) await put(`/outbounds/${editing.value.id}`, payload)
     else await post('/outbounds', payload)
     ElMessage.success(editing.value ? '上网出口已保存' : '上网出口已创建')
     dialogOpen.value = false
     await load()
+  } catch (error) {
+    ElMessage.error(error instanceof Error ? error.message : '上网出口保存失败')
   } finally { saving.value = false }
 }
 async function toggle(row) {
@@ -149,6 +164,11 @@ onMounted(load)
           <el-table-column label="类型" width="110"><template #default="{ row }"><el-tag>{{ row.type.toUpperCase() }}</el-tag></template></el-table-column>
           <el-table-column label="服务器" min-width="220"><template #default="{ row }"><span class="mono">{{ row.type === 'direct' ? '服务器直连' : `${row.server}:${row.server_port}` }}</span></template></el-table-column>
           <el-table-column label="登录用户名" prop="username" min-width="140"><template #default="{ row }">{{ row.username || '—' }}</template></el-table-column>
+          <el-table-column label="过期时间" width="180">
+            <template #default="{ row }">
+              <span :class="{ 'expired-text': isExpired(row) }">{{ formatDateTime(row.expires_at, '未设置') }}</span>
+            </template>
+          </el-table-column>
           <el-table-column label="状态" width="90"><template #default="{ row }"><el-tag :type="row.enabled ? 'success' : 'info'">{{ row.enabled ? '启用' : '停用' }}</el-tag></template></el-table-column>
           <el-table-column label="操作" width="250" fixed="right" class-name="action-column">
             <template #default="{ row }">
@@ -173,6 +193,12 @@ onMounted(load)
           <el-col :span="8"><el-form-item label="端口" required><el-input-number v-model="form.server_port" :min="1" :max="65535" style="width: 100%" /></el-form-item></el-col>
           <el-col :span="12"><el-form-item label="用户名"><el-input v-model="form.username" /></el-form-item></el-col>
           <el-col :span="12"><el-form-item :label="editing ? '新密码（留空则不变）' : '密码'"><el-input v-model="form.password" type="password" show-password /></el-form-item></el-col>
+          <el-col :span="24">
+            <el-form-item label="过期时间">
+              <el-date-picker v-model="form.expires_at" type="datetime" placeholder="选填，仅用于提醒" style="width: 100%" />
+              <div class="subtle" style="margin-top: 6px">仅作展示提醒，到期后系统不会自动停用该出口。</div>
+            </el-form-item>
+          </el-col>
         </el-row>
       </el-form>
       <template #footer><el-button @click="dialogOpen = false">取消</el-button><el-button type="primary" :loading="saving" :disabled="!form.name || !form.server" @click="save">保存</el-button></template>
@@ -217,3 +243,7 @@ onMounted(load)
     </el-dialog>
   </div>
 </template>
+
+<style scoped>
+.expired-text { color: var(--el-color-danger); }
+</style>

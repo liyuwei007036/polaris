@@ -372,12 +372,6 @@ func rewriteMihomoClientActions(ctx context.Context, tx *sql.Tx, oldName, newNam
 				changed = true
 			}
 		}
-		for index := range rules.RuleProviders {
-			if strings.EqualFold(rules.RuleProviders[index].Proxy, oldName) {
-				rules.RuleProviders[index].Proxy = newName
-				changed = true
-			}
-		}
 		if changed {
 			rules.RawRules = formatMihomoRules(rules.Rules)
 			value, err := json.Marshal(rules)
@@ -395,6 +389,12 @@ func rewriteMihomoClientActions(ctx context.Context, tx *sql.Tx, oldName, newNam
 		if _, err := tx.ExecContext(ctx, `UPDATE mihomo_client_configs_v3 SET rules_json = ?, updated_at = ? WHERE id = ?`, item.rules, nowUnix(), item.id); err != nil {
 			return err
 		}
+	}
+	// A rule provider names its download proxy, so a renamed group or node has
+	// to be followed there as well or the provider would point at a proxy that
+	// no longer exists.
+	if _, err := tx.ExecContext(ctx, `UPDATE mihomo_rule_providers SET proxy = ?, updated_at = ? WHERE proxy = ? COLLATE NOCASE`, newName, nowUnix(), oldName); err != nil {
+		return fmt.Errorf("rewrite rule provider download proxy: %w", err)
 	}
 	return nil
 }

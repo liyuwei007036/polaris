@@ -196,6 +196,109 @@ func (s *Server) createMihomoClientConfig(w http.ResponseWriter, r *http.Request
 	writeJSON(w, http.StatusCreated, created)
 }
 
+// copyMihomoClientConfig duplicates a configuration under a new name. The copy
+// gets its own update address: sharing one would mean revoking either config's
+// address revoked the other's too.
+func (s *Server) copyMihomoClientConfig(w http.ResponseWriter, r *http.Request) {
+	operator, err := s.writer(r)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	var input struct {
+		Name string `json:"name"`
+	}
+	if !decodeJSON(w, r, &input) {
+		return
+	}
+	created, err := s.store.CopyMihomoClientConfig(r.Context(), r.PathValue("id"), input.Name)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	if err := s.store.AppendAudit(r.Context(), operator.ID, "mihomo.client_config.created", "mihomo_client_config", created.ID, "Mihomo client config copied"); err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, created)
+}
+
+func (s *Server) listMihomoRuleProviders(w http.ResponseWriter, r *http.Request) {
+	if _, err := s.operator(r, false); err != nil {
+		writeError(w, err)
+		return
+	}
+	providers, err := s.store.ListMihomoRuleProviders(r.Context())
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"rule_providers": providers})
+}
+
+func (s *Server) createMihomoRuleProvider(w http.ResponseWriter, r *http.Request) {
+	operator, err := s.writer(r)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	var input MihomoRuleProvider
+	if !decodeJSON(w, r, &input) {
+		return
+	}
+	created, err := s.store.CreateMihomoRuleProvider(r.Context(), input)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	if err := s.store.AppendAudit(r.Context(), operator.ID, "mihomo.rule_provider.created", "mihomo_rule_provider", created.ID, "Mihomo rule provider created"); err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, created)
+}
+
+func (s *Server) updateMihomoRuleProvider(w http.ResponseWriter, r *http.Request) {
+	operator, err := s.writer(r)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	var input MihomoRuleProvider
+	if !decodeJSON(w, r, &input) {
+		return
+	}
+	input.ID = r.PathValue("id")
+	updated, err := s.store.UpdateMihomoRuleProvider(r.Context(), input)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	if err := s.store.AppendAudit(r.Context(), operator.ID, "mihomo.rule_provider.updated", "mihomo_rule_provider", updated.ID, "Mihomo rule provider updated"); err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, updated)
+}
+
+func (s *Server) deleteMihomoRuleProvider(w http.ResponseWriter, r *http.Request) {
+	operator, err := s.admin(r)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	id := r.PathValue("id")
+	if err := s.store.DeleteMihomoRuleProvider(r.Context(), id); err != nil {
+		writeError(w, err)
+		return
+	}
+	if err := s.store.AppendAudit(r.Context(), operator.ID, "mihomo.rule_provider.deleted", "mihomo_rule_provider", id, "Mihomo rule provider deleted"); err != nil {
+		writeError(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
 func (s *Server) updateMihomoClientConfig(w http.ResponseWriter, r *http.Request) {
 	operator, err := s.writer(r)
 	if err != nil {

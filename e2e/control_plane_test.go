@@ -311,16 +311,20 @@ func TestControlPlaneProcessJourneyWithRealAgent(t *testing.T) {
 			return members
 		}(),
 	}, true, http.StatusCreated, &proxyGroup)
+	var ruleProvider struct {
+		ID string `json:"id"`
+	}
+	api.mustJSON(t, http.MethodPost, "/api/v1/mihomo/rule-providers", map[string]any{
+		"name": "远程代理规则", "behavior": "domain", "format": "mrs",
+		"url": "https://rules.example.test/proxy.mrs", "path": "./ruleset/proxy.mrs",
+		"interval": 86400, "proxy": "DIRECT",
+	}, true, http.StatusCreated, &ruleProvider)
 	var clientConfig struct {
 		ID string `json:"id"`
 	}
 	api.mustJSON(t, http.MethodPost, "/api/v1/mihomo/client-configs", map[string]any{
 		"name": "E2E 客户端", "proxy_group_ids": []string{proxyGroup.ID},
-		"rule_mode": "table", "rule_providers": []map[string]any{{
-			"name": "远程代理规则", "behavior": "domain", "format": "mrs",
-			"url": "https://rules.example.test/proxy.mrs", "path": "./ruleset/proxy.mrs",
-			"interval": 86400, "proxy": "DIRECT",
-		}},
+		"rule_mode": "table", "rule_provider_ids": []string{ruleProvider.ID},
 		"rules": []map[string]any{
 			{"type": "RULE-SET", "value": "远程代理规则", "action": "全部节点"},
 			{"type": "GEOSITE", "value": "CN", "action": "DIRECT"},
