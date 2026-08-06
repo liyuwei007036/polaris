@@ -120,13 +120,18 @@ func TestFail2BanJailsBanThroughNftables(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(jail, "banaction = nftables-multiport") {
-		t.Fatalf("jail does not ban through nftables:\n%s", jail)
+	// An unset port list means "this address may not connect at all", which
+	// is the allports action; multiport would only ever cover TCP and UDP.
+	if !strings.Contains(jail, "banaction = nftables-allports") {
+		t.Fatalf("jail does not block the address on every port:\n%s", jail)
 	}
-	// An unset port list must block the address outright, which is what
-	// "stop this IP connecting" means.
-	if !strings.Contains(jail, "port = 0:65535") {
-		t.Fatalf("jail does not block every port by default:\n%s", jail)
+	if strings.Contains(jail, "\nport = ") {
+		t.Fatalf("an allports ban must not narrow itself with a port list:\n%s", jail)
+	}
+	// Fail2Ban's nftables actions cover TCP only unless told otherwise, which
+	// would leave every UDP service reachable by a banned address.
+	if !strings.Contains(jail, "protocol = tcp,udp") {
+		t.Fatalf("jail bans TCP only, leaving UDP open:\n%s", jail)
 	}
 }
 

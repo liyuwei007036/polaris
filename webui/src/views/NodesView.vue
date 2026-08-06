@@ -189,7 +189,8 @@ onBeforeUnmount(() => {
           <el-table-column label="当前下载 / 上传" min-width="180">
             <template #default="{ row }">
               <span v-if="live.get(row.id)?.has_rates" class="mono">↓ {{ formatBytes(live.get(row.id).received_rate, '/s') }} · ↑ {{ formatBytes(live.get(row.id).sent_rate, '/s') }}</span>
-              <span v-else class="subtle">{{ row.online ? '正在测量' : '离线' }}</span>
+              <span v-else-if="!row.online" class="subtle">离线</span>
+              <span v-else class="subtle">等待连接服务上报</span>
             </template>
           </el-table-column>
           <el-table-column label="累计下载 / 上传" min-width="190">

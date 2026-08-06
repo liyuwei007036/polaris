@@ -145,16 +145,20 @@ func applyFail2Ban(ctx context.Context, task Task) TaskResult {
 		}
 		return TaskResult{Status: "failed", Summary: commandSummary("fail2ban-client -t", output, err) + "; rollback did not complete"}
 	}
-	if output, err := exec.CommandContext(ctx, "systemctl", "reload-or-restart", "fail2ban.service").CombinedOutput(); err != nil {
+	// A restart, not a reload. Reloading re-reads the jails but never runs a
+	// ban action's actionstart, so the nftables table and chain the bans go
+	// into are never created: Fail2Ban then reports addresses as banned while
+	// the kernel keeps letting them straight through.
+	if output, err := exec.CommandContext(ctx, "systemctl", "restart", "fail2ban.service").CombinedOutput(); err != nil {
 		if restore() {
-			_, _ = exec.CommandContext(ctx, "systemctl", "reload-or-restart", "fail2ban.service").CombinedOutput()
-			return TaskResult{Status: "rolled_back", Summary: commandSummary("systemctl reload-or-restart fail2ban.service", output, err) + "; restored previous fail2ban configuration"}
+			_, _ = exec.CommandContext(ctx, "systemctl", "restart", "fail2ban.service").CombinedOutput()
+			return TaskResult{Status: "rolled_back", Summary: commandSummary("systemctl restart fail2ban.service", output, err) + "; restored previous fail2ban configuration"}
 		}
-		return TaskResult{Status: "failed", Summary: commandSummary("systemctl reload-or-restart fail2ban.service", output, err) + "; rollback did not complete"}
+		return TaskResult{Status: "failed", Summary: commandSummary("systemctl restart fail2ban.service", output, err) + "; rollback did not complete"}
 	}
 	if output, err := exec.CommandContext(ctx, "systemctl", "is-active", "--quiet", "fail2ban.service").CombinedOutput(); err != nil {
 		if restore() {
-			_, _ = exec.CommandContext(ctx, "systemctl", "reload-or-restart", "fail2ban.service").CombinedOutput()
+			_, _ = exec.CommandContext(ctx, "systemctl", "restart", "fail2ban.service").CombinedOutput()
 			return TaskResult{Status: "rolled_back", Summary: commandSummary("systemctl is-active fail2ban.service", output, err) + "; restored previous fail2ban configuration"}
 		}
 		return TaskResult{Status: "failed", Summary: "fail2ban.service is not active after reload and rollback did not complete"}

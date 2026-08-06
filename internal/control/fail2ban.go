@@ -90,18 +90,23 @@ func CompileFail2Ban(jails []Fail2BanJail) (string, map[string]string, error) {
 		// all — the jail counts failures and reports them while every blocked
 		// address keeps connecting. This project manages the firewall with
 		// nftables, so the ban action has to match.
-		jailOutput.WriteString("banaction = nftables-multiport\nbanaction_allports = nftables-allports\n")
-		jailOutput.WriteString("port = " + jailPorts(jail) + "\n")
+		//
+		// Without a port list the intent is "this address may not connect at
+		// all", which is the allports action: multiport with a full range
+		// would still only cover TCP and UDP.
+		//
+		// The protocol list matters just as much: Fail2Ban's nftables actions
+		// default to TCP only, so a "blocked" address could still reach every
+		// UDP service — including the QUIC-based proxies this tool manages.
+		if ports := strings.TrimSpace(jail.Ports); ports == "" {
+			jailOutput.WriteString("banaction = nftables-allports\nbanaction_allports = nftables-allports\n")
+		} else {
+			jailOutput.WriteString("banaction = nftables-multiport\nbanaction_allports = nftables-allports\n")
+			jailOutput.WriteString("port = " + ports + "\n")
+		}
+		jailOutput.WriteString("protocol = tcp,udp\n")
 		jailOutput.WriteString(fmt.Sprintf("maxretry = %d\nfindtime = %d\nbantime = %d\n\n", jail.MaxRetry, jail.FindTimeSeconds, jail.BanTimeSeconds))
 	}
 	return jailOutput.String(), filters, nil
 }
 
-// jailPorts reports which ports a ban covers. Blocking the offender outright
-// is the useful default for a proxy host, so an unset value means every port.
-func jailPorts(jail Fail2BanJail) string {
-	if strings.TrimSpace(jail.Ports) == "" {
-		return "0:65535"
-	}
-	return strings.TrimSpace(jail.Ports)
-}
