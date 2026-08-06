@@ -123,6 +123,7 @@ func (s *Server) registerBrowserRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/v1/operators/{id}/totp/reset", s.resetOperatorTOTP)
 	mux.HandleFunc("POST /api/v1/nodes/registration-tokens", s.createRegistrationToken)
 	mux.HandleFunc("GET /api/v1/nodes", s.listNodes)
+	mux.HandleFunc("PUT /api/v1/nodes/{id}", s.updateNode)
 	mux.HandleFunc("PUT /api/v1/nodes/{id}/name", s.setNodeName)
 	mux.HandleFunc("PUT /api/v1/nodes/{id}/client-address", s.setNodeClientAddress)
 	mux.HandleFunc("GET /api/v1/nodes/metrics", s.allNodeMetrics)
@@ -981,6 +982,37 @@ func (s *Server) setNodeClientAddress(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := s.store.AppendAudit(r.Context(), operator.ID, "node.client_address_updated", "node", nodeID, "client connection address updated"); err != nil {
+		writeError(w, err)
+		return
+	}
+	node, err := s.store.GetNode(r.Context(), nodeID)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, node)
+}
+
+// updateNode saves a node's name and client address in one request.
+func (s *Server) updateNode(w http.ResponseWriter, r *http.Request) {
+	operator, err := s.writer(r)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	var input struct {
+		Name    string `json:"name"`
+		Address string `json:"client_address"`
+	}
+	if !decodeJSON(w, r, &input) {
+		return
+	}
+	nodeID := r.PathValue("id")
+	if err := s.store.UpdateNode(r.Context(), nodeID, input.Name, input.Address); err != nil {
+		writeError(w, err)
+		return
+	}
+	if err := s.store.AppendAudit(r.Context(), operator.ID, "node.updated", "node", nodeID, "node name and client address updated"); err != nil {
 		writeError(w, err)
 		return
 	}

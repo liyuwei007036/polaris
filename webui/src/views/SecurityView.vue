@@ -34,48 +34,52 @@ const filteredJails = computed(() => jails.value.filter((row) => {
 const firewallOpen = ref(false)
 const jailOpen = ref(false)
 const firewall = reactive({ node_id: '', action: 'accept', protocol: 'tcp', cidr: '0.0.0.0/0', port: 443, enabled: true })
-const jail = reactive({ node_id: '', name: '', log_path: '', filter_name: '', fail_regex: '', max_retry: 5, find_time_seconds: 600, ban_time_seconds: 3600, enabled: true })
-const selectedTemplate = ref('auth')
+const jail = reactive({ node_id: '', name: '', log_path: '', filter_name: '', fail_regex: '', max_retry: 5, find_time_seconds: 600, ban_time_seconds: 3600, ports: '', enabled: true })
+const selectedTemplate = ref('sshd')
 
 // sing-box writes this log because the compiled configuration points it here;
-// a jail watching any other path will simply never match anything.
+// a jail watching any other path will never match anything.
 const singBoxLogPath = '/var/log/sing-box/sing-box.log'
 
-// Hand-writing a fail2ban regex is the step that made this feature unusable
-// for most operators, so the common cases ship as ready-made presets.
+// Automatic banning is a system-level control: a matching IP is blocked by
+// the server's firewall and cannot connect at all. The presets cover the
+// usual sources of attack traffic so nobody has to hand-write a regex.
 const templates = {
-  auth: {
-    label: '连接认证失败（推荐）',
-    description: '客户端使用错误的密码或 UUID 反复尝试连接时封禁其 IP。',
-    name: 'singbox-auth',
-    filter_name: 'singbox-auth',
+  sshd: {
+    label: 'SSH 暴力破解（推荐）',
+    description: '反复尝试登录服务器 SSH 的来源 IP 会被系统防火墙封禁，无法再连接本服务器的任何端口。',
+    name: 'ssh-bruteforce',
+    filter_name: 'ssh-bruteforce',
+    log_path: '/var/log/auth.log',
+    fail_regex: '^.*sshd.*(Failed password|Invalid user|Connection closed by authenticating user).* from <HOST>.*$',
+    max_retry: 5,
+    find_time_seconds: 600,
+    ban_time_seconds: 86400,
+    ports: '',
+  },
+  proxyauth: {
+    label: '代理认证失败',
+    description: '使用错误的密码或 UUID 反复尝试连接代理服务的来源 IP 会被系统防火墙封禁。',
+    name: 'proxy-auth',
+    filter_name: 'proxy-auth',
     log_path: singBoxLogPath,
     fail_regex: '^.*inbound/.*: process connection from <HOST>:\\d+:.*(authenticat|password|user).*$',
     max_retry: 5,
     find_time_seconds: 600,
     ban_time_seconds: 3600,
+    ports: '',
   },
-  flood: {
-    label: '连接异常中断过多',
-    description: '同一 IP 在短时间内产生大量失败连接时封禁，用于抵御扫描和探测。',
-    name: 'singbox-flood',
-    filter_name: 'singbox-flood',
+  scan: {
+    label: '端口扫描与探测',
+    description: '短时间内产生大量失败连接的来源 IP 会被系统防火墙封禁，用于抵御扫描和探测。',
+    name: 'port-scan',
+    filter_name: 'port-scan',
     log_path: singBoxLogPath,
     fail_regex: '^.*inbound/.*: process connection from <HOST>:\\d+: .*$',
     max_retry: 60,
     find_time_seconds: 60,
     ban_time_seconds: 1800,
-  },
-  sshd: {
-    label: 'SSH 登录失败',
-    description: '保护服务器自身的 SSH 端口，封禁反复登录失败的 IP。',
-    name: 'sshd-auth',
-    filter_name: 'sshd-auth',
-    log_path: '/var/log/auth.log',
-    fail_regex: '^.*sshd.*(Failed password|Invalid user).* from <HOST>.*$',
-    max_retry: 5,
-    find_time_seconds: 600,
-    ban_time_seconds: 3600,
+    ports: '',
   },
   custom: { label: '自定义规则', description: '自行填写要检查的日志文件和匹配规则。' },
 }
@@ -91,6 +95,7 @@ function applyTemplate(key) {
     max_retry: template.max_retry,
     find_time_seconds: template.find_time_seconds,
     ban_time_seconds: template.ban_time_seconds,
+    ports: template.ports,
   })
 }
 
@@ -174,9 +179,9 @@ async function removeFirewall(row) {
 }
 
 function addJail() {
-  Object.assign(jail, { node_id: defaultNode(), name: '', log_path: singBoxLogPath, filter_name: '', fail_regex: '', max_retry: 5, find_time_seconds: 600, ban_time_seconds: 3600, enabled: true })
-  selectedTemplate.value = 'auth'
-  applyTemplate('auth')
+  Object.assign(jail, { node_id: defaultNode(), name: '', log_path: '', filter_name: '', fail_regex: '', max_retry: 5, find_time_seconds: 600, ban_time_seconds: 3600, ports: '', enabled: true })
+  selectedTemplate.value = 'sshd'
+  applyTemplate('sshd')
   jailOpen.value = true
 }
 
@@ -244,8 +249,9 @@ onMounted(load)
             <PagedTable :rows="filteredJails" :loading="loading" empty-text="还没有自动封禁规则">
               <el-table-column label="服务器" min-width="150"><template #default="{ row }">{{ nodeNames[row.node_id] || row.node_id }}</template></el-table-column>
               <el-table-column label="规则名称" prop="name" min-width="150" />
-              <el-table-column label="检查的日志文件" prop="log_path" min-width="240" />
+              <el-table-column label="检查的日志文件" prop="log_path" min-width="220" />
               <el-table-column label="允许失败次数" prop="max_retry" width="120" />
+              <el-table-column label="封禁范围" width="140"><template #default="{ row }">{{ row.ports || '全部端口' }}</template></el-table-column>
               <el-table-column label="封禁时间" width="120"><template #default="{ row }">{{ row.ban_time_seconds }} 秒</template></el-table-column>
               <el-table-column label="状态" width="90"><template #default="{ row }">{{ row.enabled ? '启用' : '停用' }}</template></el-table-column>
               <el-table-column label="服务器上的运行情况" min-width="230">
@@ -303,7 +309,11 @@ onMounted(load)
           <el-col :span="8"><el-form-item label="统计时间范围（秒）"><el-input-number v-model="jail.find_time_seconds" :min="1" style="width: 100%" /></el-form-item></el-col>
           <el-col :span="8"><el-form-item label="封禁时长（秒）"><el-input-number v-model="jail.ban_time_seconds" :min="1" style="width: 100%" /></el-form-item></el-col>
         </el-row>
-        <el-alert title="保存后会自动下发到所选服务器：未安装 Fail2Ban 的服务器会自动安装并启动，缺少的日志文件也会自动创建。" type="info" show-icon :closable="false" />
+        <el-form-item label="封禁范围">
+          <el-input v-model="jail.ports" placeholder="留空表示禁止该 IP 连接本服务器的所有端口" />
+          <div class="subtle" style="margin-top: 6px">如只想封禁特定端口，可填写如 22 或 443,8443，多个端口用逗号分隔。</div>
+        </el-form-item>
+        <el-alert title="触发条件后，服务器防火墙会直接拒绝该 IP 的连接。未安装 Fail2Ban 或 nftables 的服务器会自动安装，缺少的日志文件也会自动创建。" type="info" show-icon :closable="false" />
       </el-form>
       <template #footer><el-button @click="jailOpen = false">取消</el-button><el-button type="primary" :loading="publishing" :disabled="!jail.name || !jail.filter_name || !jail.fail_regex || !jail.log_path" @click="saveJail">保存</el-button></template>
     </el-dialog>

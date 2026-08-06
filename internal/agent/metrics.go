@@ -41,10 +41,15 @@ func CollectMetrics() MetricReport {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 	report.Health.SingBoxService = collectSingBoxServiceHealth(ctx)
-	if connections, err := collectConnections(ctx); err == nil {
+	if connections, traffic, err := collectConnectionsAndTraffic(ctx); err == nil {
 		report.Connections = connections
 		report.Capabilities["connection"] = MetricCapability{CumulativeTraffic: true, InstantRate: false, ConnectionCount: true, Source: "sing-box clash_api " + clashAPIBase, Precision: "per_connection"}
 		report.Health.ClashAPIAvailable = true
+		if traffic.Available {
+			// Proxied traffic, not host interface totals: this is the number
+			// that stays at zero while nothing is being proxied.
+			report.Proxy = map[string]uint64{"received_bytes": traffic.ReceivedBytes, "sent_bytes": traffic.SentBytes}
+		}
 	}
 	report.Fail2Ban = CollectFail2BanStatus(ctx)
 	received, sent, ok := NodeTrafficCounters()
@@ -139,30 +144,51 @@ func collectSingBoxServiceHealth(ctx context.Context) string {
 	return "inactive"
 }
 
+// ProxyTraffic is sing-box's own cumulative byte count for traffic it
+// carried. It is what an operator means by "traffic": the host interface
+// counters also include SSH, package updates and everything else on the box,
+// which is why a node with no connections at all still appeared to be
+// pushing data.
+type ProxyTraffic struct {
+	ReceivedBytes uint64
+	SentBytes     uint64
+	Available     bool
+}
+
 // CollectConnections independently polls the local Clash API for the current
 // connection list. It is used by the fast real-time push loop, which runs on
 // its own short interval decoupled from the slower heartbeat.
 func CollectConnections(ctx context.Context) ([]ConnectionInfo, error) {
-	return collectConnections(ctx)
+	connections, _, err := collectConnectionsAndTraffic(ctx)
+	return connections, err
 }
 
-// collectConnections reads current connections from the loopback sing-box
-// Clash API. Every value is copied verbatim; absent fields stay empty.
-func collectConnections(ctx context.Context) ([]ConnectionInfo, error) {
+// CollectConnectionsAndTraffic returns the open connections together with
+// sing-box's cumulative proxied byte counts from the same single request.
+func CollectConnectionsAndTraffic(ctx context.Context) ([]ConnectionInfo, ProxyTraffic, error) {
+	return collectConnectionsAndTraffic(ctx)
+}
+
+// collectConnectionsAndTraffic reads the current connections and sing-box's
+// cumulative proxied byte counts from the loopback Clash API. Every value is
+// copied verbatim; absent fields stay empty.
+func collectConnectionsAndTraffic(ctx context.Context) ([]ConnectionInfo, ProxyTraffic, error) {
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, clashAPIBase+"/connections", nil)
 	if err != nil {
-		return nil, err
+		return nil, ProxyTraffic{}, err
 	}
 	response, err := (&http.Client{Timeout: 3 * time.Second}).Do(request)
 	if err != nil {
-		return nil, err
+		return nil, ProxyTraffic{}, err
 	}
 	defer response.Body.Close()
 	if response.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("clash API returned HTTP %d", response.StatusCode)
+		return nil, ProxyTraffic{}, fmt.Errorf("clash API returned HTTP %d", response.StatusCode)
 	}
 	var payload struct {
-		Connections []struct {
+		DownloadTotal uint64 `json:"downloadTotal"`
+		UploadTotal   uint64 `json:"uploadTotal"`
+		Connections   []struct {
 			ID       string `json:"id"`
 			Metadata struct {
 				Network         string `json:"network"`
@@ -182,8 +208,9 @@ func collectConnections(ctx context.Context) ([]ConnectionInfo, error) {
 		} `json:"connections"`
 	}
 	if err := json.NewDecoder(io.LimitReader(response.Body, 8*1024*1024)).Decode(&payload); err != nil {
-		return nil, err
+		return nil, ProxyTraffic{}, err
 	}
+	traffic := ProxyTraffic{ReceivedBytes: payload.DownloadTotal, SentBytes: payload.UploadTotal, Available: true}
 	const maximumConnections = 1000
 	connections := make([]ConnectionInfo, 0, len(payload.Connections))
 	for index, connection := range payload.Connections {
@@ -217,5 +244,5 @@ func collectConnections(ctx context.Context) ([]ConnectionInfo, error) {
 		}
 		connections = append(connections, info)
 	}
-	return connections, nil
+	return connections, traffic, nil
 }

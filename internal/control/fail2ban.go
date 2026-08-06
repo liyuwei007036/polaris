@@ -18,6 +18,9 @@ type Fail2BanJail struct {
 	FindTimeSeconds uint32 `json:"find_time_seconds"`
 	BanTimeSeconds  uint32 `json:"ban_time_seconds"`
 	Enabled         bool   `json:"enabled"`
+	// Ports the ban applies to, in Fail2Ban syntax. Empty blocks the banned
+	// address on every port, which is what "禁止这个 IP 连接" means.
+	Ports string `json:"ports,omitempty"`
 }
 
 // fail2banNamePattern restricts jail and filter names to a safe character set
@@ -48,8 +51,15 @@ func validateFail2BanJail(jail Fail2BanJail) error {
 	if jail.MaxRetry == 0 || jail.FindTimeSeconds == 0 || jail.BanTimeSeconds == 0 {
 		return errors.New("fail2ban jail retry and time values are required")
 	}
+	if jail.Ports != "" && !fail2banPortsPattern.MatchString(jail.Ports) {
+		return errors.New("fail2ban jail ports must be a comma-separated list of ports or ranges")
+	}
 	return nil
 }
+
+// fail2banPortsPattern keeps the port list to digits, ranges and commas so it
+// cannot break out of the generated INI value.
+var fail2banPortsPattern = regexp.MustCompile(`^[0-9]{1,5}(:[0-9]{1,5})?(,[0-9]{1,5}(:[0-9]{1,5})?)*$`)
 
 // CompileFail2Ban renders the managed jail configuration and one filter file
 // per referenced filter name. Filter files live in the sb-control- namespace so
@@ -75,7 +85,23 @@ func CompileFail2Ban(jails []Fail2BanJail) (string, map[string]string, error) {
 		jailOutput.WriteString("enabled = true\n")
 		jailOutput.WriteString("filter = " + managedFilter + "\n")
 		jailOutput.WriteString("logpath = " + jail.LogPath + "\n")
+		// A ban has to actually reach the kernel. Fail2Ban still defaults to
+		// iptables, which on an nftables-only host silently bans nothing at
+		// all — the jail counts failures and reports them while every blocked
+		// address keeps connecting. This project manages the firewall with
+		// nftables, so the ban action has to match.
+		jailOutput.WriteString("banaction = nftables-multiport\nbanaction_allports = nftables-allports\n")
+		jailOutput.WriteString("port = " + jailPorts(jail) + "\n")
 		jailOutput.WriteString(fmt.Sprintf("maxretry = %d\nfindtime = %d\nbantime = %d\n\n", jail.MaxRetry, jail.FindTimeSeconds, jail.BanTimeSeconds))
 	}
 	return jailOutput.String(), filters, nil
+}
+
+// jailPorts reports which ports a ban covers. Blocking the offender outright
+// is the useful default for a proxy host, so an unset value means every port.
+func jailPorts(jail Fail2BanJail) string {
+	if strings.TrimSpace(jail.Ports) == "" {
+		return "0:65535"
+	}
+	return strings.TrimSpace(jail.Ports)
 }

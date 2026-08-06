@@ -27,13 +27,17 @@ button, input, textarea, select { font: inherit; }
 .page-header { height: 64px; flex: none; display: flex; align-items: center; padding: 0 24px; background: #fff; border-bottom: 1px solid var(--sb-border); }
 .page-header__title { margin: 0; font-size: 18px; font-weight: 680; line-height: 1.25; color: #101828; letter-spacing: 0; }
 .page-header__actions { margin-left: auto; display: flex; gap: 10px; align-items: center; }
-/* Pages fit the viewport instead of growing: tables paginate, so the content
-   column never needs its own scrollbar. Anything genuinely taller than the
-   viewport still scrolls rather than being clipped. */
+/* Pages fit the viewport: the table panel takes the leftover height and its
+   rows scroll inside it, so the pager and the toolbars stay put. Content that
+   genuinely cannot fit still scrolls rather than being clipped. */
 .page-content { flex: 1; min-height: 0; display: flex; flex-direction: column; overflow: auto; padding: 20px 24px 24px; scrollbar-width: none; }
 .page-content::-webkit-scrollbar { display: none; }
 .page-content--tight { padding-top: 16px; }
-.page-content > .table-panel { min-height: 0; }
+.page-content > .table-panel { flex: 1 1 auto; min-height: 240px; display: flex; flex-direction: column; }
+.page-content > .table-panel > .paged-table { flex: 1; min-height: 0; }
+/* A secondary list on a page keeps its natural height so the main one gets
+   the leftover space. */
+.page-content > .table-panel--fixed { flex: 0 0 auto; min-height: 0; }
 .toolbar { display: flex; gap: 10px; align-items: center; margin-bottom: 16px; flex: none; }
 .search-toolbar { flex: none; display: flex; flex-wrap: wrap; gap: 10px; align-items: center; padding: 14px 16px; background: #fff; border: 1px solid var(--sb-border); border-bottom: 0; border-radius: 7px 7px 0 0; }
 .search-toolbar + .table-panel { border-radius: 0 0 7px 7px; }
@@ -110,8 +114,14 @@ button, input, textarea, select { font: inherit; }
 .el-form-item__label { color: #344054; font-size: 13px; font-weight: 550; }
 .el-card { --el-card-border-color: var(--sb-border); }
 .el-tag { border-radius: 4px; }
-.panel-tabs > .el-tabs__header { margin: 0; padding: 0 18px; }
+.panel-tabs > .el-tabs__header { margin: 0; padding: 0 18px; flex: none; }
 .panel-tabs > .el-tabs__content { padding-top: 0; }
+/* Tabbed pages hand the leftover height down to the active pane's table.
+   Inactive panes keep their inline display:none, which outranks this. */
+.page-content > .table-panel > .panel-tabs { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.panel-tabs > .el-tabs__content { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.panel-tabs > .el-tabs__content > .el-tab-pane { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.panel-tabs .el-tab-pane > .paged-table { flex: 1; min-height: 0; }
 .tab-actions { display: flex; justify-content: flex-end; gap: 10px; padding: 14px 16px; border-bottom: 1px solid var(--sb-border); }
 .tab-actions--start { justify-content: flex-start; }
 .pagination-bar { flex: none; display: flex; justify-content: flex-end; padding: 12px 16px; border-top: 1px solid var(--sb-border); }

@@ -72,8 +72,30 @@ func (s *Server) handleAgentConn(ctx context.Context, raw net.Conn) {
 	if err := conn.WriteMessage(wire.MsgRegisterAck, ackBody); err != nil {
 		return
 	}
+	// The address the agent dialled in from is the one clients can reach it
+	// on, so a node is usable as soon as it is approved. It is only used when
+	// nobody has entered an address by hand.
+	if address := connectingAddress(raw); address != "" {
+		if err := s.store.SetNodeObservedAddress(ctx, node.ID, address); err != nil {
+			log.Printf("record observed address for node %s: %v", node.ID, err)
+		}
+	}
 	_ = raw.SetDeadline(time.Time{})
 	s.runAgentSession(ctx, conn, node)
+}
+
+// connectingAddress reports the agent's source IP, skipping loopback and
+// unspecified addresses, which tell a client nothing about how to reach it.
+func connectingAddress(raw net.Conn) string {
+	host, _, err := net.SplitHostPort(raw.RemoteAddr().String())
+	if err != nil {
+		return ""
+	}
+	ip := net.ParseIP(host)
+	if ip == nil || ip.IsLoopback() || ip.IsUnspecified() || ip.IsLinkLocalUnicast() {
+		return ""
+	}
+	return ip.String()
 }
 
 // handleRegistrationAttempt handles a connection from a public key that is
@@ -242,6 +264,9 @@ func (s *Server) handleAgentMessage(ctx context.Context, node Node, msgType byte
 			m.Connections = nil
 			if st.HasNodeTotals {
 				m.Node = map[string]uint64{"received_bytes": st.NodeReceivedBytes, "sent_bytes": st.NodeSentBytes}
+			}
+			if st.HasProxyTotals {
+				m.Proxy = map[string]uint64{"received_bytes": st.ProxyReceivedBytes, "sent_bytes": st.ProxySentBytes}
 			}
 			m.Health = &storedHealth{
 				Status: st.HealthStatus, Message: st.HealthMessage, SingBoxService: st.SingBoxService,
@@ -428,8 +453,12 @@ func (s *Server) scheduleAutomaticSingBoxInstall(ctx context.Context, nodeID, ar
 // merged with whatever was already stored so a Status update doesn't erase
 // the last-known connections and vice versa.
 type storedMetrics struct {
-	CollectedAt string             `json:"collected_at"`
-	Node        map[string]uint64  `json:"node,omitempty"`
+	CollectedAt string            `json:"collected_at"`
+	Node        map[string]uint64 `json:"node,omitempty"`
+	// Proxy is sing-box's own cumulative byte count — the figure an operator
+	// means by "traffic". Node is the host interface total, which also counts
+	// SSH, package updates and everything else on the machine.
+	Proxy       map[string]uint64  `json:"proxy,omitempty"`
 	Connections []storedConnection `json:"connections,omitempty"`
 	Fail2Ban    *storedFail2Ban    `json:"fail2ban,omitempty"`
 	Health      *storedHealth      `json:"health,omitempty"`

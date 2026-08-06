@@ -25,9 +25,9 @@ func (s *Store) CreateFail2BanJail(ctx context.Context, jail Fail2BanJail) (Fail
 		return Fail2BanJail{}, err
 	}
 	jail.ID = id
-	_, err = s.db.ExecContext(ctx, `INSERT INTO fail2ban_jails (id,node_id,name,log_path,filter_name,fail_regex,max_retry,find_time_seconds,ban_time_seconds,enabled,created_at,updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		jail.ID, jail.NodeID, jail.Name, jail.LogPath, jail.FilterName, jail.FailRegex, jail.MaxRetry, jail.FindTimeSeconds, jail.BanTimeSeconds, jail.Enabled, nowUnix(), nowUnix())
+	_, err = s.db.ExecContext(ctx, `INSERT INTO fail2ban_jails (id,node_id,name,log_path,filter_name,fail_regex,max_retry,find_time_seconds,ban_time_seconds,enabled,ports,created_at,updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		jail.ID, jail.NodeID, jail.Name, jail.LogPath, jail.FilterName, jail.FailRegex, jail.MaxRetry, jail.FindTimeSeconds, jail.BanTimeSeconds, jail.Enabled, jail.Ports, nowUnix(), nowUnix())
 	if err != nil {
 		return Fail2BanJail{}, fmt.Errorf("create fail2ban jail: %w", err)
 	}
@@ -41,8 +41,8 @@ func (s *Store) UpdateFail2BanJail(ctx context.Context, jail Fail2BanJail) (Fail
 	if err := validateFail2BanJail(jail); err != nil {
 		return Fail2BanJail{}, err
 	}
-	result, err := s.db.ExecContext(ctx, `UPDATE fail2ban_jails SET name=?,log_path=?,filter_name=?,fail_regex=?,max_retry=?,find_time_seconds=?,ban_time_seconds=?,enabled=?,updated_at=? WHERE id=?`,
-		jail.Name, jail.LogPath, jail.FilterName, jail.FailRegex, jail.MaxRetry, jail.FindTimeSeconds, jail.BanTimeSeconds, jail.Enabled, nowUnix(), jail.ID)
+	result, err := s.db.ExecContext(ctx, `UPDATE fail2ban_jails SET name=?,log_path=?,filter_name=?,fail_regex=?,max_retry=?,find_time_seconds=?,ban_time_seconds=?,enabled=?,ports=?,updated_at=? WHERE id=?`,
+		jail.Name, jail.LogPath, jail.FilterName, jail.FailRegex, jail.MaxRetry, jail.FindTimeSeconds, jail.BanTimeSeconds, jail.Enabled, jail.Ports, nowUnix(), jail.ID)
 	if err != nil {
 		return Fail2BanJail{}, fmt.Errorf("update fail2ban jail: %w", err)
 	}
@@ -59,7 +59,7 @@ func (s *Store) UpdateFail2BanJail(ctx context.Context, jail Fail2BanJail) (Fail
 }
 
 func (s *Store) ListFail2BanJails(ctx context.Context, nodeID string) ([]Fail2BanJail, error) {
-	query := `SELECT id,node_id,name,log_path,filter_name,fail_regex,max_retry,find_time_seconds,ban_time_seconds,enabled FROM fail2ban_jails`
+	query := `SELECT id,node_id,name,log_path,filter_name,fail_regex,max_retry,find_time_seconds,ban_time_seconds,enabled,COALESCE(ports,'') FROM fail2ban_jails`
 	args := []any{}
 	if nodeID != "" {
 		query += " WHERE node_id=?"
@@ -74,7 +74,7 @@ func (s *Store) ListFail2BanJails(ctx context.Context, nodeID string) ([]Fail2Ba
 	var jails []Fail2BanJail
 	for rows.Next() {
 		var jail Fail2BanJail
-		if err := rows.Scan(&jail.ID, &jail.NodeID, &jail.Name, &jail.LogPath, &jail.FilterName, &jail.FailRegex, &jail.MaxRetry, &jail.FindTimeSeconds, &jail.BanTimeSeconds, &jail.Enabled); err != nil {
+		if err := rows.Scan(&jail.ID, &jail.NodeID, &jail.Name, &jail.LogPath, &jail.FilterName, &jail.FailRegex, &jail.MaxRetry, &jail.FindTimeSeconds, &jail.BanTimeSeconds, &jail.Enabled, &jail.Ports); err != nil {
 			return nil, err
 		}
 		jails = append(jails, jail)

@@ -85,7 +85,12 @@ type Status struct {
 	NodeReceivedBytes uint64
 	NodeSentBytes     uint64
 	HasNodeTotals     bool
-	HealthStatus      string
+	// Proxy counters come from sing-box itself and stay flat while nothing is
+	// being proxied, unlike the host interface totals above.
+	ProxyReceivedBytes uint64
+	ProxySentBytes     uint64
+	HasProxyTotals     bool
+	HealthStatus       string
 	HealthMessage     string
 	SingBoxService    string
 	ClashAPIAvailable bool

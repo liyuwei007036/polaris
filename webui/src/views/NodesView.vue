@@ -20,14 +20,10 @@ const tokenDialog = ref(false)
 const token = ref('')
 const expiresAt = ref('')
 const lifetime = ref(900)
-const addressDialog = ref(false)
-const addressNode = ref(null)
-const clientAddress = ref('')
-const addressSaving = ref(false)
-const nameDialog = ref(false)
-const nameNode = ref(null)
-const nodeName = ref('')
-const nameSaving = ref(false)
+const editDialog = ref(false)
+const editNode = ref(null)
+const editForm = ref({ name: '', client_address: '' })
+const editSaving = ref(false)
 const refreshing = ref(false)
 const keyword = ref('')
 const statusFilter = ref('')
@@ -106,39 +102,26 @@ async function upgradeAgent(node) {
   ElMessage.success('升级任务已下发，agent 更新完成后会自动重新上线')
 }
 
-function openClientAddress(node) {
-  addressNode.value = node
-  clientAddress.value = node.client_address || ''
-  addressDialog.value = true
+function openEdit(node) {
+  editNode.value = node
+  editForm.value = { name: node.name, client_address: node.client_address || '' }
+  editDialog.value = true
 }
 
-function openNodeName(node) {
-  nameNode.value = node
-  nodeName.value = node.name
-  nameDialog.value = true
-}
-
-async function saveNodeName() {
-  nameSaving.value = true
+async function saveNode() {
+  editSaving.value = true
   try {
-    await put(`/nodes/${nameNode.value.id}/name`, { name: nodeName.value.trim() })
-    ElMessage.success('服务器名称已保存')
-    nameDialog.value = false
+    await put(`/nodes/${editNode.value.id}`, {
+      name: editForm.value.name.trim(),
+      client_address: editForm.value.client_address.trim(),
+    })
+    ElMessage.success('服务器信息已保存')
+    editDialog.value = false
     await load()
+  } catch (error) {
+    ElMessage.error(error instanceof Error ? error.message : '服务器信息保存失败')
   } finally {
-    nameSaving.value = false
-  }
-}
-
-async function saveClientAddress() {
-  addressSaving.value = true
-  try {
-    await put(`/nodes/${addressNode.value.id}/client-address`, { address: clientAddress.value })
-    ElMessage.success('客户端连接地址已保存')
-    addressDialog.value = false
-    await load()
-  } finally {
-    addressSaving.value = false
+    editSaving.value = false
   }
 }
 
@@ -169,8 +152,8 @@ onBeforeUnmount(() => {
       </div>
       <template v-if="pending.length">
         <div class="section-title">等待确认的服务器</div>
-        <div class="table-panel" style="margin-bottom: 24px">
-          <PagedTable :rows="filteredPending" empty-text="没有等待确认的服务器">
+        <div class="table-panel table-panel--fixed" style="margin-bottom: 24px">
+          <PagedTable :rows="filteredPending" :page-size="5" empty-text="没有等待确认的服务器">
             <el-table-column label="服务器名称" min-width="180" prop="node_name" />
             <el-table-column label="支持的功能" min-width="260" prop="capabilities" show-overflow-tooltip />
             <el-table-column label="接入时间" width="180"><template #default="{ row }">{{ formatDateTime(row.created_at) }}</template></el-table-column>
@@ -211,7 +194,7 @@ onBeforeUnmount(() => {
           </el-table-column>
           <el-table-column label="累计下载 / 上传" min-width="190">
             <template #default="{ row }">
-              <span v-if="metrics[row.id]?.node" class="mono">↓ {{ formatBytes(metrics[row.id].node.received_bytes) }} · ↑ {{ formatBytes(metrics[row.id].node.sent_bytes) }}</span>
+              <span v-if="metrics[row.id]?.proxy" class="mono">↓ {{ formatBytes(metrics[row.id].proxy.received_bytes) }} · ↑ {{ formatBytes(metrics[row.id].proxy.sent_bytes) }}</span>
               <span v-else class="subtle">等待上报</span>
             </template>
           </el-table-column>
@@ -221,8 +204,7 @@ onBeforeUnmount(() => {
           <el-table-column label="最后在线" width="180"><template #default="{ row }">{{ formatDateTime(row.last_seen_at, '从未') }}</template></el-table-column>
           <el-table-column label="操作" width="250" fixed="right" class-name="action-column">
             <template #default="{ row }">
-              <el-button v-if="canWrite" link :icon="Edit" @click="openNodeName(row)">名称</el-button>
-              <el-button v-if="canWrite" link :icon="Edit" @click="openClientAddress(row)">地址</el-button>
+              <el-button v-if="canWrite" link :icon="Edit" @click="openEdit(row)">编辑</el-button>
               <el-button v-if="isAdmin && agentUpdateAvailable(row)" link type="primary" :icon="Top" @click="upgradeAgent(row)">升级</el-button>
               <el-button v-if="isAdmin" link type="danger" :icon="RemoveFilled" @click="revoke(row)">移除</el-button>
             </template>
@@ -241,29 +223,19 @@ onBeforeUnmount(() => {
       </template>
     </el-dialog>
 
-    <el-dialog v-model="nameDialog" title="修改服务器名称" width="460px">
+    <el-dialog v-model="editDialog" title="编辑服务器" width="520px">
       <el-form label-position="top">
         <el-form-item label="服务器名称" required>
-          <el-input v-model="nodeName" maxlength="128" @keyup.enter="saveNodeName" />
+          <el-input v-model="editForm.name" maxlength="128" placeholder="便于识别的名称，例如：香港节点 01" />
         </el-form-item>
+        <el-form-item label="客户端连接域名或 IP 地址">
+          <el-input v-model="editForm.client_address" placeholder="例如：proxy.example.com 或 203.0.113.10" @keyup.enter="saveNode" />
+        </el-form-item>
+        <el-alert title="连接地址在服务器接入时会自动填入其来源 IP，只有需要改用域名或其他公网地址时才需要修改。只填写域名或 IP，不要添加 http://、端口或路径。" type="info" show-icon :closable="false" />
       </el-form>
       <template #footer>
-        <el-button @click="nameDialog = false">取消</el-button>
-        <el-button type="primary" :loading="nameSaving" :disabled="!nodeName.trim()" @click="saveNodeName">保存</el-button>
-      </template>
-    </el-dialog>
-
-    <el-dialog v-model="addressDialog" title="客户端连接地址" width="500px">
-      <el-form label-position="top">
-        <el-form-item label="服务器"><el-input :model-value="addressNode?.name" disabled /></el-form-item>
-        <el-form-item label="客户端连接域名或 IP 地址" required>
-          <el-input v-model="clientAddress" placeholder="例如：proxy.example.com 或 203.0.113.10" />
-        </el-form-item>
-        <el-alert title="只填写域名或 IP 地址，不要添加 http://、端口或路径。生成客户端配置时会使用此地址。" type="info" show-icon :closable="false" />
-      </el-form>
-      <template #footer>
-        <el-button @click="addressDialog = false">取消</el-button>
-        <el-button type="primary" :loading="addressSaving" :disabled="!clientAddress.trim()" @click="saveClientAddress">保存</el-button>
+        <el-button @click="editDialog = false">取消</el-button>
+        <el-button type="primary" :loading="editSaving" :disabled="!editForm.name.trim()" @click="saveNode">保存</el-button>
       </template>
     </el-dialog>
   </div>

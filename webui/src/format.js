@@ -14,8 +14,9 @@ export function formatBytes(value, suffix = '') {
     number /= 1024
     index += 1
   }
-  const precision = index && number < 10 ? 2 : index ? 1 : 0
-  return `${number.toFixed(precision)} ${units[index]}${suffix}`
+  // Two decimals everywhere above bytes; raw byte counts are whole numbers
+  // and reading "512.00 B" helps nobody.
+  return `${number.toFixed(index ? 2 : 0)} ${units[index]}${suffix}`
 }
 
 export function includesText(values, query) {

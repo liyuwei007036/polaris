@@ -1102,6 +1102,51 @@ func (s *Store) SetNodeClientAddress(ctx context.Context, nodeID, address string
 	return nil
 }
 
+// UpdateNode saves a node's name and client address together, which is how
+// an operator edits them: they describe the same server and splitting them
+// across two dialogs meant two round trips to change one thing.
+func (s *Store) UpdateNode(ctx context.Context, nodeID, name, address string) error {
+	name = strings.TrimSpace(name)
+	if name == "" || len(name) > 128 || strings.ContainsAny(name, "\r\n") {
+		return errors.New("node name is required and must be at most 128 characters")
+	}
+	address = strings.TrimSpace(address)
+	if address != "" && (len(address) > 253 || strings.ContainsAny(address, "\r\n,:")) {
+		return errors.New("client address must be a hostname or IP address without scheme or port")
+	}
+	result, err := s.db.ExecContext(ctx, `UPDATE nodes SET name = ?, client_address = ? WHERE id = ? AND revoked_at IS NULL`, name, address, nodeID)
+	if err != nil {
+		return fmt.Errorf("update node: %w", err)
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("read node update result: %w", err)
+	}
+	if affected == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// SetNodeObservedAddress records the address an agent connected from, but
+// only fills the client address when an operator has not chosen one. Agents
+// know their own reachable address better than a human filling in a form, so
+// a freshly approved node is usable without any manual step; an explicit
+// value always wins.
+func (s *Store) SetNodeObservedAddress(ctx context.Context, nodeID, address string) error {
+	address = strings.TrimSpace(address)
+	if address == "" || len(address) > 253 || strings.ContainsAny(address, "\r\n,:") {
+		return nil
+	}
+	_, err := s.db.ExecContext(ctx,
+		`UPDATE nodes SET client_address = ? WHERE id = ? AND revoked_at IS NULL AND TRIM(COALESCE(client_address, '')) = ''`,
+		address, nodeID)
+	if err != nil {
+		return fmt.Errorf("record observed node address: %w", err)
+	}
+	return nil
+}
+
 func validateConnectionDomain(value string) error {
 	if value != "" && !validSNI(value) {
 		return errors.New("connection domain must be a valid hostname without scheme or port")
@@ -2188,7 +2233,7 @@ CREATE TABLE IF NOT EXISTS fail2ban_jails (
   id TEXT PRIMARY KEY, node_id TEXT NOT NULL REFERENCES nodes(id), name TEXT NOT NULL,
   log_path TEXT NOT NULL, filter_name TEXT NOT NULL, fail_regex TEXT NOT NULL,
   max_retry INTEGER NOT NULL, find_time_seconds INTEGER NOT NULL, ban_time_seconds INTEGER NOT NULL,
-  enabled INTEGER NOT NULL, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
+  enabled INTEGER NOT NULL, ports TEXT NOT NULL DEFAULT '', created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
   UNIQUE(node_id, name)
 );
 CREATE TABLE IF NOT EXISTS cloudflare_settings (
@@ -2258,6 +2303,9 @@ CREATE INDEX IF NOT EXISTS idx_cloudflare_records_binding ON cloudflare_records(
 		return err
 	}
 	if err := s.migrateLegacyVLESSStreamTLS(ctx); err != nil {
+		return err
+	}
+	if err := s.addFail2BanJailColumn(ctx, "ports TEXT NOT NULL DEFAULT ''"); err != nil {
 		return err
 	}
 	if _, err := s.db.ExecContext(ctx, `DROP TABLE IF EXISTS managed_certificates`); err != nil {
@@ -2380,6 +2428,14 @@ func (s *Store) addListenerColumn(ctx context.Context, definition string) error 
 		return nil
 	}
 	return fmt.Errorf("migrate listeners table: %w", err)
+}
+
+func (s *Store) addFail2BanJailColumn(ctx context.Context, definition string) error {
+	_, err := s.db.ExecContext(ctx, "ALTER TABLE fail2ban_jails ADD COLUMN "+definition)
+	if err == nil || strings.Contains(err.Error(), "duplicate column name") {
+		return nil
+	}
+	return fmt.Errorf("migrate fail2ban jails table: %w", err)
 }
 
 func (s *Store) addMihomoProxyGroupColumn(ctx context.Context, definition string) error {

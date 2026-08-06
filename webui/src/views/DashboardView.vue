@@ -17,12 +17,10 @@ const appState = inject('appState')
 const loadNodes = inject('loadNodes')
 const loading = ref(false)
 const endpointCount = ref(0)
-const failedTasks = ref(0)
 const cumulative = ref({ download: 0, upload: 0 })
 const trafficHistory = shallowRef([])
 const connectionHistory = shallowRef([])
 const dismissedOffline = ref(readDismissed('sb_dashboard_offline'))
-const dismissedFailed = ref(readDismissed('sb_dashboard_failed'))
 const refreshing = ref(false)
 const trafficChart = ref()
 const totalChart = ref()
@@ -33,7 +31,6 @@ const charts = []
 let stopLive
 let stopConnections
 let refreshTimer
-let sampleTimer
 let resizeObserver
 let renderQueued = false
 
@@ -163,8 +160,9 @@ function renderCharts() {
   }, true)
 }
 
-// One sample per second keeps both time-series charts on the same, evenly
-// spaced timeline regardless of how often individual agents push.
+// The charts advance when the agents actually report, not on a timer of their
+// own: sampling faster than the push interval just repeated the last value
+// and made the line look like data that was never measured.
 function appendSamples() {
   const now = Date.now()
   trafficHistory.value = [...trafficHistory.value, { time: now, ...liveRates.value }].slice(-30)
@@ -178,18 +176,18 @@ async function load(silent = false) {
   if (!silent) loading.value = true
   try {
     await loadNodes()
-    const [listenerResult, taskResult, metricResult] = await Promise.all([
+    const [listenerResult, metricResult] = await Promise.all([
       api('/listeners').catch(() => ({ listeners: [] })),
-      api('/tasks?page=1&page_size=100&status=failed').catch(() => ({ total: 0 })),
       api('/nodes/metrics').catch(() => ({ nodes: [] })),
     ])
     // A node is one client-facing account, so a service with two users is two
     // nodes. The listener list carries the per-service count already.
     endpointCount.value = (listenerResult.listeners || []).reduce((total, listener) => total + Number(listener.endpoint_count || 0), 0)
-    failedTasks.value = Number(taskResult.total || 0)
+    // Proxied traffic, not host interface totals, so the figure matches what
+    // the connection list and the live rate are describing.
     cumulative.value = (metricResult.nodes || []).reduce((total, entry) => ({
-      download: total.download + Number(entry.report?.node?.received_bytes || 0),
-      upload: total.upload + Number(entry.report?.node?.sent_bytes || 0),
+      download: total.download + Number(entry.report?.proxy?.received_bytes || 0),
+      upload: total.upload + Number(entry.report?.proxy?.sent_bytes || 0),
     }), { download: 0, upload: 0 })
     scheduleRender()
   } finally {
@@ -210,8 +208,7 @@ onMounted(async () => {
   await load()
   await nextTick()
   initCharts()
-  stopConnections = subscribeConnections(scheduleRender)
-  sampleTimer = window.setInterval(appendSamples, 1000)
+  stopConnections = subscribeConnections(appendSamples)
   stopLive = subscribeLive((event) => {
     if (event.kind === 'node' || event.kind === 'task') scheduleLoad()
   })
@@ -221,7 +218,6 @@ onBeforeUnmount(() => {
   stopLive?.()
   stopConnections?.()
   window.clearTimeout(refreshTimer)
-  window.clearInterval(sampleTimer)
   resizeObserver?.disconnect()
   charts.forEach((chart) => chart.dispose())
 })
@@ -234,7 +230,6 @@ onBeforeUnmount(() => {
     </PageHeader>
     <main v-loading="loading" class="page-content dashboard-content">
       <el-alert v-if="offline > 0 && dismissedOffline !== offline" :title="`${offline} 台服务器离线，恢复连接前无法接收新配置`" type="warning" show-icon closable @close="dismiss('sb_dashboard_offline', dismissedOffline, offline)" />
-      <el-alert v-if="failedTasks > 0 && dismissedFailed !== failedTasks" :title="`最近有 ${failedTasks} 项操作未完成`" type="error" show-icon closable @close="dismiss('sb_dashboard_failed', dismissedFailed, failedTasks)" />
 
       <section class="metric-strip">
         <div class="metric"><div class="metric__label">服务器总数</div><div class="metric__value">{{ appState.nodes.length }}</div></div>

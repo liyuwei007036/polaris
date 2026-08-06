@@ -195,6 +195,66 @@ func TestDisabledListenerLeavesTheCompiledNginxConfiguration(t *testing.T) {
 	}
 }
 
+// An agent knows the address it reaches the master from, so a freshly
+// approved node is usable without anyone typing one in. An address an
+// operator did choose must never be overwritten by it.
+func TestObservedAddressFillsOnlyAnEmptyClientAddress(t *testing.T) {
+	store, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	nodeID := newTestNode(t, store, "address-node", "a")
+
+	if err := store.SetNodeObservedAddress(t.Context(), nodeID, "203.0.113.10"); err != nil {
+		t.Fatal(err)
+	}
+	node, err := store.GetNode(t.Context(), nodeID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if node.ClientAddress != "203.0.113.10" {
+		t.Fatalf("client address = %q, want the address the agent connected from", node.ClientAddress)
+	}
+
+	if err := store.UpdateNode(t.Context(), nodeID, "address-node", "proxy.example.com"); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetNodeObservedAddress(t.Context(), nodeID, "203.0.113.99"); err != nil {
+		t.Fatal(err)
+	}
+	node, err = store.GetNode(t.Context(), nodeID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if node.ClientAddress != "proxy.example.com" {
+		t.Fatalf("client address = %q, want the operator's choice preserved", node.ClientAddress)
+	}
+}
+
+// Name and address describe the same server, so they are saved together.
+func TestUpdateNodeSavesNameAndAddressTogether(t *testing.T) {
+	store, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	nodeID := newTestNode(t, store, "combined-node", "c")
+	if err := store.UpdateNode(t.Context(), nodeID, "香港 01", "hk.example.com"); err != nil {
+		t.Fatal(err)
+	}
+	node, err := store.GetNode(t.Context(), nodeID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if node.Name != "香港 01" || node.ClientAddress != "hk.example.com" {
+		t.Fatalf("node = %+v, want both fields updated in one call", node)
+	}
+	if err := store.UpdateNode(t.Context(), nodeID, "", "hk.example.com"); err == nil {
+		t.Fatal("an empty name was accepted")
+	}
+}
+
 // The console shows how many users a service has; serving that count with the
 // list removes one request per listener on every refresh.
 func TestListListenersReportsEndpointCount(t *testing.T) {

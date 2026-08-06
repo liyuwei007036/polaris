@@ -45,6 +45,41 @@ func TestCollectConnectionsReadsExitFromChainHead(t *testing.T) {
 	}
 }
 
+// Traffic shown in the console has to be traffic sing-box carried. Deriving
+// it from the host interface counters made an idle node look busy, because
+// those also count SSH, package updates and everything else on the machine.
+func TestProxyTrafficComesFromSingBoxNotTheHostInterfaces(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"downloadTotal":4096,"uploadTotal":1024,"connections":[]}`)
+	}))
+	defer server.Close()
+	original := clashAPIBase
+	clashAPIBase = server.URL
+	defer func() { clashAPIBase = original }()
+
+	connections, traffic, err := CollectConnectionsAndTraffic(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(connections) != 0 {
+		t.Fatalf("expected no connections, got %d", len(connections))
+	}
+	if !traffic.Available || traffic.ReceivedBytes != 4096 || traffic.SentBytes != 1024 {
+		t.Fatalf("proxy traffic = %+v, want sing-box's own totals", traffic)
+	}
+
+	// With no proxied traffic the counters stand still, so the rate is zero —
+	// which is the whole point: an idle node reports nothing.
+	var sampler TrafficSampler
+	start := time.Unix(1_700_000_000, 0)
+	sampler.Sample(traffic.ReceivedBytes, traffic.SentBytes, start)
+	received, sent, hasRate := sampler.Sample(traffic.ReceivedBytes, traffic.SentBytes, start.Add(5*time.Second))
+	if !hasRate || received != 0 || sent != 0 {
+		t.Fatalf("idle rate = %v/%v (hasRate=%v), want zero", received, sent, hasRate)
+	}
+}
+
 func TestTrafficSamplerReportsRateOnlyAfterTwoSamples(t *testing.T) {
 	var sampler TrafficSampler
 	start := time.Unix(1_700_000_000, 0)

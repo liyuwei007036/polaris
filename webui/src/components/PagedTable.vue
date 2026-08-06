@@ -26,9 +26,11 @@ watch(total, () => {
 
 <template>
   <div class="paged-table">
-    <el-table v-loading="props.loading" :data="pageRows" :row-key="props.rowKey" :empty-text="props.emptyText">
-      <slot />
-    </el-table>
+    <div class="paged-table__body">
+      <el-table v-loading="props.loading" :data="pageRows" :row-key="props.rowKey" :empty-text="props.emptyText">
+        <slot />
+      </el-table>
+    </div>
     <div class="pagination-bar">
       <el-pagination
         v-model:current-page="page"
@@ -43,5 +45,11 @@ watch(total, () => {
 </template>
 
 <style scoped>
+/* The rows scroll inside their own area so the pager stays reachable no
+   matter how tall a page of rows turns out to be — a wrapped cell or a
+   larger page size used to push it off the bottom of the screen with no way
+   to scroll to it. */
 .paged-table { display: flex; flex-direction: column; min-height: 0; }
+.paged-table__body { flex: 1 1 auto; min-height: 0; overflow: auto; }
+.pagination-bar { flex: 0 0 auto; }
 </style>

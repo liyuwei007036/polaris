@@ -110,6 +110,45 @@ func TestIPv6RuleUsesIP6Matcher(t *testing.T) {
 	indexOf(t, configuration, "ip6 saddr 2001:db8::/32 tcp dport 443 drop")
 }
 
+// A ban has to reach the kernel. Fail2Ban still defaults to iptables, which
+// on an nftables-only host records the ban and blocks nothing.
+func TestFail2BanJailsBanThroughNftables(t *testing.T) {
+	jail, _, err := CompileFail2Ban([]Fail2BanJail{{
+		Name: "ssh", FilterName: "ssh", LogPath: "/var/log/auth.log", FailRegex: "from <HOST>",
+		MaxRetry: 5, FindTimeSeconds: 600, BanTimeSeconds: 3600, Enabled: true,
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(jail, "banaction = nftables-multiport") {
+		t.Fatalf("jail does not ban through nftables:\n%s", jail)
+	}
+	// An unset port list must block the address outright, which is what
+	// "stop this IP connecting" means.
+	if !strings.Contains(jail, "port = 0:65535") {
+		t.Fatalf("jail does not block every port by default:\n%s", jail)
+	}
+}
+
+func TestFail2BanJailHonoursAPortList(t *testing.T) {
+	jail, _, err := CompileFail2Ban([]Fail2BanJail{{
+		Name: "web", FilterName: "web", LogPath: "/var/log/auth.log", FailRegex: "from <HOST>",
+		MaxRetry: 5, FindTimeSeconds: 600, BanTimeSeconds: 3600, Enabled: true, Ports: "443,8443",
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(jail, "port = 443,8443") {
+		t.Fatalf("jail ignored its port list:\n%s", jail)
+	}
+	if _, _, err := CompileFail2Ban([]Fail2BanJail{{
+		Name: "bad", FilterName: "bad", LogPath: "/var/log/auth.log", FailRegex: "from <HOST>",
+		MaxRetry: 5, FindTimeSeconds: 600, BanTimeSeconds: 3600, Enabled: true, Ports: "443; rm -rf /",
+	}}); err == nil {
+		t.Fatal("a port list that could break out of the INI value was accepted")
+	}
+}
+
 func TestInvalidRuleIsRejected(t *testing.T) {
 	for name, rule := range map[string]FirewallRule{
 		"bad action":   {Action: "reject", Protocol: "tcp", CIDR: "10.0.0.0/8", Port: 443, Enabled: true},

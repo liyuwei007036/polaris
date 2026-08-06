@@ -1,7 +1,7 @@
 <script setup>
 import { computed, inject, onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Connection, Delete, Edit, Plus, Refresh, Search } from '@element-plus/icons-vue'
+import { Connection, Delete, Edit, Loading, Plus, Refresh, Search } from '@element-plus/icons-vue'
 import { api, del, friendlyError, post, put } from '../api'
 import { includesText } from '../format'
 import { waitForTask } from '../live'
@@ -20,7 +20,7 @@ const editing = ref(null)
 const testDialog = ref(false)
 const testing = ref(false)
 const testTarget = ref(null)
-const testNodeID = ref('')
+const testResults = ref([])
 const form = reactive({ name: '', type: 'socks', server: '', server_port: 1080, username: '', password: '', enabled: true })
 const keyword = ref('')
 const selectedType = ref('')
@@ -65,22 +65,69 @@ async function remove(row) {
   await del(`/outbounds/${row.id}`)
   await load()
 }
+const onlineNodes = computed(() => appState.nodes.filter((node) => node.online))
+
 async function openTest(row) {
   await loadNodes()
   testTarget.value = row
-  testNodeID.value = appState.nodes.find((node) => node.online)?.id || ''
+  // Every server reaches the internet differently, so one server passing says
+  // nothing about the rest. All of them are tested together.
+  testResults.value = onlineNodes.value.map((node) => ({ id: node.id, name: node.name, state: 'pending', detail: '等待开始' }))
   testDialog.value = true
+  if (testResults.value.length) runTest()
 }
+
+function updateResult(nodeID, patch) {
+  testResults.value = testResults.value.map((row) => (row.id === nodeID ? { ...row, ...patch } : row))
+}
+
 async function runTest() {
+  if (testing.value) return
   testing.value = true
+  testResults.value = testResults.value.map((row) => ({ ...row, state: 'running', detail: '正在检测' }))
   try {
-    const task = await post(`/outbounds/${testTarget.value.id}/test`, { node_id: testNodeID.value })
-    const result = await waitForTask(task.id, 30000)
-    if (result.status !== 'succeeded') throw new Error(result.result_summary ? friendlyError(result.result_summary) : '上网出口检测未通过')
-    ElMessage.success(/[\u3400-\u9fff]/.test(result.result_summary || '') ? result.result_summary : '上网出口可用，连接检测已通过')
-    testDialog.value = false
+    await Promise.all(testResults.value.map(async (row) => {
+      try {
+        const task = await post(`/outbounds/${testTarget.value.id}/test`, { node_id: row.id })
+        const result = await waitForTask(task.id, 40000)
+        const summary = result.result_summary || ''
+        if (result.status !== 'succeeded') {
+          updateResult(row.id, { state: 'failed', detail: summary ? friendlyError(summary) : '检测未通过' })
+          return
+        }
+        updateResult(row.id, { state: 'passed', detail: hasChinese(summary) ? summary : '可正常上网' })
+      } catch (error) {
+        updateResult(row.id, { state: 'failed', detail: error instanceof Error ? error.message : '检测未完成' })
+      }
+    }))
+    const passed = testResults.value.filter((row) => row.state === 'passed').length
+    ElMessage[passed === testResults.value.length ? 'success' : 'warning'](`检测完成：${passed}/${testResults.value.length} 台服务器可通过该出口上网`)
   } finally { testing.value = false }
 }
+
+// Closing mid-run would leave the operator with no way back to the results,
+// so the dialog stays put until every server has reported.
+function requestCloseTest(done) {
+  if (testing.value) {
+    ElMessage.warning('检测正在进行，请等待全部服务器返回结果')
+    return
+  }
+  done()
+}
+
+// The agent writes its own summaries in Chinese; anything else is an internal
+// message that would mean nothing to an operator.
+function hasChinese(value) {
+  return /[㐀-鿿]/.test(value || '')
+}
+
+const testStates = {
+  pending: ['等待中', 'info'],
+  running: ['检测中', 'warning'],
+  passed: ['可用', 'success'],
+  failed: ['不可用', 'danger'],
+}
+
 onMounted(load)
 </script>
 
@@ -131,19 +178,41 @@ onMounted(load)
       <template #footer><el-button @click="dialogOpen = false">取消</el-button><el-button type="primary" :loading="saving" :disabled="!form.name || !form.server" @click="save">保存</el-button></template>
     </el-dialog>
 
-    <el-dialog v-model="testDialog" title="检测上网出口" width="520px">
-      <el-form label-position="top">
-        <el-form-item label="上网出口"><el-input :model-value="testTarget?.name" disabled /></el-form-item>
-        <el-form-item label="测试服务器" required>
-          <el-select v-model="testNodeID" style="width: 100%" placeholder="请选择在线服务器">
-            <el-option v-for="node in appState.nodes.filter((item) => item.online)" :key="node.id" :value="node.id" :label="node.name" />
-          </el-select>
-        </el-form-item>
-        <el-alert title="所选服务器会通过此出口访问测试地址，以确认能否正常上网并测量响应时间。" type="info" show-icon :closable="false" />
-      </el-form>
+    <el-dialog
+      v-model="testDialog"
+      :title="`检测上网出口：${testTarget?.name || ''}`"
+      width="640px"
+      :before-close="requestCloseTest"
+      :close-on-click-modal="!testing"
+      :close-on-press-escape="!testing"
+      :show-close="!testing"
+    >
+      <el-alert
+        v-if="!testResults.length"
+        title="没有在线的服务器可用于检测，请先确认至少有一台服务器已接入并在线。"
+        type="warning" show-icon :closable="false" />
+      <template v-else>
+        <el-alert
+          :title="testing ? '正在让每一台在线服务器通过该出口访问测试地址，请等待全部结果返回。' : '每台服务器的网络环境不同，以下是各自通过该出口上网的检测结果。'"
+          :type="testing ? 'info' : 'success'" show-icon :closable="false" style="margin-bottom: 14px" />
+        <el-table :data="testResults" max-height="340">
+          <el-table-column label="服务器" prop="name" min-width="160" />
+          <el-table-column label="结果" width="110">
+            <template #default="{ row }">
+              <el-tag :type="testStates[row.state][1]">{{ testStates[row.state][0] }}</el-tag>
+            </template>
+          </el-table-column>
+          <el-table-column label="详情" min-width="260" show-overflow-tooltip>
+            <template #default="{ row }">
+              <el-icon v-if="row.state === 'running'" class="is-loading"><Loading /></el-icon>
+              <span>{{ row.detail }}</span>
+            </template>
+          </el-table-column>
+        </el-table>
+      </template>
       <template #footer>
-        <el-button @click="testDialog = false">取消</el-button>
-        <el-button type="primary" :loading="testing" :disabled="!testNodeID" @click="runTest">检测</el-button>
+        <el-button :disabled="testing" @click="testDialog = false">关闭</el-button>
+        <el-button type="primary" :loading="testing" :disabled="!testResults.length" @click="runTest">重新检测</el-button>
       </template>
     </el-dialog>
   </div>

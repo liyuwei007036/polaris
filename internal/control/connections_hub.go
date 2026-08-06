@@ -9,8 +9,9 @@ import (
 // connectionsStaleAfter bounds how long a node's last-pushed connection list
 // is trusted. Agents push every few seconds while online; a node that has
 // gone silent for longer than this is presumed offline and is cleared
-// instead of leaving stale entries in the aggregated view forever.
-const connectionsStaleAfter = 15 * time.Second
+// instead of leaving stale entries in the aggregated view forever. It allows
+// for several missed pushes at the default five-second cadence.
+const connectionsStaleAfter = 30 * time.Second
 
 // nodeConnectionsSnapshot is the latest real-time report an agent has pushed
 // for one node: its open connections plus the host traffic counters and the

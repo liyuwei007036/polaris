@@ -31,8 +31,11 @@ type Status struct {
 // protocol-level measurements. Unavailable fields remain absent instead of
 // being estimated from unrelated traffic.
 type MetricReport struct {
-	CollectedAt  string                      `json:"collected_at"`
-	Node         map[string]uint64           `json:"node,omitempty"`
+	CollectedAt string            `json:"collected_at"`
+	Node        map[string]uint64 `json:"node,omitempty"`
+	// Proxy holds sing-box's own cumulative byte counts. Node holds the host
+	// interface totals, which include everything else running on the machine.
+	Proxy        map[string]uint64           `json:"proxy,omitempty"`
 	Capabilities map[string]MetricCapability `json:"capabilities"`
 	Connections  []ConnectionInfo            `json:"connections,omitempty"`
 	Fail2Ban     *Fail2BanReport             `json:"fail2ban,omitempty"`
@@ -206,18 +209,23 @@ func RunSession(ctx context.Context, conn *wire.Conn, handler TaskHandler, heart
 	var sampler TrafficSampler
 	sendConnections := func() error {
 		push := wire.ConnectionsPush{CollectedAt: time.Now().UTC().Format(time.RFC3339)}
-		if connections, err := CollectConnections(ctx); err == nil {
+		connections, traffic, err := CollectConnectionsAndTraffic(ctx)
+		if err == nil {
 			push.Connections = toWireConnections(connections)
 		}
-		if received, sent, ok := NodeTrafficCounters(); ok {
+		// The rate reported to the console is proxied traffic. Deriving it
+		// from the host's interface counters made an idle node look busy,
+		// because those counters also carry SSH, updates and everything else
+		// on the machine.
+		if traffic.Available {
 			push.HasNodeTotals = true
-			push.NodeReceivedBytes = received
-			push.NodeSentBytes = sent
-			push.ReceivedBytesRate, push.SentBytesRate, push.HasNodeRates = sampler.Sample(received, sent, time.Now())
+			push.NodeReceivedBytes = traffic.ReceivedBytes
+			push.NodeSentBytes = traffic.SentBytes
+			push.ReceivedBytesRate, push.SentBytesRate, push.HasNodeRates = sampler.Sample(traffic.ReceivedBytes, traffic.SentBytes, time.Now())
 		}
-		body, err := wire.Encode(push)
-		if err != nil {
-			return err
+		body, encodeErr := wire.Encode(push)
+		if encodeErr != nil {
+			return encodeErr
 		}
 		return conn.WriteMessage(wire.MsgConnections, body)
 	}
@@ -328,6 +336,11 @@ func toWireStatus(local Status) wire.Status {
 		st.HasNodeTotals = true
 		st.NodeReceivedBytes = local.Metrics.Node["received_bytes"]
 		st.NodeSentBytes = local.Metrics.Node["sent_bytes"]
+	}
+	if local.Metrics.Proxy != nil {
+		st.HasProxyTotals = true
+		st.ProxyReceivedBytes = local.Metrics.Proxy["received_bytes"]
+		st.ProxySentBytes = local.Metrics.Proxy["sent_bytes"]
 	}
 	if local.Metrics.Fail2Ban != nil {
 		st.Fail2BanAvailable = local.Metrics.Fail2Ban.Available
