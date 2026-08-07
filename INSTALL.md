@@ -1,6 +1,6 @@
 # Polaris 安装手册
 
-本手册只覆盖安装、初始化、验证、升级与卸载。控制台的日常使用流程见 [README.md](README.md)。
+本手册只覆盖安装、初始化、验证与卸载。控制台的日常使用流程见 [README.md](README.md)。
 
 适用范围：Linux + systemd，CPU 架构 `amd64` 或 `arm64`。发布包只提供这两种架构的 Linux 二进制。
 
@@ -455,65 +455,7 @@ sudo ls -la /var/lib/polaris-agent
 
 ---
 
-## 7. 升级
-
-### 7.1 从 sb-control 旧版本升级（破坏性变更）
-
-本项目已由 `sb-control` 整体改名为 Polaris。改名不提供自动迁移，**不能通过替换二进制的方式从旧版本升级**。旧安装涉及的以下标识全部改变：
-
-| 项目 | 旧 | 新 |
-| --- | --- | --- |
-| 二进制 | `/usr/local/bin/sb-control` | `/usr/local/bin/polaris` |
-| systemd 服务 | `sb-control-{master,agent,combined}.service` | `polaris-{master,agent,combined}.service` |
-| 配置目录 | `/etc/sb-control` | `/etc/polaris` |
-| 数据目录 | `/var/lib/sb-control-{master,agent}` | `/var/lib/polaris-{master,agent}` |
-| 系统用户与组 | `sb-control` | `polaris` |
-| nftables 表 | `sb_control` | `polaris` |
-| Fail2Ban jail 前缀 | `sb-control-` | `polaris-` |
-| Nginx 受管配置 | `/etc/nginx/stream-conf.d/sb-control.conf` | `/etc/nginx/stream-conf.d/polaris.conf` |
-| 登录 Cookie | `sb_control_session` | `polaris_session` |
-| 默认管理员 | `sb_admin` | `polaris_admin` |
-| 数据库文件 | `sb-control.db` | `polaris.db` |
-| 环境变量前缀 | `SB_CONTROL_` | `POLARIS_` |
-| Release 包名 | `sb-control_<ver>_linux_<arch>.tar.gz` | `polaris_<ver>_linux_<arch>.tar.gz` |
-| 默认 agent 端口 | `8443` | `19994` |
-| 默认 Web 端口 | `8080` | `19670` |
-
-默认端口只影响**新装**：全新安装会按新模板监听 19670 / 19994，因此主机防火墙放行规则、反向代理的 `proxy_pass` 目标、以及所有 agent 的 `master_address` 都要同步改。如果沿用旧的 `master.yaml`，里面写的仍是 8443 / 8080，程序会照旧使用——配置文件里的值始终优先于默认值。
-
-从旧版本迁移的步骤：按第 10 节卸载旧的 `sb-control`，按第 2 或第 3 节全新安装 Polaris，然后重新注册并批准全部节点。Master 的历史数据（数据库、主密钥、Noise 私钥）如需保留，可在卸载前把整个 `/var/lib/sb-control-master` 复制到 `/var/lib/polaris-master`，把 `sb-control.db` 改名为 `polaris.db`，再将整个目录属主改为 `polaris`；但 agent 身份必须重新注册，节点侧的旧数据目录不要复用。
-
-### 7.2 常规升级
-
-Polaris 支持在控制台内自助升级：master 发现新 Release 后提示管理员，确认后校验摘要并原地替换重启，各节点通过签名任务下发升级并自动重连。以下为手动升级步骤。
-
-升级前先下载新版本对应架构的发布包并校验 SHA-256。
-
-Master：
-
-```bash
-sudo systemctl stop polaris-master.service
-sudo cp -a /var/lib/polaris-master "/var/lib/polaris-master.backup-$(date +%Y%m%d-%H%M%S)"
-sudo install -m 0755 ./polaris /usr/local/bin/polaris
-sudo systemctl start polaris-master.service
-curl -fsS http://127.0.0.1:19670/api/v1/health
-```
-
-Agent：
-
-```bash
-sudo install -m 0755 ./polaris /usr/local/bin/polaris
-sudo systemctl restart polaris-agent.service
-sudo systemctl status polaris-agent.service
-```
-
-也可以重复执行 `install.sh`（配置与 agent 身份不会被覆盖）。
-
-以上升级的是 Polaris 自身；sing-box 的安装与升级由控制台的“安装或升级”任务处理。
-
----
-
-## 8. 数据目录与备份
+## 7. 数据目录与备份
 
 | 路径 | 内容 | 说明 |
 | --- | --- | --- |
@@ -529,7 +471,7 @@ sudo systemctl status polaris-agent.service
 
 ---
 
-## 9. 故障排查
+## 8. 故障排查
 
 ### 控制台登录后仍提示未登录
 
@@ -577,7 +519,7 @@ sudo journalctl -u polaris-master.service -n 200 --no-pager
 
 ---
 
-## 10. 卸载
+## 9. 卸载
 
 ```bash
 # 按实际模式选择服务名
@@ -604,7 +546,7 @@ sudo userdel polaris
 
 ---
 
-## 11. 命令速查
+## 10. 命令速查
 
 ```bash
 polaris version                                             # 查看版本
