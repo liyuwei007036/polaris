@@ -27,8 +27,8 @@
 ```mermaid
 flowchart LR
     Browser["管理员浏览器"] -->|"HTTPS，建议由反向代理终止 TLS"| Proxy["Nginx / Caddy"]
-    Proxy -->|"HTTP"| Web["master 浏览器端口<br/>默认 :8080"]
-    Agent1["节点 A：agent"] -->|"Noise_XK 加密 TCP"| Control["master agent 端口<br/>默认 :8443"]
+    Proxy -->|"HTTP"| Web["master 浏览器端口<br/>默认 :19670"]
+    Agent1["节点 A：agent"] -->|"Noise_XK 加密 TCP"| Control["master agent 端口<br/>默认 :19994"]
     Agent2["节点 B：agent"] -->|"Noise_XK 加密 TCP"| Control
     Web --> Master["master 控制面"]
     Control --> Master
@@ -41,8 +41,8 @@ flowchart LR
 
 | 端口 | 默认值 | 协议 | 用途 |
 | --- | --- | --- | --- |
-| 浏览器端口 | `:8080` | HTTP | Web 控制台和 JSON API |
-| agent 端口 | `:8443` | Noise 加密的原始 TCP | 节点注册、心跳、任务和实时连接 |
+| 浏览器端口 | `:19670` | HTTP | Web 控制台和 JSON API |
+| agent 端口 | `:19994` | Noise 加密的原始 TCP | 节点注册、心跳、任务和实时连接 |
 
 agent 端口不是 HTTP、HTTPS 或 TLS 端口，不能放在会终止 TLS 的 HTTP 反向代理后面。如果需要经 Nginx 转发，只能使用 `stream` 模块进行不解密的纯 TCP 转发。
 
@@ -90,8 +90,8 @@ polaris master serve --config /etc/polaris/master.yaml
 polaris master serve \
   --data-dir /var/lib/polaris-master \
   --database-path /var/lib/polaris-master/polaris.db \
-  --agent-port 8443 \
-  --web-port 8080
+  --agent-port 19994 \
+  --web-port 19670
 ```
 
 #### 2. 只运行 Agent
@@ -107,7 +107,7 @@ polaris agent serve --config /etc/polaris/agent.yaml
 ```bash
 polaris agent serve \
   --data-dir /var/lib/polaris-agent \
-  --master control.example.com:8443 \
+  --master control.example.com:19994 \
   --master-pubkey '<MASTER_NOISE_PUBKEY>'
 ```
 
@@ -127,10 +127,10 @@ polaris combined serve \
 polaris combined serve \
   --master-data-dir /var/lib/polaris-master \
   --database-path /var/lib/polaris-master/polaris.db \
-  --agent-port 8443 \
-  --web-port 8080 \
+  --agent-port 19994 \
+  --web-port 19670 \
   --agent-data-dir /var/lib/polaris-agent \
-  --master 127.0.0.1:8443 \
+  --master 127.0.0.1:19994 \
   --master-pubkey '<MASTER_NOISE_PUBKEY>'
 ```
 
@@ -145,8 +145,8 @@ Master 配置只包含端口，不配置监听 IP。Agent 名称自动读取操�
 ```yaml
 data_dir: /var/lib/polaris-master
 database_path: /var/lib/polaris-master/polaris.db
-agent_port: 8443
-web_port: 8080
+agent_port: 19994
+web_port: 19670
 allow_insecure_http: false
 ```
 
@@ -162,7 +162,7 @@ sudo -u polaris /usr/local/bin/polaris master show-pubkey --config /etc/polaris/
 
 ```yaml
 data_dir: /var/lib/polaris-agent
-master_address: 127.0.0.1:8443
+master_address: 127.0.0.1:19994
 master_public_key: <MASTER_NOISE_PUBKEY>
 heartbeat_interval: 30s
 connections_interval: 2s
@@ -213,32 +213,32 @@ master 与 agent 可以安装在同一台服务器上，但生产环境通常把
 | 名称 | 示例 | 说明 |
 | --- | --- | --- |
 | master 控制台域名 | `control.example.com` | 管理员通过 HTTPS 访问 |
-| master agent 地址 | `control.example.com:8443` | agent 建立 Noise TCP 连接时使用，不带 `http://` 或 `https://` |
+| master agent 地址 | `control.example.com:19994` | agent 建立 Noise TCP 连接时使用，不带 `http://` 或 `https://` |
 | master 数据目录 | `/var/lib/polaris-master` | 数据库、主密钥和 Noise 私钥必须整体备份 |
 | agent 数据目录 | `/var/lib/polaris-agent` | 保存节点私钥、发布签名公钥和任务幂等结果 |
 | 默认管理员用户名 | `polaris_admin` | 首次启动时自动创建，首次登录后必须修改初始密码 |
 
 master 服务器的网络要求：
 
-- 对 agent 开放 `8443/TCP`。
+- 对 agent 开放 `19994/TCP`。
 - 生产控制台通过反向代理开放 `443/TCP`。
-- `8080/TCP` 不应直接向公网放行；使用主机防火墙仅允许本机反向代理或可信管理网访问。
+- `19670/TCP` 不应直接向公网放行；使用主机防火墙仅允许本机反向代理或可信管理网访问。
 - master 需要访问 GitHub API，以查询官方 sing-box 最新稳定版和校验信息。
 
 agent 服务器的网络要求：
 
-- 能主动连接 master 的 `8443/TCP`。
+- 能主动连接 master 的 `19994/TCP`。
 - 能通过 HTTPS 下载 master 批准的 sing-box 官方发布资源。
 - agent 控制连接不需要对公网开放新的入站端口；业务代理端口按后续 Listener 配置开放。
 
 如果使用 UFW，可按实际部署开放 master 端口：
 
 ```bash
-sudo ufw allow 8443/tcp
+sudo ufw allow 19994/tcp
 sudo ufw allow 443/tcp
 ```
 
-不要把 `8443` 配置成 HTTP/HTTPS 反向代理。它承载的是 Noise 加密原始 TCP；如需转发，只能使用不终止连接的四层 TCP 转发。
+不要把 `19994` 配置成 HTTP/HTTPS 反向代理。它承载的是 Noise 加密原始 TCP；如需转发，只能使用不终止连接的四层 TCP 转发。
 
 ## GitHub 自动构建并发布
 
@@ -402,7 +402,7 @@ sudo install -d -o root -g polaris -m 0750 /etc/polaris
 sudo install -o root -g polaris -m 0640 deploy/polaris-master.yaml /etc/polaris/master.yaml
 ```
 
-如果发行版的 `nologin` 位于 `/sbin/nologin`，请相应修改 `useradd` 命令。master 不需要 root 权限；默认端口 `8080` 和 `8443` 都高于 1024。
+如果发行版的 `nologin` 位于 `/sbin/nologin`，请相应修改 `useradd` 命令。master 不需要 root 权限；默认端口 `19670` 和 `19994` 都高于 1024。
 
 ### 2. 首次登录
 
@@ -464,8 +464,8 @@ sudo journalctl -u polaris-master.service -f
 ### 5. 验证 master
 
 ```bash
-curl -fsS http://127.0.0.1:8080/api/v1/health
-sudo ss -lntp | grep -E ':(8080|8443)\b'
+curl -fsS http://127.0.0.1:19670/api/v1/health
+sudo ss -lntp | grep -E ':(19670|19994)\b'
 ```
 
 健康检查应返回：
@@ -474,11 +474,11 @@ sudo ss -lntp | grep -E ':(8080|8443)\b'
 {"status":"ok"}
 ```
 
-如果 `8443` 没有监听，查看 `journalctl` 中是否存在端口占用或数据目录权限错误。
+如果 `19994` 没有监听，查看 `journalctl` 中是否存在端口占用或数据目录权限错误。
 
 ### 6. 为控制台配置 HTTPS
 
-master 的浏览器端口本身是普通 HTTP。Master 配置只填写端口，程序监听所有本机地址；生产环境必须使用防火墙限制 `8080/TCP` 的来源，并由 Nginx、Caddy 或其他反向代理终止 HTTPS。
+master 的浏览器端口本身是普通 HTTP。Master 配置只填写端口，程序监听所有本机地址；生产环境必须使用防火墙限制 `19670/TCP` 的来源，并由 Nginx、Caddy 或其他反向代理终止 HTTPS。
 
 Nginx 示例：
 
@@ -491,7 +491,7 @@ server {
     ssl_certificate_key /etc/letsencrypt/live/control.example.com/privkey.pem;
 
     location / {
-        proxy_pass http://127.0.0.1:8080;
+        proxy_pass http://127.0.0.1:19670;
         proxy_http_version 1.1;
         proxy_set_header Host $host;
         proxy_set_header X-Forwarded-Proto https;
@@ -518,7 +518,7 @@ server {
 将地址替换成实际 master 地址：
 
 ```bash
-MASTER_ADDRESS=control.example.com:8443
+MASTER_ADDRESS=control.example.com:19994
 MASTER_HOST=${MASTER_ADDRESS%:*}
 MASTER_PORT=${MASTER_ADDRESS##*:}
 
@@ -526,7 +526,7 @@ getent hosts "$MASTER_HOST"
 timeout 5 bash -c "</dev/tcp/${MASTER_HOST}/${MASTER_PORT}"
 ```
 
-这里只检查 TCP 是否可达。`8443` 不是 HTTPS 服务，因此不要使用 `curl https://...:8443` 进行检测。
+这里只检查 TCP 是否可达。`19994` 不是 HTTPS 服务，因此不要使用 `curl https://...:19994` 进行检测。
 
 ### 2. 安装 agent 二进制
 
@@ -653,7 +653,7 @@ sudo systemctl stop polaris-master.service
 sudo cp -a /var/lib/polaris-master "/var/lib/polaris-master.backup-$(date +%Y%m%d-%H%M%S)"
 sudo install -m 0755 ./polaris /usr/local/bin/polaris
 sudo systemctl start polaris-master.service
-curl -fsS http://127.0.0.1:8080/api/v1/health
+curl -fsS http://127.0.0.1:19670/api/v1/health
 ```
 
 升级 agent：
@@ -671,14 +671,14 @@ sudo systemctl status polaris-agent.service
 ### 控制台登录后仍显示未登录
 
 - 生产环境确认通过 HTTPS 访问。
-- 确认反向代理把请求转发到 `127.0.0.1:8080`。
+- 确认反向代理把请求转发到 `127.0.0.1:19670`。
 - 只有明文 HTTP 测试环境才使用 `--allow-insecure-http`。
 - 如果已启用两步验证，确认浏览器、验证器设备和 master 系统时间准确，否则动态验证码可能失败。
 
 ### agent 无法连接 master
 
 - `--master` 必须是 `主机:端口`，不能包含 URL scheme。
-- 确认 master 的 `8443/TCP` 已监听并通过防火墙。
+- 确认 master 的 `19994/TCP` 已监听并通过防火墙。
 - 确认 agent 使用的公钥来自同一个 master 数据目录。
 - 不要把 agent 连接发送到 HTTP、HTTPS 或 TLS 终止代理。
 - 查看 `journalctl -u polaris-agent.service` 中的 Noise 握手或连接错误。

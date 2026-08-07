@@ -330,7 +330,7 @@ master_public_key() {
 configured_agent_port() {
   local port
   port=$(awk '$1 == "agent_port:" { print $2; exit }' /etc/polaris/master.yaml)
-  printf '%s' "${port:-8443}"
+  printf '%s' "${port:-19994}"
 }
 
 register_agent_if_requested() {
@@ -376,7 +376,7 @@ install_master_mode() {
       start_selected_service
     fi
     log "Master Noise 公钥：${public_key}"
-    log "默认控制台端口：8080；首次登录账户 polaris_admin / 123456"
+    log "默认控制台端口：19670；首次登录账户 polaris_admin / 123456"
   fi
 }
 

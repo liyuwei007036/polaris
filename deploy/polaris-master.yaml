@@ -1,5 +1,5 @@
 data_dir: /var/lib/polaris-master
 database_path: /var/lib/polaris-master/polaris.db
-agent_port: 8443
-web_port: 8080
+agent_port: 19994
+web_port: 19670
 allow_insecure_http: false

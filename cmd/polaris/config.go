@@ -53,7 +53,7 @@ type agentFlagValues struct {
 }
 
 func defaultMasterConfig() masterConfig {
-	return masterConfig{DataDir: "data", AgentPort: 8443, WebPort: 8080}
+	return masterConfig{DataDir: "data", AgentPort: 19994, WebPort: 19670}
 }
 
 func defaultAgentConfig() agentConfig {
