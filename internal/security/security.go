@@ -101,6 +101,7 @@ func NewTOTPSecret() (string, error) {
 }
 
 func VerifyTOTP(secret, code string, at time.Time) bool {
+	code = strings.Join(strings.Fields(code), "")
 	if len(code) != 6 {
 		return false
 	}

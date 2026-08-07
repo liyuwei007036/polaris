@@ -26,7 +26,7 @@ export function friendlyError(message) {
 }
 
 export async function api(path, options = {}) {
-  const { method = 'GET', body } = options
+  const { method = 'GET', body, silentUnauthorized = false } = options
   const headers = { 'Content-Type': 'application/json' }
   if (csrfToken.value) headers['X-CSRF-Token'] = csrfToken.value
   const response = await fetch(`/api/v1${path}`, {
@@ -35,7 +35,7 @@ export async function api(path, options = {}) {
     headers,
     body: body === undefined ? undefined : JSON.stringify(body),
   })
-  if (response.status === 401) {
+  if (response.status === 401 && !silentUnauthorized) {
     window.dispatchEvent(new CustomEvent('sb:unauthorized'))
     throw new Error('会话已过期，请重新登录')
   }
@@ -46,7 +46,9 @@ export async function api(path, options = {}) {
     : await response.text().catch(() => null)
   if (!response.ok) {
     const message = data?.error || (typeof data === 'string' ? data : `操作未完成（错误代码 ${response.status}）`)
-    throw new Error(friendlyError(message))
+    const error = new Error(friendlyError(message))
+    error.code = message
+    throw error
   }
   return data
 }

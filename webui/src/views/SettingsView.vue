@@ -81,14 +81,19 @@ async function beginTOTPSetup() {
 }
 
 async function enableTOTP() {
+  if (totpSetup.loading) return
   if (!/^\d{6}$/.test(totpSetup.code)) return ElMessage.error('请输入验证器显示的 6 位数字')
   totpSetup.loading = true
   try {
-    await post('/auth/2fa/enable', { code: totpSetup.code })
+    await api('/auth/2fa/enable', { method: 'POST', body: { code: totpSetup.code }, silentUnauthorized: true })
     appState.totp_enabled = true
     totpSetup.open = false
     ElMessage.success('两步验证已启用，后续登录需要输入动态验证码')
     await load()
+  } catch (error) {
+    ElMessage.error(error.code === 'authentication failed'
+      ? '验证码不正确，请输入验证器当前显示的 6 位动态码'
+      : error.message)
   } finally { totpSetup.loading = false }
 }
 
@@ -198,9 +203,9 @@ onMounted(load)
       <div class="totp-setup">
         <p>扫描二维码后，输入验证器显示的 6 位动态码完成绑定。</p>
         <img :src="totpSetup.qr" alt="两步验证绑定二维码" data-testid="totp-qr" />
-        <el-form label-position="top">
+        <el-form label-position="top" @submit.prevent="enableTOTP">
           <el-form-item label="无法扫码时，可手动输入此密钥"><el-input :model-value="totpSetup.secret" readonly class="mono" data-testid="totp-secret" /></el-form-item>
-          <el-form-item label="动态验证码"><el-input v-model="totpSetup.code" maxlength="6" inputmode="numeric" placeholder="000000" @keyup.enter="enableTOTP" /></el-form-item>
+          <el-form-item label="动态验证码"><el-input v-model="totpSetup.code" maxlength="6" inputmode="numeric" placeholder="000000" /></el-form-item>
         </el-form>
       </div>
       <template #footer><el-button @click="totpSetup.open = false">取消</el-button><el-button type="primary" :loading="totpSetup.loading" @click="enableTOTP">启用</el-button></template>

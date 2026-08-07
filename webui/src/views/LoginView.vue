@@ -31,16 +31,19 @@ async function submitCredentials() {
 }
 
 async function submitMFA() {
-  if (code.value.length !== 6) return
+  if (loading.value || code.value.length !== 6) return
   loading.value = true
   try {
     const result = await api('/auth/mfa', {
       method: 'POST',
       body: { challenge_id: challengeID.value, code: code.value },
+      silentUnauthorized: true,
     })
     await finishAuthentication(result)
   } catch (error) {
-    ElMessage.error(error.message)
+    ElMessage.error(error.code === 'authentication failed'
+      ? '验证码不正确或本次登录已超时，请重新输入验证器当前显示的 6 位动态码'
+      : error.message)
   } finally {
     loading.value = false
   }
@@ -95,7 +98,6 @@ async function finishAuthentication(result) {
             maxlength="6"
             inputmode="numeric"
             placeholder="000000"
-            @keyup.enter="submitMFA"
           />
         </el-form-item>
         <el-button type="primary" size="large" :loading="loading" @click="submitMFA">登录</el-button>
