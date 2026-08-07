@@ -208,7 +208,7 @@ func LatestOfficialSingBoxRelease(ctx context.Context, architecture string) (Sin
 		return SingBoxRelease{}, err
 	}
 	request.Header.Set("Accept", "application/vnd.github+json")
-	request.Header.Set("User-Agent", "sb-control")
+	request.Header.Set("User-Agent", "polaris")
 	response, err := (&http.Client{Timeout: 20 * time.Second}).Do(request)
 	if err != nil {
 		return SingBoxRelease{}, fmt.Errorf("fetch official sing-box release: %w", err)

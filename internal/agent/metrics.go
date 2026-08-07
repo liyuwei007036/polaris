@@ -19,7 +19,7 @@ import (
 // configurations. It is never reachable from outside the node. The E2E suite
 // redirects only its spawned agent to a deterministic local test endpoint.
 var clashAPIBase = func() string {
-	if value := strings.TrimRight(strings.TrimSpace(os.Getenv("SB_CONTROL_E2E_CLASH_API_URL")), "/"); value != "" {
+	if value := strings.TrimRight(strings.TrimSpace(os.Getenv("POLARIS_E2E_CLASH_API_URL")), "/"); value != "" {
 		return value
 	}
 	return "http://127.0.0.1:9090"

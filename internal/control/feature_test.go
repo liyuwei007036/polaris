@@ -14,8 +14,8 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/sb-control/sb-control/internal/control"
-	"github.com/sb-control/sb-control/internal/wire"
+	"github.com/liyuwei007036/polaris/internal/control"
+	"github.com/liyuwei007036/polaris/internal/wire"
 )
 
 func approveTestNode(t *testing.T, server *control.Server, baseURL, session, csrfToken, nodeName string) string {
@@ -617,10 +617,10 @@ func TestCompileFail2BanRendersManagedNamespace(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(jailFile, "[sb-control-singbox-auth]") || !strings.Contains(jailFile, "filter = sb-control-singbox-auth") {
+	if !strings.Contains(jailFile, "[polaris-singbox-auth]") || !strings.Contains(jailFile, "filter = polaris-singbox-auth") {
 		t.Fatalf("jail file missing managed namespace: %q", jailFile)
 	}
-	filter, ok := filters["sb-control-singbox-auth.conf"]
+	filter, ok := filters["polaris-singbox-auth.conf"]
 	if !ok || !strings.Contains(filter, "failregex = authentication failed from <HOST>") {
 		t.Fatalf("filter file missing: %#v", filters)
 	}
@@ -703,7 +703,7 @@ func TestFail2BanJailLifecycleAndPublish(t *testing.T) {
 	if err := json.Unmarshal([]byte(task.Payload), &payload); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(payload.Jail, "[sb-control-singbox-auth]") || len(payload.Filters) != 1 {
+	if !strings.Contains(payload.Jail, "[polaris-singbox-auth]") || len(payload.Filters) != 1 {
 		t.Fatalf("unexpected payload: %#v", payload)
 	}
 

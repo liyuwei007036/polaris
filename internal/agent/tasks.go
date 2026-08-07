@@ -26,15 +26,15 @@ import (
 	"strings"
 	"time"
 
-	"github.com/sb-control/sb-control/internal/nginxroute"
-	"github.com/sb-control/sb-control/internal/selfupdate"
-	"github.com/sb-control/sb-control/internal/version"
+	"github.com/liyuwei007036/polaris/internal/nginxroute"
+	"github.com/liyuwei007036/polaris/internal/selfupdate"
+	"github.com/liyuwei007036/polaris/internal/version"
 	"golang.org/x/net/proxy"
 )
 
 var managedSingBoxConfig = managedSystemPath("/etc/sing-box/config.json")
-var managedNginxConfig = managedSystemPath("/etc/nginx/stream-conf.d/sb-control.conf")
-var managedNginxModuleConfig = managedSystemPath("/etc/nginx/modules-enabled/99-sb-control-stream.conf")
+var managedNginxConfig = managedSystemPath("/etc/nginx/stream-conf.d/polaris.conf")
+var managedNginxModuleConfig = managedSystemPath("/etc/nginx/modules-enabled/99-polaris-stream.conf")
 var managedNginxMainConfig = managedSystemPath("/etc/nginx/nginx.conf")
 
 const minimumNginxWorkerConnections = 4096
@@ -46,8 +46,8 @@ const singBoxLogDirectory = "/var/log/sing-box"
 
 // The managed firewall keeps its own configuration file and unit so the
 // host's /etc/nftables.conf is never rewritten.
-const managedNftablesConfig = "/etc/sb-control/nftables.conf"
-const managedNftablesUnit = "/etc/systemd/system/sb-control-nftables.service"
+const managedNftablesConfig = "/etc/polaris/nftables.conf"
+const managedNftablesUnit = "/etc/systemd/system/polaris-nftables.service"
 
 var nginxWorkerConnectionsPattern = regexp.MustCompile(`(?m)^([ \t]*worker_connections[ \t]+)([0-9]+)([ \t]*;)`)
 var nginxWorkerOpenFilesPattern = regexp.MustCompile(`(?m)^([ \t]*worker_rlimit_nofile[ \t]+)([0-9]+)([ \t]*;)`)
@@ -55,11 +55,11 @@ var nginxWorkerOpenFilesPattern = regexp.MustCompile(`(?m)^([ \t]*worker_rlimit_
 var outboundProbeURL = "https://www.gstatic.com/generate_204"
 
 // managedSystemPath leaves production paths unchanged. The black-box E2E
-// suite sets SB_CONTROL_E2E_ROOT in the spawned agent process so the real task
+// suite sets POLARIS_E2E_ROOT in the spawned agent process so the real task
 // executor can exercise atomic writes and rollback bookkeeping without
 // touching the host's /etc or /usr/local directories.
 func managedSystemPath(path string) string {
-	root := strings.TrimSpace(os.Getenv("SB_CONTROL_E2E_ROOT"))
+	root := strings.TrimSpace(os.Getenv("POLARIS_E2E_ROOT"))
 	if root == "" {
 		return path
 	}
@@ -72,7 +72,7 @@ func managedSystemPath(path string) string {
 // every such write fails with an unexplained "permission denied".
 func permissionHint(err error) string {
 	if os.IsPermission(err) {
-		return "; agent 没有写入权限，需要以 root 身份运行 sb-control agent（例如通过 systemd 并设置 User=root），或对该目录授予写权限后重试"
+		return "; agent 没有写入权限，需要以 root 身份运行 polaris agent（例如通过 systemd 并设置 User=root），或对该目录授予写权限后重试"
 	}
 	return ""
 }
@@ -228,7 +228,7 @@ func installSingBox(ctx context.Context, task Task, dataDir string) TaskResult {
 	if err := os.MkdirAll(binaryDirectory, 0o755); err != nil {
 		return TaskResult{Status: "failed", Summary: "create sing-box binary directory: " + err.Error() + permissionHint(err)}
 	}
-	artifact, err := os.CreateTemp(binaryDirectory, ".sb-control-sing-box-*")
+	artifact, err := os.CreateTemp(binaryDirectory, ".polaris-sing-box-*")
 	if err != nil {
 		return TaskResult{Status: "failed", Summary: "create temporary sing-box artifact: " + err.Error()}
 	}
@@ -262,7 +262,7 @@ func installSingBox(ctx context.Context, task Task, dataDir string) TaskResult {
 		return TaskResult{Status: "failed", Summary: "set sing-box artifact mode: " + err.Error()}
 	}
 
-	backupPath := binaryPath + ".sb-control.last-good"
+	backupPath := binaryPath + ".polaris.last-good"
 	if current, err := os.ReadFile(binaryPath); err == nil {
 		if err := os.WriteFile(backupPath, current, 0o755); err != nil {
 			return TaskResult{Status: "failed", Summary: "backup sing-box binary: " + err.Error()}
@@ -292,7 +292,7 @@ func installSingBox(ctx context.Context, task Task, dataDir string) TaskResult {
 	return TaskResult{Status: "failed", Summary: "sing-box service failed after upgrade and rollback did not complete"}
 }
 
-// upgradeAgent replaces the running sb-control binary with a master-signed
+// upgradeAgent replaces the running polaris binary with a master-signed
 // release. It reuses the sing-box release manifest verification, so the agent
 // still never accepts a bare download URL from the control stream. On success
 // the session loop re-executes the process after the result is reported.
@@ -341,7 +341,7 @@ func extractSingBoxArchive(archivePath, directory string) (string, error) {
 		if header.Typeflag != tar.TypeReg || filepath.Base(header.Name) != "sing-box" || header.Size <= 0 || header.Size > 200*1024*1024 {
 			continue
 		}
-		target, err := os.CreateTemp(directory, ".sb-control-sing-box-extracted-*")
+		target, err := os.CreateTemp(directory, ".polaris-sing-box-extracted-*")
 		if err != nil {
 			return "", err
 		}
@@ -423,7 +423,7 @@ func applyNftables(ctx context.Context, task Task) TaskResult {
 	if err := ensureNftablesReady(ctx); err != nil {
 		return TaskResult{Status: "failed", Summary: "准备防火墙失败：" + err.Error()}
 	}
-	snapshot, _ := exec.CommandContext(ctx, "nft", "list", "table", "inet", "sb_control").CombinedOutput()
+	snapshot, _ := exec.CommandContext(ctx, "nft", "list", "table", "inet", "polaris").CombinedOutput()
 	// Replacing the table in one script is what makes a re-publish idempotent.
 	// Loading the definition on its own merges into the existing table, so
 	// every publish used to stack another copy of every rule on top of the
@@ -433,7 +433,7 @@ func applyNftables(ctx context.Context, task Task) TaskResult {
 	if err := os.MkdirAll(nftTemporaryDirectory, 0o700); err != nil {
 		return TaskResult{Status: "failed", Summary: "create nftables temporary directory: " + err.Error() + permissionHint(err)}
 	}
-	temporary, err := os.CreateTemp(nftTemporaryDirectory, "sb-control-nft-*.nft")
+	temporary, err := os.CreateTemp(nftTemporaryDirectory, "polaris-nft-*.nft")
 	if err != nil {
 		return TaskResult{Status: "failed", Summary: err.Error()}
 	}
@@ -452,7 +452,7 @@ func applyNftables(ctx context.Context, task Task) TaskResult {
 	if output, err := exec.CommandContext(ctx, "nft", "-f", temporaryPath).CombinedOutput(); err != nil {
 		_ = output
 		if len(snapshot) > 0 {
-			if restore, restoreErr := os.CreateTemp(nftTemporaryDirectory, "sb-control-nft-restore-*.nft"); restoreErr == nil {
+			if restore, restoreErr := os.CreateTemp(nftTemporaryDirectory, "polaris-nft-restore-*.nft"); restoreErr == nil {
 				restorePath := restore.Name()
 				if _, writeErr := restore.WriteString(replaceableNftablesScript(string(snapshot))); writeErr == nil {
 					restore.Close()
@@ -461,23 +461,23 @@ func applyNftables(ctx context.Context, task Task) TaskResult {
 				os.Remove(restorePath)
 			}
 		}
-		return TaskResult{Status: "rolled_back", Summary: "nftables apply failed; attempted restore of sb_control table"}
+		return TaskResult{Status: "rolled_back", Summary: "nftables apply failed; attempted restore of polaris table"}
 	}
 	if err := persistNftables(ctx, script); err != nil {
 		return TaskResult{Status: "succeeded", Summary: "防火墙规则已生效，但开机自动恢复未能配置：" + err.Error()}
 	}
-	return TaskResult{Status: "succeeded", Summary: "sb_control nftables table applied and persisted across reboots"}
+	return TaskResult{Status: "succeeded", Summary: "polaris nftables table applied and persisted across reboots"}
 }
 
 // replaceableNftablesScript wraps a table definition so loading it replaces
 // whatever is there. The empty declaration makes the delete safe when the
 // table does not exist yet.
 func replaceableNftablesScript(configuration string) string {
-	return "table inet sb_control\ndelete table inet sb_control\n" + configuration
+	return "table inet polaris\ndelete table inet polaris\n" + configuration
 }
 
 func ensureNftablesReady(ctx context.Context) error {
-	if strings.TrimSpace(os.Getenv("SB_CONTROL_E2E_ROOT")) != "" || commandExists("nft") {
+	if strings.TrimSpace(os.Getenv("POLARIS_E2E_ROOT")) != "" || commandExists("nft") {
 		return nil
 	}
 	return installPackages(ctx, "nftables")
@@ -488,7 +488,7 @@ func ensureNftablesReady(ctx context.Context) error {
 // in the running kernel, which meant every restart silently dropped the whole
 // firewall. The host's own /etc/nftables.conf is left untouched.
 func persistNftables(ctx context.Context, script string) error {
-	if strings.TrimSpace(os.Getenv("SB_CONTROL_E2E_ROOT")) != "" {
+	if strings.TrimSpace(os.Getenv("POLARIS_E2E_ROOT")) != "" {
 		return nil
 	}
 	configurationPath := managedSystemPath(managedNftablesConfig)
@@ -502,10 +502,10 @@ func persistNftables(ctx context.Context, script string) error {
 		return nil
 	}
 	unitPath := managedSystemPath(managedNftablesUnit)
-	unit := "[Unit]\nDescription=sb-control managed nftables rules\nAfter=network-pre.target\nWants=network-pre.target\n\n" +
+	unit := "[Unit]\nDescription=polaris managed nftables rules\nAfter=network-pre.target\nWants=network-pre.target\n\n" +
 		"[Service]\nType=oneshot\nRemainAfterExit=yes\n" +
 		"ExecStart=/usr/sbin/nft -f " + managedNftablesConfig + "\n" +
-		"ExecStop=/usr/sbin/nft delete table inet sb_control\n\n" +
+		"ExecStop=/usr/sbin/nft delete table inet polaris\n\n" +
 		"[Install]\nWantedBy=multi-user.target\n"
 	existing, readErr := os.ReadFile(unitPath)
 	if readErr != nil || string(existing) != unit {
@@ -521,8 +521,8 @@ func persistNftables(ctx context.Context, script string) error {
 	}
 	// enable without --now: the rules are already loaded, and starting the
 	// unit here would only load them a second time.
-	if output, err := exec.CommandContext(ctx, "systemctl", "enable", "sb-control-nftables.service").CombinedOutput(); err != nil {
-		return errors.New(commandSummary("systemctl enable sb-control-nftables.service", output, err))
+	if output, err := exec.CommandContext(ctx, "systemctl", "enable", "polaris-nftables.service").CombinedOutput(); err != nil {
+		return errors.New(commandSummary("systemctl enable polaris-nftables.service", output, err))
 	}
 	return nil
 }
@@ -569,7 +569,7 @@ func applyNginxConfig(ctx context.Context, task Task, passthrough []NginxPassthr
 	if err := os.MkdirAll(directory, 0o750); err != nil {
 		return TaskResult{Status: "failed", Summary: "create Nginx stream directory: " + err.Error() + permissionHint(err)}
 	}
-	temporary, err := os.CreateTemp(directory, ".sb-control-stream-*.conf")
+	temporary, err := os.CreateTemp(directory, ".polaris-stream-*.conf")
 	if err != nil {
 		return TaskResult{Status: "failed", Summary: "create temporary Nginx configuration: " + err.Error()}
 	}
@@ -586,7 +586,7 @@ func applyNginxConfig(ctx context.Context, task Task, passthrough []NginxPassthr
 	if err := temporary.Close(); err != nil {
 		return TaskResult{Status: "failed", Summary: "close temporary Nginx configuration: " + err.Error()}
 	}
-	backupPath := managedNginxConfig + ".sb-control.last-good"
+	backupPath := managedNginxConfig + ".polaris.last-good"
 	if current, err := os.ReadFile(managedNginxConfig); err == nil {
 		if err := os.WriteFile(backupPath, current, 0o640); err != nil {
 			return TaskResult{Status: "failed", Summary: "backup current Nginx configuration: " + err.Error()}
@@ -627,7 +627,7 @@ func applyNginxConfig(ctx context.Context, task Task, passthrough []NginxPassthr
 }
 
 func ensureNginxReady(ctx context.Context, needed bool) error {
-	if strings.TrimSpace(os.Getenv("SB_CONTROL_E2E_ROOT")) != "" {
+	if strings.TrimSpace(os.Getenv("POLARIS_E2E_ROOT")) != "" {
 		return nil
 	}
 	installedByUs := false
@@ -781,7 +781,7 @@ func ensureNginxWorkerCapacity(ctx context.Context) (bool, error) {
 }
 
 func EnsureManagedNginxCapacity(ctx context.Context) error {
-	if strings.TrimSpace(os.Getenv("SB_CONTROL_E2E_ROOT")) != "" || !commandExists("nginx") {
+	if strings.TrimSpace(os.Getenv("POLARIS_E2E_ROOT")) != "" || !commandExists("nginx") {
 		return nil
 	}
 	configuration, err := os.ReadFile(managedNginxConfig)
@@ -842,7 +842,7 @@ func raiseNginxWorkerOpenFiles(configuration []byte) ([]byte, bool) {
 }
 
 func replaceFileAtomically(path string, content []byte, mode os.FileMode) error {
-	temporary, err := os.CreateTemp(filepath.Dir(path), ".sb-control-nginx-main-*.conf")
+	temporary, err := os.CreateTemp(filepath.Dir(path), ".polaris-nginx-main-*.conf")
 	if err != nil {
 		return err
 	}
@@ -949,7 +949,7 @@ func applySingBoxConfig(ctx context.Context, task Task) TaskResult {
 	if err := os.MkdirAll(managedSystemPath(singBoxLogDirectory), 0o755); err != nil {
 		return TaskResult{Status: "failed", Summary: "create sing-box log directory: " + err.Error() + permissionHint(err)}
 	}
-	temporary, err := os.CreateTemp(configDir, ".sb-control-config-*.json")
+	temporary, err := os.CreateTemp(configDir, ".polaris-config-*.json")
 	if err != nil {
 		return TaskResult{Status: "failed", Summary: "create temporary configuration: " + err.Error()}
 	}
@@ -973,7 +973,7 @@ func applySingBoxConfig(ctx context.Context, task Task) TaskResult {
 	if output, err := exec.CommandContext(ctx, "sing-box", "check", "-c", temporaryPath).CombinedOutput(); err != nil {
 		return TaskResult{Status: "failed", Summary: commandSummary("sing-box check", output, err)}
 	}
-	backupPath := managedSingBoxConfig + ".sb-control.last-good"
+	backupPath := managedSingBoxConfig + ".polaris.last-good"
 	if current, err := os.ReadFile(managedSingBoxConfig); err == nil {
 		if err := os.WriteFile(backupPath, current, 0o640); err != nil {
 			return TaskResult{Status: "failed", Summary: "backup current configuration: " + err.Error()}
@@ -1018,7 +1018,7 @@ const initialSingBoxConfig = `{
 `
 
 const singBoxUnitContents = `[Unit]
-Description=sing-box service (managed by sb-control)
+Description=sing-box service (managed by polaris)
 After=network.target
 
 [Service]

@@ -7,7 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"github.com/sb-control/sb-control/internal/security"
+	"github.com/liyuwei007036/polaris/internal/security"
 )
 
 // CompileNodeConfig translates only typed Listener and Endpoint objects into a

@@ -20,7 +20,7 @@ func buildArchive(t *testing.T, binaryName, content string) []byte {
 	var buffer bytes.Buffer
 	gzipWriter := gzip.NewWriter(&buffer)
 	tarWriter := tar.NewWriter(gzipWriter)
-	if err := tarWriter.WriteHeader(&tar.Header{Name: "sb-control_0.40_linux_amd64/" + binaryName, Mode: 0o755, Size: int64(len(content))}); err != nil {
+	if err := tarWriter.WriteHeader(&tar.Header{Name: "polaris_0.40_linux_amd64/" + binaryName, Mode: 0o755, Size: int64(len(content))}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := tarWriter.Write([]byte(content)); err != nil {
@@ -48,12 +48,12 @@ func serveArchive(t *testing.T, archive []byte) *httptest.Server {
 }
 
 func TestApplyReplacesBinaryAndBacksUpPrevious(t *testing.T) {
-	archive := buildArchive(t, "sb-control", "new-binary-content")
+	archive := buildArchive(t, "polaris", "new-binary-content")
 	server := serveArchive(t, archive)
 	digest := sha256.Sum256(archive)
 
 	directory := t.TempDir()
-	executable := filepath.Join(directory, "sb-control")
+	executable := filepath.Join(directory, "polaris")
 	if err := os.WriteFile(executable, []byte("old-binary-content"), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -81,19 +81,19 @@ func TestApplyReplacesBinaryAndBacksUpPrevious(t *testing.T) {
 	if err != nil || string(installed) != "new-binary-content" {
 		t.Fatalf("installed binary content %q err=%v", installed, err)
 	}
-	backup, err := os.ReadFile(executable + ".sb-control.last-good")
+	backup, err := os.ReadFile(executable + ".polaris.last-good")
 	if err != nil || string(backup) != "old-binary-content" {
 		t.Fatalf("backup content %q err=%v", backup, err)
 	}
 }
 
 func TestApplyRollsBackWhenVerificationFails(t *testing.T) {
-	archive := buildArchive(t, "sb-control", "broken-binary")
+	archive := buildArchive(t, "polaris", "broken-binary")
 	server := serveArchive(t, archive)
 	digest := sha256.Sum256(archive)
 
 	directory := t.TempDir()
-	executable := filepath.Join(directory, "sb-control")
+	executable := filepath.Join(directory, "polaris")
 	if err := os.WriteFile(executable, []byte("old-binary-content"), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -112,11 +112,11 @@ func TestApplyRollsBackWhenVerificationFails(t *testing.T) {
 }
 
 func TestApplyRejectsChecksumMismatch(t *testing.T) {
-	archive := buildArchive(t, "sb-control", "any-content")
+	archive := buildArchive(t, "polaris", "any-content")
 	server := serveArchive(t, archive)
 
 	directory := t.TempDir()
-	executable := filepath.Join(directory, "sb-control")
+	executable := filepath.Join(directory, "polaris")
 	if err := os.WriteFile(executable, []byte("old-binary-content"), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -138,13 +138,13 @@ func TestApplyRejectsArchiveWithoutBinary(t *testing.T) {
 	digest := sha256.Sum256(archive)
 
 	directory := t.TempDir()
-	executable := filepath.Join(directory, "sb-control")
+	executable := filepath.Join(directory, "polaris")
 	if err := os.WriteFile(executable, []byte("old-binary-content"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 
 	manifest := Manifest{Version: "0.40", URL: server.URL, SHA256: hex.EncodeToString(digest[:]), Archive: "tar.gz"}
 	if err := Apply(t.Context(), manifest, executable, func(context.Context, string) error { return nil }); err == nil {
-		t.Fatal("apply accepted an archive without the sb-control binary")
+		t.Fatal("apply accepted an archive without the polaris binary")
 	}
 }

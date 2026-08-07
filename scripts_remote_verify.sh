@@ -24,21 +24,21 @@ for argument in "$@"; do
 done
 [ -n "$TARGET" ] || { echo "usage: scripts_remote_verify.sh [--from-scratch] user@host" >&2; exit 2; }
 
-REMOTE_DIR="${SB_REMOTE_DIR:-/opt/sb-control-verify}"
+REMOTE_DIR="${SB_REMOTE_DIR:-/opt/polaris-verify}"
 WEB_PORT="${SB_WEB_PORT:-18080}"
 AGENT_PORT="${SB_AGENT_PORT:-18443}"
-BINARY="artifacts/sb-control-linux-amd64"
+BINARY="artifacts/polaris-linux-amd64"
 
 echo "==> building web assets and the Linux binary"
 npm --prefix webui run build
 mkdir -p artifacts
-GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -trimpath -o "$BINARY" ./cmd/sb-control
+GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -trimpath -o "$BINARY" ./cmd/polaris
 
 echo "==> uploading to $TARGET:$REMOTE_DIR"
 # The pkill pattern is bracketed so it cannot match the shell running it.
-ssh "$TARGET" "mkdir -p $REMOTE_DIR; pkill -f 'sb-control com[b]ined' >/dev/null 2>&1; sleep 1; exit 0"
-scp "$BINARY" "$TARGET:$REMOTE_DIR/sb-control"
-ssh "$TARGET" "chmod +x $REMOTE_DIR/sb-control"
+ssh "$TARGET" "mkdir -p $REMOTE_DIR; pkill -f 'polaris com[b]ined' >/dev/null 2>&1; sleep 1; exit 0"
+scp "$BINARY" "$TARGET:$REMOTE_DIR/polaris"
+ssh "$TARGET" "chmod +x $REMOTE_DIR/polaris"
 
 if [ "$FROM_SCRATCH" -eq 1 ]; then
     echo "==> purging Nginx and Fail2Ban so the agent has to install them itself"
@@ -58,8 +58,8 @@ echo "==> starting master and agent"
 ssh "$TARGET" "sh -s" <<REMOTE
 set -eu
 cd "$REMOTE_DIR"
-PUB=\$(./sb-control master show-pubkey --data-dir data)
-setsid nohup ./sb-control combined serve \
+PUB=\$(./polaris master show-pubkey --data-dir data)
+setsid nohup ./polaris combined serve \
   --master-data-dir data --agent-data-dir agent-data \
   --web-port $WEB_PORT --agent-port $AGENT_PORT \
   --master 127.0.0.1:$AGENT_PORT --master-pubkey "\$PUB" \
@@ -75,17 +75,17 @@ echo "--- sing-box managed configuration ---"
 [ -f /etc/sing-box/config.json ] && grep -o '"output"[^,}]*' /etc/sing-box/config.json || echo "(sing-box not installed yet)"
 echo
 echo "--- managed Nginx stream routing ---"
-[ -f /etc/nginx/stream-conf.d/sb-control.conf ] && cat /etc/nginx/stream-conf.d/sb-control.conf || echo "(no shared-port routing configured)"
+[ -f /etc/nginx/stream-conf.d/polaris.conf ] && cat /etc/nginx/stream-conf.d/polaris.conf || echo "(no shared-port routing configured)"
 command -v nginx >/dev/null && nginx -t 2>&1 || echo "(nginx not installed)"
 echo "port 80 exposed? $(ss -lnt 2>/dev/null | grep -q ':80 ' && echo YES-PROBLEM || echo no)"
 echo
 echo "--- managed firewall ---"
-nft list table inet sb_control 2>&1 | sed -n '1,20p'
-echo "boot unit: $(systemctl is-enabled sb-control-nftables.service 2>&1)"
+nft list table inet polaris 2>&1 | sed -n '1,20p'
+echo "boot unit: $(systemctl is-enabled polaris-nftables.service 2>&1)"
 echo
 echo "--- Fail2Ban ---"
 command -v fail2ban-client >/dev/null && fail2ban-client status 2>&1 || echo "(fail2ban not installed; it installs on first publish)"
-echo "jails not owned by sb-control are left untouched:"
+echo "jails not owned by polaris are left untouched:"
 ls /etc/fail2ban/jail.d/ 2>&1
 echo
 echo "--- services ---"
@@ -94,4 +94,4 @@ REMOTE
 
 echo
 echo "Console: http://${TARGET#*@}:$WEB_PORT"
-echo "To stop:  ssh $TARGET \"pkill -f 'sb-control com[b]ined'\""
+echo "To stop:  ssh $TARGET \"pkill -f 'polaris com[b]ined'\""

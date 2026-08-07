@@ -43,16 +43,16 @@ func TestUnbanRejectsUnsafeInput(t *testing.T) {
 		digest := sha256.Sum256(encoded)
 		return Task{ID: "0123456789abcdef0123456789abcdef", Kind: "fail2ban.unban", Payload: string(encoded), ExpectedHash: hex.EncodeToString(digest[:])}
 	}
-	if result := unbanAddress(context.Background(), hashed(map[string]string{"jail": "sb-control-ssh", "ip": "203.0.113.7"})); result.Status == "succeeded" {
+	if result := unbanAddress(context.Background(), hashed(map[string]string{"jail": "polaris-ssh", "ip": "203.0.113.7"})); result.Status == "succeeded" {
 		t.Fatalf("unban should not succeed without fail2ban-client: %#v", result)
 	}
-	if result := unbanAddress(context.Background(), hashed(map[string]string{"jail": "sb-control-ssh; rm -rf /", "ip": "203.0.113.7"})); result.Status != "failed" {
+	if result := unbanAddress(context.Background(), hashed(map[string]string{"jail": "polaris-ssh; rm -rf /", "ip": "203.0.113.7"})); result.Status != "failed" {
 		t.Fatalf("accepted an invalid jail name: %#v", result)
 	}
-	if result := unbanAddress(context.Background(), hashed(map[string]string{"jail": "sb-control-ssh", "ip": "not-an-ip"})); result.Status != "failed" {
+	if result := unbanAddress(context.Background(), hashed(map[string]string{"jail": "polaris-ssh", "ip": "not-an-ip"})); result.Status != "failed" {
 		t.Fatalf("accepted an invalid address: %#v", result)
 	}
-	tampered := hashed(map[string]string{"jail": "sb-control-ssh", "ip": "203.0.113.7"})
+	tampered := hashed(map[string]string{"jail": "polaris-ssh", "ip": "203.0.113.7"})
 	tampered.ExpectedHash = "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
 	if result := unbanAddress(context.Background(), tampered); result.Status != "failed" {
 		t.Fatalf("accepted a payload whose hash does not match: %#v", result)

@@ -1,15 +1,15 @@
 import { ref } from 'vue'
 
-export const csrfToken = ref(localStorage.getItem('sb_control_csrf') || '')
+export const csrfToken = ref(localStorage.getItem('polaris_csrf') || '')
 
 export function setCsrfToken(token) {
   csrfToken.value = token || ''
-  if (token) localStorage.setItem('sb_control_csrf', token)
-  else localStorage.removeItem('sb_control_csrf')
+  if (token) localStorage.setItem('polaris_csrf', token)
+  else localStorage.removeItem('polaris_csrf')
 }
 
 window.addEventListener('storage', (event) => {
-  if (event.key === 'sb_control_csrf') csrfToken.value = event.newValue || ''
+  if (event.key === 'polaris_csrf') csrfToken.value = event.newValue || ''
 })
 
 export function friendlyError(message) {

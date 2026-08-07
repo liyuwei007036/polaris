@@ -90,7 +90,7 @@ func CompileNftables(rules []FirewallRule) (string, error) {
 			lines = append(lines, "    "+key.protocol+" dport "+strconv.Itoa(int(key.port))+" drop")
 		}
 	}
-	return "table inet sb_control {\n  chain input {\n    type filter hook input priority filter; policy accept;\n" +
+	return "table inet polaris {\n  chain input {\n    type filter hook input priority filter; policy accept;\n" +
 		strings.Join(lines, "\n") + "\n  }\n}\n", nil
 }
 

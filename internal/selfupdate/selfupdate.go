@@ -1,4 +1,4 @@
-// Package selfupdate replaces the running sb-control binary with a verified
+// Package selfupdate replaces the running polaris binary with a verified
 // release artifact. It only touches the file whose path the caller supplies;
 // deciding which release to trust (signed manifest on agents, direct GitHub
 // digest on the master) stays with the caller.
@@ -33,7 +33,7 @@ const maximumArtifactBytes = 200 * 1024 * 1024
 // httpClient is a variable so tests can trust their local TLS server.
 var httpClient = &http.Client{Timeout: 120 * time.Second}
 
-// Apply downloads the artifact, checks its SHA-256, extracts the sb-control
+// Apply downloads the artifact, checks its SHA-256, extracts the polaris
 // binary, backs up executablePath and installs the new binary over it. verify
 // runs against the installed file and triggers a rollback when it fails; nil
 // selects the default check that "<binary> version" prints manifest.Version.
@@ -68,7 +68,7 @@ func Apply(ctx context.Context, manifest Manifest, executablePath string, verify
 	}
 
 	binaryDirectory := filepath.Dir(executablePath)
-	artifact, err := os.CreateTemp(binaryDirectory, ".sb-control-update-*")
+	artifact, err := os.CreateTemp(binaryDirectory, ".polaris-update-*")
 	if err != nil {
 		return fmt.Errorf("创建临时文件失败（进程可能无权写入 %s）: %w", binaryDirectory, err)
 	}
@@ -103,7 +103,7 @@ func Apply(ctx context.Context, manifest Manifest, executablePath string, verify
 		return fmt.Errorf("设置可执行权限失败: %w", err)
 	}
 
-	backupPath := executablePath + ".sb-control.last-good"
+	backupPath := executablePath + ".polaris.last-good"
 	if current, err := os.ReadFile(executablePath); err == nil {
 		if err := os.WriteFile(backupPath, current, 0o755); err != nil {
 			return fmt.Errorf("备份当前版本失败: %w", err)
@@ -123,8 +123,8 @@ func Apply(ctx context.Context, manifest Manifest, executablePath string, verify
 	return nil
 }
 
-// extractBinary pulls the sb-control binary out of the release tar.gz, which
-// packages it as sb-control_<version>_linux_<arch>/sb-control.
+// extractBinary pulls the polaris binary out of the release tar.gz, which
+// packages it as polaris_<version>_linux_<arch>/polaris.
 func extractBinary(archivePath, directory string) (string, error) {
 	file, err := os.Open(archivePath)
 	if err != nil {
@@ -145,10 +145,10 @@ func extractBinary(archivePath, directory string) (string, error) {
 		if err != nil {
 			return "", err
 		}
-		if header.Typeflag != tar.TypeReg || filepath.Base(header.Name) != "sb-control" || header.Size <= 0 || header.Size > maximumArtifactBytes {
+		if header.Typeflag != tar.TypeReg || filepath.Base(header.Name) != "polaris" || header.Size <= 0 || header.Size > maximumArtifactBytes {
 			continue
 		}
-		target, err := os.CreateTemp(directory, ".sb-control-update-extracted-*")
+		target, err := os.CreateTemp(directory, ".polaris-update-extracted-*")
 		if err != nil {
 			return "", err
 		}
@@ -164,5 +164,5 @@ func extractBinary(archivePath, directory string) (string, error) {
 		}
 		return targetPath, nil
 	}
-	return "", errors.New("归档中没有 sb-control 二进制")
+	return "", errors.New("归档中没有 polaris 二进制")
 }

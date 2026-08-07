@@ -17,9 +17,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sb-control/sb-control/internal/agent"
-	"github.com/sb-control/sb-control/internal/control"
-	"github.com/sb-control/sb-control/internal/wire"
+	"github.com/liyuwei007036/polaris/internal/agent"
+	"github.com/liyuwei007036/polaris/internal/control"
+	"github.com/liyuwei007036/polaris/internal/wire"
 )
 
 func TestDefaultAdministratorForcesPasswordChangeAndAllowsOptionalTOTP(t *testing.T) {
@@ -102,7 +102,7 @@ func TestDefaultAdministratorForcesPasswordChangeAndAllowsOptionalTOTP(t *testin
 		OTPAuthURI string `json:"otpauth_uri"`
 	}
 	decodeBody(t, response, &setup)
-	if setup.Secret == "" || !strings.HasPrefix(setup.OTPAuthURI, "otpauth://totp/") || !strings.Contains(setup.OTPAuthURI, "issuer=sb-control") {
+	if setup.Secret == "" || !strings.HasPrefix(setup.OTPAuthURI, "otpauth://totp/") || !strings.Contains(setup.OTPAuthURI, "issuer=Polaris") {
 		t.Fatalf("unexpected TOTP setup: %#v", setup)
 	}
 	response = request(t, http.MethodPost, httpServer.URL+"/api/v1/auth/2fa/enable", map[string]string{
@@ -626,7 +626,7 @@ func request(t *testing.T, method, url string, value any, session, csrfToken str
 		req.Header.Set("Content-Type", "application/json")
 	}
 	if session != "" {
-		req.AddCookie(&http.Cookie{Name: "sb_control_session", Value: session})
+		req.AddCookie(&http.Cookie{Name: "polaris_session", Value: session})
 	}
 	if csrfToken != "" {
 		req.Header.Set("X-CSRF-Token", csrfToken)

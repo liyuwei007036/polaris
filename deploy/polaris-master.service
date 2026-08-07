@@ -1,14 +1,14 @@
 [Unit]
-Description=sb-control master
+Description=polaris master
 After=network-online.target
 Wants=network-online.target
 
 [Service]
 Type=simple
-User=sb-control
-Group=sb-control
+User=polaris
+Group=polaris
 UMask=0077
-ExecStart=/usr/local/bin/sb-control master serve --config /etc/sb-control/master.yaml
+ExecStart=/usr/local/bin/polaris master serve --config /etc/polaris/master.yaml
 Restart=on-failure
 RestartSec=5
 

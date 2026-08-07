@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sb-control/sb-control/internal/control"
+	"github.com/liyuwei007036/polaris/internal/control"
 )
 
 // newFeatureServer builds the usual store/server/session trio the tests below
@@ -273,7 +273,7 @@ func TestBannedAddressesAreListedAndCanBeReleased(t *testing.T) {
 		t.Fatalf("create jail: got %d", response.StatusCode)
 	}
 	metrics := map[string]any{"fail2ban": map[string]any{"available": true, "jails": []map[string]any{
-		{"name": "sb-control-ssh-bruteforce", "managed": true, "currently_banned": "1", "banned": []map[string]string{
+		{"name": "polaris-ssh-bruteforce", "managed": true, "currently_banned": "1", "banned": []map[string]string{
 			{"ip": "203.0.113.7", "banned_at": "2026-08-06T02:00:00Z", "unban_at": "2026-08-06T03:00:00Z"},
 		}},
 		{"name": "operator-own-jail", "managed": false, "banned": []map[string]string{{"ip": "198.51.100.9"}}},
@@ -322,7 +322,7 @@ func TestBannedAddressesAreListedAndCanBeReleased(t *testing.T) {
 		Kind string `json:"kind"`
 	}
 	response = request(t, http.MethodPost, baseURL+"/api/v1/nodes/"+nodeID+"/fail2ban/unban", map[string]any{
-		"jail": "sb-control-ssh-bruteforce", "ip": "203.0.113.7",
+		"jail": "polaris-ssh-bruteforce", "ip": "203.0.113.7",
 	}, session, csrfToken)
 	if response.StatusCode != http.StatusAccepted {
 		t.Fatalf("unban: got %d", response.StatusCode)
@@ -334,7 +334,7 @@ func TestBannedAddressesAreListedAndCanBeReleased(t *testing.T) {
 
 	// A value that is not an address never reaches the node.
 	response = request(t, http.MethodPost, baseURL+"/api/v1/nodes/"+nodeID+"/fail2ban/unban", map[string]any{
-		"jail": "sb-control-ssh-bruteforce", "ip": "not-an-ip",
+		"jail": "polaris-ssh-bruteforce", "ip": "not-an-ip",
 	}, session, csrfToken)
 	if response.StatusCode != http.StatusBadRequest {
 		t.Fatalf("invalid unban address: got %d", response.StatusCode)

@@ -105,7 +105,7 @@ func TestTrafficSamplerReportsRateOnlyAfterTwoSamples(t *testing.T) {
 func TestCachedNginxTaskStillRecordsDesiredState(t *testing.T) {
 	root := t.TempDir()
 	originalConfig := managedNginxConfig
-	managedNginxConfig = filepath.Join(root, "sb-control.conf")
+	managedNginxConfig = filepath.Join(root, "polaris.conf")
 	defer func() { managedNginxConfig = originalConfig }()
 	if err := os.WriteFile(managedNginxConfig, []byte("stream-config"), 0o600); err != nil {
 		t.Fatal(err)
@@ -170,10 +170,10 @@ func TestStreamSupportDetectedFromLoadedDynamicModule(t *testing.T) {
 // Reapplying the same firewall configuration must replace the table rather
 // than merge into it, or every publish stacks another copy of every rule.
 func TestNftablesScriptReplacesTheTableRatherThanMerging(t *testing.T) {
-	script := replaceableNftablesScript("table inet sb_control {\n  chain input {\n  }\n}\n")
-	deleteAt := strings.Index(script, "delete table inet sb_control")
-	defineAt := strings.Index(script, "table inet sb_control {")
-	declareAt := strings.Index(script, "table inet sb_control\n")
+	script := replaceableNftablesScript("table inet polaris {\n  chain input {\n  }\n}\n")
+	deleteAt := strings.Index(script, "delete table inet polaris")
+	defineAt := strings.Index(script, "table inet polaris {")
+	declareAt := strings.Index(script, "table inet polaris\n")
 	if declareAt != 0 {
 		t.Fatalf("the script must open with an empty declaration so the delete is safe:\n%s", script)
 	}
@@ -185,7 +185,7 @@ func TestNftablesScriptReplacesTheTableRatherThanMerging(t *testing.T) {
 // Every jail's log path has to be discoverable from the compiled jail file,
 // because fail2ban refuses to start a jail whose logpath is missing.
 func TestLogPathPatternFindsEveryJailLogPath(t *testing.T) {
-	configuration := "[sb-control-a]\nenabled = true\nlogpath = /var/log/sing-box/sing-box.log\nmaxretry = 5\n\n[sb-control-b]\nlogpath = /var/log/auth.log\n"
+	configuration := "[polaris-a]\nenabled = true\nlogpath = /var/log/sing-box/sing-box.log\nmaxretry = 5\n\n[polaris-b]\nlogpath = /var/log/auth.log\n"
 	matches := logPathPattern.FindAllStringSubmatch(configuration, -1)
 	if len(matches) != 2 || matches[0][1] != "/var/log/sing-box/sing-box.log" || matches[1][1] != "/var/log/auth.log" {
 		encoded, _ := json.Marshal(matches)

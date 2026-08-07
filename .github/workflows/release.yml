@@ -60,17 +60,17 @@ jobs:
           else
             version="${GITHUB_SHA::7}"
           fi
-          package="sb-control_${version}_linux_${GOARCH}"
+          package="polaris_${version}_linux_${GOARCH}"
 
           mkdir -p "package/${package}" dist
 
           go build \
             -trimpath \
-            -ldflags "-X github.com/sb-control/sb-control/internal/version.Version=${version}" \
-            -o "package/${package}/sb-control" \
-            ./cmd/sb-control
+            -ldflags "-X github.com/liyuwei007036/polaris/internal/version.Version=${version}" \
+            -o "package/${package}/polaris" \
+            ./cmd/polaris
 
-          chmod 0755 "package/${package}/sb-control"
+          chmod 0755 "package/${package}/polaris"
 
           cp README.md "package/${package}/"
           cp install.sh "package/${package}/"
@@ -88,7 +88,7 @@ jobs:
       - name: Upload package
         uses: actions/upload-artifact@v7
         with:
-          name: sb-control-linux-${{ matrix.goarch }}
+          name: polaris-linux-${{ matrix.goarch }}
           path: dist/*
           if-no-files-found: error
 

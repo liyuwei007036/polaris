@@ -41,7 +41,7 @@ func main() {
 }
 
 func appendInvocation(name string, args []string) {
-	path := os.Getenv("SB_CONTROL_E2E_COMMAND_LOG")
+	path := os.Getenv("POLARIS_E2E_COMMAND_LOG")
 	if path == "" {
 		return
 	}

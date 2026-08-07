@@ -11,9 +11,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/sb-control/sb-control/internal/selfupdate"
-	"github.com/sb-control/sb-control/internal/version"
-	"github.com/sb-control/sb-control/internal/wire"
+	"github.com/liyuwei007036/polaris/internal/selfupdate"
+	"github.com/liyuwei007036/polaris/internal/version"
+	"github.com/liyuwei007036/polaris/internal/wire"
 )
 
 type Status struct {
@@ -87,7 +87,7 @@ type Fail2BanJailStatus struct {
 	// them, which the plain status output does not include.
 	Banned []Fail2BanBan `json:"banned,omitempty"`
 	Error  string        `json:"error,omitempty"`
-	// Managed distinguishes jails sb-control wrote from ones already on the
+	// Managed distinguishes jails polaris wrote from ones already on the
 	// host, which are reported for visibility but never modified.
 	Managed bool `json:"managed"`
 }
@@ -102,7 +102,7 @@ type Fail2BanBan struct {
 }
 
 // FirewallReport lists the firewall rules already present on the host that
-// sb-control did not write. They are read-only: the console shows them so an
+// polaris did not write. They are read-only: the console shows them so an
 // operator can see what a server is already protected by.
 type FirewallReport struct {
 	Available bool                `json:"available"`
@@ -322,7 +322,7 @@ func RunSession(ctx context.Context, conn *wire.Conn, handler TaskHandler, heart
 
 func detectSingBoxVersion(ctx context.Context) string {
 	binaryPath := managedSystemPath("/usr/local/bin/sing-box")
-	if strings.TrimSpace(os.Getenv("SB_CONTROL_E2E_ROOT")) == "" {
+	if strings.TrimSpace(os.Getenv("POLARIS_E2E_ROOT")) == "" {
 		if discovered, err := exec.LookPath("sing-box"); err == nil {
 			binaryPath = discovered
 		}

@@ -10,8 +10,8 @@ import (
 
 func TestApplyFail2BanRejectsTamperedOrUnsafePayloads(t *testing.T) {
 	payload, err := json.Marshal(map[string]any{
-		"jail":    "[sb-control-test]\nenabled = true\n",
-		"filters": map[string]string{"sb-control-test.conf": "[Definition]\nfailregex = x <HOST>\n"},
+		"jail":    "[polaris-test]\nenabled = true\n",
+		"filters": map[string]string{"polaris-test.conf": "[Definition]\nfailregex = x <HOST>\n"},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -22,7 +22,7 @@ func TestApplyFail2BanRejectsTamperedOrUnsafePayloads(t *testing.T) {
 		t.Fatalf("accepted payload with a wrong hash: %#v", result)
 	}
 	escaping, err := json.Marshal(map[string]any{
-		"jail":    "[sb-control-test]\n",
+		"jail":    "[polaris-test]\n",
 		"filters": map[string]string{"../evil.conf": "[Definition]\nfailregex = x\n"},
 	})
 	if err != nil {

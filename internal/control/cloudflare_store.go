@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/sb-control/sb-control/internal/security"
+	"github.com/liyuwei007036/polaris/internal/security"
 )
 
 // ManagedCloudflareRecord stores the operator-declared desired state next to
@@ -339,7 +339,7 @@ func (s *Store) RecordCloudflareObservation(ctx context.Context, recordID, remot
 }
 
 // CloudflareRecordEqual reports whether the desired record matches an observed
-// remote record on the fields sb-control manages.
+// remote record on the fields polaris manages.
 func CloudflareRecordEqual(desired ManagedCloudflareRecord, remote CloudflareRecord) bool {
 	if !strings.EqualFold(desired.Name, strings.TrimSuffix(remote.Name, ".")) || !strings.EqualFold(desired.Type, remote.Type) {
 		return false

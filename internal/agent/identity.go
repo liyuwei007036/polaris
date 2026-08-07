@@ -6,7 +6,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/sb-control/sb-control/internal/wire"
+	"github.com/liyuwei007036/polaris/internal/wire"
 )
 
 const (

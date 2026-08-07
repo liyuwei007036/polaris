@@ -27,7 +27,7 @@ type Fail2BanJail struct {
 // so they can be embedded in INI sections and managed file names.
 var fail2banNamePattern = regexp.MustCompile(`^[a-zA-Z0-9_-]{1,64}$`)
 
-const fail2banFilterPrefix = "sb-control-"
+const fail2banFilterPrefix = "polaris-"
 
 // SingBoxLogPath is where compiled configurations tell sing-box to write its
 // log. Fail2Ban jails watch this file, so both sides must agree on it.
@@ -62,7 +62,7 @@ func validateFail2BanJail(jail Fail2BanJail) error {
 var fail2banPortsPattern = regexp.MustCompile(`^[0-9]{1,5}(:[0-9]{1,5})?(,[0-9]{1,5}(:[0-9]{1,5})?)*$`)
 
 // CompileFail2Ban renders the managed jail configuration and one filter file
-// per referenced filter name. Filter files live in the sb-control- namespace so
+// per referenced filter name. Filter files live in the polaris- namespace so
 // the agent never touches operator-authored fail2ban configuration.
 func CompileFail2Ban(jails []Fail2BanJail) (string, map[string]string, error) {
 	var jailOutput strings.Builder

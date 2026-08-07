@@ -10,7 +10,7 @@ export default defineConfig({
   reporter: [['list']],
   use: {
     baseURL: 'http://127.0.0.1',
-    channel: process.env.SB_CONTROL_E2E_BROWSER_CHANNEL || 'chrome',
+    channel: process.env.POLARIS_E2E_BROWSER_CHANNEL || 'chrome',
     headless: true,
     screenshot: 'only-on-failure',
     trace: 'retain-on-failure',

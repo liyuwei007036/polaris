@@ -1,4 +1,4 @@
-module github.com/sb-control/sb-control
+module github.com/liyuwei007036/polaris
 
 go 1.24.0
 

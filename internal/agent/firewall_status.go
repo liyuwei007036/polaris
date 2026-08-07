@@ -12,7 +12,7 @@ import (
 const maximumReportedFirewallRules = 200
 
 // CollectFirewallStatus reports the firewall rules already present on the host
-// that sb-control did not write. The managed `inet sb_control` table is left
+// that polaris did not write. The managed `inet polaris` table is left
 // out: the console already shows those as its own access limits, and repeating
 // them here would read as duplicate protection.
 func CollectFirewallStatus(ctx context.Context) *FirewallReport {
@@ -39,7 +39,7 @@ func collectNftablesRules(ctx context.Context) *FirewallReport {
 			continue
 		}
 		family, name := fields[1], fields[2]
-		if family == "inet" && name == "sb_control" {
+		if family == "inet" && name == "polaris" {
 			continue
 		}
 		tableOutput, err := exec.CommandContext(ctx, "nft", "list", "table", family, name).CombinedOutput()

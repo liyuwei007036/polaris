@@ -12,7 +12,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/sb-control/sb-control/internal/security"
+	"github.com/liyuwei007036/polaris/internal/security"
 )
 
 type SubscriptionKind string

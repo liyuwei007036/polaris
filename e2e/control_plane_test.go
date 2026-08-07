@@ -38,7 +38,7 @@ const (
 func TestControlPlaneProcessJourneyWithRealAgent(t *testing.T) {
 	root := repositoryRoot(t)
 	work := t.TempDir()
-	binaryPath := buildProgram(t, root, "./cmd/sb-control", filepath.Join(work, executableName("sb-control-e2e")))
+	binaryPath := buildProgram(t, root, "./cmd/polaris", filepath.Join(work, executableName("polaris-e2e")))
 	stubDir := filepath.Join(work, "command-stubs")
 	if err := os.MkdirAll(stubDir, 0o700); err != nil {
 		t.Fatal(err)
@@ -118,9 +118,9 @@ func TestControlPlaneProcessJourneyWithRealAgent(t *testing.T) {
 	}
 
 	agentEnv := append(os.Environ(),
-		"SB_CONTROL_E2E_ROOT="+managedRoot,
-		"SB_CONTROL_E2E_COMMAND_LOG="+commandLog,
-		"SB_CONTROL_E2E_CLASH_API_URL="+clashAPI.URL,
+		"POLARIS_E2E_ROOT="+managedRoot,
+		"POLARIS_E2E_COMMAND_LOG="+commandLog,
+		"POLARIS_E2E_CLASH_API_URL="+clashAPI.URL,
 		"PATH="+stubDir+string(os.PathListSeparator)+os.Getenv("PATH"),
 	)
 	agentProcess := startProcess(t, "agent", binaryPath, agentEnv,
@@ -240,7 +240,7 @@ func TestControlPlaneProcessJourneyWithRealAgent(t *testing.T) {
 		}
 		sharedEndpointIDs = append(sharedEndpointIDs, shared.Endpoints[0].ID)
 	}
-	nginxConfiguration := readFile(t, filepath.Join(managedRoot, "etc", "nginx", "stream-conf.d", "sb-control.conf"))
+	nginxConfiguration := readFile(t, filepath.Join(managedRoot, "etc", "nginx", "stream-conf.d", "polaris.conf"))
 	for _, serverName := range []string{"vless-a.e2e.test", "vless-b.e2e.test"} {
 		if !strings.Contains(nginxConfiguration, serverName) {
 			t.Fatalf("Nginx automatic port configuration is missing %s:\n%s", serverName, nginxConfiguration)
@@ -283,7 +283,7 @@ func TestControlPlaneProcessJourneyWithRealAgent(t *testing.T) {
 	if completed := waitForTask(t, api, fail2banTask.ID, 20*time.Second); completed.Status != "succeeded" {
 		t.Fatalf("Fail2Ban task did not succeed: %#v", completed)
 	}
-	assertFileExists(t, filepath.Join(managedRoot, "etc", "fail2ban", "jail.d", "sb-control.local"))
+	assertFileExists(t, filepath.Join(managedRoot, "etc", "fail2ban", "jail.d", "polaris.local"))
 	commandInvocations = readFile(t, commandLog)
 	for _, expected := range []string{
 		"nginx -t", "systemctl reload nginx.service", "nft -c -f", "nft -f",
@@ -528,7 +528,7 @@ func startClashAPI(t *testing.T) *httptest.Server {
 func verifyEmbeddedWebApplication(t *testing.T, baseURL string) {
 	t.Helper()
 	status, _, index := rawRequest(t, http.DefaultClient, http.MethodGet, baseURL+"/", nil, "")
-	if status != http.StatusOK || !bytes.Contains(index, []byte("sb-control")) {
+	if status != http.StatusOK || !bytes.Contains(index, []byte("polaris")) {
 		t.Fatalf("embedded web application is unavailable: HTTP %d", status)
 	}
 	assetMatch := regexp.MustCompile(`(?:src|href)="(/[^"]+\.(?:js|css))"`).FindSubmatch(index)

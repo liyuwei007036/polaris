@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-REPOSITORY="${SB_CONTROL_REPOSITORY:-liyuwei007036/sb-control}"
-VERSION="${SB_CONTROL_VERSION:-latest}"
+REPOSITORY="${POLARIS_REPOSITORY:-liyuwei007036/polaris}"
+VERSION="${POLARIS_VERSION:-latest}"
 MODE=""
 START_SERVICE=1
 ALLOW_INSECURE_HTTP=0
@@ -11,11 +11,11 @@ TEMP_DIR=""
 SOURCE_DIR=""
 
 log() {
-  printf '[sb-control] %s\n' "$*"
+  printf '[polaris] %s\n' "$*"
 }
 
 fail() {
-  printf '[sb-control] 错误：%s\n' "$*" >&2
+  printf '[polaris] 错误：%s\n' "$*" >&2
   exit 1
 }
 
@@ -25,15 +25,15 @@ usage() {
 
 选项：
   --version VERSION          安装指定版本；默认安装最新 Release
-  --repository OWNER/REPO   GitHub 仓库；默认 liyuwei007036/sb-control
+  --repository OWNER/REPO   GitHub 仓库；默认 liyuwei007036/polaris
   --allow-insecure-http      允许通过明文 HTTP 登录，仅适用于可信内网或测试
   --no-start                 安装文件和配置，但不启动 systemd 服务
   -h, --help                 显示帮助
 
 Agent 可通过环境变量预先提供非交互参数：
-  SB_CONTROL_MASTER_ADDRESS
-  SB_CONTROL_MASTER_PUBKEY
-  SB_CONTROL_REGISTRATION_TOKEN
+  POLARIS_MASTER_ADDRESS
+  POLARIS_MASTER_PUBKEY
+  POLARIS_REGISTRATION_TOKEN
 
 DESTDIR 仅用于将文件安装到隔离根目录；设置后不会创建用户、注册节点或调用 systemd。
 EOF
@@ -168,7 +168,7 @@ download_release() {
   fi
   [[ "$VERSION" =~ ^[0-9A-Za-z._-]+$ ]] || fail "版本号格式不正确：$VERSION"
 
-  local package="sb-control_${VERSION}_linux_${architecture}"
+  local package="polaris_${VERSION}_linux_${architecture}"
   local base_url="https://github.com/${REPOSITORY}/releases/download/v${VERSION}"
   TEMP_DIR=$(mktemp -d)
   log "下载 ${package}"
@@ -190,7 +190,7 @@ locate_install_source() {
   if [[ -n "$script_path" && -f "$script_path" ]]; then
     script_dir=$(CDPATH='' cd -- "$(dirname -- "$script_path")" && pwd)
   fi
-  if [[ -n "$script_dir" && -x "${script_dir}/sb-control" && -d "${script_dir}/deploy" ]]; then
+  if [[ -n "$script_dir" && -x "${script_dir}/polaris" && -d "${script_dir}/deploy" ]]; then
     SOURCE_DIR="$script_dir"
     log "使用安装包内的预编译程序"
   else
@@ -199,12 +199,12 @@ locate_install_source() {
 
   local required
   for required in \
-    sb-control \
-    deploy/sb-control-master.yaml \
-    deploy/sb-control-agent.yaml \
-    deploy/sb-control-master.service \
-    deploy/sb-control-agent.service \
-    deploy/sb-control-combined.service; do
+    polaris \
+    deploy/polaris-master.yaml \
+    deploy/polaris-agent.yaml \
+    deploy/polaris-master.service \
+    deploy/polaris-agent.service \
+    deploy/polaris-combined.service; do
     [[ -f "${SOURCE_DIR}/${required}" ]] || fail "安装包缺少 ${required}"
   done
 }
@@ -225,15 +225,15 @@ ensure_master_user() {
   if [[ -n "$DESTDIR" ]]; then
     return 0
   fi
-  if ! getent group sb-control >/dev/null 2>&1; then
-    groupadd --system sb-control
+  if ! getent group polaris >/dev/null 2>&1; then
+    groupadd --system polaris
   fi
-  if ! id sb-control >/dev/null 2>&1; then
+  if ! id polaris >/dev/null 2>&1; then
     local nologin_shell
     nologin_shell=$(command -v nologin || true)
     [[ -n "$nologin_shell" ]] || nologin_shell="/usr/sbin/nologin"
-    useradd --system --gid sb-control --home-dir /var/lib/sb-control-master \
-      --shell "$nologin_shell" sb-control
+    useradd --system --gid polaris --home-dir /var/lib/polaris-master \
+      --shell "$nologin_shell" polaris
   fi
 }
 
@@ -250,31 +250,31 @@ install_directory() {
 }
 
 install_common_files() {
-  install -D -m 0755 "${SOURCE_DIR}/sb-control" "$(root_path /usr/local/bin/sb-control)"
-  install -D -m 0644 "${SOURCE_DIR}/deploy/sb-control-master.service" \
-    "$(root_path /etc/systemd/system/sb-control-master.service)"
-  install -D -m 0644 "${SOURCE_DIR}/deploy/sb-control-agent.service" \
-    "$(root_path /etc/systemd/system/sb-control-agent.service)"
-  install -D -m 0644 "${SOURCE_DIR}/deploy/sb-control-combined.service" \
-    "$(root_path /etc/systemd/system/sb-control-combined.service)"
+  install -D -m 0755 "${SOURCE_DIR}/polaris" "$(root_path /usr/local/bin/polaris)"
+  install -D -m 0644 "${SOURCE_DIR}/deploy/polaris-master.service" \
+    "$(root_path /etc/systemd/system/polaris-master.service)"
+  install -D -m 0644 "${SOURCE_DIR}/deploy/polaris-agent.service" \
+    "$(root_path /etc/systemd/system/polaris-agent.service)"
+  install -D -m 0644 "${SOURCE_DIR}/deploy/polaris-combined.service" \
+    "$(root_path /etc/systemd/system/polaris-combined.service)"
 }
 
 configure_master() {
   ensure_master_user
-  install_directory 0700 sb-control sb-control /var/lib/sb-control-master
-  install_directory 0750 root sb-control /etc/sb-control
+  install_directory 0700 polaris polaris /var/lib/polaris-master
+  install_directory 0750 root polaris /etc/polaris
   local target
-  target=$(root_path /etc/sb-control/master.yaml)
+  target=$(root_path /etc/polaris/master.yaml)
   if [[ ! -e "$target" ]]; then
-    install -m 0640 "${SOURCE_DIR}/deploy/sb-control-master.yaml" "$target"
+    install -m 0640 "${SOURCE_DIR}/deploy/polaris-master.yaml" "$target"
     if [[ "$ALLOW_INSECURE_HTTP" -eq 1 ]]; then
       sed -i 's/^allow_insecure_http:.*/allow_insecure_http: true/' "$target"
     fi
     if [[ -z "$DESTDIR" ]]; then
-      chown root:sb-control "$target"
+      chown root:polaris "$target"
     fi
   else
-    log "保留已有配置：/etc/sb-control/master.yaml"
+    log "保留已有配置：/etc/polaris/master.yaml"
   fi
 }
 
@@ -285,7 +285,7 @@ write_agent_config() {
   local temporary="${target}.tmp.$$"
   umask 077
   cat >"$temporary" <<EOF
-data_dir: /var/lib/sb-control-agent
+data_dir: /var/lib/polaris-agent
 master_address: '${master_address}'
 master_public_key: '${master_pubkey}'
 heartbeat_interval: 30s
@@ -298,15 +298,15 @@ EOF
 configure_agent() {
   local master_address="$1"
   local master_pubkey="$2"
-  install_directory 0700 root root /var/lib/sb-control-agent
-  if [[ -e "$(root_path /etc/sb-control/master.yaml)" ]] && \
-    { [[ -n "$DESTDIR" ]] || getent group sb-control >/dev/null 2>&1; }; then
-    install_directory 0750 root sb-control /etc/sb-control
+  install_directory 0700 root root /var/lib/polaris-agent
+  if [[ -e "$(root_path /etc/polaris/master.yaml)" ]] && \
+    { [[ -n "$DESTDIR" ]] || getent group polaris >/dev/null 2>&1; }; then
+    install_directory 0750 root polaris /etc/polaris
   else
-    install_directory 0700 root root /etc/sb-control
+    install_directory 0700 root root /etc/polaris
   fi
   local target
-  target=$(root_path /etc/sb-control/agent.yaml)
+  target=$(root_path /etc/polaris/agent.yaml)
   if [[ ! -e "$target" ]]; then
     [[ -n "$master_address" ]] || fail "Master 地址不能为空"
     [[ -n "$master_pubkey" ]] || fail "Master 公钥不能为空"
@@ -316,43 +316,43 @@ configure_agent() {
       fail "Master Noise 公钥必须是 32 字节 Base64 字符串"
     write_agent_config "$target" "$master_address" "$master_pubkey"
   else
-    log "保留已有配置：/etc/sb-control/agent.yaml"
+    log "保留已有配置：/etc/polaris/agent.yaml"
   fi
 }
 
 master_public_key() {
   local key
-  key=$(/usr/local/bin/sb-control master show-pubkey --config /etc/sb-control/master.yaml)
-  chown -R sb-control:sb-control /var/lib/sb-control-master
+  key=$(/usr/local/bin/polaris master show-pubkey --config /etc/polaris/master.yaml)
+  chown -R polaris:polaris /var/lib/polaris-master
   printf '%s' "$key"
 }
 
 configured_agent_port() {
   local port
-  port=$(awk '$1 == "agent_port:" { print $2; exit }' /etc/sb-control/master.yaml)
+  port=$(awk '$1 == "agent_port:" { print $2; exit }' /etc/polaris/master.yaml)
   printf '%s' "${port:-8443}"
 }
 
 register_agent_if_requested() {
-  local token="${SB_CONTROL_REGISTRATION_TOKEN:-}"
-  if [[ -e /var/lib/sb-control-agent/agent-noise.key ]]; then
+  local token="${POLARIS_REGISTRATION_TOKEN:-}"
+  if [[ -e /var/lib/polaris-agent/agent-noise.key ]]; then
     log "检测到现有 Agent 身份，跳过重复注册"
     return
   fi
   prompt_secret_optional token '请输入一次性注册令牌'
   if [[ -n "$token" ]]; then
-    /usr/local/bin/sb-control agent register \
-      --config /etc/sb-control/agent.yaml --token "$token"
+    /usr/local/bin/polaris agent register \
+      --config /etc/polaris/agent.yaml --token "$token"
   else
     log "尚未注册 Agent；安装完成后请执行："
-    log "sudo /usr/local/bin/sb-control agent register --config /etc/sb-control/agent.yaml --token TOKEN"
+    log "sudo /usr/local/bin/polaris agent register --config /etc/polaris/agent.yaml --token TOKEN"
   fi
 }
 
 start_selected_service() {
-  local selected="sb-control-${MODE}.service"
+  local selected="polaris-${MODE}.service"
   local other
-  for other in sb-control-master.service sb-control-agent.service sb-control-combined.service; do
+  for other in polaris-master.service polaris-agent.service polaris-combined.service; do
     if [[ "$other" != "$selected" ]] && systemctl is-active --quiet "$other"; then
       fail "${other} 正在运行；请先停止它，避免同时启动多个模式"
     fi
@@ -376,14 +376,14 @@ install_master_mode() {
       start_selected_service
     fi
     log "Master Noise 公钥：${public_key}"
-    log "默认控制台端口：8080；首次登录账户 sb_admin / 123456"
+    log "默认控制台端口：8080；首次登录账户 polaris_admin / 123456"
   fi
 }
 
 install_agent_mode() {
-  local master_address="${SB_CONTROL_MASTER_ADDRESS:-}"
-  local master_pubkey="${SB_CONTROL_MASTER_PUBKEY:-}"
-  if [[ ! -e "$(root_path /etc/sb-control/agent.yaml)" ]]; then
+  local master_address="${POLARIS_MASTER_ADDRESS:-}"
+  local master_pubkey="${POLARIS_MASTER_PUBKEY:-}"
+  if [[ ! -e "$(root_path /etc/polaris/agent.yaml)" ]]; then
     prompt_required master_address 'Master 地址（主机:端口）'
     prompt_required master_pubkey 'Master Noise 公钥'
   fi

@@ -178,7 +178,7 @@ function unmanagedJails(nodeID) {
 }
 
 function jailRuntime(row) {
-  const jail = (jailStatus.value[row.node_id]?.jails || []).find((item) => item.name === 'sb-control-' + row.name)
+  const jail = (jailStatus.value[row.node_id]?.jails || []).find((item) => item.name === 'polaris-' + row.name)
   if (!jail) return { text: '等待服务器上报', type: 'info' }
   if (jail.error) return { text: '未生效：' + jail.error, type: 'danger' }
   return { text: `运行中 · 当前封禁 ${jail.currently_banned || 0} · 累计 ${jail.total_banned || 0}`, type: 'success' }

@@ -76,11 +76,11 @@ func MergePassthrough(configuration string, routes []Route) (string, error) {
 }
 
 func GroupName(address string, port uint16) string {
-	return "sb_control_" + strings.NewReplacer(".", "_", ":", "_").Replace(address) + "_" + strconv.Itoa(int(port))
+	return "polaris_" + strings.NewReplacer(".", "_", ":", "_").Replace(address) + "_" + strconv.Itoa(int(port))
 }
 
 func Marker(groupName string) string {
-	return "    # sb-control-passthrough:" + groupName + "\n"
+	return "    # polaris-passthrough:" + groupName + "\n"
 }
 
 func groupRoutes(routes []Route) (map[routeKey][]Route, []routeKey, error) {

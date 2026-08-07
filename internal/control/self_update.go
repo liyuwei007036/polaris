@@ -13,40 +13,40 @@ import (
 	"strings"
 	"time"
 
-	"github.com/sb-control/sb-control/internal/selfupdate"
-	"github.com/sb-control/sb-control/internal/version"
+	"github.com/liyuwei007036/polaris/internal/selfupdate"
+	"github.com/liyuwei007036/polaris/internal/version"
 )
 
-// sbControlReleaseAPI is a variable so tests can point it at a local server.
-var sbControlReleaseAPI = "https://api.github.com/repos/liyuwei007036/sb-control/releases/latest"
+// polarisReleaseAPI is a variable so tests can point it at a local server.
+var polarisReleaseAPI = "https://api.github.com/repos/liyuwei007036/polaris/releases/latest"
 
-const sbControlReleaseCacheTTL = time.Hour
+const polarisReleaseCacheTTL = time.Hour
 
-type sbControlReleaseCacheEntry struct {
+type polarisReleaseCacheEntry struct {
 	release   SingBoxRelease
 	fetchedAt time.Time
 }
 
-// LatestSBControlRelease resolves the newest published sb-control release for
+// LatestPolarisRelease resolves the newest published polaris release for
 // one architecture from GitHub, reusing the SingBoxRelease manifest shape so
 // the existing signing and dispatch path applies unchanged.
-func LatestSBControlRelease(ctx context.Context, architecture string) (SingBoxRelease, error) {
+func LatestPolarisRelease(ctx context.Context, architecture string) (SingBoxRelease, error) {
 	if architecture != "amd64" && architecture != "arm64" {
-		return SingBoxRelease{}, errors.New("sb-control 发布仅支持 amd64 或 arm64 架构")
+		return SingBoxRelease{}, errors.New("polaris 发布仅支持 amd64 或 arm64 架构")
 	}
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet, sbControlReleaseAPI, nil)
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, polarisReleaseAPI, nil)
 	if err != nil {
 		return SingBoxRelease{}, err
 	}
 	request.Header.Set("Accept", "application/vnd.github+json")
-	request.Header.Set("User-Agent", "sb-control")
+	request.Header.Set("User-Agent", "polaris")
 	response, err := (&http.Client{Timeout: 20 * time.Second}).Do(request)
 	if err != nil {
-		return SingBoxRelease{}, fmt.Errorf("查询 sb-control 最新版本失败: %w", err)
+		return SingBoxRelease{}, fmt.Errorf("查询 polaris 最新版本失败: %w", err)
 	}
 	defer response.Body.Close()
 	if response.StatusCode != http.StatusOK {
-		return SingBoxRelease{}, fmt.Errorf("sb-control 版本查询返回 HTTP %d", response.StatusCode)
+		return SingBoxRelease{}, fmt.Errorf("polaris 版本查询返回 HTTP %d", response.StatusCode)
 	}
 	var document struct {
 		TagName    string `json:"tag_name"`
@@ -60,13 +60,13 @@ func LatestSBControlRelease(ctx context.Context, architecture string) (SingBoxRe
 	}
 	decoder := json.NewDecoder(io.LimitReader(response.Body, 4*1024*1024))
 	if err := decoder.Decode(&document); err != nil {
-		return SingBoxRelease{}, fmt.Errorf("解析 sb-control 版本信息失败: %w", err)
+		return SingBoxRelease{}, fmt.Errorf("解析 polaris 版本信息失败: %w", err)
 	}
 	if document.Draft || document.Prerelease || document.TagName == "" {
-		return SingBoxRelease{}, errors.New("sb-control 最新发布不是稳定版本")
+		return SingBoxRelease{}, errors.New("polaris 最新发布不是稳定版本")
 	}
 	releaseVersion := strings.TrimPrefix(document.TagName, "v")
-	name := fmt.Sprintf("sb-control_%s_linux_%s.tar.gz", releaseVersion, architecture)
+	name := fmt.Sprintf("polaris_%s_linux_%s.tar.gz", releaseVersion, architecture)
 	for _, asset := range document.Assets {
 		if asset.Name != name || !strings.HasPrefix(asset.Digest, "sha256:") {
 			continue
@@ -123,30 +123,30 @@ func versionParts(value string) ([]int, bool) {
 	return parts, true
 }
 
-func (s *Server) latestSBControlRelease(ctx context.Context, architecture string) (SingBoxRelease, error) {
-	return s.latestSBControlReleaseCached(ctx, architecture, false)
+func (s *Server) latestPolarisRelease(ctx context.Context, architecture string) (SingBoxRelease, error) {
+	return s.latestPolarisReleaseCached(ctx, architecture, false)
 }
 
-func (s *Server) latestSBControlReleaseCached(ctx context.Context, architecture string, bypassCache bool) (SingBoxRelease, error) {
+func (s *Server) latestPolarisReleaseCached(ctx context.Context, architecture string, bypassCache bool) (SingBoxRelease, error) {
 	s.selfUpdateMu.Lock()
-	entry, cached := s.sbControlLatest[architecture]
+	entry, cached := s.polarisLatest[architecture]
 	s.selfUpdateMu.Unlock()
-	if cached && !bypassCache && time.Since(entry.fetchedAt) < sbControlReleaseCacheTTL {
+	if cached && !bypassCache && time.Since(entry.fetchedAt) < polarisReleaseCacheTTL {
 		return entry.release, nil
 	}
-	resolver := s.latestSBControlReleaseFn
+	resolver := s.latestPolarisReleaseFn
 	if resolver == nil {
-		resolver = LatestSBControlRelease
+		resolver = LatestPolarisRelease
 	}
 	release, err := resolver(ctx, architecture)
 	if err != nil {
 		return SingBoxRelease{}, err
 	}
 	s.selfUpdateMu.Lock()
-	if s.sbControlLatest == nil {
-		s.sbControlLatest = make(map[string]sbControlReleaseCacheEntry)
+	if s.polarisLatest == nil {
+		s.polarisLatest = make(map[string]polarisReleaseCacheEntry)
 	}
-	s.sbControlLatest[architecture] = sbControlReleaseCacheEntry{release: release, fetchedAt: time.Now()}
+	s.polarisLatest[architecture] = polarisReleaseCacheEntry{release: release, fetchedAt: time.Now()}
 	s.selfUpdateMu.Unlock()
 	return release, nil
 }
@@ -166,7 +166,7 @@ func (s *Server) systemUpdateStatus(w http.ResponseWriter, r *http.Request) {
 		"os":               runtime.GOOS,
 		"architecture":     runtime.GOARCH,
 	}
-	release, err := s.latestSBControlReleaseCached(r.Context(), runtime.GOARCH, r.URL.Query().Get("refresh") == "1")
+	release, err := s.latestPolarisReleaseCached(r.Context(), runtime.GOARCH, r.URL.Query().Get("refresh") == "1")
 	if err != nil {
 		status["check_error"] = err.Error()
 	} else {
@@ -189,7 +189,7 @@ func (s *Server) applySystemUpdate(w http.ResponseWriter, r *http.Request) {
 		writeError(w, errors.New("master 自动更新仅支持 Linux"))
 		return
 	}
-	release, err := s.latestSBControlRelease(r.Context(), runtime.GOARCH)
+	release, err := s.latestPolarisRelease(r.Context(), runtime.GOARCH)
 	if err != nil {
 		writeError(w, err)
 		return
@@ -254,7 +254,7 @@ func (s *Server) upgradeNodeAgent(w http.ResponseWriter, r *http.Request) {
 		writeError(w, errors.New("尚未获取该节点的架构信息，请等待 agent 心跳后重试"))
 		return
 	}
-	release, err := s.latestSBControlRelease(r.Context(), node.Architecture)
+	release, err := s.latestPolarisRelease(r.Context(), node.Architecture)
 	if err != nil {
 		writeError(w, err)
 		return

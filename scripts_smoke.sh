@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Throwaway authenticated smoke test against a fresh master instance.
 set -u
-BIN=/home/pi/sbtest/sb-control.new
+BIN=/home/pi/sbtest/polaris.new
 W=/tmp/sbv
 PORT=8553
 AGENT_PORT=8554

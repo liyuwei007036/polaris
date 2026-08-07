@@ -40,7 +40,7 @@ func (s *Server) createFail2BanJail(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
-	if err := s.store.AppendAudit(r.Context(), operator.ID, "fail2ban_jail.created", "fail2ban_jail", created.ID, "sb-control fail2ban jail created"); err != nil {
+	if err := s.store.AppendAudit(r.Context(), operator.ID, "fail2ban_jail.created", "fail2ban_jail", created.ID, "polaris fail2ban jail created"); err != nil {
 		writeError(w, err)
 		return
 	}
@@ -63,7 +63,7 @@ func (s *Server) updateFail2BanJail(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
-	if err := s.store.AppendAudit(r.Context(), operator.ID, "fail2ban_jail.updated", "fail2ban_jail", updated.ID, "sb-control fail2ban jail updated"); err != nil {
+	if err := s.store.AppendAudit(r.Context(), operator.ID, "fail2ban_jail.updated", "fail2ban_jail", updated.ID, "polaris fail2ban jail updated"); err != nil {
 		writeError(w, err)
 		return
 	}
@@ -86,7 +86,7 @@ func (s *Server) setFail2BanJailEnabled(w http.ResponseWriter, r *http.Request) 
 		writeError(w, err)
 		return
 	}
-	if err := s.store.AppendAudit(r.Context(), operator.ID, "fail2ban_jail.state_changed", "fail2ban_jail", r.PathValue("id"), "sb-control fail2ban jail state changed"); err != nil {
+	if err := s.store.AppendAudit(r.Context(), operator.ID, "fail2ban_jail.state_changed", "fail2ban_jail", r.PathValue("id"), "polaris fail2ban jail state changed"); err != nil {
 		writeError(w, err)
 		return
 	}
@@ -103,7 +103,7 @@ func (s *Server) deleteFail2BanJail(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
-	if err := s.store.AppendAudit(r.Context(), operator.ID, "fail2ban_jail.deleted", "fail2ban_jail", r.PathValue("id"), "sb-control fail2ban jail deleted"); err != nil {
+	if err := s.store.AppendAudit(r.Context(), operator.ID, "fail2ban_jail.deleted", "fail2ban_jail", r.PathValue("id"), "polaris fail2ban jail deleted"); err != nil {
 		writeError(w, err)
 		return
 	}
@@ -111,7 +111,7 @@ func (s *Server) deleteFail2BanJail(w http.ResponseWriter, r *http.Request) {
 }
 
 // BannedAddress is one currently banned IP as reported by a node, resolved
-// back to the jail — and, where sb-control wrote it, the rule name an operator
+// back to the jail — and, where polaris wrote it, the rule name an operator
 // configured — that banned it.
 type BannedAddress struct {
 	NodeID   string `json:"node_id"`
@@ -172,7 +172,7 @@ func (s *Server) listBannedAddresses(w http.ResponseWriter, r *http.Request) {
 
 // unbanAddress asks one node to release one address from one jail. It is a
 // runtime action rather than a configuration change, so it applies to the
-// operator's own jails too, not only the ones sb-control wrote.
+// operator's own jails too, not only the ones polaris wrote.
 func (s *Server) unbanAddress(w http.ResponseWriter, r *http.Request) {
 	operator, err := s.admin(r)
 	if err != nil {
@@ -211,7 +211,7 @@ func (s *Server) unbanAddress(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
-	if err := s.store.AppendAudit(r.Context(), operator.ID, "fail2ban.unban_requested", "node", nodeID, "sb-control fail2ban unban requested"); err != nil {
+	if err := s.store.AppendAudit(r.Context(), operator.ID, "fail2ban.unban_requested", "node", nodeID, "polaris fail2ban unban requested"); err != nil {
 		writeError(w, err)
 		return
 	}
@@ -242,7 +242,7 @@ func (s *Server) publishNodeFail2Ban(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
-	if err := s.store.AppendAudit(r.Context(), operator.ID, "fail2ban.publish_requested", "node", nodeID, "sb-control fail2ban task requested"); err != nil {
+	if err := s.store.AppendAudit(r.Context(), operator.ID, "fail2ban.publish_requested", "node", nodeID, "polaris fail2ban task requested"); err != nil {
 		writeError(w, err)
 		return
 	}

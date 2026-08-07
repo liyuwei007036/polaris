@@ -12,7 +12,7 @@ import (
 
 	"gopkg.in/yaml.v3"
 
-	"github.com/sb-control/sb-control/internal/security"
+	"github.com/liyuwei007036/polaris/internal/security"
 )
 
 type mihomoClientRulesV3 struct {

@@ -47,7 +47,7 @@ func TestUpgradeAgentRejectsForeignArchitecture(t *testing.T) {
 		foreign = "amd64"
 	}
 	hash := strings.Repeat("a", 64)
-	manifest := fmt.Sprintf(`{"version":"0.40","architecture":"%s","url":"https://releases.example.invalid/sb-control.tar.gz","sha256":"%s","archive":"tar.gz"}`, foreign, hash)
+	manifest := fmt.Sprintf(`{"version":"0.40","architecture":"%s","url":"https://releases.example.invalid/polaris.tar.gz","sha256":"%s","archive":"tar.gz"}`, foreign, hash)
 	dataDir, task := signedUpgradeTask(t, manifest, hash)
 	result := upgradeAgent(t.Context(), task, dataDir)
 	if result.Status != "failed" || !strings.Contains(result.Summary, "architecture") {
@@ -59,7 +59,7 @@ func TestUpgradeAgentSkipsWhenVersionAlreadyRuns(t *testing.T) {
 	// The test binary reports the default development version, so a manifest
 	// carrying that version must succeed without touching any file.
 	hash := strings.Repeat("a", 64)
-	manifest := fmt.Sprintf(`{"version":"dev","architecture":"%s","url":"https://releases.example.invalid/sb-control.tar.gz","sha256":"%s","archive":"tar.gz"}`, runtime.GOARCH, hash)
+	manifest := fmt.Sprintf(`{"version":"dev","architecture":"%s","url":"https://releases.example.invalid/polaris.tar.gz","sha256":"%s","archive":"tar.gz"}`, runtime.GOARCH, hash)
 	dataDir, task := signedUpgradeTask(t, manifest, hash)
 	result := upgradeAgent(t.Context(), task, dataDir)
 	if result.Status != "succeeded" || result.RestartAgent {

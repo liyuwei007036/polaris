@@ -16,10 +16,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/sb-control/sb-control/internal/agent"
-	"github.com/sb-control/sb-control/internal/control"
-	"github.com/sb-control/sb-control/internal/version"
-	"github.com/sb-control/sb-control/internal/wire"
+	"github.com/liyuwei007036/polaris/internal/agent"
+	"github.com/liyuwei007036/polaris/internal/control"
+	"github.com/liyuwei007036/polaris/internal/version"
+	"github.com/liyuwei007036/polaris/internal/wire"
 )
 
 func main() {
@@ -199,11 +199,11 @@ func serveMaster(ctx context.Context, configuration masterConfig) error {
 	}()
 	errorsChannel := make(chan error, 2)
 	go func() {
-		fmt.Fprintln(os.Stdout, "sb-control master (agent, Noise-encrypted TCP) listening on", agentAddress)
+		fmt.Fprintln(os.Stdout, "polaris master (agent, Noise-encrypted TCP) listening on", agentAddress)
 		errorsChannel <- server.ServeAgents(ctx, agentListener)
 	}()
 	go func() {
-		fmt.Fprintln(os.Stdout, "sb-control master (browser, plain HTTP) listening on", browserAddress)
+		fmt.Fprintln(os.Stdout, "polaris master (browser, plain HTTP) listening on", browserAddress)
 		errorsChannel <- browserServer.ListenAndServe()
 	}()
 	runErr := <-errorsChannel
@@ -230,7 +230,7 @@ func runAgent(args []string) error {
 func parseMasterPubKey(value string) ([wire.KeySize]byte, error) {
 	var out [wire.KeySize]byte
 	if value == "" {
-		return out, errors.New("--master-pubkey is required (see \"sb-control master show-pubkey\")")
+		return out, errors.New("--master-pubkey is required (see \"polaris master show-pubkey\")")
 	}
 	decoded, err := base64.StdEncoding.DecodeString(value)
 	if err != nil {
@@ -406,10 +406,10 @@ func readPassword(reader io.Reader) (string, error) {
 // to /etc/sing-box, /etc/nginx, or /etc/fail2ban.
 func warnIfNotRoot() {
 	if runtime.GOOS == "linux" && os.Geteuid() != 0 {
-		fmt.Fprintln(os.Stderr, "warning: agent is not running as root; tasks that write to /etc/sing-box, /etc/nginx, or /etc/fail2ban will fail with permission denied. Run via systemd with User=root (see deploy/sb-control-agent.service), or as root directly.")
+		fmt.Fprintln(os.Stderr, "warning: agent is not running as root; tasks that write to /etc/sing-box, /etc/nginx, or /etc/fail2ban will fail with permission denied. Run via systemd with User=root (see deploy/polaris-agent.service), or as root directly.")
 	}
 }
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: sb-control master <init-admin|reset-mfa|serve|show-pubkey> ... | sb-control agent <register|serve> ... | sb-control combined serve ... | sb-control version")
+	fmt.Fprintln(os.Stderr, "usage: polaris master <init-admin|reset-mfa|serve|show-pubkey> ... | polaris agent <register|serve> ... | polaris combined serve ... | polaris version")
 }

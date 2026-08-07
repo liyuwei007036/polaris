@@ -33,7 +33,7 @@ func TestIsNewerVersion(t *testing.T) {
 	}
 }
 
-func TestLatestSBControlRelease(t *testing.T) {
+func TestLatestPolarisRelease(t *testing.T) {
 	sha := strings.Repeat("a", 64)
 	stub := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -42,32 +42,32 @@ func TestLatestSBControlRelease(t *testing.T) {
 			"draft": false,
 			"prerelease": false,
 			"assets": [
-				{"name": "sb-control_0.40_linux_amd64.tar.gz", "browser_download_url": "https://releases.example.invalid/sb-control_0.40_linux_amd64.tar.gz", "digest": "sha256:` + sha + `"},
-				{"name": "sb-control_0.40_linux_amd64.tar.gz.sha256", "browser_download_url": "https://releases.example.invalid/sb-control_0.40_linux_amd64.tar.gz.sha256", "digest": "sha256:` + strings.Repeat("b", 64) + `"}
+				{"name": "polaris_0.40_linux_amd64.tar.gz", "browser_download_url": "https://releases.example.invalid/polaris_0.40_linux_amd64.tar.gz", "digest": "sha256:` + sha + `"},
+				{"name": "polaris_0.40_linux_amd64.tar.gz.sha256", "browser_download_url": "https://releases.example.invalid/polaris_0.40_linux_amd64.tar.gz.sha256", "digest": "sha256:` + strings.Repeat("b", 64) + `"}
 			]
 		}`))
 	}))
 	defer stub.Close()
-	previous := sbControlReleaseAPI
-	sbControlReleaseAPI = stub.URL
-	defer func() { sbControlReleaseAPI = previous }()
+	previous := polarisReleaseAPI
+	polarisReleaseAPI = stub.URL
+	defer func() { polarisReleaseAPI = previous }()
 
-	release, err := LatestSBControlRelease(t.Context(), "amd64")
+	release, err := LatestPolarisRelease(t.Context(), "amd64")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if release.Version != "0.40" || release.Architecture != "amd64" || release.SHA256 != sha || release.Archive != "tar.gz" {
 		t.Fatalf("unexpected release: %#v", release)
 	}
-	if _, err := LatestSBControlRelease(t.Context(), "arm64"); err == nil {
+	if _, err := LatestPolarisRelease(t.Context(), "arm64"); err == nil {
 		t.Fatal("resolved a release for an architecture without a published asset")
 	}
-	if _, err := LatestSBControlRelease(t.Context(), "riscv64"); err == nil {
+	if _, err := LatestPolarisRelease(t.Context(), "riscv64"); err == nil {
 		t.Fatal("accepted an unsupported architecture")
 	}
 }
 
-func TestLatestSBControlReleaseCacheAndRefresh(t *testing.T) {
+func TestLatestPolarisReleaseCacheAndRefresh(t *testing.T) {
 	store, err := Open(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
@@ -78,24 +78,24 @@ func TestLatestSBControlReleaseCacheAndRefresh(t *testing.T) {
 		t.Fatal(err)
 	}
 	calls := 0
-	server.latestSBControlReleaseFn = func(_ context.Context, architecture string) (SingBoxRelease, error) {
+	server.latestPolarisReleaseFn = func(_ context.Context, architecture string) (SingBoxRelease, error) {
 		calls++
 		return SingBoxRelease{
-			Version: "0.40", Architecture: architecture, URL: "https://releases.example.invalid/sb-control.tar.gz",
+			Version: "0.40", Architecture: architecture, URL: "https://releases.example.invalid/polaris.tar.gz",
 			SHA256: strings.Repeat("a", 64), Enabled: true, Archive: "tar.gz",
 		}, nil
 	}
 
-	if _, err := server.latestSBControlRelease(t.Context(), "amd64"); err != nil {
+	if _, err := server.latestPolarisRelease(t.Context(), "amd64"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := server.latestSBControlRelease(t.Context(), "amd64"); err != nil {
+	if _, err := server.latestPolarisRelease(t.Context(), "amd64"); err != nil {
 		t.Fatal(err)
 	}
 	if calls != 1 {
 		t.Fatalf("release resolver called %d times; cache did not hold", calls)
 	}
-	if _, err := server.latestSBControlReleaseCached(t.Context(), "amd64", true); err != nil {
+	if _, err := server.latestPolarisReleaseCached(t.Context(), "amd64", true); err != nil {
 		t.Fatal(err)
 	}
 	if calls != 2 {

@@ -1,5 +1,0 @@
-data_dir: /var/lib/sb-control-master
-database_path: /var/lib/sb-control-master/sb-control.db
-agent_port: 8443
-web_port: 8080
-allow_insecure_http: false

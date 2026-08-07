@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/sb-control/sb-control/internal/security"
+	"github.com/liyuwei007036/polaris/internal/security"
 )
 
 // Outbound is a managed egress definition, shared globally across every node:

@@ -12,8 +12,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/sb-control/sb-control/internal/agent"
-	"github.com/sb-control/sb-control/internal/nginxroute"
+	"github.com/liyuwei007036/polaris/internal/agent"
+	"github.com/liyuwei007036/polaris/internal/nginxroute"
 	"gopkg.in/yaml.v3"
 )
 
@@ -211,7 +211,7 @@ func loadYAMLConfig(path string, target any) (string, error) {
 func normalizeMasterConfig(configuration masterConfig, base string) (masterConfig, error) {
 	configuration.DataDir = resolveConfiguredPath(base, configuration.DataDir)
 	if strings.TrimSpace(configuration.DatabasePath) == "" {
-		configuration.DatabasePath = filepath.Join(configuration.DataDir, "sb-control.db")
+		configuration.DatabasePath = filepath.Join(configuration.DataDir, "polaris.db")
 	} else {
 		configuration.DatabasePath = resolveConfiguredPath(base, configuration.DatabasePath)
 	}

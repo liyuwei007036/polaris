@@ -15,7 +15,7 @@ import (
 	"math/big"
 	"time"
 
-	"github.com/sb-control/sb-control/internal/security"
+	"github.com/liyuwei007036/polaris/internal/security"
 )
 
 type hysteria2Certificate struct {
@@ -86,7 +86,7 @@ func generateHysteria2Certificate(domain string) (string, string, error) {
 	now := time.Now()
 	commonName := domain
 	if commonName == "" {
-		commonName = "sb-control-hysteria2"
+		commonName = "polaris-hysteria2"
 	}
 	certificate := &x509.Certificate{SerialNumber: serial, Subject: pkix.Name{CommonName: commonName}, DNSNames: []string{commonName}, NotBefore: now.Add(-time.Hour), NotAfter: now.Add(365 * 24 * time.Hour), KeyUsage: x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment, ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth}}
 	der, err := x509.CreateCertificate(rand.Reader, certificate, certificate, &key.PublicKey, key)

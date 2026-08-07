@@ -12,8 +12,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sb-control/sb-control/internal/agent"
-	"github.com/sb-control/sb-control/internal/control"
+	"github.com/liyuwei007036/polaris/internal/agent"
+	"github.com/liyuwei007036/polaris/internal/control"
 )
 
 func TestCombinedFileAndCommandLineConfiguration(t *testing.T) {

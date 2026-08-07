@@ -8,7 +8,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/sb-control/sb-control/internal/security"
+	"github.com/liyuwei007036/polaris/internal/security"
 )
 
 type mihomoClientRules struct {

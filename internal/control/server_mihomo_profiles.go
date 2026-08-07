@@ -6,7 +6,7 @@ import (
 	"net/url"
 	"strings"
 
-	"github.com/sb-control/sb-control/internal/security"
+	"github.com/liyuwei007036/polaris/internal/security"
 )
 
 func (s *Server) listMihomoProxyGroups(w http.ResponseWriter, r *http.Request) {

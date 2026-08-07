@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/sb-control/sb-control/internal/control"
+	"github.com/liyuwei007036/polaris/internal/control"
 )
 
 // TestManagedOutboundCompilation exercises the managed-outbound surface end to

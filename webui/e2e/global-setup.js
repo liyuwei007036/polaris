@@ -5,16 +5,16 @@ import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-const adminUsername = 'sb_admin'
+const adminUsername = 'polaris_admin'
 const initialPassword = '123456'
 const changedPassword = 'Browser-E2E-Password-2026!'
 
 export default async function globalSetup() {
   const projectRoot = resolve(fileURLToPath(new URL('../..', import.meta.url)))
-  const work = mkdtempSync(join(tmpdir(), 'sb-control-browser-e2e-'))
-  const executable = join(work, process.platform === 'win32' ? 'sb-control.exe' : 'sb-control')
+  const work = mkdtempSync(join(tmpdir(), 'polaris-browser-e2e-'))
+  const executable = join(work, process.platform === 'win32' ? 'polaris.exe' : 'polaris')
   const go = resolveGo(projectRoot)
-  run(go, ['build', '-trimpath', '-o', executable, './cmd/sb-control'], { cwd: projectRoot })
+  run(go, ['build', '-trimpath', '-o', executable, './cmd/polaris'], { cwd: projectRoot })
 
   const dataDir = join(work, 'master-data')
   const agentPort = await freePort()
@@ -37,10 +37,10 @@ export default async function globalSetup() {
     throw error
   }
 
-  process.env.SB_CONTROL_E2E_BASE_URL = baseURL
-  process.env.SB_CONTROL_E2E_ADMIN_USERNAME = adminUsername
-  process.env.SB_CONTROL_E2E_INITIAL_PASSWORD = initialPassword
-  process.env.SB_CONTROL_E2E_CHANGED_PASSWORD = changedPassword
+  process.env.POLARIS_E2E_BASE_URL = baseURL
+  process.env.POLARIS_E2E_ADMIN_USERNAME = adminUsername
+  process.env.POLARIS_E2E_INITIAL_PASSWORD = initialPassword
+  process.env.POLARIS_E2E_CHANGED_PASSWORD = changedPassword
 
   return async () => {
     master.kill('SIGKILL')

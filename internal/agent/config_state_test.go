@@ -9,7 +9,7 @@ import (
 
 func TestReportedNginxConfigurationHashDetectsDrift(t *testing.T) {
 	originalPath := managedNginxConfig
-	managedNginxConfig = filepath.Join(t.TempDir(), "sb-control.conf")
+	managedNginxConfig = filepath.Join(t.TempDir(), "polaris.conf")
 	defer func() { managedNginxConfig = originalPath }()
 	dataDir := t.TempDir()
 	if err := os.WriteFile(managedNginxConfig, []byte("configuration-a"), 0o600); err != nil {

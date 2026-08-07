@@ -15,7 +15,7 @@ import (
 	"time"
 )
 
-var managedFail2BanJail = managedSystemPath("/etc/fail2ban/jail.d/sb-control.local")
+var managedFail2BanJail = managedSystemPath("/etc/fail2ban/jail.d/polaris.local")
 var managedFail2BanFilterDir = managedSystemPath("/etc/fail2ban/filter.d")
 
 // logPathPattern extracts the log files a compiled jail watches. Fail2Ban
@@ -24,12 +24,12 @@ var managedFail2BanFilterDir = managedSystemPath("/etc/fail2ban/filter.d")
 var logPathPattern = regexp.MustCompile(`(?m)^logpath\s*=\s*(\S+)\s*$`)
 
 // managedFilterPattern accepts only master-compiled filter file names inside
-// the sb-control namespace; anything else is rejected before touching disk.
-var managedFilterPattern = regexp.MustCompile(`^sb-control-[a-zA-Z0-9_-]{1,64}\.conf$`)
+// the polaris namespace; anything else is rejected before touching disk.
+var managedFilterPattern = regexp.MustCompile(`^polaris-[a-zA-Z0-9_-]{1,64}\.conf$`)
 
-// fail2banManagedPrefix marks the jails sb-control owns. Everything outside
+// fail2banManagedPrefix marks the jails polaris owns. Everything outside
 // it belongs to the operator and is only ever read, never written.
-const fail2banManagedPrefix = "sb-control-"
+const fail2banManagedPrefix = "polaris-"
 
 type fail2banBackup struct {
 	path     string
@@ -77,7 +77,7 @@ func applyFail2Ban(ctx context.Context, task Task) TaskResult {
 	if err := snapshot(managedFail2BanJail); err != nil {
 		return TaskResult{Status: "failed", Summary: "read current fail2ban jail file: " + err.Error()}
 	}
-	existingFilters, err := filepath.Glob(filepath.Join(managedFail2BanFilterDir, "sb-control-*.conf"))
+	existingFilters, err := filepath.Glob(filepath.Join(managedFail2BanFilterDir, "polaris-*.conf"))
 	if err != nil {
 		return TaskResult{Status: "failed", Summary: "list managed fail2ban filters: " + err.Error()}
 	}
@@ -173,7 +173,7 @@ func applyFail2Ban(ctx context.Context, task Task) TaskResult {
 // publish failed at `fail2ban-client -t` on any host that had never installed
 // Fail2Ban, or on any jail whose log file sing-box had not created yet.
 func ensureFail2BanReady(ctx context.Context, jailConfiguration string) error {
-	if strings.TrimSpace(os.Getenv("SB_CONTROL_E2E_ROOT")) != "" {
+	if strings.TrimSpace(os.Getenv("POLARIS_E2E_ROOT")) != "" {
 		return nil
 	}
 	if strings.TrimSpace(jailConfiguration) == "" {
@@ -201,7 +201,7 @@ func ensureFail2BanReady(ctx context.Context, jailConfiguration string) error {
 		// Only arm it for boot here. Starting the service is left to the
 		// reload-or-restart that follows the configuration write, so a host
 		// whose existing configuration is currently broken does not fail this
-		// step before sb-control has had a chance to write its own files.
+		// step before polaris has had a chance to write its own files.
 		if output, err := exec.CommandContext(ctx, "systemctl", "enable", "fail2ban.service").CombinedOutput(); err != nil {
 			return errors.New(commandSummary("systemctl enable fail2ban.service", output, err))
 		}
@@ -236,7 +236,7 @@ func ensureLogFile(path string) error {
 
 func writeFileAtomic(path string, content []byte, mode os.FileMode) error {
 	directory := filepath.Dir(path)
-	temporary, err := os.CreateTemp(directory, ".sb-control-*")
+	temporary, err := os.CreateTemp(directory, ".polaris-*")
 	if err != nil {
 		return err
 	}
@@ -278,7 +278,7 @@ func CollectFail2BanStatus(ctx context.Context) *Fail2BanReport {
 			if name == "" {
 				continue
 			}
-			// Jails the operator set up outside sb-control are reported too,
+			// Jails the operator set up outside polaris are reported too,
 			// marked as unmanaged, so the console can show what a host is
 			// already protected by instead of pretending nothing is there.
 			status := collectJailStatus(ctx, name)
@@ -404,5 +404,5 @@ func unbanAddress(ctx context.Context, task Task) TaskResult {
 }
 
 // jailNamePattern accepts the jail names Fail2Ban itself allows, covering both
-// sb-control's own jails and the operator's.
+// polaris's own jails and the operator's.
 var jailNamePattern = regexp.MustCompile(`^[a-zA-Z0-9_.-]{1,128}$`)

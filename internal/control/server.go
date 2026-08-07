@@ -19,12 +19,12 @@ import (
 	"sync"
 	"time"
 
-	"github.com/sb-control/sb-control/internal/security"
-	"github.com/sb-control/sb-control/internal/selfupdate"
-	"github.com/sb-control/sb-control/internal/wire"
+	"github.com/liyuwei007036/polaris/internal/security"
+	"github.com/liyuwei007036/polaris/internal/selfupdate"
+	"github.com/liyuwei007036/polaris/internal/wire"
 )
 
-const sessionCookieName = "sb_control_session"
+const sessionCookieName = "polaris_session"
 
 //go:embed web/dist
 var dashboardFS embed.FS
@@ -39,8 +39,8 @@ type Server struct {
 	autoInstallChecked     map[string]bool
 	latestSingBoxReleaseFn func(context.Context, string) (SingBoxRelease, error)
 	selfUpdateMu             sync.Mutex
-	sbControlLatest          map[string]sbControlReleaseCacheEntry
-	latestSBControlReleaseFn func(context.Context, string) (SingBoxRelease, error)
+	polarisLatest          map[string]polarisReleaseCacheEntry
+	latestPolarisReleaseFn func(context.Context, string) (SingBoxRelease, error)
 	selfUpdateApplyFn        func(context.Context, selfupdate.Manifest, string, func(context.Context, string) error) error
 	selfUpdateRestartFn      func() error
 	connHub                *connectionsHub
@@ -105,7 +105,7 @@ func (s *Server) StartMaintenance(ctx context.Context) {
 }
 
 // NoisePublicKey returns the master's static public key, base64-encoded, for
-// operators to pin into agent configuration (see cmd/sb-control "master
+// operators to pin into agent configuration (see cmd/polaris "master
 // show-pubkey") — the WireGuard-style replacement for distributing a CA cert.
 func (s *Server) NoisePublicKey() [wire.KeySize]byte {
 	return s.noiseKeypair.Public
@@ -407,7 +407,7 @@ func (s *Server) beginOwnTOTPSetup(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
-	issuer := "sb-control"
+	issuer := "Polaris"
 	label := url.PathEscape(issuer + ":" + operator.Username)
 	query := url.Values{"secret": {secret}, "issuer": {issuer}, "algorithm": {"SHA1"}, "digits": {"6"}, "period": {"30"}}
 	writeJSON(w, http.StatusOK, map[string]string{
@@ -980,7 +980,7 @@ func (s *Server) clientSubscriptionContent(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-	w.Header().Set("Content-Disposition", "attachment; filename=sb-control-subscription.txt")
+	w.Header().Set("Content-Disposition", "attachment; filename=polaris-subscription.txt")
 	_, _ = w.Write([]byte(content))
 }
 
@@ -1160,7 +1160,7 @@ func (s *Server) createFirewallRule(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
-	if err := s.store.AppendAudit(r.Context(), operator.ID, "firewall_rule.created", "firewall_rule", created.ID, "sb-control firewall rule created"); err != nil {
+	if err := s.store.AppendAudit(r.Context(), operator.ID, "firewall_rule.created", "firewall_rule", created.ID, "polaris firewall rule created"); err != nil {
 		writeError(w, err)
 		return
 	}
@@ -1183,7 +1183,7 @@ func (s *Server) setFirewallRuleEnabled(w http.ResponseWriter, r *http.Request) 
 		writeError(w, err)
 		return
 	}
-	if err := s.store.AppendAudit(r.Context(), operator.ID, "firewall_rule.state_changed", "firewall_rule", r.PathValue("id"), "sb-control firewall rule state changed"); err != nil {
+	if err := s.store.AppendAudit(r.Context(), operator.ID, "firewall_rule.state_changed", "firewall_rule", r.PathValue("id"), "polaris firewall rule state changed"); err != nil {
 		writeError(w, err)
 		return
 	}
@@ -1200,7 +1200,7 @@ func (s *Server) deleteFirewallRule(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
-	if err := s.store.AppendAudit(r.Context(), operator.ID, "firewall_rule.deleted", "firewall_rule", r.PathValue("id"), "sb-control firewall rule deleted"); err != nil {
+	if err := s.store.AppendAudit(r.Context(), operator.ID, "firewall_rule.deleted", "firewall_rule", r.PathValue("id"), "polaris firewall rule deleted"); err != nil {
 		writeError(w, err)
 		return
 	}
@@ -1231,7 +1231,7 @@ func (s *Server) publishNodeFirewall(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
-	if err := s.store.AppendAudit(r.Context(), operator.ID, "firewall.publish_requested", "node", nodeID, "sb-control firewall task requested"); err != nil {
+	if err := s.store.AppendAudit(r.Context(), operator.ID, "firewall.publish_requested", "node", nodeID, "polaris firewall task requested"); err != nil {
 		writeError(w, err)
 		return
 	}

@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/sb-control/sb-control/internal/wire"
+	"github.com/liyuwei007036/polaris/internal/wire"
 )
 
 // ServeAgents accepts raw TCP connections from agents and runs the Noise_XK
@@ -471,7 +471,7 @@ type storedMetrics struct {
 	Health      *storedHealth      `json:"health,omitempty"`
 }
 
-// storedFirewall carries the host's own firewall rules — the ones sb-control
+// storedFirewall carries the host's own firewall rules — the ones polaris
 // did not write — so the console can show what a server already enforces.
 type storedFirewall struct {
 	Available bool                 `json:"available"`

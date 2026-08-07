@@ -11,7 +11,7 @@ import (
 	"os/signal"
 	"time"
 
-	"github.com/sb-control/sb-control/internal/control"
+	"github.com/liyuwei007036/polaris/internal/control"
 )
 
 type combinedFlagValues struct {
@@ -181,11 +181,11 @@ func serveCombined(ctx context.Context, masterConfiguration masterConfig, agentC
 	warnIfNotRoot()
 	errorsChannel := make(chan error, 3)
 	go func() {
-		fmt.Fprintln(os.Stdout, "sb-control combined (master agent port) listening on", agentAddress)
+		fmt.Fprintln(os.Stdout, "polaris combined (master agent port) listening on", agentAddress)
 		errorsChannel <- server.ServeAgents(combinedContext, agentListener)
 	}()
 	go func() {
-		fmt.Fprintln(os.Stdout, "sb-control combined (master web port) listening on", browserAddress)
+		fmt.Fprintln(os.Stdout, "polaris combined (master web port) listening on", browserAddress)
 		errorsChannel <- browserServer.ListenAndServe()
 	}()
 	go func() {

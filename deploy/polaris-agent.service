@@ -1,5 +1,5 @@
 [Unit]
-Description=sb-control agent
+Description=polaris agent
 After=network-online.target
 Wants=network-online.target
 
@@ -8,7 +8,7 @@ Wants=network-online.target
 # and /etc/fail2ban on behalf of the master, and restarts sing-box.service /
 # nginx.service via systemctl.
 User=root
-ExecStart=/usr/local/bin/sb-control agent serve --config /etc/sb-control/agent.yaml
+ExecStart=/usr/local/bin/polaris agent serve --config /etc/polaris/agent.yaml
 Restart=on-failure
 RestartSec=5
 

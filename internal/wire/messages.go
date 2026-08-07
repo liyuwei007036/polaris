@@ -82,7 +82,7 @@ type Fail2BanBan struct {
 }
 
 // FirewallRuleEntry is one firewall rule already present on the host that
-// sb-control did not write.
+// polaris did not write.
 type FirewallRuleEntry struct {
 	Table string
 	Chain string
@@ -117,7 +117,7 @@ type Status struct {
 	Fail2BanAvailable bool
 	Fail2BanJails     []Fail2BanJailStatus
 	// The firewall fields describe what the host already enforces outside
-	// sb-control's own managed table.
+	// polaris's own managed table.
 	FirewallAvailable bool
 	FirewallTool      string
 	FirewallRules     []FirewallRuleEntry

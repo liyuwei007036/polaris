@@ -16,7 +16,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/sb-control/sb-control/internal/security"
+	"github.com/liyuwei007036/polaris/internal/security"
 	_ "modernc.org/sqlite"
 )
 
@@ -30,7 +30,7 @@ var (
 )
 
 const (
-	DefaultAdminUsername = "sb_admin"
+	DefaultAdminUsername = "polaris_admin"
 	DefaultAdminPassword = "123456"
 	masterKeyFile        = "master.key"
 	defaultSessionTTL    = 8 * time.Hour
@@ -196,7 +196,7 @@ func OpenWithDatabase(dataDir, databasePath string) (*Store, error) {
 		return nil, err
 	}
 	if databasePath == "" {
-		databasePath = filepath.Join(dataDir, "sb-control.db")
+		databasePath = filepath.Join(dataDir, "polaris.db")
 	}
 	if err := os.MkdirAll(filepath.Dir(databasePath), 0o700); err != nil {
 		return nil, fmt.Errorf("create database directory: %w", err)
