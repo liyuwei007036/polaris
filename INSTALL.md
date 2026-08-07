@@ -119,6 +119,21 @@ Combined 会先生成 Master 公钥并写好本机 agent 配置，再启动服�
 
 非交互部署可预设环境变量：`POLARIS_MASTER_ADDRESS`、`POLARIS_MASTER_PUBKEY`、`POLARIS_REGISTRATION_TOKEN`，以及 `POLARIS_VERSION`、`POLARIS_REPOSITORY`。
 
+### 2.5 非 root 用户与无终端环境
+
+以 `ubuntu` 等普通用户执行时无需手动加 `sudo`，脚本会自动用 `sudo` 重新执行自身，并透传上述 `POLARIS_*` 环境变量。前提是脚本已保存为文件；用 `curl ... | bash` 管道执行时无法自我提权，需改成先下载再 `sudo bash install.sh`。
+
+脚本要下载到当前用户可写的目录，例如 `/tmp` 或家目录；写入 `/run`、`/usr/local` 等 root 目录会得到 `curl: (23) Failure writing output to destination`。
+
+面板控制台、`ssh host '命令'`、CI、cron 等没有控制终端的环境无法交互输入，必须预设环境变量：
+
+```bash
+cd /tmp && curl -fsSLo install.sh https://raw.githubusercontent.com/liyuwei007036/polaris/main/install.sh
+sudo env POLARIS_MASTER_ADDRESS='master主机:19994' POLARIS_MASTER_PUBKEY='Master的Noise公钥' POLARIS_REGISTRATION_TOKEN='一次性注册令牌' bash install.sh agent
+```
+
+缺少必需参数时脚本会直接报「非交互安装缺少 …」并退出，不会挂在等待输入上。
+
 不放心直接把远程脚本交给 root 执行时，先下载检查再运行：
 
 ```bash

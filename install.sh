@@ -9,6 +9,7 @@ ALLOW_INSECURE_HTTP=0
 DESTDIR="${DESTDIR:-}"
 TEMP_DIR=""
 SOURCE_DIR=""
+ORIGINAL_ARGS=("$@")
 
 log() {
   printf '[polaris] %s\n' "$*"
@@ -81,11 +82,16 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
+has_tty() {
+  { exec 3</dev/tty; } 2>/dev/null || return 1
+  exec 3<&-
+}
+
 choose_mode() {
   if [[ -n "$MODE" ]]; then
     return
   fi
-  [[ -r /dev/tty ]] || fail "非交互安装必须指定 master、agent 或 combined"
+  has_tty || fail "非交互安装必须指定 master、agent 或 combined"
   cat >/dev/tty <<'EOF'
 请选择安装模式：
   1. Master
@@ -115,7 +121,7 @@ prompt_required() {
   local label="$2"
   local value="${!variable_name:-}"
   if [[ -z "$value" ]]; then
-    [[ -r /dev/tty ]] || fail "非交互安装缺少 $label"
+    has_tty || fail "非交互安装缺少 $label"
     IFS= read -r -p "$label：" value </dev/tty
   fi
   [[ -n "$value" ]] || fail "$label 不能为空"
@@ -126,7 +132,7 @@ prompt_secret_optional() {
   local variable_name="$1"
   local label="$2"
   local value="${!variable_name:-}"
-  if [[ -z "$value" && -r /dev/tty ]]; then
+  if [[ -z "$value" ]] && has_tty; then
     IFS= read -r -s -p "$label（留空可稍后执行注册）：" value </dev/tty
     printf '\n' >/dev/tty
   fi
@@ -209,6 +215,22 @@ locate_install_source() {
   done
 }
 
+reexec_with_sudo() {
+  local script_path="${BASH_SOURCE[0]:-}"
+  [[ -n "$script_path" && -f "$script_path" ]] || \
+    fail "当前不是 root；请先把脚本保存为文件再执行：sudo bash install.sh [master|agent|combined]"
+  command -v sudo >/dev/null 2>&1 || fail "当前不是 root，且系统没有 sudo；请用 root 用户执行"
+  script_path=$(CDPATH='' cd -- "$(dirname -- "$script_path")" && pwd)/$(basename -- "$script_path")
+  log "当前用户不是 root，改用 sudo 重新执行"
+  exec sudo env \
+    POLARIS_REPOSITORY="$REPOSITORY" \
+    POLARIS_VERSION="$VERSION" \
+    POLARIS_MASTER_ADDRESS="${POLARIS_MASTER_ADDRESS:-}" \
+    POLARIS_MASTER_PUBKEY="${POLARIS_MASTER_PUBKEY:-}" \
+    POLARIS_REGISTRATION_TOKEN="${POLARIS_REGISTRATION_TOKEN:-}" \
+    bash "$script_path" ${ORIGINAL_ARGS[@]+"${ORIGINAL_ARGS[@]}"}
+}
+
 ensure_root() {
   [[ "$(uname -s)" == "Linux" ]] || fail "install.sh 只支持 Linux"
   if [[ -n "$DESTDIR" ]]; then
@@ -216,7 +238,7 @@ ensure_root() {
     DESTDIR="${DESTDIR%/}"
     return
   fi
-  [[ "$EUID" -eq 0 ]] || fail "请使用 sudo 运行 install.sh"
+  [[ "$EUID" -eq 0 ]] || reexec_with_sudo
   require_command systemctl
   require_command install
 }
@@ -414,8 +436,8 @@ install_combined_mode() {
   log "Master Noise 公钥：${public_key}"
 }
 
-choose_mode
 ensure_root
+choose_mode
 locate_install_source
 install_common_files
 
