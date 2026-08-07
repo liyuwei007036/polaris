@@ -298,7 +298,7 @@ async function save() {
 // the copy is meant to be edited, not to mirror the original.
 async function copyConfig(config) {
   const result = await ElMessageBox.prompt('新配置的名称', `复制“${config.name}”`, {
-    inputValue: `${config.name} 副本`,
+    inputValue: config.name,
     inputPattern: /\S/,
     inputErrorMessage: '请填写配置名称',
     confirmButtonText: '复制',

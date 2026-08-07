@@ -43,49 +43,44 @@ function recordName(record) {
 
 // A domain belongs to this server when an A/AAAA record carries the server's
 // address, or a CNAME leads to such a domain. When the server is reached by a
-// domain instead of an IP, that domain counts as well.
+// domain instead of an IP, that domain counts as well. Each one is kept with
+// its CDN state, which decides whether traffic reaches the server directly.
 const matchedDomains = computed(() => {
   const address = nodeAddress.value
   if (!address) return []
-  const names = new Set(
-    props.dnsRecords
-      .filter((record) => ['A', 'AAAA'].includes(record.type) && record.content === address)
-      .map(recordName),
-  )
-  if (!/^[0-9.]+$/.test(address) && !address.includes(':')) names.add(address)
+  const found = new Map()
+  const add = (name, proxied) => { if (name && !found.has(name)) found.set(name, proxied) }
+  for (const record of props.dnsRecords) {
+    if (['A', 'AAAA'].includes(record.type) && record.content === address) add(recordName(record), Boolean(record.proxied))
+  }
+  if (!/^[0-9.]+$/.test(address) && !address.includes(':')) {
+    const own = props.dnsRecords.find((record) => recordName(record) === address)
+    add(address, own ? Boolean(own.proxied) : null)
+  }
   let grew = true
   while (grew) {
     grew = false
     for (const record of props.dnsRecords) {
-      if (record.type !== 'CNAME' || names.has(recordName(record))) continue
+      if (record.type !== 'CNAME' || found.has(recordName(record))) continue
       const target = String(record.content || '').replace(/\.$/, '')
-      if (target === address || names.has(target)) {
-        names.add(recordName(record))
+      if (target === address || found.has(target)) {
+        add(recordName(record), Boolean(record.proxied))
         grew = true
       }
     }
   }
-  return [...names].filter(Boolean)
+  return [...found].map(([value, proxied]) => ({
+    value,
+    proxied,
+    note: proxied === null ? '' : proxied ? '已开启橙云加速' : '未开启橙云加速',
+  }))
 })
 
-const otherDomains = computed(() => {
-  const matched = new Set(matchedDomains.value)
-  const names = props.dnsRecords
-    .filter((record) => ['A', 'AAAA', 'CNAME'].includes(record.type))
-    .map(recordName)
-    .filter((name) => name && !matched.has(name))
-  return [...new Set(names)]
-})
-
-// Domains that resolve to the selected server come first; anything else is
-// still offered, and any domain can be typed in regardless.
+// Only domains that resolve to the selected server are offered; any other
+// domain can still be typed in.
 function suggestDomains(query, callback) {
-  const suggestions = [
-    ...matchedDomains.value.map((domain) => ({ value: domain, note: '解析到本服务器' })),
-    ...otherDomains.value.map((domain) => ({ value: domain, note: '未解析到本服务器' })),
-  ]
   const keyword = query.trim().toLowerCase()
-  callback(keyword ? suggestions.filter((item) => item.value.toLowerCase().includes(keyword)) : suggestions)
+  callback(keyword ? matchedDomains.value.filter((item) => item.value.toLowerCase().includes(keyword)) : matchedDomains.value)
 }
 
 const rules = computed(() => ({
@@ -127,7 +122,7 @@ watch(
       ? props.endpoints.map((endpoint) => ({
           id: props.listener ? endpoint.id : '',
           name: endpoint.name,
-          alias: props.listener ? endpoint.alias || '' : `${endpoint.alias || endpoint.name} 副本`,
+          alias: endpoint.alias || endpoint.name,
           enabled: endpoint.enabled,
           outbound_id: endpoint.outbound_id || 'direct',
         }))
@@ -214,7 +209,7 @@ async function save() {
     <div class="listener-dialog-body">
       <el-alert
         v-if="template"
-        title="已带入原配置，保存前请确认服务器、端口与域名。连接凭据和 Reality 密钥会重新生成。"
+        title="已带入原配置，保存前请确认服务器、端口与域名，并修改客户端节点别名（别名不能与已有的重复）。连接凭据和 Reality 密钥会重新生成。"
         type="info" show-icon :closable="false" style="margin-bottom: 14px" />
       <div class="form-section">
         <div class="form-section__head">选择连接协议</div>
@@ -270,7 +265,7 @@ async function save() {
                   placeholder="proxy.example.com">
                   <template #default="{ item }">
                     <span>{{ item.value }}</span>
-                    <span class="domain-note">{{ item.note }}</span>
+                    <span :class="['domain-note', { 'domain-note--proxied': item.proxied }]">{{ item.note }}</span>
                   </template>
                 </el-autocomplete>
                 <div class="form-hint">
@@ -371,6 +366,7 @@ async function save() {
 .account-index { color: var(--sb-muted); text-align: center; font-variant-numeric: tabular-nums; }
 .form-hint { margin-top: 6px; color: var(--sb-muted); font-size: 12px; }
 .domain-note { float: right; margin-left: 20px; color: var(--sb-muted); font-size: 12px; }
+.domain-note--proxied { color: var(--el-color-warning); }
 .dialog-footer { display: flex; justify-content: flex-end; gap: 8px; }
 @media (max-width: 680px) {
   .listener-dialog-body :deep(.el-col) { max-width: 100%; flex: 0 0 100%; }

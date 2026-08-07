@@ -111,7 +111,6 @@ async function openCopy(listener) {
   copying.value = {
     ...listener,
     id: '',
-    name: `${listener.name} 副本`,
     listen_address: '0.0.0.0',
     backend_port: 0,
   }

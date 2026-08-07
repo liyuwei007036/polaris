@@ -286,15 +286,19 @@ test('浏览器页面回归：真实登录，核心工作区 API 使用路由替
   // still chooses the target server and saves.
   await page.getByRole('button', { name: '复制', exact: true }).click()
   const copyDialog = page.getByRole('dialog', { name: '复制接入服务', exact: true })
-  await expect(copyDialog.getByRole('textbox', { name: '服务名称' })).toHaveValue('WebSocket 接入 副本')
+  // A copy carries the source's values verbatim; nothing is renamed for it.
+  await expect(copyDialog.getByRole('textbox', { name: '服务名称' })).toHaveValue('WebSocket 接入')
   await expect(copyDialog.getByRole('textbox', { name: '连接域名' })).toHaveValue('ws.example.com')
   await expect(copyDialog.getByRole('textbox', { name: '用户名称' })).toHaveValue('默认账号')
-  await expect(copyDialog.getByRole('textbox', { name: '客户端节点别名' })).toHaveValue('测试节点 01 副本')
+  await expect(copyDialog.getByRole('textbox', { name: '客户端节点别名' })).toHaveValue('测试节点 01')
+  // The identical message from the rejected create above has to be gone first,
+  // otherwise both are on screen and neither can be told apart.
+  await expect(page.getByText('测试校验错误：请检查接入服务参数', { exact: true })).toHaveCount(0)
   await copyDialog.getByRole('button', { name: '创建', exact: true }).click()
   await expect(page.getByText('测试校验错误：请检查接入服务参数', { exact: true })).toBeVisible()
-  expect(quickListenerPayload.listener).toMatchObject({ name: 'WebSocket 接入 副本', connection_domain: 'ws.example.com', port: 18444 })
+  expect(quickListenerPayload.listener).toMatchObject({ name: 'WebSocket 接入', connection_domain: 'ws.example.com', port: 18444 })
   expect(quickListenerPayload.listener.spec.transport).toMatchObject({ type: 'ws' })
-  expect(quickListenerPayload.accounts[0]).toMatchObject({ name: '默认账号', alias: '测试节点 01 副本' })
+  expect(quickListenerPayload.accounts[0]).toMatchObject({ name: '默认账号', alias: '测试节点 01' })
   await copyDialog.getByRole('button', { name: '取消', exact: true }).click()
 
   await page.getByRole('button', { name: '代理分组', exact: true }).click()
@@ -492,12 +496,12 @@ test('浏览器页面回归：真实登录，核心工作区 API 使用路由替
   const domainInput = domainDialog.getByRole('textbox', { name: '连接域名' })
   await domainInput.click()
   const suggestions = page.locator('.el-autocomplete-suggestion__list li')
-  // ws.example.com carries the server's address; cdn.example.com is a CNAME
-  // that leads to it, so both belong to this server.
+  // ws.example.com carries the server's address and cdn.example.com is a CNAME
+  // leading to it, so both are offered with their CDN state.
+  // other.example.com points elsewhere and must not show up at all.
   await expect(suggestions).toHaveText([
-    'ws.example.com解析到本服务器',
-    'cdn.example.com解析到本服务器',
-    'other.example.com未解析到本服务器',
+    'ws.example.com未开启橙云加速',
+    'cdn.example.com已开启橙云加速',
   ])
   await suggestions.filter({ hasText: 'cdn.example.com' }).click()
   await expect(domainInput).toHaveValue('cdn.example.com')
