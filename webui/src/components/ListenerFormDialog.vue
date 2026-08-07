@@ -102,12 +102,18 @@ function randomAccountName() {
   return `user_${randomHex(4)}`
 }
 
+// A guessable WebSocket path is what makes an access service findable by
+// probing, so the path is always generated rather than typed.
+function randomPath() {
+  return `/${randomHex(12)}`
+}
+
 function setProfile(value) {
   model.value.profile = value
   model.value.tls_alpn = value === 'vless-grpc' ? ['h2'] : value === 'vless-ws' ? ['http/1.1'] : []
   normalizeProfile()
   if (listenerProfileMap[value]?.transport === 'ws' && !model.value.transport_path) {
-    model.value.transport_path = `/${randomHex(12)}`
+    model.value.transport_path = randomPath()
   }
 }
 
@@ -116,6 +122,9 @@ watch(
   async (open) => {
     if (!open) return
     model.value = createListenerModel(props.listener || props.template, props.nodes[0]?.id || '')
+    // Editing keeps the path its clients are already using; a new service and
+    // a copy each get their own.
+    if (!props.listener) model.value.transport_path = randomPath()
     // A copy reuses the source's users as new ones: their IDs are dropped so
     // saving creates fresh accounts with their own credentials.
     accounts.value = props.listener || props.template
@@ -301,7 +310,12 @@ async function save() {
           <el-row :gutter="16">
             <el-col v-if="model.transport_type === 'ws'" :span="12">
               <el-form-item label="请求路径">
-                <el-input v-model="model.transport_path" placeholder="/proxy" />
+                <el-input v-model="model.transport_path" readonly>
+                  <template #append>
+                    <el-button @click="model.transport_path = randomPath()">重新生成</el-button>
+                  </template>
+                </el-input>
+                <div class="form-hint">由系统随机生成，避免被探测。重新生成后客户端需要同步更新。</div>
               </el-form-item>
             </el-col>
             <el-col v-if="model.transport_type === 'ws'" :span="12">

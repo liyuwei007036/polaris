@@ -291,6 +291,8 @@ test('浏览器页面回归：真实登录，核心工作区 API 使用路由替
   await expect(copyDialog.getByRole('textbox', { name: '连接域名' })).toHaveValue('ws.example.com')
   await expect(copyDialog.getByRole('textbox', { name: '用户名称' })).toHaveValue('默认账号')
   await expect(copyDialog.getByRole('textbox', { name: '客户端节点别名' })).toHaveValue('测试节点 01')
+  // The WebSocket path is never carried over: a copy gets its own random one.
+  await expect(copyDialog.getByRole('textbox', { name: '请求路径' })).toHaveValue(/^\/[0-9a-f]{24}$/)
   // The identical message from the rejected create above has to be gone first,
   // otherwise both are on screen and neither can be told apart.
   await expect(page.getByText('测试校验错误：请检查接入服务参数', { exact: true })).toHaveCount(0)

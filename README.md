@@ -106,7 +106,7 @@ curl -fsSLo install.sh https://raw.githubusercontent.com/liyuwei007036/polaris/m
 
 ### 入站协议
 
-当前只支持 `Hysteria2`、`VLESS + Reality`、`VLESS + WebSocket` 和 `VLESS + gRPC`。VLESS 仅允许 Reality、WebSocket 或 gRPC 三种模式；Hysteria2 使用自身的 QUIC 传输。其他入站协议及传输组合均会被后端拒绝。
+当前只支持 `Hysteria2`、`VLESS + Reality`、`VLESS + WebSocket` 和 `VLESS + gRPC`。WebSocket 的请求路径由控制台随机生成且不可手填，新建和复制各自获得独立路径；修改已有服务时保留客户端正在使用的路径，可手动点“重新生成”。VLESS 仅允许 Reality、WebSocket 或 gRPC 三种模式；Hysteria2 使用自身的 QUIC 传输。其他入站协议及传输组合均会被后端拒绝。
 
 WebSocket 和 gRPC 新建时默认启用自动生成的 TLS 源站证书，可通过 Cloudflare `Full` 模式回源。若在“域名解析 → 源证书”中配置了覆盖该接入服务连接域名的 Origin CA 证书，则改用该证书回源，Cloudflare 可使用 `Full (strict)`。Reality 必须使用灰云直连；它的同端口路由键是客户端实际发送的 Reality 目标网站 SNI，而不是连接域名。
 
