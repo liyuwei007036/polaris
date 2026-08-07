@@ -1,7 +1,7 @@
 <script setup>
 import { computed, inject, onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { ArrowDown, ArrowUp, CopyDocument, Delete, DocumentCopy, Edit, Plus, Refresh, RefreshRight, Search } from '@element-plus/icons-vue'
+import { ArrowDown, ArrowLeft, ArrowUp, CopyDocument, Delete, DocumentCopy, Edit, Plus, Refresh, RefreshRight, Search } from '@element-plus/icons-vue'
 import { api, del, post, put } from '../api'
 import { formatDateTime, includesText } from '../format'
 import { regionFlag } from '../flags'
@@ -15,7 +15,9 @@ const loadNodes = inject('loadNodes')
 const loading = ref(false)
 const saving = ref(false)
 const changingState = ref('')
-const dialogVisible = ref(false)
+// 配置项太多，塞进一个浮层要一路滚到底。改成整页编辑：列表和表单是这个
+// 视图的两种形态，表单再按左侧导航分节，一次只面对一节。
+const mode = ref('list')
 const editing = ref(null)
 const configs = ref([])
 const proxyGroups = ref([])
@@ -65,6 +67,13 @@ function cloneDNS(dns) {
   }
 }
 const form = reactive({ name: '', proxy_group_ids: [], rule_provider_ids: [], rule_mode: 'table', rules: [], raw_rules: '', dns_mode: 'form', dns: defaultDNS(), raw_dns: '' })
+const sections = [
+  { key: 'basic', label: '基础信息', hint: '名称 · 代理分组 · 规则供应商' },
+  { key: 'rules', label: '访问规则', hint: '决定流量走哪个分组' },
+  { key: 'dns', label: 'DNS', hint: '下发给客户端的解析设置' },
+]
+const activeSection = ref('basic')
+const formBody = ref(null)
 const strategyNames = { select: '手动选择', 'url-test': '自动测速', fallback: '故障切换' }
 const enhancedModes = [
   { value: 'fake-ip', label: 'fake-ip · 域名解析推迟到代理端' },
@@ -124,13 +133,16 @@ const selectedProviders = computed(() => form.rule_provider_ids
   .map((id) => ruleProviders.value.find((provider) => provider.id === id))
   .filter(Boolean))
 const providerNames = computed(() => new Set(selectedProviders.value.map((provider) => provider.name)))
-const formValid = computed(() => {
-  if (!form.name.trim() || !form.proxy_group_ids.length) return false
-  // Mihomo refuses to start without these two lists once dns is enabled.
-  if (form.dns_mode === 'form' && form.dns.enable && (!form.dns.nameserver.length || !form.dns.default_nameserver.length)) return false
+// 校验按分节拆开，导航上就能标出是哪一节还没填完，不用逐节翻找。
+const basicValid = computed(() => Boolean(form.name.trim() && form.proxy_group_ids.length))
+const rulesValid = computed(() => {
   if (form.rule_mode === 'text') return Boolean(form.raw_rules.trim())
   return Boolean(form.rules.length && form.rules.at(-1)?.type === 'MATCH' && form.rules.every((rule) => rule.action && (rule.type === 'MATCH' || (rule.value.trim() && (rule.type !== 'RULE-SET' || providerNames.value.has(rule.value))))))
 })
+// Mihomo refuses to start without these two lists once dns is enabled.
+const dnsValid = computed(() => !(form.dns_mode === 'form' && form.dns.enable) || Boolean(form.dns.nameserver.length && form.dns.default_nameserver.length))
+const sectionValid = computed(() => ({ basic: basicValid.value, rules: rulesValid.value, dns: dnsValid.value }))
+const formValid = computed(() => basicValid.value && rulesValid.value && dnsValid.value)
 
 function resolveGroups(ids) {
   const result = []
@@ -186,8 +198,9 @@ function searchAccess() {
   loadAccess()
 }
 
-function resetForm(config = null) {
+function openForm(config = null) {
   editing.value = config
+  activeSection.value = 'basic'
   Object.assign(form, config ? {
     name: config.name,
     proxy_group_ids: [...(config.proxy_group_ids || [])],
@@ -204,7 +217,13 @@ function resetForm(config = null) {
     dns: cloneDNS(config.dns),
     raw_dns: config.raw_dns || '',
   } : { name: '', proxy_group_ids: [], rule_provider_ids: [], rule_mode: 'table', rules: [], raw_rules: '', dns_mode: 'form', dns: defaultDNS(), raw_dns: '' })
-  dialogVisible.value = true
+  mode.value = 'form'
+}
+
+// 每节独立滚动，切节时回到顶部，否则从长长的规则表底部切到 DNS 会停在半空。
+function selectSection(key) {
+  activeSection.value = key
+  if (formBody.value) formBody.value.scrollTop = 0
 }
 
 // Switching to the text editor starts from what the form currently says, so
@@ -266,7 +285,7 @@ async function save() {
     if (editing.value) await put(`/mihomo/client-configs/${editing.value.id}`, payload)
     else await post('/mihomo/client-configs', payload)
     ElMessage.success(editing.value ? '客户端配置已保存' : '客户端配置已创建')
-    dialogVisible.value = false
+    mode.value = 'list'
     await load()
   } catch (error) {
     ElMessage.error(error instanceof Error ? error.message : '客户端配置保存失败')
@@ -355,11 +374,11 @@ onMounted(() => { load(); loadAccess() })
 
 <template>
   <div class="page-shell">
-    <PageHeader title="客户端配置">
+    <PageHeader v-if="mode === 'list'" title="客户端配置">
       <el-button :icon="Refresh" @click="load(); loadAccess()">刷新</el-button>
-      <el-button v-if="canWrite" type="primary" :icon="Plus" @click="resetForm()">新建</el-button>
+      <el-button v-if="canWrite" type="primary" :icon="Plus" @click="openForm()">新建</el-button>
     </PageHeader>
-    <main v-loading="loading" class="page-content">
+    <main v-if="mode === 'list'" v-loading="loading" class="page-content">
       <div class="table-panel">
         <el-tabs v-model="tab" class="panel-tabs">
           <el-tab-pane label="客户端配置" name="configs">
@@ -396,7 +415,7 @@ onMounted(() => { load(); loadAccess() })
               <el-button link :icon="CopyDocument" @click="copySubscription(row)">复制</el-button>
               <el-button v-if="canWrite" link :icon="DocumentCopy" @click="copyConfig(row)">复制配置</el-button>
               <el-button v-if="canWrite" link :icon="RefreshRight" @click="rotateSubscription(row)">更换</el-button>
-              <el-button v-if="canWrite" link :icon="Edit" @click="resetForm(row)">编辑</el-button>
+              <el-button v-if="canWrite" link :icon="Edit" @click="openForm(row)">编辑</el-button>
               <el-button v-if="isAdmin" link type="danger" :icon="Delete" @click="remove(row)">删除</el-button>
             </template>
           </el-table-column>
@@ -423,141 +442,187 @@ onMounted(() => { load(); loadAccess() })
       </div>
     </main>
 
-    <el-dialog v-model="dialogVisible" :title="editing ? '编辑客户端配置' : '新建客户端配置'" width="min(980px, 96vw)">
-      <el-form label-position="top">
-        <el-form-item label="配置名称" required><el-input v-model="form.name" maxlength="128" /></el-form-item>
-        <el-form-item label="引用代理分组" required>
-          <el-select
-            v-model="form.proxy_group_ids"
-            multiple
-            filterable
-            collapse-tags
-            collapse-tags-tooltip
-            :max-collapse-tags="6"
-            style="width: 100%"
-            placeholder="选择代理分组"
-          >
-            <!-- 图标与成员数量对读屏无意义，隐藏起来，选项名保持为分组名。 -->
-            <el-option v-for="group in proxyGroups" :key="group.id" :label="`${group.name} · ${strategyNames[group.strategy]}`" :value="group.id">
-              <span>{{ group.name }} · {{ strategyNames[group.strategy] }}</span>
-              <span class="option-meta" aria-hidden="true">
-                <span v-for="flag in (groupSummaries[group.id]?.flags || []).slice(0, 5)" :key="flag" class="region-flag">{{ flag }}</span>
-                {{ groupSummaries[group.id]?.count || 0 }} 个成员
-              </span>
-            </el-option>
-          </el-select>
-        </el-form-item>
-
-        <el-form-item label="规则供应商">
-          <el-select v-model="form.rule_provider_ids" multiple filterable collapse-tags collapse-tags-tooltip :max-collapse-tags="6" style="width: 100%" aria-label="引用规则供应商" placeholder="选择规则供应商">
-            <el-option v-for="provider in ruleProviders" :key="provider.id" :label="`${provider.name} · ${provider.url}`" :value="provider.id" />
-          </el-select>
-          <div class="subtle" style="margin-top: 6px">选择后可在下方 RULE-SET 规则中引用。</div>
-        </el-form-item>
-
-        <section class="rules-section">
-          <div class="section-heading">
-            <div><h3>访问规则</h3></div>
-            <el-radio-group v-model="form.rule_mode" aria-label="规则配置模式">
-              <el-radio-button value="table">表格配置</el-radio-button>
-              <el-radio-button value="text">高级纯文本</el-radio-button>
-            </el-radio-group>
-          </div>
-          <template v-if="form.rule_mode === 'table'">
-            <div class="rule-table-wrap">
-              <table class="rule-table">
-                <thead><tr><th>类型</th><th>匹配值</th><th>动作</th><th>no-resolve</th><th>顺序</th></tr></thead>
-                <tbody>
-                  <tr v-for="(rule, index) in form.rules" :key="index">
-                    <td data-label="类型"><el-select :model-value="rule.type" aria-label="规则类型" filterable @update:model-value="setRuleType(rule, $event)"><el-option v-for="type in ruleTypes" :key="type" :label="type" :value="type" /></el-select></td>
-                    <td data-label="匹配值">
-                      <el-select v-if="rule.type === 'RULE-SET'" v-model="rule.value" aria-label="规则供应商" filterable><el-option v-for="provider in selectedProviders" :key="provider.id" :label="provider.name" :value="provider.name" /></el-select>
-                      <el-input v-else v-model="rule.value" aria-label="规则匹配值" :disabled="rule.type === 'MATCH'" />
-                    </td>
-                    <td data-label="动作">
-                      <el-select v-model="rule.action" aria-label="规则动作" filterable>
-                        <el-option v-for="action in ruleActions" :key="action" :label="action" :value="action">
-                          <span v-if="regionFlag(action)" class="region-flag" aria-hidden="true">{{ regionFlag(action) }}</span>{{ action }}
-                        </el-option>
-                      </el-select>
-                    </td>
-                    <td class="check-cell" data-label="no-resolve"><el-checkbox v-model="rule.no_resolve" aria-label="no-resolve" :disabled="!noResolveTypes.has(rule.type)" /></td>
-                    <td class="rule-actions" data-label="顺序">
-                      <el-tooltip content="上移"><el-button :icon="ArrowUp" text aria-label="上移规则" :disabled="index === 0" @click="moveRule(index, -1)" /></el-tooltip>
-                      <el-tooltip content="下移"><el-button :icon="ArrowDown" text aria-label="下移规则" :disabled="index === form.rules.length - 1" @click="moveRule(index, 1)" /></el-tooltip>
-                      <el-tooltip content="删除"><el-button :icon="Delete" text type="danger" aria-label="删除规则" @click="form.rules.splice(index, 1)" /></el-tooltip>
-                    </td>
-                  </tr>
-                </tbody>
-              </table>
-            </div>
-            <el-button :icon="Plus" class="add-rule" @click="addRule">添加</el-button>
-          </template>
-          <el-input v-else v-model="form.raw_rules" type="textarea" :rows="10" aria-label="高级规则文本" placeholder="RULE-SET,供应商名称,代理组&#10;DOMAIN-SUFFIX,example.com,代理组&#10;MATCH,DIRECT" />
-        </section>
-
-        <section class="rules-section">
-          <div class="section-heading">
-            <div><h3>DNS</h3></div>
-            <el-radio-group :model-value="form.dns_mode" aria-label="DNS 配置模式" @update:model-value="setDNSMode">
-              <el-radio-button value="form">表单配置</el-radio-button>
-              <el-radio-button value="text">高级纯文本</el-radio-button>
-            </el-radio-group>
-          </div>
-          <template v-if="form.dns_mode === 'form'">
-            <el-form-item label="下发 DNS 配置">
-              <el-switch v-model="form.dns.enable" aria-label="下发 DNS 配置" />
-              <div class="subtle" style="margin-left: 12px">关闭后订阅不含 dns 段，由客户端自己的 DNS 设置决定。</div>
+    <PageHeader v-if="mode === 'form'" :title="editing ? '编辑客户端配置' : '新建客户端配置'">
+      <el-button :icon="ArrowLeft" @click="mode = 'list'">返回</el-button>
+      <el-button type="primary" :loading="saving" :disabled="!formValid" @click="save">保存</el-button>
+    </PageHeader>
+    <main v-if="mode === 'form'" class="page-content form-page">
+      <nav class="form-nav" aria-label="配置分节">
+        <button
+          v-for="section in sections"
+          :key="section.key"
+          type="button"
+          class="form-nav__item"
+          :class="{ active: activeSection === section.key }"
+          :aria-current="activeSection === section.key || undefined"
+          @click="selectSection(section.key)"
+        >
+          <span class="form-nav__label">
+            {{ section.label }}
+            <el-tag v-if="!sectionValid[section.key]" size="small" type="warning" effect="plain" disable-transitions>待填</el-tag>
+          </span>
+          <span class="form-nav__hint">{{ section.hint }}</span>
+        </button>
+      </nav>
+      <div ref="formBody" class="form-body">
+        <el-form label-position="top" class="form-body__inner">
+          <template v-if="activeSection === 'basic'">
+            <el-form-item label="配置名称" required><el-input v-model="form.name" maxlength="128" /></el-form-item>
+            <el-form-item label="引用代理分组" required>
+              <el-select
+                v-model="form.proxy_group_ids"
+                multiple
+                filterable
+                collapse-tags
+                collapse-tags-tooltip
+                :max-collapse-tags="6"
+                style="width: 100%"
+                placeholder="选择代理分组"
+              >
+                <!-- 图标与成员数量对读屏无意义，隐藏起来，选项名保持为分组名。 -->
+                <el-option v-for="group in proxyGroups" :key="group.id" :label="`${group.name} · ${strategyNames[group.strategy]}`" :value="group.id">
+                  <span>{{ group.name }} · {{ strategyNames[group.strategy] }}</span>
+                  <span class="option-meta" aria-hidden="true">
+                    <span v-for="flag in (groupSummaries[group.id]?.flags || []).slice(0, 5)" :key="flag" class="region-flag">{{ flag }}</span>
+                    {{ groupSummaries[group.id]?.count || 0 }} 个成员
+                  </span>
+                </el-option>
+              </el-select>
             </el-form-item>
-            <template v-if="form.dns.enable">
-              <el-form-item label="解析模式">
-                <el-select v-model="form.dns.enhanced_mode" aria-label="DNS 解析模式" style="width: 100%">
-                  <el-option v-for="mode in enhancedModes" :key="mode.value" :label="mode.label" :value="mode.value" />
-                </el-select>
+
+            <el-form-item label="规则供应商">
+              <el-select v-model="form.rule_provider_ids" multiple filterable collapse-tags collapse-tags-tooltip :max-collapse-tags="6" style="width: 100%" aria-label="引用规则供应商" placeholder="选择规则供应商">
+                <el-option v-for="provider in ruleProviders" :key="provider.id" :label="`${provider.name} · ${provider.url}`" :value="provider.id" />
+              </el-select>
+              <div class="subtle" style="margin-top: 6px">选择后可在「访问规则」的 RULE-SET 规则中引用。</div>
+            </el-form-item>
+          </template>
+
+          <section v-else-if="activeSection === 'rules'">
+            <div class="section-heading">
+              <div><h3>访问规则</h3></div>
+              <el-radio-group v-model="form.rule_mode" aria-label="规则配置模式">
+                <el-radio-button value="table">表格配置</el-radio-button>
+                <el-radio-button value="text">高级纯文本</el-radio-button>
+              </el-radio-group>
+            </div>
+            <template v-if="form.rule_mode === 'table'">
+              <div class="rule-table-wrap">
+                <table class="rule-table">
+                  <thead><tr><th>类型</th><th>匹配值</th><th>动作</th><th>no-resolve</th><th>顺序</th></tr></thead>
+                  <tbody>
+                    <tr v-for="(rule, index) in form.rules" :key="index">
+                      <td data-label="类型"><el-select :model-value="rule.type" aria-label="规则类型" filterable @update:model-value="setRuleType(rule, $event)"><el-option v-for="type in ruleTypes" :key="type" :label="type" :value="type" /></el-select></td>
+                      <td data-label="匹配值">
+                        <el-select v-if="rule.type === 'RULE-SET'" v-model="rule.value" aria-label="规则供应商" filterable><el-option v-for="provider in selectedProviders" :key="provider.id" :label="provider.name" :value="provider.name" /></el-select>
+                        <el-input v-else v-model="rule.value" aria-label="规则匹配值" :disabled="rule.type === 'MATCH'" />
+                      </td>
+                      <td data-label="动作">
+                        <el-select v-model="rule.action" aria-label="规则动作" filterable>
+                          <el-option v-for="action in ruleActions" :key="action" :label="action" :value="action">
+                            <span v-if="regionFlag(action)" class="region-flag" aria-hidden="true">{{ regionFlag(action) }}</span>{{ action }}
+                          </el-option>
+                        </el-select>
+                      </td>
+                      <td class="check-cell" data-label="no-resolve"><el-checkbox v-model="rule.no_resolve" aria-label="no-resolve" :disabled="!noResolveTypes.has(rule.type)" /></td>
+                      <td class="rule-actions" data-label="顺序">
+                        <el-tooltip content="上移"><el-button :icon="ArrowUp" text aria-label="上移规则" :disabled="index === 0" @click="moveRule(index, -1)" /></el-tooltip>
+                        <el-tooltip content="下移"><el-button :icon="ArrowDown" text aria-label="下移规则" :disabled="index === form.rules.length - 1" @click="moveRule(index, 1)" /></el-tooltip>
+                        <el-tooltip content="删除"><el-button :icon="Delete" text type="danger" aria-label="删除规则" @click="form.rules.splice(index, 1)" /></el-tooltip>
+                      </td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+              <el-button :icon="Plus" class="add-rule" @click="addRule">添加</el-button>
+            </template>
+            <el-input v-else v-model="form.raw_rules" type="textarea" :rows="10" aria-label="高级规则文本" placeholder="RULE-SET,供应商名称,代理组&#10;DOMAIN-SUFFIX,example.com,代理组&#10;MATCH,DIRECT" />
+          </section>
+
+          <section v-else>
+            <div class="section-heading">
+              <div><h3>DNS</h3></div>
+              <el-radio-group :model-value="form.dns_mode" aria-label="DNS 配置模式" @update:model-value="setDNSMode">
+                <el-radio-button value="form">表单配置</el-radio-button>
+                <el-radio-button value="text">高级纯文本</el-radio-button>
+              </el-radio-group>
+            </div>
+            <template v-if="form.dns_mode === 'form'">
+              <el-form-item label="下发 DNS 配置">
+                <el-switch v-model="form.dns.enable" aria-label="下发 DNS 配置" />
+                <div class="subtle" style="margin-left: 12px">关闭后订阅不含 dns 段，由客户端自己的 DNS 设置决定。</div>
               </el-form-item>
-              <template v-if="form.dns.enhanced_mode === 'fake-ip'">
-                <el-form-item label="Fake-IP 网段">
-                  <el-input v-model="form.dns.fake_ip_range" aria-label="Fake-IP 网段" placeholder="198.18.0.1/16" />
+              <template v-if="form.dns.enable">
+                <el-form-item label="解析模式">
+                  <el-select v-model="form.dns.enhanced_mode" aria-label="DNS 解析模式" style="width: 100%">
+                    <el-option v-for="mode in enhancedModes" :key="mode.value" :label="mode.label" :value="mode.value" />
+                  </el-select>
                 </el-form-item>
-                <el-form-item label="Fake-IP 过滤模式">
-                  <el-radio-group v-model="form.dns.fake_ip_filter_mode" aria-label="Fake-IP 过滤模式">
-                    <el-radio-button v-for="mode in fakeIPFilterModes" :key="mode" :value="mode">{{ mode }}</el-radio-button>
-                  </el-radio-group>
+                <template v-if="form.dns.enhanced_mode === 'fake-ip'">
+                  <el-form-item label="Fake-IP 网段">
+                    <el-input v-model="form.dns.fake_ip_range" aria-label="Fake-IP 网段" placeholder="198.18.0.1/16" />
+                  </el-form-item>
+                  <el-form-item label="Fake-IP 过滤模式">
+                    <el-radio-group v-model="form.dns.fake_ip_filter_mode" aria-label="Fake-IP 过滤模式">
+                      <el-radio-button v-for="mode in fakeIPFilterModes" :key="mode" :value="mode">{{ mode }}</el-radio-button>
+                    </el-radio-group>
+                  </el-form-item>
+                  <el-form-item label="Fake-IP 过滤">
+                    <el-select v-model="form.dns.fake_ip_filter" multiple filterable allow-create default-first-option :reserve-keyword="false" aria-label="Fake-IP 过滤" style="width: 100%" placeholder="rule 模式写规则，如 MATCH,fake-ip；其它模式写域名，如 *.lan" />
+                    <div class="subtle">rule 模式下每条是一条规则，动作只能是 fake-ip 或 real-ip，自上而下匹配。</div>
+                  </el-form-item>
+                </template>
+                <el-form-item v-for="field in nameserverFields" :key="field.key" :label="field.label">
+                  <el-select v-model="form.dns[field.key]" multiple filterable allow-create default-first-option :reserve-keyword="false" :aria-label="field.label" style="width: 100%" placeholder="回车添加，如 https://223.5.5.5/dns-query 或 system" />
+                  <div class="subtle">{{ field.hint }}</div>
                 </el-form-item>
-                <el-form-item label="Fake-IP 过滤">
-                  <el-select v-model="form.dns.fake_ip_filter" multiple filterable allow-create default-first-option :reserve-keyword="false" aria-label="Fake-IP 过滤" style="width: 100%" placeholder="rule 模式写规则，如 MATCH,fake-ip；其它模式写域名，如 *.lan" />
-                  <div class="subtle">rule 模式下每条是一条规则，动作只能是 fake-ip 或 real-ip，自上而下匹配。</div>
+                <el-form-item label="其它开关">
+                  <el-checkbox v-model="form.dns.ipv6">解析 IPv6（ipv6）</el-checkbox>
+                  <el-checkbox v-model="form.dns.respect_rules">DNS 连接遵守路由规则（respect-rules）</el-checkbox>
+                  <el-checkbox v-model="form.dns.direct_nameserver_follow_policy">直连解析遵守 nameserver-policy</el-checkbox>
                 </el-form-item>
               </template>
-              <el-form-item v-for="field in nameserverFields" :key="field.key" :label="field.label">
-                <el-select v-model="form.dns[field.key]" multiple filterable allow-create default-first-option :reserve-keyword="false" :aria-label="field.label" style="width: 100%" placeholder="回车添加，如 https://223.5.5.5/dns-query 或 system" />
-                <div class="subtle">{{ field.hint }}</div>
-              </el-form-item>
-              <el-form-item label="其它开关">
-                <el-checkbox v-model="form.dns.ipv6">解析 IPv6（ipv6）</el-checkbox>
-                <el-checkbox v-model="form.dns.respect_rules">DNS 连接遵守路由规则（respect-rules）</el-checkbox>
-                <el-checkbox v-model="form.dns.direct_nameserver_follow_policy">直连解析遵守 nameserver-policy</el-checkbox>
-              </el-form-item>
             </template>
-          </template>
-          <template v-else>
-            <el-input v-model="form.raw_dns" type="textarea" :rows="12" aria-label="高级 DNS 文本" placeholder="enable: true&#10;enhanced-mode: fake-ip&#10;nameserver:&#10;  - https://223.5.5.5/dns-query" />
-            <div class="subtle" style="margin-top: 6px">按 Mihomo 的 dns 段格式书写，内容会原样写入订阅；留空则订阅不含 dns 段。</div>
-          </template>
-        </section>
-      </el-form>
-      <template #footer>
-        <el-button @click="dialogVisible = false">取消</el-button>
-        <el-button type="primary" :loading="saving" :disabled="!formValid" @click="save">保存</el-button>
-      </template>
-    </el-dialog>
+            <template v-else>
+              <el-input v-model="form.raw_dns" type="textarea" :rows="12" aria-label="高级 DNS 文本" placeholder="enable: true&#10;enhanced-mode: fake-ip&#10;nameserver:&#10;  - https://223.5.5.5/dns-query" />
+              <div class="subtle" style="margin-top: 6px">按 Mihomo 的 dns 段格式书写，内容会原样写入订阅；留空则订阅不含 dns 段。</div>
+            </template>
+          </section>
+        </el-form>
+      </div>
+    </main>
   </div>
 </template>
 
 <style scoped>
 .group-tag { margin: 3px 6px 3px 0; }
 .option-meta { float: right; margin-left: 18px; color: var(--sb-muted); font-size: 12px; }
-.rules-section { margin-top: 8px; padding-top: 20px; border-top: 1px solid var(--el-border-color-lighter); }
+
+/* 整页编辑：左侧导航固定，右侧只渲染当前一节并独立滚动，
+   这样无论规则有多少条，导航和顶部的保存按钮都不会被推走。 */
+.form-page { flex-direction: row; gap: 20px; align-items: stretch; overflow: hidden; }
+.form-nav { flex: 0 0 200px; display: flex; flex-direction: column; gap: 6px; }
+.form-nav__item {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 11px 14px;
+  border: 1px solid transparent;
+  border-radius: var(--sb-radius);
+  background: transparent;
+  color: var(--sb-muted);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: background .15s ease, color .15s ease, border-color .15s ease;
+}
+.form-nav__item:hover { background: var(--sb-panel-solid); color: var(--el-text-color-primary); }
+.form-nav__item.active { border-color: var(--sb-line); background: var(--sb-panel-solid); color: #fff; }
+.form-nav__label { display: flex; align-items: center; gap: 8px; font-size: 14px; font-weight: 550; }
+.form-nav__hint { font-size: 12px; line-height: 1.4; opacity: .75; }
+.form-body { flex: 1 1 auto; min-width: 0; overflow: auto; }
+.form-body__inner { max-width: 1120px; }
+
 .section-heading { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 14px; }
 .section-heading h3 { margin: 0 0 3px; font-size: 16px; }
 .section-heading span { color: var(--sb-muted); font-size: 12px; }
@@ -573,6 +638,14 @@ onMounted(() => { load(); loadAccess() })
 .check-cell { text-align: center; }
 .rule-actions { white-space: nowrap; }
 .add-rule { margin-top: 12px; }
+/* 窄屏放不下侧栏，分节导航改为顶部一行，提示文字让位。 */
+@media (max-width: 900px) {
+  .form-page { flex-direction: column; gap: 14px; overflow: auto; }
+  .form-nav { flex: none; flex-direction: row; overflow-x: auto; }
+  .form-nav__item { flex: 1 0 auto; padding: 9px 14px; }
+  .form-nav__hint { display: none; }
+  .form-body { overflow: visible; }
+}
 @media (max-width: 640px) { .section-heading { align-items: flex-start; flex-direction: column; } }
 @media (max-width: 720px) {
   .rule-table, .rule-table tbody, .rule-table tr, .rule-table td { display: block; width: 100%; }
