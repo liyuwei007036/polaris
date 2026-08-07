@@ -476,6 +476,10 @@ sudo ls -la /var/lib/polaris-agent
 | 数据库文件 | `sb-control.db` | `polaris.db` |
 | 环境变量前缀 | `SB_CONTROL_` | `POLARIS_` |
 | Release 包名 | `sb-control_<ver>_linux_<arch>.tar.gz` | `polaris_<ver>_linux_<arch>.tar.gz` |
+| 默认 agent 端口 | `8443` | `19994` |
+| 默认 Web 端口 | `8080` | `19670` |
+
+默认端口只影响**新装**：全新安装会按新模板监听 19670 / 19994，因此主机防火墙放行规则、反向代理的 `proxy_pass` 目标、以及所有 agent 的 `master_address` 都要同步改。如果沿用旧的 `master.yaml`，里面写的仍是 8443 / 8080，程序会照旧使用——配置文件里的值始终优先于默认值。
 
 从旧版本迁移的步骤：按第 10 节卸载旧的 `sb-control`，按第 2 或第 3 节全新安装 Polaris，然后重新注册并批准全部节点。Master 的历史数据（数据库、主密钥、Noise 私钥）如需保留，可在卸载前把整个 `/var/lib/sb-control-master` 复制到 `/var/lib/polaris-master`，把 `sb-control.db` 改名为 `polaris.db`，再将整个目录属主改为 `polaris`；但 agent 身份必须重新注册，节点侧的旧数据目录不要复用。
 

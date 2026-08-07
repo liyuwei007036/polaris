@@ -24,9 +24,9 @@ for argument in "$@"; do
 done
 [ -n "$TARGET" ] || { echo "usage: scripts_remote_verify.sh [--from-scratch] user@host" >&2; exit 2; }
 
-REMOTE_DIR="${SB_REMOTE_DIR:-/opt/polaris-verify}"
-WEB_PORT="${SB_WEB_PORT:-18080}"
-AGENT_PORT="${SB_AGENT_PORT:-18443}"
+REMOTE_DIR="${POLARIS_REMOTE_DIR:-/opt/polaris-verify}"
+WEB_PORT="${POLARIS_WEB_PORT:-18080}"
+AGENT_PORT="${POLARIS_AGENT_PORT:-18443}"
 BINARY="artifacts/polaris-linux-amd64"
 
 echo "==> building web assets and the Linux binary"
