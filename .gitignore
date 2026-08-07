@@ -6,6 +6,7 @@ data/
 *.key
 .idea
 webui/node_modules/
+internal/control/web/dist/
 artifacts/
 webui/playwright-report/
 webui/test-results/

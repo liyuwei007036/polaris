@@ -2200,6 +2200,15 @@ CREATE TABLE IF NOT EXISTS listener_certificates (
   listener_id TEXT PRIMARY KEY REFERENCES listeners(id), domain TEXT NOT NULL, certificate BLOB NOT NULL,
   created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL
 );
+-- Operator-supplied origin certificates, matched to a listener by its
+-- connection domain so Cloudflare can pull from VLESS WebSocket and gRPC
+-- origins with full (strict) TLS.
+CREATE TABLE IF NOT EXISTS origin_certificates (
+  id TEXT PRIMARY KEY, domain TEXT NOT NULL UNIQUE, material BLOB NOT NULL,
+  subject TEXT NOT NULL DEFAULT '', issuer TEXT NOT NULL DEFAULT '', dns_names TEXT NOT NULL DEFAULT '[]',
+  fingerprint TEXT NOT NULL DEFAULT '', not_before INTEGER NOT NULL DEFAULT 0, not_after INTEGER NOT NULL DEFAULT 0,
+  created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL
+);
 CREATE TABLE IF NOT EXISTS subscriptions (
   id TEXT PRIMARY KEY, kind TEXT NOT NULL, node_id TEXT REFERENCES nodes(id), name TEXT NOT NULL,
   url_encrypted BLOB, format TEXT NOT NULL, endpoint_ids TEXT NOT NULL, token_hash BLOB UNIQUE,
@@ -2370,6 +2379,12 @@ CREATE INDEX IF NOT EXISTS idx_cloudflare_records_binding ON cloudflare_records(
 		return err
 	}
 	if err := s.addMihomoClientConfigV3Column(ctx, "enabled INTEGER NOT NULL DEFAULT 1"); err != nil {
+		return err
+	}
+	if err := s.addMihomoClientConfigV3Column(ctx, "dns_json TEXT NOT NULL DEFAULT ''"); err != nil {
+		return err
+	}
+	if err := s.adoptHardCodedMihomoClientDNS(ctx); err != nil {
 		return err
 	}
 	if err := s.migrateEmbeddedMihomoClientGroups(ctx); err != nil {

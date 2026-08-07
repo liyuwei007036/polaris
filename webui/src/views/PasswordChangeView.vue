@@ -1,8 +1,8 @@
 <script setup>
 import { reactive, ref } from 'vue'
 import { ElMessage } from 'element-plus'
-import { Key } from '@element-plus/icons-vue'
 import { api, post } from '../api'
+import BrandMark from '../components/BrandMark.vue'
 
 defineProps({ username: { type: String, required: true } })
 const emit = defineEmits(['changed'])
@@ -34,10 +34,9 @@ async function save() {
 <template>
   <div class="password-page">
     <section class="password-card">
-      <div class="password-card__icon"><Key /></div>
+      <div class="password-card__icon"><BrandMark :size="24" /></div>
       <h1>首次登录需要修改密码</h1>
       <p>当前账户：<strong>{{ username }}</strong></p>
-      <el-alert title="修改完成前，不能进入管理平台或调用其他管理功能。" type="warning" show-icon :closable="false" />
       <el-form label-position="top" @submit.prevent="save">
         <el-form-item label="当前密码">
           <el-input v-model="form.current_password" type="password" show-password autocomplete="current-password" placeholder="请输入当前密码" />
@@ -55,11 +54,28 @@ async function save() {
 </template>
 
 <style scoped>
-.password-page { min-height: 100%; display: grid; place-items: center; padding: 24px; background: #f4f6f9; }
-.password-card { width: min(460px, 100%); padding: 34px; background: #fff; border: 1px solid var(--sb-border); border-radius: 12px; box-shadow: 0 18px 48px rgba(15,23,42,.08); }
-.password-card__icon { width: 46px; height: 46px; display: grid; place-items: center; margin-bottom: 18px; color: #fff; background: var(--sb-accent); border-radius: 10px; font-size: 22px; }
-.password-card h1 { margin: 0 0 8px; color: var(--sb-text); font-size: 24px; }
-.password-card p { margin: 0 0 20px; color: var(--sb-muted); }
-.password-card .el-alert { margin-bottom: 22px; }
+.password-page { min-height: 100%; display: grid; place-items: center; padding: 24px; }
+.password-card {
+  width: min(460px, 100%);
+  padding: 34px;
+  background: var(--sb-panel);
+  border: 1px solid var(--sb-line);
+  border-radius: var(--sb-radius);
+  box-shadow: var(--sb-shadow);
+}
+.password-card__icon {
+  width: 46px;
+  height: 46px;
+  display: grid;
+  place-items: center;
+  margin-bottom: 18px;
+  color: #04121f;
+  background: linear-gradient(135deg, var(--sb-accent), var(--sb-accent-2));
+  border-radius: 12px;
+  font-size: 22px;
+  box-shadow: 0 0 24px -6px rgba(56, 189, 248, .85);
+}
+.password-card h1 { margin: 0 0 8px; color: #fff; font-size: 24px; font-weight: 620; letter-spacing: .4px; }
+.password-card p { margin: 0 0 22px; color: var(--sb-muted); }
 .password-card .el-button { width: 100%; }
 </style>

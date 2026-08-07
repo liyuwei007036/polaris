@@ -77,7 +77,7 @@ func TestLegacyMihomoConfigMigratesOnceWithoutResurrection(t *testing.T) {
 		t.Fatalf("migrated rules = %#v", configs[0])
 	}
 	_, yaml, err := store.GenerateStoredMihomoYAML(t.Context(), configs[0].ID)
-	if err != nil || !strings.Contains(yaml, `"name":"迁移后的别名"`) {
+	if err != nil || !strings.Contains(yaml, "name: 迁移后的别名") {
 		t.Fatalf("legacy alias was not migrated: %v\n%s", err, yaml)
 	}
 	if err := store.DeleteMihomoClientConfig(t.Context(), configs[0].ID); err != nil {

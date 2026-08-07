@@ -325,6 +325,14 @@ func TestControlPlaneProcessJourneyWithRealAgent(t *testing.T) {
 	api.mustJSON(t, http.MethodPost, "/api/v1/mihomo/client-configs", map[string]any{
 		"name": "E2E 客户端", "proxy_group_ids": []string{proxyGroup.ID},
 		"rule_mode": "table", "rule_provider_ids": []string{ruleProvider.ID},
+		"dns_mode": "form",
+		"dns": map[string]any{
+			"enable": true, "enhanced_mode": "fake-ip", "fake_ip_range": "198.18.0.1/16",
+			"fake_ip_filter_mode": "rule", "fake_ip_filter": []string{"MATCH,fake-ip"},
+			"default_nameserver": []string{"223.5.5.5"},
+			"nameserver":         []string{"https://223.5.5.5/dns-query"},
+			"direct_nameserver":  []string{"https://223.5.5.5/dns-query"},
+		},
 		"rules": []map[string]any{
 			{"type": "RULE-SET", "value": "远程代理规则", "action": "全部节点"},
 			{"type": "GEOSITE", "value": "CN", "action": "DIRECT"},
@@ -343,7 +351,7 @@ func TestControlPlaneProcessJourneyWithRealAgent(t *testing.T) {
 	if disposition := responseHeader.Get("Content-Disposition"); !strings.Contains(disposition, `filename*=UTF-8''E2E%20%E5%AE%A2%E6%88%B7%E7%AB%AF.yaml`) {
 		t.Fatalf("Mihomo subscription filename is not UTF-8 encoded: %q", disposition)
 	}
-	for _, expected := range []string{"store-selected: true", "tun:", "strict-route: true", "proxies:", `"server":"ws.e2e.test"`, `"server":"hy2.e2e.test"`, `"sni":"hy2.e2e.test"`, "proxy-groups:", `"name":"全部节点"`, "rule-providers:", `"url":"https://rules.example.test/proxy.mrs"`, "rules:", "RULE-SET,远程代理规则,全部节点", "GEOSITE,CN,DIRECT", "enhanced-mode: fake-ip", "nameserver:\n    - rcode://success", "direct-nameserver:", "https://223.5.5.5/dns-query"} {
+	for _, expected := range []string{"store-selected: true", "tun:", "strict-route: true", "proxies:", "server: ws.e2e.test", "server: hy2.e2e.test", "sni: hy2.e2e.test", "proxy-groups:", "name: 全部节点", "rule-providers:", "url: https://rules.example.test/proxy.mrs", "rules:", "RULE-SET,远程代理规则,全部节点", "GEOSITE,CN,DIRECT", "enhanced-mode: fake-ip", "direct-nameserver:", "https://223.5.5.5/dns-query"} {
 		if !strings.Contains(string(yaml), expected) {
 			t.Fatalf("Mihomo subscription is missing %q:\n%s", expected, yaml)
 		}

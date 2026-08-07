@@ -109,19 +109,17 @@ onMounted(load)
     <main class="page-content page-content--tight">
       <div class="search-toolbar">
         <el-input v-model="keyword" clearable :prefix-icon="Search" placeholder="搜索名称、地址或类型" style="width: 280px" />
-        <span class="toolbar__spacer" />
-        <span class="subtle">在“客户端配置”里可以选择这里维护的供应商</span>
       </div>
       <div class="table-panel">
         <PagedTable :rows="filtered" :loading="loading" empty-text="还没有规则供应商">
-          <el-table-column label="名称" prop="name" min-width="170" />
-          <el-table-column label="行为" width="120"><template #default="{ row }">{{ behaviorNames[row.behavior] || row.behavior }}</template></el-table-column>
-          <el-table-column label="格式" width="100"><template #default="{ row }">{{ (row.format || '').toUpperCase() }}</template></el-table-column>
-          <el-table-column label="规则地址" min-width="280"><template #default="{ row }"><span class="mono">{{ row.url }}</span></template></el-table-column>
-          <el-table-column label="保存路径" min-width="190"><template #default="{ row }"><span class="mono">{{ row.path }}</span></template></el-table-column>
-          <el-table-column label="更新间隔" width="120"><template #default="{ row }">{{ row.interval }} 秒</template></el-table-column>
-          <el-table-column label="下载代理" width="140" prop="proxy" />
-          <el-table-column label="操作" width="150" fixed="right" class-name="action-column">
+          <el-table-column label="名称" prop="name" min-width="160" show-overflow-tooltip />
+          <el-table-column label="行为" width="100"><template #default="{ row }">{{ behaviorNames[row.behavior] || row.behavior }}</template></el-table-column>
+          <el-table-column label="格式" width="88"><template #default="{ row }">{{ (row.format || '').toUpperCase() }}</template></el-table-column>
+          <el-table-column label="规则地址" min-width="240" show-overflow-tooltip><template #default="{ row }"><span class="mono">{{ row.url }}</span></template></el-table-column>
+          <el-table-column label="保存路径" min-width="170" show-overflow-tooltip><template #default="{ row }"><span class="mono">{{ row.path }}</span></template></el-table-column>
+          <el-table-column label="更新间隔" width="108"><template #default="{ row }">{{ row.interval }} 秒</template></el-table-column>
+          <el-table-column label="下载代理" width="120" prop="proxy" show-overflow-tooltip />
+          <el-table-column label="操作" width="146" fixed="right" class-name="action-column">
             <template #default="{ row }">
               <el-button v-if="canWrite" link :icon="Edit" @click="openEdit(row)">编辑</el-button>
               <el-button v-if="isAdmin" link type="danger" :icon="Delete" @click="remove(row)">删除</el-button>
@@ -162,7 +160,7 @@ onMounted(load)
             </el-form-item>
           </el-col>
         </el-row>
-        <el-alert title="下载代理必须是 DIRECT，或引用该供应商的客户端配置中存在的代理分组、节点名称。" type="info" show-icon :closable="false" />
+        <el-alert title="下载代理需为 DIRECT，或客户端配置中已存在的代理分组 / 节点名称。" type="info" show-icon :closable="false" />
       </el-form>
       <template #footer>
         <el-button @click="dialogOpen = false">取消</el-button>

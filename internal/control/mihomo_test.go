@@ -90,6 +90,15 @@ func TestStoredMihomoConfigReferencesNestedGroupsRulesAndAliases(t *testing.T) {
 		ProxyGroupIDs:   []string{allGroup.ID},
 		RuleMode:        "table",
 		RuleProviderIDs: []string{provider.ID},
+		DNSMode:         "form",
+		DNS: control.MihomoClientDNS{
+			Enable: true, EnhancedMode: "fake-ip", FakeIPRange: "198.18.0.1/16",
+			FakeIPFilterMode: "rule", FakeIPFilter: []string{"MATCH,fake-ip"},
+			DefaultNameserver:     []string{"https://223.5.5.5/dns-query"},
+			Nameserver:            []string{"https://223.5.5.5/dns-query"},
+			ProxyServerNameserver: []string{"https://223.5.5.5/dns-query"},
+			DirectNameserver:      []string{"https://223.5.5.5/dns-query"},
+		},
 		Rules: []control.MihomoRule{
 			{Type: "RULE-SET", Value: "远程代理规则", Action: "自动选择"},
 			{Type: "DOMAIN-SUFFIX", Value: "youtube.com", Action: "洛杉矶 01"},
@@ -111,9 +120,16 @@ func TestStoredMihomoConfigReferencesNestedGroupsRulesAndAliases(t *testing.T) {
 	if config.SubscriptionPath == "" {
 		t.Fatal("new Mihomo client config did not receive a subscription path")
 	}
-	for _, expected := range []string{`"name":"美国节点"`, `"type":"url-test"`, `"name":"日本节点"`, `"name":"自动选择"`, `"proxies":["美国节点","日本节点"]`, `"name":"洛杉矶 01"`, `"name":"东京 01"`, `"server":"us-listener.example.com"`, `"server":"jp-listener.example.com"`, "geox-url:", "testingcf.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@release/GeoLite2-ASN.mmdb", "rule-providers:", `"远程代理规则": {"behavior":"domain","format":"mrs","interval":86400,"path":"./ruleset/proxy.mrs","proxy":"自动选择","type":"http","url":"https://rules.example.com/proxy.mrs"}`, "RULE-SET,远程代理规则,自动选择", "DOMAIN-SUFFIX,youtube.com,洛杉矶 01", "DOMAIN-SUFFIX,example.com,自动选择", "IP-ASN,13335,自动选择", "MATCH,DIRECT", "fake-ip-range: 198.18.0.1/16", "fake-ip-filter-mode: rule", "- MATCH,fake-ip", "respect-rules: false", "rcode://success", "direct-nameserver-follow-policy: false", "https://223.5.5.5/dns-query"} {
+	for _, expected := range []string{"name: 美国节点", "type: url-test", "name: 日本节点", "name: 自动选择", "name: 洛杉矶 01", "name: 东京 01", "server: us-listener.example.com", "server: jp-listener.example.com", "geox-url:", "testingcf.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@release/GeoLite2-ASN.mmdb", "rule-providers:", "RULE-SET,远程代理规则,自动选择", "DOMAIN-SUFFIX,youtube.com,洛杉矶 01", "DOMAIN-SUFFIX,example.com,自动选择", "IP-ASN,13335,自动选择", "MATCH,DIRECT", "fake-ip-range: 198.18.0.1/16", "fake-ip-filter-mode: rule", "- MATCH,fake-ip", "respect-rules: false", "direct-nameserver-follow-policy: false", "https://223.5.5.5/dns-query"} {
 		if !strings.Contains(yaml, expected) {
 			t.Fatalf("stored YAML does not contain %q:\n%s", expected, yaml)
+		}
+	}
+	// A Mihomo subscription has to be readable YAML, not YAML with JSON
+	// objects pasted into it.
+	for _, forbidden := range []string{`{"`, `":"`, `":[`} {
+		if strings.Contains(yaml, forbidden) {
+			t.Fatalf("stored YAML embeds JSON %q:\n%s", forbidden, yaml)
 		}
 	}
 	var generated struct {
@@ -169,12 +185,14 @@ func TestStoredMihomoConfigReferencesNestedGroupsRulesAndAliases(t *testing.T) {
 	if generated.DNS.IPv6 || generated.DNS.EnhancedMode != "fake-ip" || generated.DNS.FakeIPRange != "198.18.0.1/16" || generated.DNS.FakeIPFilterMode != "rule" || len(generated.DNS.FakeIPFilter) != 1 || generated.DNS.FakeIPFilter[0] != "MATCH,fake-ip" || generated.DNS.RespectRules {
 		t.Fatalf("generated Fake-IP DNS configuration = %#v", generated.DNS)
 	}
-	if len(generated.DNS.Nameserver) != 1 || generated.DNS.Nameserver[0] != "rcode://success" || generated.DNS.DirectNameserverFollowPolicy {
+	if generated.DNS.DirectNameserverFollowPolicy {
 		t.Fatalf("generated DNS routing configuration = %#v", generated.DNS)
 	}
-	for _, resolver := range append(append(generated.DNS.DefaultNameserver, generated.DNS.DirectNameserver...), generated.DNS.ProxyServerNameserver...) {
+	// A resolver that answers without any record silently breaks every rule
+	// that has to match on the destination IP.
+	for _, resolver := range append(append(append(generated.DNS.DefaultNameserver, generated.DNS.Nameserver...), generated.DNS.DirectNameserver...), generated.DNS.ProxyServerNameserver...) {
 		if !strings.HasPrefix(resolver, "https://") || !strings.Contains(resolver, "/dns-query") {
-			t.Fatalf("non-DoH resolver %q in generated YAML", resolver)
+			t.Fatalf("resolver %q cannot answer a real lookup", resolver)
 		}
 	}
 
@@ -206,7 +224,7 @@ func TestStoredMihomoConfigReferencesNestedGroupsRulesAndAliases(t *testing.T) {
 		t.Fatal(err)
 	}
 	_, yaml, err = store.GenerateStoredMihomoYAML(t.Context(), config.ID)
-	if err != nil || !strings.Contains(yaml, "DOMAIN-SUFFIX,example.org,自动选择 2") || !strings.Contains(yaml, `"proxy":"自动选择 2"`) {
+	if err != nil || !strings.Contains(yaml, "DOMAIN-SUFFIX,example.org,自动选择 2") || !strings.Contains(yaml, "proxy: 自动选择 2") {
 		t.Fatalf("renamed group was not synchronized to client rules: %v\n%s", err, yaml)
 	}
 	response := request(t, http.MethodGet, httpServer.URL+config.SubscriptionPath, nil, "", "")
@@ -221,7 +239,7 @@ func TestStoredMihomoConfigReferencesNestedGroupsRulesAndAliases(t *testing.T) {
 	}
 	body, err := io.ReadAll(response.Body)
 	response.Body.Close()
-	if err != nil || !strings.Contains(string(body), `"name":"洛杉矶 02"`) {
+	if err != nil || !strings.Contains(string(body), "name: 洛杉矶 02") {
 		t.Fatalf("subscription content does not contain alias: %v\n%s", err, body)
 	}
 	response = request(t, http.MethodGet, httpServer.URL+"/api/v1/mihomo/subscription-access?config_id="+config.ID+"&ip=127&location="+url.QueryEscape("本机")+"&user_agent=Go-http-client", nil, session, csrfToken)

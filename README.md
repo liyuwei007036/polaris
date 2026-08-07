@@ -19,7 +19,7 @@
 - sb-control 自身的自动更新：master 打开控制台时检查 GitHub Release，发现新版本后在控制台提示；管理员确认后 master 校验摘要并原地替换重启，各节点 agent 通过签名任务下发升级并自动重连。
 - 同一服务器出现兼容的 TLS TCP 端口重复时，自动生成并发布基于实际 SNI 的端口分配配置。
 - nftables 防火墙和 Fail2Ban 配置发布。
-- Cloudflare DNS 期望状态、发布确认、远端校验和漂移检测。
+- Cloudflare DNS 期望状态、发布确认、远端校验和漂移检测；多域名 Origin CA 源证书，供 VLESS WebSocket 与 gRPC 以 `Full (strict)` 回源。
 - 主机累计流量、实时连接、Fail2Ban 状态、任务结果和审计日志。
 
 ## 架构
@@ -717,7 +717,7 @@ sudo systemctl status sb-control-agent.service
 
 VLESS 仅允许 Reality、WebSocket 或 gRPC 三种模式；Hysteria2 使用自身的 QUIC 传输。其他入站协议及传输组合均会被后端拒绝。
 
-WebSocket 和 gRPC 新建时默认启用自动生成的 TLS 源站证书，可通过 Cloudflare `Full` 模式回源。Cloudflare `Full (strict)` 不信任自动生成的自签名证书，需要另行部署受信任的 Origin CA 或公开证书。Reality 必须使用灰云直连；它的同端口路由键是客户端实际发送的 Reality 目标网站 SNI，而不是连接域名。
+WebSocket 和 gRPC 新建时默认启用自动生成的 TLS 源站证书，可通过 Cloudflare `Full` 模式回源。若在“域名解析 → 源证书”中配置了覆盖该接入服务连接域名的 Origin CA 证书，则改用该证书回源，Cloudflare 可使用 `Full (strict)`。Reality 必须使用灰云直连；它的同端口路由键是客户端实际发送的 Reality 目标网站 SNI，而不是连接域名。
 
 同一节点可以让 Reality、WebSocket 和 gRPC 共用公网 TCP/443：Nginx stream 读取 TLS ClientHello 的 SNI 后转发到各自的 loopback 内部端口。Hysteria2 使用 UDP/443，因此可同时占用相同的数值端口。三个 TCP 接入的实际 SNI 必须互不相同。
 
@@ -749,6 +749,13 @@ Cloudflare 集成支持 `A`、`AAAA`、`CNAME` 和 `TXT` 记录。master 保存�
 - 橙云记录必须绑定 Listener，以便校验协议、传输层、端口和 TLS 兼容性。
 - 橙云支持启用 TLS 的 VLESS WebSocket，以及使用 TLS/443 的 VLESS gRPC；Cloudflare 侧还需启用对应的 gRPC 功能。
 - Reality 和 UDP Listener 只能使用灰云 DNS。
+
+“源证书”页签保存多条 Cloudflare Origin CA 证书，用于 VLESS WebSocket 和 gRPC 的回源：
+
+- 域名填写纯文本，支持 `*.example.com`（通配一级子域）或完整域名；证书与私钥按 PEM 原文粘贴。
+- 保存时校验证书与私钥配对，并要求证书的 SAN 覆盖所填域名。
+- 编译配置时按接入服务的“连接域名”匹配：完整域名优先于通配符，未命中的接入服务继续使用自动生成的自签名证书。
+- 新增、修改或删除源证书后，受影响节点的 sing-box 配置自动重新编译并下发，无需手动发布；修改域名时新旧两个匹配范围内的节点都会收到新配置。只有 Reality、Hysteria2 或域名不匹配的节点不会被打扰。
 
 ## 配置发布与文件边界
 
@@ -782,8 +789,8 @@ include /etc/nginx/stream-conf.d/*.conf;
 - 节点私钥需要更换时，应吊销旧节点并重新注册，不支持原地轮换。
 - 管理员密码使用 Argon2id 保存；初始密码必须在首次登录时更换。TOTP 两步验证由每个用户自行扫码启用，启用后登录必须完成动态验证码校验。
 - 写请求要求会话 Cookie 和 CSRF Token；Cookie 使用 `HttpOnly`、`SameSite=Strict`，生产默认启用 `Secure`。
-- Endpoint 凭据、TLS 私钥、Reality 私钥和 Cloudflare Token 使用 master key 加密后写入 SQLite。
-- API 列表不会回传 Endpoint 密码、TLS 私钥或完整 Cloudflare Token。
+- Endpoint 凭据、TLS 私钥、Reality 私钥、源证书私钥和 Cloudflare Token 使用 master key 加密后写入 SQLite。
+- API 列表不会回传 Endpoint 密码、TLS 私钥、源证书私钥或完整 Cloudflare Token。
 - 任务在 master 中先持久化；离线 agent 重连后会收到未完成任务。
 - agent 按任务 ID、类型和内容哈希保存完成结果，重复下发不会重复执行副作用。
 - sing-box 安装清单由 master 的 Ed25519 密钥签名，agent 还会校验 HTTPS URL、SHA-256 和 CPU 架构。

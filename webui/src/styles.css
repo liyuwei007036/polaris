@@ -1,148 +1,418 @@
+/* ── 设计令牌 ─────────────────────────────────────────────
+   深色控制台主题：以深空蓝为底，青蓝色为强调色，所有页面共用
+   同一套颜色、圆角、间距与描边，避免各页面各自定义样式。 */
 :root {
+  color-scheme: dark;
   font-family: Inter, "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
-  color: #182230;
-  background: #f6f7f9;
   font-synthesis: none;
   text-rendering: optimizeLegibility;
-  --sb-sidebar: #101828;
-  --sb-sidebar-soft: #1f2937;
-  --sb-accent: #2563eb;
-  --sb-border: #e4e7ec;
-  --sb-muted: #667085;
-  --sb-text: #344054;
-  --el-color-primary: #175cd3;
-  --el-border-radius-base: 6px;
-  --el-border-radius-small: 5px;
+
+  --sb-bg: #060a13;
+  --sb-surface: #0e1524;
+  --sb-surface-2: #141d30;
+  --sb-surface-3: #1a2438;
+  --sb-sidebar: #080d18;
+  --sb-line: rgba(148, 163, 184, .14);
+  --sb-line-strong: rgba(148, 163, 184, .26);
+  --sb-border: var(--sb-line);
+  --sb-text: #e8eef8;
+  --sb-text-2: #c2cde0;
+  --sb-muted: #8496b0;
+  --sb-accent: #38bdf8;
+  --sb-accent-2: #6366f1;
+  --sb-accent-soft: rgba(56, 189, 248, .12);
+  --sb-success: #34d399;
+  --sb-warning: #fbbf24;
+  --sb-danger: #fb7185;
+  --sb-radius: 12px;
+  --sb-radius-sm: 8px;
+  --sb-shadow: 0 22px 48px -32px rgba(0, 0, 0, .95);
+  --sb-panel: linear-gradient(180deg, rgba(23, 33, 54, .82), rgba(12, 19, 33, .82));
+  /* 表格里的固定列必须是不透明的，否则滚动时下层单元格会透出来。 */
+  --sb-panel-solid: #101827;
+}
+
+/* Element Plus 深色变量对齐到上面的令牌，组件才不会出现
+   两套灰阶混在一起的情况。 */
+html.dark {
+  --el-color-primary: #38bdf8;
+  --el-color-primary-light-3: #0ea5e9;
+  --el-color-primary-light-5: #0284c7;
+  --el-color-primary-light-7: rgba(56, 189, 248, .34);
+  --el-color-primary-light-8: rgba(56, 189, 248, .22);
+  --el-color-primary-light-9: rgba(56, 189, 248, .12);
+  --el-color-primary-dark-2: #7dd3fc;
+  --el-color-success: var(--sb-success);
+  --el-color-warning: var(--sb-warning);
+  --el-color-danger: var(--sb-danger);
+  --el-color-error: var(--sb-danger);
+  --el-color-info: var(--sb-muted);
+  --el-bg-color: var(--sb-surface);
+  --el-bg-color-overlay: var(--sb-surface-2);
+  --el-bg-color-page: var(--sb-bg);
+  --el-text-color-primary: var(--sb-text);
+  --el-text-color-regular: var(--sb-text-2);
+  --el-text-color-secondary: var(--sb-muted);
+  --el-text-color-placeholder: #64748b;
+  --el-text-color-disabled: #55637a;
+  --el-border-color: var(--sb-line-strong);
+  --el-border-color-light: var(--sb-line);
+  --el-border-color-lighter: var(--sb-line);
+  --el-border-color-extra-light: var(--sb-line);
+  --el-border-color-dark: var(--sb-line-strong);
+  --el-border-color-hover: rgba(56, 189, 248, .5);
+  --el-fill-color: rgba(148, 163, 184, .10);
+  --el-fill-color-light: rgba(148, 163, 184, .07);
+  --el-fill-color-lighter: rgba(148, 163, 184, .05);
+  --el-fill-color-extra-light: rgba(148, 163, 184, .04);
+  --el-fill-color-blank: transparent;
+  --el-mask-color: rgba(4, 8, 16, .72);
+  --el-box-shadow-light: var(--sb-shadow);
+  --el-box-shadow: var(--sb-shadow);
+  --el-border-radius-base: 8px;
+  --el-border-radius-small: 6px;
   --el-font-size-base: 14px;
+  --el-table-bg-color: transparent;
+  --el-table-tr-bg-color: transparent;
+  --el-table-header-bg-color: rgba(148, 163, 184, .06);
+  --el-table-header-text-color: var(--sb-muted);
+  --el-table-text-color: var(--sb-text-2);
+  --el-table-border-color: var(--sb-line);
+  --el-table-row-hover-bg-color: rgba(56, 189, 248, .06);
 }
 
 * { box-sizing: border-box; }
 html, body, #app { width: 100%; height: 100%; margin: 0; }
-body { min-width: 0; overflow: hidden; }
+body {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--sb-text);
+  background:
+    radial-gradient(1100px 620px at 8% -12%, rgba(56, 189, 248, .10), transparent 62%),
+    radial-gradient(900px 520px at 102% 4%, rgba(99, 102, 241, .12), transparent 58%),
+    var(--sb-bg);
+}
 button, input, textarea, select { font: inherit; }
+::selection { background: rgba(56, 189, 248, .28); }
 
-/* Both halves of the page transition must be defined. With only the enter
-   half, `mode="out-in"` had no leave animation to wait for and the outgoing
-   page could be left stuck in page-leave-active forever, so switching pages
-   silently stopped working. */
+/* ── 页面骨架 ───────────────────────────────────────────── */
+/* 两半过渡都必须定义。只写进入动画时 `mode="out-in"` 会等待一个
+   永远不会到来的结束事件，页面切换会卡在上一页。 */
 .page-enter-active, .page-leave-active { transition: opacity .16s ease, transform .16s ease; }
 .page-enter-from, .page-leave-to { opacity: 0; transform: translateY(4px); }
+
 .page-shell { height: 100%; display: flex; flex-direction: column; min-width: 0; }
-.page-header { height: 64px; flex: none; display: flex; align-items: center; padding: 0 24px; background: #fff; border-bottom: 1px solid var(--sb-border); }
-.page-header__title { margin: 0; font-size: 18px; font-weight: 680; line-height: 1.25; color: #101828; letter-spacing: 0; }
+.page-header {
+  position: relative;
+  height: 64px;
+  flex: none;
+  display: flex;
+  align-items: center;
+  padding: 0 32px;
+  background: linear-gradient(180deg, rgba(20, 29, 48, .72), rgba(10, 16, 29, .55));
+  border-bottom: 1px solid var(--sb-line);
+}
+.page-header::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: -1px;
+  height: 1px;
+  background: linear-gradient(90deg, var(--sb-accent), rgba(99, 102, 241, .5) 32%, transparent 70%);
+  opacity: .65;
+}
+.page-header__title {
+  position: relative;
+  margin: 0;
+  padding-left: 14px;
+  font-size: 18px;
+  font-weight: 650;
+  line-height: 1.25;
+  color: #fff;
+  letter-spacing: .3px;
+}
+.page-header__title::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 50%;
+  width: 3px;
+  height: 17px;
+  transform: translateY(-50%);
+  border-radius: 2px;
+  background: linear-gradient(180deg, var(--sb-accent), var(--sb-accent-2));
+  box-shadow: 0 0 12px rgba(56, 189, 248, .65);
+}
 .page-header__actions { margin-left: auto; display: flex; gap: 10px; align-items: center; }
-/* Pages fit the viewport: the table panel takes the leftover height and its
-   rows scroll inside it, so the pager and the toolbars stay put. Content that
-   genuinely cannot fit still scrolls rather than being clipped. */
-.page-content { flex: 1; min-height: 0; display: flex; flex-direction: column; overflow: auto; padding: 20px 24px 24px; scrollbar-width: none; }
+/* 页面自适应视口：表格面板占据剩余高度，行在面板内部滚动，
+   分页条和工具栏保持固定位置。 */
+.page-content { flex: 1; min-height: 0; display: flex; flex-direction: column; overflow: auto; padding: 22px 32px 28px; scrollbar-width: none; }
 .page-content::-webkit-scrollbar { display: none; }
 .page-content--tight { padding-top: 16px; }
 .page-content > .table-panel { flex: 1 1 auto; min-height: 240px; display: flex; flex-direction: column; }
 .page-content > .table-panel > .paged-table { flex: 1; min-height: 0; }
-/* A secondary list on a page keeps its natural height so the main one gets
-   the leftover space. */
+/* 页面上的次要列表保持自身高度，把剩余空间让给主列表。 */
 .page-content > .table-panel--fixed { flex: 0 0 auto; min-height: 0; }
-.toolbar { display: flex; gap: 10px; align-items: center; margin-bottom: 16px; flex: none; }
-.search-toolbar { flex: none; display: flex; flex-wrap: wrap; gap: 10px; align-items: center; padding: 14px 16px; background: #fff; border: 1px solid var(--sb-border); border-bottom: 0; border-radius: 7px 7px 0 0; }
-.search-toolbar + .table-panel { border-radius: 0 0 7px 7px; }
-.toolbar__spacer { flex: 1; }
-.section-title { flex: none; margin: 24px 0 12px; font-size: 15px; font-weight: 650; color: #344054; }
-.section-title:first-child { margin-top: 0; }
-.empty-panel { padding: 60px 24px; background: #fff; border: 1px solid var(--sb-border); border-radius: 8px; }
-.table-panel { background: #fff; border: 1px solid var(--sb-border); border-radius: 7px; overflow: hidden; box-shadow: 0 1px 2px rgba(16,24,40,.025); }
-.table-panel .el-table { --el-table-border-color: var(--sb-border); }
-.table-panel .el-table th.el-table__cell { height: 42px; color: #475467; background: #f9fafb; font-size: 12px; font-weight: 650; }
-/* A full page of ten rows plus header, toolbar and pager has to fit a laptop
-   viewport, otherwise pagination would not remove the scrollbar. */
-.table-panel .el-table td.el-table__cell { height: 46px; padding: 0; }
-.table-panel .el-table__row:hover > td.el-table__cell { background: #f8faff; }
+
+/* ── 面板与表格 ─────────────────────────────────────────── */
+.table-panel {
+  background: var(--sb-panel-solid);
+  border: 1px solid var(--sb-line);
+  border-radius: var(--sb-radius);
+  overflow: hidden;
+  box-shadow: var(--sb-shadow);
+}
+.table-panel .el-table { background: transparent; }
+.table-panel .el-table .el-table-fixed-column--left,
+.table-panel .el-table .el-table-fixed-column--right { background: var(--sb-panel-solid); }
+.table-panel .el-table th.el-table__cell {
+  height: 42px;
+  color: var(--sb-muted);
+  background: rgba(148, 163, 184, .06);
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: .4px;
+  border-bottom: 1px solid var(--sb-line);
+}
+/* 一页十行加上表头、工具栏和分页条要能放进笔记本视口，
+   否则分页就失去了去掉滚动条的意义。 */
+.table-panel .el-table td.el-table__cell { height: 46px; padding: 0; border-bottom: 1px solid rgba(148, 163, 184, .08); }
+/* 首末列贴着面板边缘会很挤，统一留出和面板内边距一致的空隙。 */
+.table-panel .el-table th.el-table__cell:first-child > .cell,
+.table-panel .el-table td.el-table__cell:first-child > .cell { padding-left: 20px; }
+.table-panel .el-table th.el-table__cell:last-child > .cell,
+.table-panel .el-table td.el-table__cell:last-child > .cell { padding-right: 20px; }
+/* 固定列的底色要排在通用单元格规则之后，否则会被后者覆盖成半透明。 */
+.table-panel .el-table th.el-table__cell.el-table-fixed-column--left,
+.table-panel .el-table th.el-table__cell.el-table-fixed-column--right { background: #182030; }
+.table-panel .el-table__row:hover > td.el-table__cell.el-table-fixed-column--left,
+.table-panel .el-table__row:hover > td.el-table__cell.el-table-fixed-column--right { background: #16223a; }
+.table-panel .el-table__inner-wrapper::before { display: none; }
 .table-panel .action-column .cell { display: flex; flex-wrap: nowrap; align-items: center; overflow: visible; white-space: nowrap; }
 .table-panel .action-column .el-button + .el-button { margin-left: 8px; }
-.subtle { color: var(--sb-muted); font-size: 13px; }
-.mono { font-family: "Cascadia Code", Consolas, monospace; font-size: 12px; }
-.status-dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; margin-right: 7px; }
-.status-dot.online { background: #12b76a; box-shadow: 0 0 0 3px #d1fadf; }
-.status-dot.offline { background: #98a2b3; }
-.metric-strip { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); background: #fff; border: 1px solid var(--sb-border); border-radius: 8px; margin-bottom: 18px; }
-.metric { padding: 16px 18px; border-right: 1px solid var(--sb-border); }
-.metric:last-child { border-right: none; }
-.metric__label { color: var(--sb-muted); font-size: 12px; margin-bottom: 8px; }
-.metric__value { font-size: 23px; font-weight: 680; color: #101828; letter-spacing: 0; }
-.detail-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px 24px; }
-.detail-item dt { color: var(--sb-muted); font-size: 12px; margin-bottom: 4px; }
-.detail-item dd { margin: 0; color: #344054; }
-.form-section { margin: 8px 0 18px; }
-.form-section__head { display: flex; align-items: center; gap: 10px; margin-bottom: 14px; color: #344054; font-size: 13px; font-weight: 650; }
-.form-section__head::after { content: ""; flex: 1; height: 1px; background: var(--sb-border); }
-.protocol-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; margin-bottom: 18px; }
-.protocol-more { margin: -10px 0 12px; }
-.protocol-option { position: relative; min-height: 88px; padding: 14px; text-align: left; border: 1px solid #d8dee8; border-radius: 7px; background: #fff; cursor: pointer; transition: border-color .14s ease, background .14s ease, box-shadow .14s ease; }
-.protocol-option:hover { border-color: #9db7ea; }
-.protocol-option.active { border-color: var(--sb-accent); background: #eff6ff; box-shadow: 0 0 0 2px rgba(37, 99, 235, .08); }
-.protocol-option__name { display: flex; align-items: center; gap: 7px; font-weight: 650; color: #1d2939; }
-.protocol-option__summary { margin-top: 7px; color: var(--sb-muted); font-size: 12px; line-height: 1.45; }
-.protocol-summary { display: flex; align-items: center; gap: 12px; padding: 12px 14px; margin-bottom: 18px; border: 1px solid #cfe0ff; border-radius: 7px; background: #f5f9ff; }
-.protocol-summary__main { flex: 1; }
-.protocol-summary__main strong { display: block; margin-bottom: 3px; }
-.protocol-summary__main span { color: var(--sb-muted); font-size: 12px; }
-.inbound-name { font-weight: 650; color: #1d2939; }
-.inbound-meta { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 6px; }
-.warning-strip { padding: 12px 14px; margin-bottom: 16px; border: 1px solid #fedf89; border-radius: 7px; background: #fffaeb; color: #93370d; font-size: 13px; }
-.info-strip { padding: 12px 14px; margin-bottom: 16px; border: 1px solid #b2ddff; border-radius: 7px; background: #eff8ff; color: #175cd3; font-size: 13px; }
-.danger-text { color: #d92d20; }
-.login-page { width: 100%; height: 100%; display: grid; grid-template-columns: minmax(560px, 1.25fr) minmax(460px, .75fr); background: #fff; }
-.login-brand { position: relative; overflow: hidden; padding: 58px 64px; background: var(--sb-sidebar); color: #fff; }
-.login-brand::after { content: ""; position: absolute; width: 540px; height: 540px; right: -180px; bottom: -240px; border: 1px solid rgba(255,255,255,.12); border-radius: 50%; box-shadow: 0 0 0 80px rgba(255,255,255,.025), 0 0 0 160px rgba(255,255,255,.018); }
-.login-brand__logo { display: flex; align-items: center; gap: 12px; font-size: 19px; font-weight: 700; }
-.login-brand__mark { width: 38px; height: 38px; display: grid; place-items: center; background: var(--sb-accent); border-radius: 9px; }
-.login-brand__copy { position: absolute; left: 64px; bottom: 72px; max-width: 520px; }
-.login-brand__copy h1 { margin: 0 0 14px; font-size: 34px; line-height: 1.25; }
-.login-brand__copy p { margin: 0; color: #aeb8c7; line-height: 1.75; }
-.login-form-wrap { display: grid; place-items: center; padding: 56px; }
-.login-form { width: 360px; }
-.login-form h2 { margin: 0 0 8px; font-size: 24px; }
-.login-form__sub { color: var(--sb-muted); margin-bottom: 28px; }
-.login-form .el-button { width: 100%; margin-top: 8px; }
-.login-form__back { margin-top: 10px; text-align: center; }
+.search-toolbar {
+  flex: none;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+  /* 与表格首列文字左边缘对齐（面板边框 1px + 单元格 20px 留白）。 */
+  padding: 14px 20px;
+  background: rgba(148, 163, 184, .04);
+  border: 1px solid var(--sb-line);
+  border-bottom: 0;
+  border-radius: var(--sb-radius) var(--sb-radius) 0 0;
+}
+.search-toolbar + .table-panel { border-top-left-radius: 0; border-top-right-radius: 0; }
+/* 独立成块的筛选栏，下方不直接接表格时使用。 */
+.search-toolbar--standalone { border-bottom: 1px solid var(--sb-line); border-radius: var(--sb-radius); margin-bottom: 16px; }
+.toolbar { display: flex; gap: 10px; align-items: center; margin-bottom: 16px; flex: none; }
+.toolbar__spacer { flex: 1; }
+.section-title {
+  flex: none;
+  margin: 24px 0 12px;
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: .6px;
+  color: var(--sb-muted);
+  text-transform: uppercase;
+}
+.section-title:first-child { margin-top: 0; }
+.tab-actions { display: flex; justify-content: flex-end; gap: 10px; padding: 14px 20px; border-bottom: 1px solid var(--sb-line); }
+.tab-actions--start { justify-content: flex-start; }
+.pagination-bar { flex: none; display: flex; justify-content: flex-end; padding: 12px 20px; border-top: 1px solid var(--sb-line); }
 
-.el-dialog__header { padding-bottom: 14px; border-bottom: 1px solid var(--sb-border); }
-.el-overlay { overflow: hidden; }
+/* ── 指标卡 ─────────────────────────────────────────────── */
+.metric-strip { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 14px; margin-bottom: 18px; }
+.metric {
+  position: relative;
+  padding: 15px 18px;
+  overflow: hidden;
+  background: var(--sb-panel);
+  border: 1px solid var(--sb-line);
+  border-radius: var(--sb-radius);
+  box-shadow: var(--sb-shadow);
+}
+.metric::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 0;
+  height: 2px;
+  background: linear-gradient(90deg, var(--sb-accent), rgba(99, 102, 241, .55) 45%, transparent);
+}
+.metric__label { color: var(--sb-muted); font-size: 12px; letter-spacing: .4px; margin-bottom: 6px; }
+.metric__value {
+  font-size: 26px;
+  font-weight: 650;
+  line-height: 1.15;
+  color: #fff;
+  font-variant-numeric: tabular-nums;
+  text-shadow: 0 0 20px rgba(56, 189, 248, .28);
+}
+
+/* ── 通用文本与状态 ─────────────────────────────────────── */
+/* 两行式单元格：主信息在上，次要信息用弱化字号跟在下面。 */
+.cell-main { display: flex; align-items: center; gap: 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cell-sub { margin-top: 2px; color: var(--sb-muted); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.subtle { color: var(--sb-muted); font-size: 13px; }
+.mono { font-family: "Cascadia Code", Consolas, monospace; font-size: 12px; color: var(--sb-text-2); }
+.danger-text { color: var(--sb-danger); }
+.status-dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; margin-right: 7px; }
+.status-dot.online { background: var(--sb-success); box-shadow: 0 0 0 3px rgba(52, 211, 153, .16), 0 0 10px rgba(52, 211, 153, .8); }
+.status-dot.offline { background: #64748b; }
+/* 地区图标：只是名称前面的装饰，字号略大保证 emoji 旗帜清晰。 */
+.region-flag { margin-right: 6px; font-size: 14px; line-height: 1; }
+/* 画不出国旗的系统上，退化出来的字母对做成地区徽章，不至于像乱码。 */
+html.no-flag-emoji .region-flag {
+  display: inline-block;
+  padding: 1px 5px;
+  border-radius: 5px;
+  background: rgba(56, 189, 248, .14);
+  color: #7dd3fc;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: .6px;
+  vertical-align: 1px;
+}
+.inbound-name { font-weight: 600; color: var(--sb-text); }
+.inbound-meta { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 6px; }
+
+/* ── 表单与弹窗 ─────────────────────────────────────────── */
+.form-section { margin: 8px 0 18px; }
+.form-section__head { display: flex; align-items: center; gap: 10px; margin-bottom: 14px; color: var(--sb-text-2); font-size: 13px; font-weight: 600; }
+.form-section__head::after { content: ""; flex: 1; height: 1px; background: var(--sb-line); }
+.protocol-summary {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 14px;
+  margin-bottom: 18px;
+  border: 1px solid rgba(56, 189, 248, .28);
+  border-radius: var(--sb-radius-sm);
+  background: var(--sb-accent-soft);
+}
+.protocol-summary__main { flex: 1; }
+.protocol-summary__main strong { display: block; margin-bottom: 3px; color: var(--sb-text); }
+.protocol-summary__main span { color: var(--sb-muted); font-size: 12px; }
+
+.el-dialog { max-height: calc(100dvh - 24px); display: flex; flex-direction: column; margin: 0 !important; overflow: hidden; border: 1px solid var(--sb-line-strong); box-shadow: 0 40px 90px -40px rgba(0, 0, 0, .95); }
+.el-dialog__header { padding-bottom: 14px; border-bottom: 1px solid var(--sb-line); }
+.el-dialog__title { font-weight: 620; letter-spacing: .3px; }
+.el-overlay { overflow: hidden; backdrop-filter: blur(2px); }
 .el-overlay-dialog { display: grid; place-items: center; padding: 12px; overflow: hidden; }
-.el-dialog { max-height: calc(100dvh - 24px); display: flex; flex-direction: column; margin: 0 !important; overflow: hidden; }
 .el-dialog__header, .el-dialog__footer { flex: none; }
 .el-dialog__body { min-width: 0; min-height: 0; padding-top: 18px; overflow-x: hidden; overflow-y: auto; scrollbar-width: none; }
 .el-dialog__body::-webkit-scrollbar { display: none; }
 .el-button { font-weight: 550; }
-.el-button--primary { --el-button-hover-bg-color: #1849a9; --el-button-hover-border-color: #1849a9; }
-.el-input__wrapper, .el-select__wrapper { box-shadow: 0 0 0 1px #d0d5dd inset; }
-.el-form-item__label { color: #344054; font-size: 13px; font-weight: 550; }
-.el-card { --el-card-border-color: var(--sb-border); }
-.el-tag { border-radius: 4px; }
-.panel-tabs > .el-tabs__header { margin: 0; padding: 0 18px; flex: none; }
+.el-button--primary {
+  --el-button-bg-color: #0ea5e9;
+  --el-button-border-color: #0ea5e9;
+  --el-button-text-color: #04121f;
+  --el-button-hover-bg-color: #38bdf8;
+  --el-button-hover-border-color: #38bdf8;
+  --el-button-hover-text-color: #04121f;
+  --el-button-active-bg-color: #0284c7;
+  --el-button-active-border-color: #0284c7;
+  box-shadow: 0 6px 18px -10px rgba(56, 189, 248, .9);
+}
+.el-input__wrapper, .el-select__wrapper, .el-textarea__inner {
+  background-color: rgba(148, 163, 184, .07);
+  box-shadow: 0 0 0 1px var(--sb-line-strong) inset;
+}
+.el-input__wrapper.is-focus, .el-select__wrapper.is-focused { box-shadow: 0 0 0 1px var(--sb-accent) inset, 0 0 0 3px rgba(56, 189, 248, .12); }
+.el-form-item__label { color: var(--sb-text-2); font-size: 13px; font-weight: 550; }
+.el-card { background: var(--sb-panel); border: 1px solid var(--sb-line); border-radius: var(--sb-radius); box-shadow: var(--sb-shadow); }
+.el-tag { border-radius: 5px; }
+.el-alert { border: 1px solid var(--sb-line); border-radius: var(--sb-radius-sm); }
+.panel-tabs > .el-tabs__header { margin: 0; padding: 0 18px; flex: none; border-bottom: 1px solid var(--sb-line); }
+.panel-tabs > .el-tabs__header .el-tabs__nav-wrap::after { display: none; }
 .panel-tabs > .el-tabs__content { padding-top: 0; }
-/* Tabbed pages hand the leftover height down to the active pane's table.
-   Inactive panes keep their inline display:none, which outranks this. */
+/* 带标签页的页面把剩余高度传给当前面板中的表格，
+   未激活面板的内联 display:none 优先级更高，不受影响。 */
 .page-content > .table-panel > .panel-tabs { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 .panel-tabs > .el-tabs__content { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 .panel-tabs > .el-tabs__content > .el-tab-pane { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 .panel-tabs .el-tab-pane > .paged-table { flex: 1; min-height: 0; }
-.tab-actions { display: flex; justify-content: flex-end; gap: 10px; padding: 14px 16px; border-bottom: 1px solid var(--sb-border); }
-.tab-actions--start { justify-content: flex-start; }
-.pagination-bar { flex: none; display: flex; justify-content: flex-end; padding: 12px 16px; border-top: 1px solid var(--sb-border); }
+/* 面板里直接放 el-table 的标签页，分页条同样贴在底部，
+   与使用 PagedTable 的页面保持一致。 */
+.panel-tabs .el-tab-pane > .pagination-bar { margin-top: auto; }
+
+/* ── 登录与首次改密 ─────────────────────────────────────── */
+.login-page { width: 100%; height: 100%; display: grid; grid-template-columns: minmax(560px, 1.25fr) minmax(460px, .75fr); }
+.login-brand {
+  position: relative;
+  overflow: hidden;
+  padding: 58px 64px;
+  color: #fff;
+  background:
+    radial-gradient(760px 420px at 18% 12%, rgba(56, 189, 248, .22), transparent 60%),
+    radial-gradient(620px 420px at 88% 96%, rgba(99, 102, 241, .26), transparent 62%),
+    var(--sb-sidebar);
+}
+/* 背景网格与光环，纯装饰，不接收指针事件。 */
+.login-brand::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background-image:
+    linear-gradient(rgba(148, 163, 184, .07) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(148, 163, 184, .07) 1px, transparent 1px);
+  background-size: 52px 52px;
+  mask-image: radial-gradient(70% 70% at 30% 30%, #000 30%, transparent 100%);
+  pointer-events: none;
+}
+.login-brand::after {
+  content: "";
+  position: absolute;
+  width: 540px;
+  height: 540px;
+  right: -180px;
+  bottom: -240px;
+  border: 1px solid rgba(56, 189, 248, .22);
+  border-radius: 50%;
+  box-shadow: 0 0 0 80px rgba(56, 189, 248, .05), 0 0 0 160px rgba(99, 102, 241, .04);
+  pointer-events: none;
+}
+.login-brand__logo { position: relative; display: flex; align-items: center; gap: 12px; font-size: 19px; font-weight: 700; letter-spacing: .6px; }
+.login-brand__mark {
+  width: 38px;
+  height: 38px;
+  display: grid;
+  place-items: center;
+  border-radius: 10px;
+  background: linear-gradient(135deg, var(--sb-accent), var(--sb-accent-2));
+  box-shadow: 0 0 22px -4px rgba(56, 189, 248, .8);
+}
+.login-brand__copy { position: absolute; left: 64px; bottom: 72px; max-width: 520px; }
+.login-brand__copy h1 { margin: 0; font-size: 34px; line-height: 1.3; font-weight: 620; letter-spacing: 1px; }
+.login-brand__copy p { margin: 14px 0 0; color: #93a4bd; line-height: 1.75; }
+.login-form-wrap { display: grid; place-items: center; padding: 56px; background: linear-gradient(180deg, rgba(14, 21, 36, .9), rgba(6, 10, 19, .9)); border-left: 1px solid var(--sb-line); }
+.login-form {
+  width: min(100%, 400px);
+  padding: 36px 34px 34px;
+  background: var(--sb-panel);
+  border: 1px solid var(--sb-line);
+  border-radius: 16px;
+  box-shadow: var(--sb-shadow);
+}
+.login-form h2 { margin: 0 0 24px; font-size: 24px; font-weight: 620; letter-spacing: .5px; }
+.login-form__sub { color: var(--sb-muted); margin: -16px 0 24px; font-size: 13px; }
+.login-form .el-button { width: 100%; margin-top: 8px; }
+.login-form__back { margin-top: 10px; text-align: center; }
 
 @media (max-width: 980px) {
-  .page-header { height: auto; min-height: 64px; padding: 12px 18px; }
+  .page-header { height: auto; min-height: 64px; padding: 12px 20px; }
   .page-header__actions { flex-wrap: wrap; justify-content: flex-end; }
-  .page-content { padding: 16px 18px 24px; }
+  .page-content { padding: 18px 20px 24px; }
   .metric-strip { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  .metric:nth-child(2) { border-right: 0; }
-  .metric:nth-child(-n+2) { border-bottom: 1px solid var(--sb-border); }
-  .detail-grid { grid-template-columns: 1fr; }
-  .protocol-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .el-dialog { max-width: calc(100vw - 24px); }
   .toolbar { align-items: flex-start; flex-wrap: wrap; }
   .login-page { grid-template-columns: 1fr; }
   .login-brand { display: none; }
+  .login-form-wrap { border-left: 0; }
 }
 
 @media (max-width: 640px) {
@@ -150,9 +420,6 @@ button, input, textarea, select { font: inherit; }
   .page-header__actions { width: 100%; margin-left: 0; justify-content: flex-start; }
   .page-content { padding: 14px 12px 22px; }
   .metric-strip { grid-template-columns: 1fr; }
-  .metric { border-right: 0; border-bottom: 1px solid var(--sb-border); }
-  .metric:last-child { border-bottom: 0; }
-  .protocol-grid { grid-template-columns: 1fr; }
   .protocol-summary { align-items: flex-start; flex-wrap: wrap; }
   .login-form-wrap { padding: 24px; }
   .login-form { width: min(100%, 360px); }

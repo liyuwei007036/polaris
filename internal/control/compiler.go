@@ -329,6 +329,20 @@ func (s *Store) compileTLS(ctx context.Context, listener Listener) (map[string]a
 		}
 		return configuration, nil
 	}
+	// A matching origin certificate replaces the self-signed fallback so
+	// Cloudflare can validate the pull; without one the listener keeps working
+	// as before, which only Cloudflare's non-strict modes accept.
+	if listenerUsesOriginCertificate(spec) {
+		certificate, privateKey, found, err := s.loadOriginCertificateFor(ctx, listener.Domain)
+		if err != nil {
+			return nil, err
+		}
+		if found {
+			configuration["certificate"] = []string{certificate}
+			configuration["key"] = []string{privateKey}
+			return configuration, nil
+		}
+	}
 	certificate, privateKey, err := s.loadOrCreateHysteria2Certificate(ctx, listener.ID, listener.Domain)
 	if err != nil {
 		return nil, err

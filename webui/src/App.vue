@@ -6,7 +6,6 @@ import {
   Connection,
   DataAnalysis,
   Document,
-  Key,
   Link,
   List,
   Lock,
@@ -19,8 +18,10 @@ import {
   User,
 } from '@element-plus/icons-vue'
 import { api, post, setCsrfToken } from './api'
-import { closeLiveEvents, liveStatus, subscribeLive } from './live'
+import { closeLiveEvents, subscribeLive } from './live'
 import { closeConnectionEvents } from './connections'
+import { brandName, brandTagline } from './brand'
+import BrandMark from './components/BrandMark.vue'
 import LoginView from './views/LoginView.vue'
 import PasswordChangeView from './views/PasswordChangeView.vue'
 
@@ -98,7 +99,6 @@ const activeComponent = computed(() => views[currentView.value] || views.dashboa
 const roleLabel = computed(() => ({ admin: '管理员', operator: '运维人员', viewer: '只读用户' })[appState.role] || appState.role)
 const canWrite = computed(() => appState.role === 'admin' || appState.role === 'operator')
 const isAdmin = computed(() => appState.role === 'admin')
-const liveLabel = computed(() => liveStatus.value === 'connected' ? '数据连接正常' : '正在重新连接')
 let stopAppLive
 
 async function loadNodes() {
@@ -201,7 +201,7 @@ onBeforeUnmount(() => {
 <template>
   <div v-if="checking" class="boot-screen">
     <el-icon class="is-loading" :size="28"><Operation /></el-icon>
-    <span>正在打开管理平台</span>
+    <span>正在载入</span>
   </div>
 
   <LoginView v-else-if="!authenticated" @authenticated="setAuthenticated" />
@@ -215,10 +215,10 @@ onBeforeUnmount(() => {
   <el-container v-else class="app-layout">
     <el-aside width="232px" class="app-sidebar">
       <div class="app-brand">
-        <span class="app-brand__mark"><Key /></span>
-        <span>
-          <strong>sb-control</strong>
-          <small>服务器连接管理</small>
+        <span class="app-brand__mark"><BrandMark :size="21" /></span>
+        <span class="app-brand__text">
+          <strong>{{ brandName }}</strong>
+          <small>{{ brandTagline }}</small>
         </span>
       </div>
 
@@ -239,10 +239,6 @@ onBeforeUnmount(() => {
         </div>
       </el-scrollbar>
 
-      <div class="live-panel">
-        <span class="status-dot" :class="liveStatus === 'connected' ? 'online' : 'offline'" />
-        <span>{{ liveLabel }}</span>
-      </div>
       <div class="operator-panel">
         <span class="operator-avatar"><User /></span>
         <span class="operator-info">
@@ -257,9 +253,9 @@ onBeforeUnmount(() => {
 
     <el-main class="app-main">
       <div v-if="appState.systemUpdate?.update_available && !updateBannerDismissed" class="update-banner">
-        <span>发现新版本 v{{ appState.systemUpdate.latest_version }}（当前 v{{ appState.systemUpdate.current_version }}），可前往系统设置执行更新。</span>
-        <el-button size="small" type="primary" @click="navigate('settings')">前往系统设置</el-button>
-        <el-button size="small" text @click="updateBannerDismissed = true">暂不提醒</el-button>
+        <span>新版本 v{{ appState.systemUpdate.latest_version }} 可用 · 当前 v{{ appState.systemUpdate.current_version }}</span>
+        <el-button size="small" type="primary" @click="navigate('settings')">前往更新</el-button>
+        <el-button size="small" text @click="updateBannerDismissed = true">忽略</el-button>
       </div>
       <!-- out-in keeps exactly one page mounted at a time. It only works
            because the leave half of the transition is defined; without it
@@ -280,16 +276,32 @@ onBeforeUnmount(() => {
   align-items: center;
   justify-content: center;
   gap: 12px;
-  color: #667085;
-  background: #f4f6f9;
+  color: var(--sb-muted);
+  letter-spacing: 1px;
 }
 .app-layout { width: 100%; height: 100%; }
 .app-sidebar {
+  position: relative;
   display: flex;
   flex-direction: column;
-  color: #d5d9e2;
-  background: var(--sb-sidebar);
-  border-right: 1px solid #273244;
+  /* el-aside 默认 overflow: auto，内容稍宽就会在侧边栏底部出现横向滚动条。 */
+  overflow: hidden;
+  color: var(--sb-text-2);
+  background: linear-gradient(180deg, #0b1120, var(--sb-sidebar));
+  border-right: 1px solid var(--sb-line);
+}
+/* 侧边栏右缘的一道渐隐高光，与页头的强调线呼应。
+   注意贴着 right: 0 画，越界哪怕 1px 都会让侧边栏多出一条横向滚动条。 */
+.app-sidebar::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  right: 0;
+  width: 1px;
+  height: 240px;
+  background: linear-gradient(180deg, var(--sb-accent), transparent);
+  opacity: .5;
+  pointer-events: none;
 }
 .app-brand {
   height: 64px;
@@ -298,49 +310,65 @@ onBeforeUnmount(() => {
   align-items: center;
   gap: 11px;
   padding: 0 20px;
-  border-bottom: 1px solid rgba(255,255,255,.08);
+  border-bottom: 1px solid var(--sb-line);
 }
 .app-brand__mark {
   width: 36px;
   height: 36px;
+  flex: none;
   display: grid;
   place-items: center;
-  color: #fff;
-  background: var(--sb-accent);
-  border-radius: 8px;
+  color: #04121f;
+  background: linear-gradient(135deg, var(--sb-accent), var(--sb-accent-2));
+  border-radius: 10px;
+  box-shadow: 0 0 20px -4px rgba(56, 189, 248, .85);
 }
-.app-brand strong { display: block; color: #fff; font-size: 16px; line-height: 1.2; }
-.app-brand small { color: #778197; font-size: 9px; letter-spacing: 0; }
+.app-brand__text { min-width: 0; }
+.app-brand strong { display: block; color: #fff; font-size: 16px; line-height: 1.2; letter-spacing: .6px; }
+.app-brand small { display: block; margin-top: 2px; color: var(--sb-muted); font-size: 10px; letter-spacing: 3px; }
 .app-menu-scroll { flex: 1; min-height: 0; padding: 10px 0; }
+/* 菜单只纵向滚动：窄屏折叠时文字被裁掉会撑出一条横向滚动条。 */
+.app-menu-scroll :deep(.el-scrollbar__wrap) { overflow-x: hidden; }
+.app-menu-scroll :deep(.el-scrollbar__view) { min-width: 0; }
+.app-menu-scroll :deep(.el-scrollbar__bar.is-horizontal) { display: none; }
 .menu-group { padding: 4px 9px 7px; }
-.menu-group__label { padding: 7px 10px; color: #687386; font-size: 11px; letter-spacing: 0; }
+.menu-group__label { padding: 7px 10px; color: #5f6d85; font-size: 10px; font-weight: 600; letter-spacing: 1.4px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .menu-item {
+  position: relative;
   width: 100%;
   height: 38px;
   display: flex;
   align-items: center;
   gap: 11px;
   padding: 0 12px;
-  color: #aab3c2;
+  color: #94a3b8;
   background: transparent;
   border: none;
-  border-radius: 6px;
+  border-radius: 8px;
   cursor: pointer;
   transition: color .14s ease, background .14s ease;
 }
-.menu-item:hover { color: #fff; background: rgba(255,255,255,.055); }
-.menu-item.active { color: #fff; background: #263449; box-shadow: inset 3px 0 0 var(--sb-accent); }
-.menu-item .el-icon { font-size: 17px; }
-.live-panel {
-  height: 36px;
-  display: flex;
-  align-items: center;
-  padding: 0 16px;
-  color: #8f9bad;
-  border-top: 1px solid rgba(255,255,255,.06);
-  font-size: 11px;
+.menu-item:hover { color: #fff; background: rgba(148, 163, 184, .08); }
+.menu-item.active {
+  color: #fff;
+  background: linear-gradient(90deg, rgba(56, 189, 248, .18), rgba(99, 102, 241, .06));
+  box-shadow: inset 0 0 0 1px rgba(56, 189, 248, .22);
 }
-.live-panel .status-dot { flex: none; }
+.menu-item.active::before {
+  content: "";
+  position: absolute;
+  left: -9px;
+  top: 50%;
+  width: 3px;
+  height: 20px;
+  transform: translateY(-50%);
+  border-radius: 0 3px 3px 0;
+  background: var(--sb-accent);
+  box-shadow: 0 0 12px rgba(56, 189, 248, .9);
+}
+.menu-item.active .el-icon { color: var(--sb-accent); }
+.menu-item .el-icon { flex: none; font-size: 17px; }
+.menu-item span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .operator-panel {
   height: 62px;
   flex: none;
@@ -348,33 +376,49 @@ onBeforeUnmount(() => {
   align-items: center;
   gap: 10px;
   padding: 0 14px;
-  border-top: 1px solid rgba(255,255,255,.08);
+  border-top: 1px solid var(--sb-line);
 }
 .operator-avatar {
   width: 34px;
   height: 34px;
+  flex: none;
   display: grid;
   place-items: center;
-  color: #fff;
-  background: #334155;
-  border-radius: 7px;
+  color: var(--sb-accent);
+  background: rgba(56, 189, 248, .12);
+  border: 1px solid rgba(56, 189, 248, .22);
+  border-radius: 9px;
 }
 .operator-info { flex: 1; min-width: 0; }
 .operator-info strong, .operator-info small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.operator-info strong { color: #e5e7eb; font-size: 12px; }
-.operator-info small { color: #7f8a9e; font-size: 11px; margin-top: 2px; }
-.operator-panel :deep(.el-button) { color: #8c96a8; }
-.app-main { --el-main-padding: 0; min-width: 0; height: 100%; overflow: hidden; background: #f4f6f9; display: flex; flex-direction: column; }
+.operator-info strong { color: var(--sb-text); font-size: 12px; }
+.operator-info small { color: var(--sb-muted); font-size: 11px; margin-top: 2px; }
+.operator-panel :deep(.el-button) { color: var(--sb-muted); }
+.operator-panel :deep(.el-button:hover) { color: var(--sb-danger); }
+.app-main { --el-main-padding: 0; position: relative; min-width: 0; height: 100%; overflow: hidden; display: flex; flex-direction: column; background: transparent; }
+/* 工作区背景的网格纹理，纯装饰。 */
+.app-main::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background-image:
+    linear-gradient(rgba(148, 163, 184, .045) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(148, 163, 184, .045) 1px, transparent 1px);
+  background-size: 48px 48px;
+  mask-image: radial-gradient(120% 90% at 50% 0%, #000 20%, transparent 85%);
+  pointer-events: none;
+}
+.app-main > * { position: relative; }
 .app-main > :last-child { flex: 1; min-height: 0; }
 .update-banner {
   flex: none;
   display: flex;
   align-items: center;
   gap: 12px;
-  padding: 9px 20px;
-  color: #92400e;
-  background: #fef3c7;
-  border-bottom: 1px solid #fcd34d;
+  padding: 9px 32px;
+  color: #fcd34d;
+  background: linear-gradient(90deg, rgba(251, 191, 36, .14), rgba(251, 191, 36, .03));
+  border-bottom: 1px solid rgba(251, 191, 36, .28);
   font-size: 13px;
 }
 .update-banner > span { flex: 1; min-width: 0; }
@@ -382,11 +426,11 @@ onBeforeUnmount(() => {
 @media (max-width: 900px) {
   .app-sidebar { width: 72px !important; }
   .app-brand { justify-content: center; padding: 0; }
-  .app-brand > span:last-child, .menu-group__label, .menu-item span, .operator-info, .live-panel span:last-child { display: none; }
+  .app-brand__text, .menu-group__label, .menu-item span, .operator-info { display: none; }
   .menu-group { padding: 4px 8px 7px; }
   .menu-item { justify-content: center; padding: 0; }
-  .menu-item.active { box-shadow: inset 2px 0 0 var(--sb-accent); }
-  .live-panel, .operator-panel { justify-content: center; padding: 0; }
+  .menu-item.active::before { left: -8px; }
+  .operator-panel { justify-content: center; padding: 0; }
   .operator-panel :deep(.el-button) { display: none; }
 }
 

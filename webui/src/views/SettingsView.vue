@@ -142,8 +142,8 @@ onMounted(load)
             <section class="security-card">
               <div>
                 <h3>两步验证</h3>
-                <p v-if="appState.totp_enabled">已启用。后续登录除密码外，还需要输入验证器应用生成的动态验证码。</p>
-                <p v-else>未启用。可以使用验证器应用扫描二维码，提高账户安全性。</p>
+                <p v-if="appState.totp_enabled">登录时需要输入验证器生成的动态验证码。</p>
+                <p v-else>为账户增加一层动态验证码保护。</p>
               </div>
               <el-tag :type="appState.totp_enabled ? 'success' : 'info'">{{ appState.totp_enabled ? '已启用' : '未启用' }}</el-tag>
               <el-button v-if="appState.totp_enabled" type="danger" plain @click="disableOwnTOTP">关闭</el-button>
@@ -162,8 +162,8 @@ onMounted(load)
                   </template>
                 </p>
                 <p v-if="systemUpdate?.check_error" style="color: var(--el-color-danger)">检查更新失败：{{ systemUpdate.check_error }}</p>
-                <p v-else-if="systemUpdate?.update_available">发现新版本。更新 master 后，可在「服务器」页面逐台升级各节点的 agent。</p>
-                <p v-else>管理平台会在打开控制台时自动检查 GitHub 上的新版本。</p>
+                <p v-else-if="systemUpdate?.update_available">更新控制端后，可在「服务器」页面逐台升级 agent。</p>
+                <p v-else>打开控制台时会自动检查新版本。</p>
               </div>
               <el-tag :type="systemUpdate?.update_available ? 'warning' : 'success'">
                 {{ systemUpdate?.update_available ? '有新版本' : '已是最新' }}
@@ -196,7 +196,7 @@ onMounted(load)
 
     <el-dialog v-model="totpSetup.open" title="启用两步验证" width="500px" :close-on-click-modal="false">
       <div class="totp-setup">
-        <p>使用验证器应用扫描二维码，然后输入应用显示的 6 位数字完成绑定。</p>
+        <p>扫描二维码后，输入验证器显示的 6 位动态码完成绑定。</p>
         <img :src="totpSetup.qr" alt="两步验证绑定二维码" data-testid="totp-qr" />
         <el-form label-position="top">
           <el-form-item label="无法扫码时，可手动输入此密钥"><el-input :model-value="totpSetup.secret" readonly class="mono" data-testid="totp-secret" /></el-form-item>
@@ -210,13 +210,22 @@ onMounted(load)
 </template>
 
 <style scoped>
-.security-card { display: flex; align-items: center; gap: 18px; padding: 24px; }
+.security-card {
+  display: flex;
+  align-items: center;
+  gap: 18px;
+  margin: 18px;
+  padding: 22px;
+  background: rgba(148, 163, 184, .05);
+  border: 1px solid var(--sb-line);
+  border-radius: var(--sb-radius);
+}
 .security-card > div { flex: 1; }
-.security-card h3 { margin: 0 0 7px; color: var(--sb-text); font-size: 16px; }
+.security-card h3 { margin: 0 0 7px; color: var(--sb-text); font-size: 15px; font-weight: 620; }
 .security-card p { margin: 0; color: var(--sb-muted); line-height: 1.7; }
 .totp-setup { text-align: center; }
 .totp-setup > p { margin: 0 0 16px; color: var(--sb-muted); line-height: 1.7; }
-.totp-setup img { width: 220px; height: 220px; margin-bottom: 14px; border: 1px solid var(--sb-border); border-radius: 8px; }
+.totp-setup img { width: 220px; height: 220px; margin-bottom: 14px; padding: 8px; background: #fff; border-radius: var(--sb-radius-sm); }
 .totp-setup :deep(.el-form-item) { text-align: left; }
 .form-tip { margin-top: 6px; color: var(--sb-muted); font-size: 12px; }
 @media (max-width: 700px) {

@@ -10,6 +10,8 @@ import (
 	"net/url"
 	"strings"
 
+	"gopkg.in/yaml.v3"
+
 	"github.com/sb-control/sb-control/internal/security"
 )
 
@@ -384,7 +386,24 @@ func (s *Store) normalizeMihomoClientConfigV3(ctx context.Context, config *Mihom
 	default:
 		return errors.New("rule mode must be table or text")
 	}
+	if err := normalizeMihomoClientDNS(config); err != nil {
+		return err
+	}
 	return validateMihomoClientTerminalRule(config.Rules)
+}
+
+type mihomoClientDNSV3 struct {
+	Mode string          `json:"mode"`
+	DNS  MihomoClientDNS `json:"dns"`
+	Raw  string          `json:"raw,omitempty"`
+}
+
+func encodeMihomoClientDNS(config MihomoClientConfig) (string, error) {
+	encoded, err := json.Marshal(mihomoClientDNSV3{Mode: config.DNSMode, DNS: config.DNS, Raw: config.RawDNS})
+	if err != nil {
+		return "", fmt.Errorf("encode Mihomo client DNS: %w", err)
+	}
+	return string(encoded), nil
 }
 
 func encodeMihomoClientConfigV3(config MihomoClientConfig) (string, string, error) {
@@ -401,15 +420,20 @@ func encodeMihomoClientConfigV3(config MihomoClientConfig) (string, string, erro
 
 func scanMihomoClientConfig(scanner interface{ Scan(...any) error }, masterKey []byte) (MihomoClientConfig, error) {
 	var config MihomoClientConfig
-	var groupsJSON, rulesJSON string
+	var groupsJSON, rulesJSON, dnsJSON string
 	var encryptedToken []byte
 	var created, updated int64
-	if err := scanner.Scan(&config.ID, &config.Name, &groupsJSON, &config.RuleMode, &rulesJSON, &encryptedToken, &config.Enabled, &created, &updated); err != nil {
+	if err := scanner.Scan(&config.ID, &config.Name, &groupsJSON, &config.RuleMode, &rulesJSON, &dnsJSON, &encryptedToken, &config.Enabled, &created, &updated); err != nil {
 		return MihomoClientConfig{}, err
 	}
 	if err := json.Unmarshal([]byte(groupsJSON), &config.ProxyGroupIDs); err != nil {
 		return MihomoClientConfig{}, err
 	}
+	var dns mihomoClientDNSV3
+	if err := json.Unmarshal([]byte(dnsJSON), &dns); err != nil {
+		return MihomoClientConfig{}, err
+	}
+	config.DNSMode, config.DNS, config.RawDNS = dns.Mode, dns.DNS, dns.Raw
 	var rules mihomoClientRulesV3
 	if err := json.Unmarshal([]byte(rulesJSON), &rules); err != nil {
 		return MihomoClientConfig{}, err
@@ -435,6 +459,10 @@ func (s *Store) CreateMihomoClientConfig(ctx context.Context, config MihomoClien
 	if err != nil {
 		return MihomoClientConfig{}, err
 	}
+	dnsJSON, err := encodeMihomoClientDNS(config)
+	if err != nil {
+		return MihomoClientConfig{}, err
+	}
 	config.ID, err = newID()
 	if err != nil {
 		return MihomoClientConfig{}, err
@@ -450,8 +478,8 @@ func (s *Store) CreateMihomoClientConfig(ctx context.Context, config MihomoClien
 	now := nowUnix()
 	config.Enabled = true
 	_, err = s.db.ExecContext(ctx, `INSERT INTO mihomo_client_configs_v3
-		(id, name, groups_json, rule_mode, rules_json, subscription_token_hash, subscription_token_encrypted, enabled, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, config.ID, config.Name, groupsJSON, config.RuleMode, rulesJSON, security.TokenHash(token), encrypted, config.Enabled, now, now)
+		(id, name, groups_json, rule_mode, rules_json, dns_json, subscription_token_hash, subscription_token_encrypted, enabled, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, config.ID, config.Name, groupsJSON, config.RuleMode, rulesJSON, dnsJSON, security.TokenHash(token), encrypted, config.Enabled, now, now)
 	if err != nil {
 		if strings.Contains(strings.ToLower(err.Error()), "unique") {
 			return MihomoClientConfig{}, ErrConflict
@@ -481,6 +509,9 @@ func (s *Store) CopyMihomoClientConfig(ctx context.Context, configID, name strin
 		RuleMode:        source.RuleMode,
 		Rules:           append([]MihomoRule(nil), source.Rules...),
 		RawRules:        source.RawRules,
+		DNSMode:         source.DNSMode,
+		DNS:             source.DNS,
+		RawDNS:          source.RawDNS,
 	}
 	return s.CreateMihomoClientConfig(ctx, copied)
 }
@@ -496,8 +527,12 @@ func (s *Store) UpdateMihomoClientConfig(ctx context.Context, config MihomoClien
 	if err != nil {
 		return MihomoClientConfig{}, err
 	}
-	result, err := s.db.ExecContext(ctx, `UPDATE mihomo_client_configs_v3 SET name = ?, groups_json = ?, rule_mode = ?, rules_json = ?, updated_at = ? WHERE id = ?`,
-		config.Name, groupsJSON, config.RuleMode, rulesJSON, nowUnix(), config.ID)
+	dnsJSON, err := encodeMihomoClientDNS(config)
+	if err != nil {
+		return MihomoClientConfig{}, err
+	}
+	result, err := s.db.ExecContext(ctx, `UPDATE mihomo_client_configs_v3 SET name = ?, groups_json = ?, rule_mode = ?, rules_json = ?, dns_json = ?, updated_at = ? WHERE id = ?`,
+		config.Name, groupsJSON, config.RuleMode, rulesJSON, dnsJSON, nowUnix(), config.ID)
 	if err != nil {
 		if strings.Contains(strings.ToLower(err.Error()), "unique") {
 			return MihomoClientConfig{}, ErrConflict
@@ -511,7 +546,7 @@ func (s *Store) UpdateMihomoClientConfig(ctx context.Context, config MihomoClien
 }
 
 func (s *Store) mihomoClientConfigByID(ctx context.Context, id string) (MihomoClientConfig, error) {
-	row := s.db.QueryRowContext(ctx, `SELECT id, name, groups_json, rule_mode, rules_json, subscription_token_encrypted, enabled, created_at, updated_at FROM mihomo_client_configs_v3 WHERE id = ?`, id)
+	row := s.db.QueryRowContext(ctx, `SELECT id, name, groups_json, rule_mode, rules_json, dns_json, subscription_token_encrypted, enabled, created_at, updated_at FROM mihomo_client_configs_v3 WHERE id = ?`, id)
 	config, err := scanMihomoClientConfig(row, s.masterKey)
 	if errors.Is(err, sql.ErrNoRows) {
 		return MihomoClientConfig{}, ErrNotFound
@@ -539,7 +574,7 @@ func (s *Store) describeMihomoRuleProviders(ctx context.Context, ids []string) [
 }
 
 func (s *Store) ListMihomoClientConfigs(ctx context.Context) ([]MihomoClientConfig, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT id, name, groups_json, rule_mode, rules_json, subscription_token_encrypted, enabled, created_at, updated_at FROM mihomo_client_configs_v3 ORDER BY name, id`)
+	rows, err := s.db.QueryContext(ctx, `SELECT id, name, groups_json, rule_mode, rules_json, dns_json, subscription_token_encrypted, enabled, created_at, updated_at FROM mihomo_client_configs_v3 ORDER BY name, id`)
 	if err != nil {
 		return nil, err
 	}
@@ -914,6 +949,78 @@ func (s *Store) mihomoClientConfigIDsReferencingEndpoint(ctx context.Context, en
 	return configIDs, rows.Err()
 }
 
+// The subscription is a plain Mihomo YAML document, so it is built from
+// ordered structs and handed to the YAML encoder rather than assembled as
+// text: the encoder quotes any node name, rule line or provider name that
+// would otherwise change the meaning of the document.
+type mihomoYAMLProfile struct {
+	StoreSelected bool `yaml:"store-selected"`
+}
+
+type mihomoYAMLGeoxURL struct {
+	GeoIP   string `yaml:"geoip"`
+	Mmdb    string `yaml:"mmdb"`
+	ASN     string `yaml:"asn"`
+	GeoSite string `yaml:"geosite"`
+}
+
+// Mihomo downloads its geo databases from github.com release assets by
+// default, which a client on a restricted network cannot reach: the download
+// times out, every GEOSITE and GEOIP rule fails to build and Mihomo rejects
+// the whole subscription. All four databases are pointed at the same mirror.
+const mihomoGeoDataMirror = "https://testingcf.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@release/"
+
+func defaultMihomoGeoxURL() mihomoYAMLGeoxURL {
+	return mihomoYAMLGeoxURL{
+		GeoIP:   mihomoGeoDataMirror + "geoip.dat",
+		Mmdb:    mihomoGeoDataMirror + "geoip.metadb",
+		ASN:     mihomoGeoDataMirror + "GeoLite2-ASN.mmdb",
+		GeoSite: mihomoGeoDataMirror + "geosite.dat",
+	}
+}
+
+type mihomoYAMLTun struct {
+	Enable              bool     `yaml:"enable"`
+	Stack               string   `yaml:"stack"`
+	AutoRoute           bool     `yaml:"auto-route"`
+	AutoDetectInterface bool     `yaml:"auto-detect-interface"`
+	StrictRoute         bool     `yaml:"strict-route"`
+	DNSHijack           []string `yaml:"dns-hijack"`
+}
+
+type mihomoYAMLGroup struct {
+	Name     string   `yaml:"name"`
+	Type     string   `yaml:"type"`
+	Proxies  []string `yaml:"proxies"`
+	URL      string   `yaml:"url,omitempty"`
+	Interval int      `yaml:"interval,omitempty"`
+}
+
+type mihomoYAMLRuleProvider struct {
+	Type     string `yaml:"type"`
+	Behavior string `yaml:"behavior"`
+	Format   string `yaml:"format"`
+	URL      string `yaml:"url"`
+	Path     string `yaml:"path"`
+	Interval int    `yaml:"interval"`
+	Proxy    string `yaml:"proxy"`
+}
+
+type mihomoYAMLConfig struct {
+	MixedPort     int                               `yaml:"mixed-port"`
+	AllowLAN      bool                              `yaml:"allow-lan"`
+	Mode          string                            `yaml:"mode"`
+	LogLevel      string                            `yaml:"log-level"`
+	Profile       mihomoYAMLProfile                 `yaml:"profile"`
+	GeoxURL       mihomoYAMLGeoxURL                 `yaml:"geox-url"`
+	Tun           mihomoYAMLTun                     `yaml:"tun"`
+	DNS           *yaml.Node                        `yaml:"dns,omitempty"`
+	Proxies       []map[string]any                  `yaml:"proxies"`
+	ProxyGroups   []mihomoYAMLGroup                 `yaml:"proxy-groups"`
+	RuleProviders map[string]mihomoYAMLRuleProvider `yaml:"rule-providers,omitempty"`
+	Rules         []string                          `yaml:"rules"`
+}
+
 func (s *Store) generateMihomoClientYAML(ctx context.Context, config MihomoClientConfig) (string, error) {
 	groups, err := s.resolveMihomoProxyGroups(ctx, config.ProxyGroupIDs)
 	if err != nil {
@@ -939,30 +1046,24 @@ func (s *Store) generateMihomoClientYAML(ctx context.Context, config MihomoClien
 			proxies = append(proxies, proxy)
 		}
 	}
-	var builder strings.Builder
-	builder.WriteString("mixed-port: 7890\nallow-lan: false\nmode: rule\nlog-level: info\n")
-	builder.WriteString("profile:\n  store-selected: true\n")
-	for _, rule := range config.Rules {
-		if rule.Type == "IP-ASN" || rule.Type == "SRC-IP-ASN" {
-			builder.WriteString("geox-url:\n  asn: https://testingcf.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@release/GeoLite2-ASN.mmdb\n")
-			break
-		}
+	dns, err := mihomoClientDNSNode(config)
+	if err != nil {
+		return "", err
 	}
-	builder.WriteString("tun:\n  enable: true\n  stack: mixed\n  auto-route: true\n  auto-detect-interface: true\n  strict-route: true\n")
-	builder.WriteString("  dns-hijack:\n    - any:53\n    - tcp://any:53\n")
-	builder.WriteString("dns:\n  enable: true\n  ipv6: false\n  enhanced-mode: fake-ip\n")
-	builder.WriteString("  fake-ip-range: 198.18.0.1/16\n  fake-ip-filter-mode: rule\n")
-	builder.WriteString("  fake-ip-filter:\n    - MATCH,fake-ip\n  respect-rules: false\n")
-	builder.WriteString("  default-nameserver:\n    - https://223.5.5.5/dns-query\n")
-	builder.WriteString("  nameserver:\n    - rcode://success\n")
-	builder.WriteString("  direct-nameserver:\n    - https://223.5.5.5/dns-query\n  direct-nameserver-follow-policy: false\n")
-	builder.WriteString("  proxy-server-nameserver:\n    - https://223.5.5.5/dns-query\n")
-	builder.WriteString("proxies:\n")
-	for _, proxy := range proxies {
-		encoded, _ := json.Marshal(proxy)
-		builder.WriteString("  - " + string(encoded) + "\n")
+	document := mihomoYAMLConfig{
+		MixedPort: 7890,
+		Mode:      "rule",
+		LogLevel:  "info",
+		Profile:   mihomoYAMLProfile{StoreSelected: true},
+		GeoxURL:   defaultMihomoGeoxURL(),
+		Tun: mihomoYAMLTun{
+			Enable: true, Stack: "mixed", AutoRoute: true, AutoDetectInterface: true,
+			StrictRoute: true, DNSHijack: []string{"any:53", "tcp://any:53"},
+		},
+		DNS:     dns,
+		Proxies: proxies,
 	}
-	builder.WriteString("proxy-groups:\n")
+	document.ProxyGroups = make([]mihomoYAMLGroup, 0, len(groups))
 	for _, group := range groups {
 		members := make([]string, 0, len(group.Members))
 		for _, member := range group.Members {
@@ -972,37 +1073,34 @@ func (s *Store) generateMihomoClientYAML(ctx context.Context, config MihomoClien
 				members = append(members, groupNames[member.ID])
 			}
 		}
-		object := map[string]any{"name": group.Name, "type": group.Strategy, "proxies": members}
+		object := mihomoYAMLGroup{Name: group.Name, Type: group.Strategy, Proxies: members}
 		if group.Strategy != "select" {
-			object["url"] = "https://www.gstatic.com/generate_204"
-			object["interval"] = 300
+			object.URL = "https://www.gstatic.com/generate_204"
+			object.Interval = 300
 		}
-		encoded, _ := json.Marshal(object)
-		builder.WriteString("  - " + string(encoded) + "\n")
+		document.ProxyGroups = append(document.ProxyGroups, object)
 	}
 	if len(config.RuleProviders) != 0 {
-		builder.WriteString("rule-providers:\n")
+		document.RuleProviders = make(map[string]mihomoYAMLRuleProvider, len(config.RuleProviders))
 		for _, provider := range config.RuleProviders {
-			name, _ := json.Marshal(provider.Name)
-			object := map[string]any{
-				"type": "http", "behavior": provider.Behavior, "format": provider.Format,
-				"url": provider.URL, "path": provider.Path, "interval": provider.Interval, "proxy": provider.Proxy,
+			document.RuleProviders[provider.Name] = mihomoYAMLRuleProvider{
+				Type: "http", Behavior: provider.Behavior, Format: provider.Format,
+				URL: provider.URL, Path: provider.Path, Interval: provider.Interval, Proxy: provider.Proxy,
 			}
-			encoded, _ := json.Marshal(object)
-			builder.WriteString("  " + string(name) + ": " + string(encoded) + "\n")
 		}
 	}
-	builder.WriteString("rules:\n")
+	document.Rules = make([]string, 0, len(config.Rules))
 	for _, rule := range config.Rules {
-		line := rule.Type
-		if rule.Type != "MATCH" {
-			line += "," + rule.Value
-		}
-		line += "," + rule.Action
-		if rule.NoResolve {
-			line += ",no-resolve"
-		}
-		builder.WriteString("  - " + line + "\n")
+		document.Rules = append(document.Rules, formatMihomoRule(rule))
+	}
+	var builder strings.Builder
+	encoder := yaml.NewEncoder(&builder)
+	encoder.SetIndent(2)
+	if err := encoder.Encode(document); err != nil {
+		return "", fmt.Errorf("encode Mihomo subscription: %w", err)
+	}
+	if err := encoder.Close(); err != nil {
+		return "", fmt.Errorf("encode Mihomo subscription: %w", err)
 	}
 	return builder.String(), nil
 }

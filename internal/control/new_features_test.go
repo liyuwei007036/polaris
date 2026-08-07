@@ -152,7 +152,7 @@ func TestSharedRuleProvidersAreReferencedByClientConfigs(t *testing.T) {
 		t.Fatalf("subscription: got %d", response.StatusCode)
 	}
 	yaml := readBodyForTest(t, response)
-	for _, expected := range []string{`"远程规则改名"`, "RULE-SET,远程规则改名,DIRECT"} {
+	for _, expected := range []string{"远程规则改名:", "RULE-SET,远程规则改名,DIRECT"} {
 		if !strings.Contains(yaml, expected) {
 			t.Fatalf("generated profile is missing %q:\n%s", expected, yaml)
 		}

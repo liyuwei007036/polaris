@@ -4,6 +4,7 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import { CopyDocument, Edit, Plus, Refresh, RemoveFilled, Search, Top } from '@element-plus/icons-vue'
 import { api, post, put } from '../api'
 import { formatBytes, formatDateTime, includesText } from '../format'
+import { regionFlag } from '../flags'
 import { subscribeLive } from '../live'
 import { connectionSnapshots, subscribeConnections } from '../connections'
 import PageHeader from '../components/PageHeader.vue'
@@ -146,7 +147,7 @@ onBeforeUnmount(() => {
       <el-button v-if="isAdmin" type="primary" :icon="Plus" @click="generateToken">添加</el-button>
     </PageHeader>
     <main v-loading="loading" class="page-content page-content--tight">
-      <div class="search-toolbar" style="border-bottom: 1px solid var(--sb-border); border-radius: 7px; margin-bottom: 16px">
+      <div class="search-toolbar search-toolbar--standalone">
         <el-input v-model="keyword" clearable :prefix-icon="Search" placeholder="搜索名称、地址或版本" style="width: 280px" />
         <el-select v-model="statusFilter" clearable placeholder="全部状态" style="width: 150px"><el-option label="在线" value="online" /><el-option label="离线" value="offline" /></el-select>
       </div>
@@ -167,43 +168,47 @@ onBeforeUnmount(() => {
       <div class="section-title">已接入服务器</div>
       <div class="table-panel">
         <PagedTable :rows="filteredNodes" empty-text="尚未接入任何服务器">
-          <el-table-column label="服务器" min-width="180">
+          <!-- 同一类信息合并成两行，整张表就能在常见宽度里放下，
+               不必靠横向滚动去看被固定列挡住的列。 -->
+          <el-table-column label="服务器 / 系统" min-width="190" show-overflow-tooltip>
             <template #default="{ row }">
-              <span class="status-dot" :class="row.online ? 'online' : 'offline'" />
-              <strong>{{ row.name }}</strong>
+              <div class="cell-main">
+                <span class="status-dot" :class="row.online ? 'online' : 'offline'" />
+                <span v-if="regionFlag(row.name)" class="region-flag">{{ regionFlag(row.name) }}</span>
+                <strong>{{ row.name }}</strong>
+              </div>
+              <div class="cell-sub">{{ row.os || '—' }} · {{ row.architecture || '—' }}</div>
             </template>
           </el-table-column>
-          <el-table-column label="系统" min-width="150">
-            <template #default="{ row }">{{ row.os || '—' }} · {{ row.architecture || '—' }}</template>
-          </el-table-column>
-          <el-table-column label="Agent 版本" width="140">
+          <el-table-column label="版本" width="150">
             <template #default="{ row }">
-              <span>{{ row.agent_version || '—' }}</span>
-              <el-tag v-if="agentUpdateAvailable(row)" type="warning" size="small" style="margin-left: 6px">可升级</el-tag>
+              <div class="cell-main">
+                {{ row.agent_version || '—' }}
+                <el-tag v-if="agentUpdateAvailable(row)" type="warning" size="small" style="margin-left: 6px">可升级</el-tag>
+              </div>
+              <div class="cell-sub">sing-box {{ row.sing_box_version || '—' }}</div>
             </template>
           </el-table-column>
-          <el-table-column label="sing-box 版本" width="130" prop="sing_box_version" />
-          <el-table-column label="客户端连接地址" min-width="190">
+          <el-table-column label="客户端连接地址" min-width="170" show-overflow-tooltip>
             <template #default="{ row }"><span v-if="row.client_address" class="mono">{{ row.client_address }}</span><el-tag v-else type="warning">未配置</el-tag></template>
           </el-table-column>
-          <el-table-column label="当前下载 / 上传" min-width="180">
+          <el-table-column label="实时 / 累计流量" min-width="196" show-overflow-tooltip>
             <template #default="{ row }">
-              <span v-if="live.get(row.id)?.has_rates" class="mono">↓ {{ formatBytes(live.get(row.id).received_rate, '/s') }} · ↑ {{ formatBytes(live.get(row.id).sent_rate, '/s') }}</span>
-              <span v-else-if="!row.online" class="subtle">离线</span>
-              <span v-else class="subtle">等待连接服务上报</span>
+              <div class="cell-main mono">
+                <template v-if="live.get(row.id)?.has_rates">↓ {{ formatBytes(live.get(row.id).received_rate, '/s') }} · ↑ {{ formatBytes(live.get(row.id).sent_rate, '/s') }}</template>
+                <span v-else class="subtle">{{ row.online ? '等待上报' : '离线' }}</span>
+              </div>
+              <div class="cell-sub mono">
+                <template v-if="metrics[row.id]?.proxy">↓ {{ formatBytes(metrics[row.id].proxy.received_bytes) }} · ↑ {{ formatBytes(metrics[row.id].proxy.sent_bytes) }}</template>
+                <template v-else>等待上报</template>
+              </div>
             </template>
           </el-table-column>
-          <el-table-column label="累计下载 / 上传" min-width="190">
-            <template #default="{ row }">
-              <span v-if="metrics[row.id]?.proxy" class="mono">↓ {{ formatBytes(metrics[row.id].proxy.received_bytes) }} · ↑ {{ formatBytes(metrics[row.id].proxy.sent_bytes) }}</span>
-              <span v-else class="subtle">等待上报</span>
-            </template>
-          </el-table-column>
-          <el-table-column label="连接数" width="90">
+          <el-table-column label="连接数" width="82" align="center">
             <template #default="{ row }">{{ live.get(row.id)?.connection_count ?? '—' }}</template>
           </el-table-column>
-          <el-table-column label="最后在线" width="180"><template #default="{ row }">{{ formatDateTime(row.last_seen_at, '从未') }}</template></el-table-column>
-          <el-table-column label="操作" width="250" fixed="right" class-name="action-column">
+          <el-table-column label="最后在线" width="152"><template #default="{ row }">{{ formatDateTime(row.last_seen_at, '从未') }}</template></el-table-column>
+          <el-table-column label="操作" width="200" fixed="right" class-name="action-column">
             <template #default="{ row }">
               <el-button v-if="canWrite" link :icon="Edit" @click="openEdit(row)">编辑</el-button>
               <el-button v-if="isAdmin && agentUpdateAvailable(row)" link type="primary" :icon="Top" @click="upgradeAgent(row)">升级</el-button>
@@ -215,7 +220,7 @@ onBeforeUnmount(() => {
     </main>
 
     <el-dialog v-model="tokenDialog" title="服务器接入信息" width="580px">
-      <el-alert title="此信息只显示一次，请立即复制并在要添加的服务器上使用。" type="warning" show-icon :closable="false" />
+      <el-alert title="此信息只显示一次，请立即复制。" type="warning" show-icon :closable="false" />
       <el-input v-model="token" readonly type="textarea" :rows="4" class="mono" style="margin-top: 16px" />
       <p class="subtle">有效期至：{{ formatDateTime(expiresAt) }}</p>
       <template #footer>
@@ -227,12 +232,12 @@ onBeforeUnmount(() => {
     <el-dialog v-model="editDialog" title="编辑服务器" width="520px">
       <el-form label-position="top">
         <el-form-item label="服务器名称" required>
-          <el-input v-model="editForm.name" maxlength="128" placeholder="便于识别的名称，例如：香港节点 01" />
+          <el-input v-model="editForm.name" maxlength="128" placeholder="例如：香港节点 01" />
         </el-form-item>
         <el-form-item label="客户端连接域名或 IP 地址">
           <el-input v-model="editForm.client_address" placeholder="例如：proxy.example.com 或 203.0.113.10" @keyup.enter="saveNode" />
         </el-form-item>
-        <el-alert title="连接地址在服务器接入时会自动填入其来源 IP，只有需要改用域名或其他公网地址时才需要修改。只填写域名或 IP，不要添加 http://、端口或路径。" type="info" show-icon :closable="false" />
+        <el-alert title="接入时会自动填入来源 IP。仅填域名或 IP，不含 http://、端口与路径。" type="info" show-icon :closable="false" />
       </el-form>
       <template #footer>
         <el-button @click="editDialog = false">取消</el-button>

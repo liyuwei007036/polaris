@@ -1,8 +1,9 @@
 <script setup>
 import { ref } from 'vue'
 import { ElMessage } from 'element-plus'
-import { Key } from '@element-plus/icons-vue'
 import { api, setCsrfToken } from '../api'
+import { brandName } from '../brand'
+import BrandMark from '../components/BrandMark.vue'
 
 const emit = defineEmits(['authenticated'])
 const step = ref('credentials')
@@ -56,18 +57,18 @@ async function finishAuthentication(result) {
   <div class="login-page">
     <section class="login-brand">
       <div class="login-brand__logo">
-        <span class="login-brand__mark"><Key /></span>
-        <span>sb-control</span>
+        <span class="login-brand__mark"><BrandMark :size="22" /></span>
+        <span>{{ brandName }}</span>
       </div>
       <div class="login-brand__copy">
-        <h1>统一管理服务器和客户端连接</h1>
-        <p>在一个平台中完成服务器接入、用户配置和访问规则设置。每次修改都会先检查，再自动应用并保留记录。</p>
+        <h1>统一管理服务器<br>与客户端连接</h1>
+        <p>接入 · 分流 · 防护 · 审计</p>
       </div>
     </section>
 
     <section class="login-form-wrap">
       <el-form v-if="step === 'credentials'" class="login-form" label-position="top" @submit.prevent="submitCredentials">
-        <h2>登录管理平台</h2>
+        <h2>登录</h2>
         <el-form-item label="用户名">
           <el-input v-model="credentials.username" size="large" autocomplete="username" />
         </el-form-item>
@@ -86,7 +87,7 @@ async function finishAuthentication(result) {
 
       <el-form v-else class="login-form" label-position="top" @submit.prevent="submitMFA">
         <h2>两步验证</h2>
-        <div class="login-form__sub">请输入验证器应用当前显示的 6 位数字</div>
+        <div class="login-form__sub">输入验证器当前显示的 6 位动态码</div>
         <el-form-item label="动态验证码">
           <el-input
             v-model="code"

@@ -28,7 +28,11 @@ const connectionChart = ref()
 const networkChart = ref()
 const proxyChart = ref()
 const charts = []
-const protocolColors = { TCP: '#38b2ac', UDP: '#93b25f', 其他: '#667085' }
+const protocolColors = { TCP: '#38bdf8', UDP: '#34d399', 其他: '#64748b' }
+// 图表配色跟随控制台的深色令牌，避免出现浅色底残留。
+const chartInk = { title: '#e8eef8', label: '#8496b0', line: 'rgba(148,163,184,.22)', split: 'rgba(148,163,184,.10)', empty: 'rgba(148,163,184,.16)' }
+const chartTooltip = { backgroundColor: '#101a2c', borderColor: 'rgba(148,163,184,.28)', textStyle: { color: chartInk.title, fontSize: 12 } }
+const chartLegend = { bottom: 10, textStyle: { color: chartInk.label } }
 // How far back "recently" reaches when ranking the busiest nodes.
 const nodeWindowMinutes = 10
 const nodeActivity = new Map()
@@ -66,8 +70,8 @@ function dismiss(key, reference, value) {
 function chartBase(title) {
   return {
     animation: false,
-    title: { text: title, left: 16, top: 14, textStyle: { color: '#344054', fontSize: 14, fontWeight: 600 } },
-    tooltip: { trigger: 'axis', borderColor: '#d0d5dd', textStyle: { color: '#344054', fontSize: 12 } },
+    title: { text: title, left: 16, top: 14, textStyle: { color: chartInk.title, fontSize: 13, fontWeight: 600 } },
+    tooltip: { ...chartTooltip, trigger: 'axis' },
     grid: { left: 56, right: 22, top: 58, bottom: 66 },
     textStyle: { fontFamily: 'Inter, Segoe UI, Microsoft YaHei, sans-serif' },
   }
@@ -102,38 +106,39 @@ function scheduleRender() {
 function renderCharts() {
   if (charts.length !== 5) return
   const axis = {
-    axisLine: { lineStyle: { color: '#d0d5dd' } },
+    axisLine: { lineStyle: { color: chartInk.line } },
     axisTick: { show: false },
-    axisLabel: { color: '#667085', fontSize: 11 },
-    splitLine: { lineStyle: { color: '#eef1f5' } },
+    axisLabel: { color: chartInk.label, fontSize: 11 },
+    splitLine: { lineStyle: { color: chartInk.split } },
   }
   charts[0].setOption({
     ...chartBase('实时流量'),
-    legend: { bottom: 10, data: ['下载', '上传'] },
+    legend: { ...chartLegend, data: ['下载', '上传'] },
     xAxis: { ...axis, type: 'category', data: trafficHistory.value.map((item) => timeLabel(item.time)), boundaryGap: false },
     yAxis: { ...axis, type: 'value', minInterval: 1, axisLabel: { ...axis.axisLabel, formatter: (value) => formatBytes(value, '/s') } },
     series: [
-      { name: '下载', type: 'line', data: trafficHistory.value.map((item) => item.download), showSymbol: false, smooth: 0.25, lineStyle: { width: 2, color: '#0e9384' }, areaStyle: { color: 'rgba(14,147,132,.08)' } },
-      { name: '上传', type: 'line', data: trafficHistory.value.map((item) => item.upload), showSymbol: false, smooth: 0.25, lineStyle: { width: 2, color: '#7a9b48' }, areaStyle: { color: 'rgba(122,155,72,.07)' } },
+      { name: '下载', type: 'line', data: trafficHistory.value.map((item) => item.download), showSymbol: false, smooth: 0.25, lineStyle: { width: 2, color: '#38bdf8' }, areaStyle: { color: 'rgba(56,189,248,.14)' } },
+      { name: '上传', type: 'line', data: trafficHistory.value.map((item) => item.upload), showSymbol: false, smooth: 0.25, lineStyle: { width: 2, color: '#34d399' }, areaStyle: { color: 'rgba(52,211,153,.12)' } },
     ],
   }, true)
   const totals = cumulative.value.download + cumulative.value.upload
   charts[1].setOption({
     animation: false,
     title: chartBase('累计流量').title,
-    tooltip: { trigger: 'item', formatter: ({ name, value }) => `${name}<br>${formatBytes(value)}` },
-    legend: { bottom: 10, show: totals > 0 },
-    series: [{ type: 'pie', radius: ['48%', '70%'], center: ['50%', '49%'], label: { show: false }, data: totals > 0 ? [
-      { name: '下载', value: cumulative.value.download, itemStyle: { color: '#38b2ac' } },
-      { name: '上传', value: cumulative.value.upload, itemStyle: { color: '#93b25f' } },
-    ] : [{ name: '暂无流量', value: 1, itemStyle: { color: '#e4e7ec' } }] }],
+    // 没有流量时只显示占位圆环，不要把占位用的 1 当成流量报出来。
+    tooltip: { ...chartTooltip, trigger: 'item', formatter: ({ name, value }) => (totals > 0 ? `${name}<br>${formatBytes(value)}` : name) },
+    legend: { ...chartLegend, show: totals > 0 },
+    series: [{ type: 'pie', silent: totals === 0, radius: ['48%', '70%'], center: ['50%', '49%'], label: { show: false }, itemStyle: { borderColor: '#0e1524', borderWidth: 2 }, data: totals > 0 ? [
+      { name: '下载', value: cumulative.value.download, itemStyle: { color: '#38bdf8' } },
+      { name: '上传', value: cumulative.value.upload, itemStyle: { color: '#6366f1' } },
+    ] : [{ name: '暂无流量', value: 1, itemStyle: { color: chartInk.empty } }] }],
   }, true)
   charts[2].setOption({
     ...chartBase('活动连接'),
-    legend: { bottom: 10, data: ['连接数'] },
+    legend: { ...chartLegend, data: ['连接数'] },
     xAxis: { ...axis, type: 'category', data: connectionHistory.value.map((item) => timeLabel(item.time)), boundaryGap: false },
     yAxis: { ...axis, type: 'value', minInterval: 1 },
-    series: [{ name: '连接数', type: 'line', data: connectionHistory.value.map((item) => item.count), showSymbol: false, smooth: 0.25, lineStyle: { width: 2, color: '#d46b5f' }, areaStyle: { color: 'rgba(212,107,95,.09)' } }],
+    series: [{ name: '连接数', type: 'line', data: connectionHistory.value.map((item) => item.count), showSymbol: false, smooth: 0.25, lineStyle: { width: 2, color: '#a78bfa' }, areaStyle: { color: 'rgba(167,139,250,.14)' } }],
   }, true)
   // sing-box reports the transport protocol a connection uses, so this counts
   // TCP against UDP rather than inventing categories of its own.
@@ -147,22 +152,23 @@ function renderCharts() {
     animation: false,
     title: chartBase('传输协议').title,
     tooltip: {
+      ...chartTooltip,
       trigger: 'item',
       formatter: ({ name, value, percent }) => (protocolCounts.length ? `${name}<br>${value} 条连接（${percent}%）` : name),
     },
-    legend: { bottom: 10, show: protocolCounts.length > 0 },
-    series: [{ type: 'pie', radius: ['48%', '70%'], center: ['50%', '49%'], label: { show: false }, data: protocolCounts.length
-      ? protocolCounts.map(([name, value]) => ({ name, value, itemStyle: { color: protocolColors[name] || '#667085' } }))
-      : [{ name: '暂无连接', value: 1, itemStyle: { color: '#e4e7ec' } }] }],
+    legend: { ...chartLegend, show: protocolCounts.length > 0 },
+    series: [{ type: 'pie', silent: protocolCounts.length === 0, radius: ['48%', '70%'], center: ['50%', '49%'], label: { show: false }, itemStyle: { borderColor: '#0e1524', borderWidth: 2 }, data: protocolCounts.length
+      ? protocolCounts.map(([name, value]) => ({ name, value, itemStyle: { color: protocolColors[name] || '#64748b' } }))
+      : [{ name: '暂无连接', value: 1, itemStyle: { color: chartInk.empty } }] }],
   }, true)
   const popular = popularNodes()
   charts[4].setOption({
     ...chartBase(`热门节点（最近 ${nodeWindowMinutes} 分钟）`),
     grid: { left: 112, right: 28, top: 58, bottom: 24 },
-    tooltip: { trigger: 'axis', formatter: (items) => `${items[0].name}<br>${items[0].value} 次连接` },
+    tooltip: { ...chartTooltip, trigger: 'axis', formatter: (items) => `${items[0].name}<br>${items[0].value} 次连接` },
     xAxis: { ...axis, type: 'value', minInterval: 1 },
     yAxis: { ...axis, type: 'category', inverse: true, data: popular.map(([name]) => name), axisLabel: { ...axis.axisLabel, width: 92, overflow: 'truncate' } },
-    series: [{ type: 'bar', data: popular.map(([, value]) => value), barMaxWidth: 18, itemStyle: { color: '#4d90a6', borderRadius: 2 } }],
+    series: [{ type: 'bar', data: popular.map(([, value]) => value), barMaxWidth: 16, itemStyle: { color: '#22d3ee', borderRadius: [0, 3, 3, 0] } }],
   }, true)
 }
 
@@ -258,7 +264,7 @@ onBeforeUnmount(() => {
       <el-button :icon="Refresh" @click="load">刷新</el-button>
     </PageHeader>
     <main v-loading="loading" class="page-content dashboard-content">
-      <el-alert v-if="offline > 0 && dismissedOffline !== offline" :title="`${offline} 台服务器离线，恢复连接前无法接收新配置`" type="warning" show-icon closable @close="dismiss('sb_dashboard_offline', dismissedOffline, offline)" />
+      <el-alert v-if="offline > 0 && dismissedOffline !== offline" :title="`${offline} 台服务器离线`" type="warning" show-icon closable @close="dismiss('sb_dashboard_offline', dismissedOffline, offline)" />
 
       <section class="metric-strip">
         <div class="metric"><div class="metric__label">服务器总数</div><div class="metric__value">{{ appState.nodes.length }}</div></div>
@@ -285,7 +291,15 @@ onBeforeUnmount(() => {
 /* The chart rows share whatever height is left rather than each claiming a
    fixed one, so the overview fits the window instead of scrolling. */
 .chart-grid { flex: 1; min-height: 0; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); grid-template-rows: repeat(2, minmax(190px, 1fr)); gap: 14px; }
-.chart-panel { min-width: 0; min-height: 0; background: #fff; border: 1px solid var(--sb-border); border-radius: 7px; }
+.chart-panel {
+  min-width: 0;
+  min-height: 0;
+  background: var(--sb-panel);
+  border: 1px solid var(--sb-line);
+  border-radius: var(--sb-radius);
+  box-shadow: var(--sb-shadow);
+  overflow: hidden;
+}
 .chart-panel--wide { grid-column: span 2; }
 @media (max-width: 1180px) { .chart-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); grid-template-rows: repeat(3, minmax(190px, 1fr)); } .chart-panel--wide { grid-column: span 2; } }
 @media (max-width: 720px) { .chart-grid { grid-template-columns: 1fr; grid-template-rows: repeat(5, minmax(220px, 1fr)); } .chart-panel--wide { grid-column: auto; } }

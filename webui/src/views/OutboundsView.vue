@@ -160,17 +160,17 @@ onMounted(load)
       </div>
       <div class="table-panel">
         <PagedTable :rows="filteredRows" :loading="loading" empty-text="还没有上网出口">
-          <el-table-column label="名称" prop="name" min-width="180" />
-          <el-table-column label="类型" width="110"><template #default="{ row }"><el-tag>{{ row.type.toUpperCase() }}</el-tag></template></el-table-column>
-          <el-table-column label="服务器" min-width="220"><template #default="{ row }"><span class="mono">{{ row.type === 'direct' ? '服务器直连' : `${row.server}:${row.server_port}` }}</span></template></el-table-column>
-          <el-table-column label="登录用户名" prop="username" min-width="140"><template #default="{ row }">{{ row.username || '—' }}</template></el-table-column>
-          <el-table-column label="过期时间" width="180">
+          <el-table-column label="名称" prop="name" min-width="170" show-overflow-tooltip />
+          <el-table-column label="类型" width="100"><template #default="{ row }"><el-tag>{{ row.type.toUpperCase() }}</el-tag></template></el-table-column>
+          <el-table-column label="服务器" min-width="200" show-overflow-tooltip><template #default="{ row }"><span class="mono">{{ row.type === 'direct' ? '服务器直连' : `${row.server}:${row.server_port}` }}</span></template></el-table-column>
+          <el-table-column label="登录用户名" prop="username" min-width="130" show-overflow-tooltip><template #default="{ row }">{{ row.username || '—' }}</template></el-table-column>
+          <el-table-column label="过期时间" width="160">
             <template #default="{ row }">
               <span :class="{ 'expired-text': isExpired(row) }">{{ formatDateTime(row.expires_at, '未设置') }}</span>
             </template>
           </el-table-column>
-          <el-table-column label="状态" width="90"><template #default="{ row }"><el-tag :type="row.enabled ? 'success' : 'info'">{{ row.enabled ? '启用' : '停用' }}</el-tag></template></el-table-column>
-          <el-table-column label="操作" width="250" fixed="right" class-name="action-column">
+          <el-table-column label="状态" width="88"><template #default="{ row }"><el-tag :type="row.enabled ? 'success' : 'info'">{{ row.enabled ? '启用' : '停用' }}</el-tag></template></el-table-column>
+          <el-table-column label="操作" width="264" fixed="right" class-name="action-column">
             <template #default="{ row }">
               <template v-if="row.type !== 'direct'">
                 <el-button link type="primary" :icon="Connection" @click="openTest(row)">测试</el-button>
@@ -196,7 +196,7 @@ onMounted(load)
           <el-col :span="24">
             <el-form-item label="过期时间">
               <el-date-picker v-model="form.expires_at" type="datetime" placeholder="选填，仅用于提醒" style="width: 100%" />
-              <div class="subtle" style="margin-top: 6px">仅作展示提醒，到期后系统不会自动停用该出口。</div>
+              <div class="subtle" style="margin-top: 6px">仅作提醒，到期不会自动停用。</div>
             </el-form-item>
           </el-col>
         </el-row>
@@ -215,11 +215,11 @@ onMounted(load)
     >
       <el-alert
         v-if="!testResults.length"
-        title="没有在线的服务器可用于检测，请先确认至少有一台服务器已接入并在线。"
+        title="没有在线的服务器可用于检测。"
         type="warning" show-icon :closable="false" />
       <template v-else>
         <el-alert
-          :title="testing ? '正在让每一台在线服务器通过该出口访问测试地址，请等待全部结果返回。' : '每台服务器的网络环境不同，以下是各自通过该出口上网的检测结果。'"
+          :title="testing ? '正在通过该出口检测各服务器的连通性…' : '各服务器通过该出口的连通性结果。'"
           :type="testing ? 'info' : 'success'" show-icon :closable="false" style="margin-bottom: 14px" />
         <el-table :data="testResults" max-height="340">
           <el-table-column label="服务器" prop="name" min-width="160" />

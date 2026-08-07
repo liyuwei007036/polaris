@@ -74,7 +74,12 @@ type MihomoClientConfig struct {
 	RuleProviders    []MihomoRuleProvider `json:"rule_providers,omitempty"`
 	Rules            []MihomoRule         `json:"rules,omitempty"`
 	RawRules         string               `json:"raw_rules,omitempty"`
-	DefaultAction    string               `json:"default_action,omitempty"`
+	// DNSMode selects which of the two editors below the subscription is
+	// generated from, mirroring RuleMode.
+	DNSMode          string          `json:"dns_mode,omitempty"`
+	DNS              MihomoClientDNS `json:"dns"`
+	RawDNS           string          `json:"raw_dns,omitempty"`
+	DefaultAction    string          `json:"default_action,omitempty"`
 	CreatedAt        string               `json:"created_at,omitempty"`
 	UpdatedAt        string               `json:"updated_at,omitempty"`
 	SubscriptionPath string               `json:"subscription_path,omitempty"`
@@ -207,18 +212,21 @@ func parseMihomoRawRules(raw string) ([]MihomoRule, error) {
 	return rules, nil
 }
 
+func formatMihomoRule(rule MihomoRule) string {
+	if rule.Type == "MATCH" {
+		return "MATCH," + rule.Action
+	}
+	line := rule.Type + "," + rule.Value + "," + rule.Action
+	if rule.NoResolve {
+		line += ",no-resolve"
+	}
+	return line
+}
+
 func formatMihomoRules(rules []MihomoRule) string {
 	lines := make([]string, 0, len(rules))
 	for _, rule := range rules {
-		if rule.Type == "MATCH" {
-			lines = append(lines, "MATCH,"+rule.Action)
-			continue
-		}
-		line := rule.Type + "," + rule.Value + "," + rule.Action
-		if rule.NoResolve {
-			line += ",no-resolve"
-		}
-		lines = append(lines, line)
+		lines = append(lines, formatMihomoRule(rule))
 	}
 	return strings.Join(lines, "\n")
 }

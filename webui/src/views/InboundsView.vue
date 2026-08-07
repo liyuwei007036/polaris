@@ -195,8 +195,8 @@ onMounted(load)
       </div>
       <div class="table-panel">
         <PagedTable :rows="filteredListeners" :loading="loading" empty-text="还没有接入服务">
-          <el-table-column label="服务器" min-width="150"><template #default="{ row }">{{ nodeNames[row.node_id] || row.node_id }}</template></el-table-column>
-          <el-table-column label="服务名称" min-width="190">
+          <el-table-column label="服务器" min-width="150" show-overflow-tooltip><template #default="{ row }">{{ nodeNames[row.node_id] || row.node_id }}</template></el-table-column>
+          <el-table-column label="服务名称" min-width="200">
             <template #default="{ row }">
               <div class="inbound-name">{{ row.name }}</div>
               <div class="inbound-meta">
@@ -207,21 +207,21 @@ onMounted(load)
               </div>
             </template>
           </el-table-column>
-          <el-table-column label="端口" width="110">
+          <el-table-column label="端口" width="96">
             <template #default="{ row }"><span class="mono">{{ row.port }}</span></template>
           </el-table-column>
-          <el-table-column label="连接域名" min-width="190">
+          <el-table-column label="连接域名" min-width="180" show-overflow-tooltip>
             <template #default="{ row }"><span class="mono">{{ row.connection_domain || '使用服务器地址' }}</span></template>
           </el-table-column>
-          <el-table-column label="用户" width="90" align="center">
+          <el-table-column label="用户" width="84" align="center">
             <template #default="{ row }">{{ row.endpoint_count ?? 0 }}</template>
           </el-table-column>
-          <el-table-column label="状态" width="90">
+          <el-table-column label="状态" width="88">
             <template #default="{ row }">
               <el-tag :type="row.enabled ? 'success' : 'info'">{{ row.enabled ? '启用' : '停用' }}</el-tag>
             </template>
           </el-table-column>
-          <el-table-column label="操作" width="250" fixed="right" class-name="action-column">
+          <el-table-column label="操作" width="264" fixed="right" class-name="action-column">
             <template #default="{ row }">
               <el-button v-if="canWrite" link :icon="Edit" @click="openEdit(row)">编辑</el-button>
               <el-button v-if="canWrite" link :icon="DocumentCopy" @click="openCopy(row)">复制</el-button>

@@ -95,7 +95,7 @@ onMounted(() => { loadTasks(); loadAudit() })
 <template>
   <div class="page-shell">
     <PageHeader title="操作记录">
-      <span class="subtle" style="margin-right: 12px">仅保留最近 7 天的记录（时间按本机时区 {{ timeZoneLabel }} 显示）</span>
+      <span class="subtle" style="margin-right: 12px">保留最近 7 天 · {{ timeZoneLabel }}</span>
       <el-button :icon="Refresh" @click="tab === 'tasks' ? loadTasks() : loadAudit()">刷新</el-button>
     </PageHeader>
     <main class="page-content">

@@ -73,27 +73,27 @@ onBeforeUnmount(() => stopConnections?.())
       </div>
       <div class="table-panel">
         <PagedTable :rows="filteredRows" :loading="loading" empty-text="当前没有活动连接">
-          <el-table-column label="服务器" prop="node_name" min-width="140" />
-          <el-table-column label="接入服务" min-width="150">
+          <el-table-column label="服务器" prop="node_name" min-width="130" show-overflow-tooltip />
+          <el-table-column label="接入服务" min-width="140" show-overflow-tooltip>
             <template #default="{ row }">
               <div>{{ row.entry }}</div>
               <div class="subtle">{{ (row.network || '').toUpperCase() || '—' }}</div>
             </template>
           </el-table-column>
-          <el-table-column label="客户端 IP" min-width="200">
+          <el-table-column label="客户端 IP" min-width="180" show-overflow-tooltip>
             <template #default="{ row }">
               <div class="mono">{{ row.source_ip || row.source || '—' }}</div>
               <div class="subtle">{{ row.source_location || '未知' }}</div>
             </template>
           </el-table-column>
-          <el-table-column label="访问目标" min-width="220">
+          <el-table-column label="访问目标" min-width="200" show-overflow-tooltip>
             <template #default="{ row }"><strong>{{ row.host || row.destination || '—' }}</strong><div v-if="row.host" class="subtle">{{ row.destination }}</div></template>
           </el-table-column>
-          <el-table-column label="出口" min-width="170">
+          <el-table-column label="出口" min-width="150" show-overflow-tooltip>
             <template #default="{ row }"><el-tag size="small" effect="plain">{{ row.exit }}</el-tag></template>
           </el-table-column>
-          <el-table-column label="流量" width="150"><template #default="{ row }"><span class="mono">↓ {{ formatBytes(row.download) }} · ↑ {{ formatBytes(row.upload) }}</span></template></el-table-column>
-          <el-table-column label="开始时间" width="180"><template #default="{ row }">{{ formatDateTime(row.started_at) }}</template></el-table-column>
+          <el-table-column label="流量" min-width="156"><template #default="{ row }"><span class="mono">↓ {{ formatBytes(row.download) }} · ↑ {{ formatBytes(row.upload) }}</span></template></el-table-column>
+          <el-table-column label="开始时间" width="152"><template #default="{ row }">{{ formatDateTime(row.started_at) }}</template></el-table-column>
         </PagedTable>
       </div>
     </main>

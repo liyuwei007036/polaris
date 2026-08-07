@@ -4,6 +4,7 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import { Delete, Edit, Plus, Refresh, Search } from '@element-plus/icons-vue'
 import { api, del, post, put } from '../api'
 import { includesText } from '../format'
+import { regionFlag } from '../flags'
 import PageHeader from '../components/PageHeader.vue'
 import PagedTable from '../components/PagedTable.vue'
 import { protocolMap } from '../protocols'
@@ -32,9 +33,12 @@ const clientNodes = computed(() => listeners.value
     .map((endpoint) => {
       const node = appState.nodes.find((item) => item.id === listener.node_id)
       const address = listener.connection_domain || node?.client_address || ''
+      const name = endpoint.alias || `${node?.name || listener.node_id} · ${listener.name} · ${endpoint.name}`
       return {
         id: endpoint.id,
-        label: endpoint.alias || `${node?.name || listener.node_id} · ${listener.name} · ${endpoint.name}`,
+        // 地区图标先从节点别名认，认不出再看服务器名。
+        flag: regionFlag(name) || regionFlag(node?.name),
+        label: name,
         detail: `${node?.name || listener.node_id} · ${listener.name} · ${endpoint.name}`,
         protocol: protocolMap[listener.spec?.protocol]?.label || listener.spec?.protocol,
         address: address ? `${address}:${listener.port}` : '未填写连接地址',
@@ -42,7 +46,10 @@ const clientNodes = computed(() => listeners.value
       }
     })))
 const nodeNames = computed(() => Object.fromEntries(clientNodes.value.map((item) => [item.id, item.label])))
+const nodeFlags = computed(() => Object.fromEntries(clientNodes.value.map((item) => [item.id, item.flag])))
 const groupNames = computed(() => Object.fromEntries(groups.value.map((item) => [item.id, item.name])))
+// 成员多的时候整行标签会挤满表格，先显示前几个，其余折叠成计数。
+const memberPreviewCount = 6
 const formValid = computed(() => Boolean(form.name.trim() && form.members.length))
 const filteredGroups = computed(() => groups.value.filter((group) => {
   if (selectedStrategy.value && group.strategy !== selectedStrategy.value) return false
@@ -89,6 +96,10 @@ function setMembers(keys) {
 
 function memberLabel(member) {
   return member.kind === 'group' ? groupNames.value[member.id] || '分组已失效' : nodeNames.value[member.id] || '节点已失效'
+}
+
+function memberFlag(member) {
+  return member.kind === 'group' ? '' : nodeFlags.value[member.id] || ''
 }
 
 async function save() {
@@ -138,9 +149,24 @@ onMounted(load)
           <el-table-column label="策略" width="140"><template #default="{ row }">{{ strategyNames[row.strategy] }}</template></el-table-column>
           <el-table-column label="成员" min-width="340">
             <template #default="{ row }">
-              <el-tag v-for="member in row.members" :key="`${member.kind}:${member.id}`" :type="member.kind === 'group' ? 'primary' : 'info'" class="member-tag">
-                {{ member.kind === 'group' ? '分组' : '节点' }} · {{ memberLabel(member) }}
+              <el-tag
+                v-for="member in (row.members || []).slice(0, memberPreviewCount)"
+                :key="`${member.kind}:${member.id}`"
+                :type="member.kind === 'group' ? 'primary' : 'info'"
+                class="member-tag"
+              >
+                <span v-if="memberFlag(member)" class="region-flag">{{ memberFlag(member) }}</span>
+                <span v-else class="member-tag__kind">分组</span>
+                {{ memberLabel(member) }}
               </el-tag>
+              <el-tooltip v-if="(row.members || []).length > memberPreviewCount" placement="top">
+                <template #content>
+                  <div v-for="member in row.members.slice(memberPreviewCount)" :key="`${member.kind}:${member.id}`">
+                    {{ memberFlag(member) }} {{ memberLabel(member) }}
+                  </div>
+                </template>
+                <el-tag class="member-tag" type="info" effect="plain">+{{ row.members.length - memberPreviewCount }}</el-tag>
+              </el-tooltip>
             </template>
           </el-table-column>
           <el-table-column label="操作" width="150" fixed="right" class-name="action-column">
@@ -162,10 +188,25 @@ onMounted(load)
           </el-select>
         </el-form-item>
         <el-form-item label="分组成员" required>
-          <el-select :model-value="memberKeys()" multiple filterable style="width: 100%" aria-label="分组成员" placeholder="选择节点或代理分组" @update:model-value="setMembers">
+          <!-- 成员可能有几十个，标签折叠起来，选项里带地区图标和线路信息便于分辨。 -->
+          <el-select
+            :model-value="memberKeys()"
+            multiple
+            filterable
+            collapse-tags
+            collapse-tags-tooltip
+            :max-collapse-tags="6"
+            style="width: 100%"
+            aria-label="分组成员"
+            placeholder="选择节点或代理分组"
+            @update:model-value="setMembers"
+          >
             <el-option-group label="接入节点">
-              <el-option v-for="node in clientNodes" :key="`endpoint:${node.id}`" :value="`endpoint:${node.id}`" :label="node.label" :disabled="node.disabled">
-                <span>{{ node.label }}</span><span class="option-meta">{{ node.detail }} · {{ node.protocol }} · {{ node.address }}</span>
+              <el-option v-for="node in clientNodes" :key="`endpoint:${node.id}`" :value="`endpoint:${node.id}`" :label="node.flag ? `${node.flag} ${node.label}` : node.label" :disabled="node.disabled">
+                <span class="option-name">
+                  <span v-if="node.flag" class="region-flag">{{ node.flag }}</span>{{ node.label }}
+                </span>
+                <span class="option-meta">{{ node.detail }} · {{ node.protocol }} · {{ node.address }}</span>
               </el-option>
             </el-option-group>
             <el-option-group label="代理分组">
@@ -185,6 +226,8 @@ onMounted(load)
 <style scoped>
 .page-alert { margin-bottom: 16px; }
 .member-tag { margin: 3px 6px 3px 0; }
+.member-tag__kind { margin-right: 5px; color: var(--sb-muted); }
+.option-name { display: inline-flex; align-items: center; }
 .option-meta { float: right; margin-left: 18px; color: var(--sb-muted); font-size: 12px; }
 @media (max-width: 640px) { .option-meta { display: none; } }
 </style>

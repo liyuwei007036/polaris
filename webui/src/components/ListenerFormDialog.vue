@@ -158,7 +158,7 @@ async function save() {
     <div class="listener-dialog-body">
       <el-alert
         v-if="template"
-        title="已带入原接入服务的配置，请选择目标服务器并确认端口、域名和用户后保存。用户会重新生成连接凭据，Reality 密钥也会重新生成。"
+        title="已带入原配置，保存前请确认服务器、端口与域名。连接凭据和 Reality 密钥会重新生成。"
         type="info" show-icon :closable="false" style="margin-bottom: 14px" />
       <div class="form-section">
         <div class="form-section__head">选择连接协议</div>
@@ -172,7 +172,7 @@ async function save() {
           </el-select>
         </div>
         <div v-if="selectedProfile" class="protocol-summary">
-          <el-icon color="#2563eb" :size="24"><CircleCheck /></el-icon>
+          <el-icon color="#38bdf8" :size="24"><CircleCheck /></el-icon>
           <div class="protocol-summary__main">
             <strong>{{ selectedProfile.label }}</strong>
             <span>{{ selectedProfile.summary }}</span>
@@ -207,7 +207,7 @@ async function save() {
             <el-col :span="24">
               <el-form-item label="连接域名" prop="connection_domain">
                 <el-input v-model="model.connection_domain" placeholder="proxy.example.com" />
-                <div class="form-hint">客户端连接这个域名。WS/gRPC 通过 Cloudflare 时，它同时作为 TLS 回源 SNI；Reality 分流使用下方的目标网站。</div>
+                <div class="form-hint">客户端连接的域名；经 Cloudflare 的 WS/gRPC 同时作为回源 SNI。</div>
               </el-form-item>
             </el-col>
           </el-row>
@@ -241,13 +241,13 @@ async function save() {
             <el-col v-if="model.transport_type === 'ws'" :span="12">
               <el-form-item label="请求域名（Host）">
                 <el-input v-model="model.transport_host" placeholder="可选" />
-                <div class="form-hint">Cloudflare 转发 WebSocket 请求时使用的 HTTP Host，通常与连接域名相同。</div>
+                <div class="form-hint">通常与连接域名相同。</div>
               </el-form-item>
             </el-col>
             <el-col v-if="model.transport_type === 'grpc'" :span="14">
               <el-form-item label="gRPC 服务名称">
                 <el-input v-model="model.transport_service_name" placeholder="grpc-service" />
-                <div class="form-hint">标识这条 gRPC 传输通道；客户端必须填写完全相同的值。它不是域名，也不会创建系统服务。</div>
+                <div class="form-hint">客户端必须填写完全相同的值。</div>
               </el-form-item>
             </el-col>
           </el-row>
@@ -255,7 +255,7 @@ async function save() {
 
         <div class="form-section">
           <div class="account-section-head">
-            <div><div class="form-section__head">用户与客户端节点</div><span>每个用户只属于当前服务器；客户端节点别名会直接写入该用户的订阅配置。</span></div>
+            <div><div class="form-section__head">用户与客户端节点</div><span>别名会写入该用户的订阅配置。</span></div>
             <el-button :icon="Plus" @click="addAccount">添加</el-button>
           </div>
           <div class="account-list">
