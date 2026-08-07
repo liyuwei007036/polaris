@@ -33,6 +33,10 @@ func (s *Server) setCloudflareSettings(w http.ResponseWriter, r *http.Request) {
 	if !decodeJSON(w, r, &input) {
 		return
 	}
+	if err := VerifyCloudflareCredentials(r.Context(), input.ZoneID, input.ZoneName, input.APIToken); err != nil {
+		writeError(w, err)
+		return
+	}
 	if err := s.store.SetCloudflareSettings(r.Context(), input.ZoneID, input.ZoneName, input.APIToken); err != nil {
 		writeError(w, err)
 		return

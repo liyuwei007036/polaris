@@ -1,7 +1,7 @@
 <script setup>
 import { computed, inject, onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Delete, Plus, Promotion, Refresh, Search, Setting } from '@element-plus/icons-vue'
+import { Delete, Edit, Plus, Promotion, Refresh, Search, Setting } from '@element-plus/icons-vue'
 import { api, del, post, put } from '../api'
 import { formatDateTime, includesText } from '../format'
 import PageHeader from '../components/PageHeader.vue'
@@ -20,7 +20,12 @@ const settingsOpen = ref(false)
 const recordOpen = ref(false)
 const certificateOpen = ref(false)
 const config = reactive({ zone_id: '', zone_name: '', api_token: '' })
-const record = reactive({ type: 'A', name: '', content: '', ttl: 1, proxied: false, node_id: '', listener_id: '' })
+const record = reactive({ id: '', type: 'A', name: '', content: '', ttl: 1, proxied: false, node_id: '', listener_id: '' })
+// A record that only exists at Cloudflare has no local desired state yet, so
+// editing one means declaring it here first; saving creates that declaration
+// and the operator publishes it over the live record.
+const adopting = ref(false)
+const remoteError = ref('')
 // An origin certificate is matched to an access service by its connection
 // domain, so the operator only pastes the plain "*.example.com" text and the
 // PEM pair Cloudflare issued for it.
@@ -79,9 +84,16 @@ async function load() {
       api('/cloudflare/origin-certificates'),
       api('/listeners'),
     ])
-    const remoteResult = settingsResult.configured
-      ? await api('/cloudflare/remote-records').catch(() => ({ records: [] }))
-      : { records: [] }
+    remoteError.value = settingsResult.error || ''
+    let remoteResult = { records: [] }
+    if (settingsResult.connected) {
+      // A failure here means the zone could not be read at all; hiding it
+      // behind an empty table is what made this page look broken.
+      remoteResult = await api('/cloudflare/remote-records').catch((error) => {
+        remoteError.value = error instanceof Error ? error.message : '读取 Cloudflare 线上记录失败'
+        return { records: [] }
+      })
+    }
     settings.value = settingsResult
     records.value = [
       ...(recordResult.records || []).map((row) => ({ ...row, managed: true })),
@@ -93,8 +105,38 @@ async function load() {
 }
 
 function openSettings() { Object.assign(config, { zone_id: settings.value.zone_id || '', zone_name: settings.value.zone_name || '', api_token: '' }); settingsOpen.value = true }
-async function saveSettings() { await put('/cloudflare/settings', config); settingsOpen.value = false; ElMessage.success('域名服务连接设置已保存'); await load() }
-function addRecord() { Object.assign(record, { type: 'A', name: '', content: '', ttl: 1, proxied: false, node_id: '', listener_id: '' }); recordOpen.value = true }
+// Saving verifies the zone and token upstream, so a rejection has to reach the
+// operator with its reason instead of closing the dialog as if it worked.
+async function saveSettings() {
+  try {
+    await put('/cloudflare/settings', config)
+    settingsOpen.value = false
+    ElMessage.success('域名服务连接设置已保存')
+    await load()
+  } catch (error) {
+    ElMessage.error(error instanceof Error ? error.message : '连接 Cloudflare 失败，请检查区域编号与访问令牌')
+  }
+}
+function addRecord() {
+  Object.assign(record, { id: '', type: 'A', name: '', content: '', ttl: 1, proxied: false, node_id: '', listener_id: '' })
+  adopting.value = false
+  recordOpen.value = true
+}
+
+function editRecord(row) {
+  Object.assign(record, {
+    id: row.managed ? row.id : '',
+    type: row.type,
+    name: String(row.name || '').replace(/\.$/, ''),
+    content: row.content,
+    ttl: row.ttl || 1,
+    proxied: Boolean(row.proxied),
+    node_id: row.node_id || '',
+    listener_id: row.listener_id || '',
+  })
+  adopting.value = !row.managed
+  recordOpen.value = true
+}
 
 // Binding a record to a server is the whole point of managing DNS here: the
 // record should point at that server, so its client address is filled in.
@@ -113,8 +155,18 @@ function onListenerChange() {
 }
 
 async function saveRecord() {
+  const body = {
+    type: record.type,
+    name: record.name,
+    content: record.content,
+    ttl: record.ttl,
+    proxied: record.proxied,
+    node_id: record.node_id,
+    listener_id: record.listener_id,
+  }
   try {
-    await post('/cloudflare/records', record)
+    if (record.id) await put(`/cloudflare/records/${record.id}`, body)
+    else await post('/cloudflare/records', body)
     recordOpen.value = false
     ElMessage.success('域名记录已保存，请点击“发布”写入 Cloudflare')
     await load()
@@ -205,16 +257,21 @@ onMounted(load)
   <div class="page-shell">
     <PageHeader title="域名解析">
       <!-- 连接状态放在页头，不占用列表上方的位置。 -->
-      <el-tag :type="settings.configured ? 'success' : 'warning'" effect="plain">
-        {{ settings.configured ? `已连接 ${settings.zone_name || settings.zone_id}` : '未连接 Cloudflare' }}
+      <el-tag :type="settings.connected ? 'success' : settings.configured ? 'danger' : 'warning'" effect="plain">
+        {{ settings.connected ? `已连接 ${settings.zone_name || settings.zone_id}` : settings.configured ? '连接异常' : '未连接 Cloudflare' }}
       </el-tag>
       <el-button :icon="Refresh" @click="load">刷新</el-button>
-      <el-button v-if="canWrite && tab === 'records'" :icon="Refresh" :disabled="!settings.configured" @click="sync">检查</el-button>
+      <el-button v-if="canWrite && tab === 'records'" :icon="Refresh" :disabled="!settings.connected" @click="sync">检查</el-button>
       <el-button v-if="isAdmin && tab === 'records'" :icon="Setting" @click="openSettings">设置</el-button>
-      <el-button v-if="isAdmin && tab === 'records'" type="primary" :icon="Plus" :disabled="!settings.configured" @click="addRecord">新建</el-button>
+      <el-button v-if="isAdmin && tab === 'records'" type="primary" :icon="Plus" :disabled="!settings.connected" @click="addRecord">新建</el-button>
       <el-button v-if="isAdmin && tab === 'certificates'" type="primary" :icon="Plus" @click="addCertificate">新建</el-button>
     </PageHeader>
     <main class="page-content page-content--tight">
+      <el-alert
+        v-if="tab === 'records' && remoteError"
+        :title="`读取 Cloudflare 失败：${remoteError}`"
+        description="请点击「设置」检查区域编号与访问令牌，并确认这台控制机可以访问 api.cloudflare.com。"
+        type="error" show-icon :closable="false" style="margin-bottom: 12px" />
       <div class="search-toolbar">
         <el-input v-model="keyword" clearable :prefix-icon="Search" :placeholder="tab === 'records' ? '搜索域名、内容或服务器' : '搜索域名或证书'" style="width: 260px" />
         <template v-if="tab === 'records'">
@@ -247,8 +304,9 @@ onMounted(load)
                 </template>
               </el-table-column>
               <el-table-column label="检查结果" min-width="180" show-overflow-tooltip><template #default="{ row }">{{ checkResult(row) }}</template></el-table-column>
-              <el-table-column label="操作" width="140" fixed="right" class-name="action-column">
+              <el-table-column label="操作" width="200" fixed="right" class-name="action-column">
                 <template #default="{ row }">
+                  <el-button v-if="isAdmin" link type="primary" :icon="Edit" @click="editRecord(row)">修改</el-button>
                   <el-button v-if="isAdmin && row.managed" link type="primary" :icon="Promotion" @click="publish(row)">发布</el-button>
                   <el-button v-if="isAdmin && row.managed" link type="danger" :icon="Delete" @click="remove(row)">删除</el-button>
                 </template>
@@ -300,8 +358,12 @@ onMounted(load)
       </template>
     </el-dialog>
 
-    <el-dialog v-model="recordOpen" title="新建域名记录" width="620px">
+    <el-dialog v-model="recordOpen" :title="record.id ? '修改域名记录' : adopting ? '修改线上记录' : '新建域名记录'" width="620px">
       <el-form label-position="top">
+        <el-alert
+          v-if="adopting"
+          title="该记录目前只存在于 Cloudflare。保存后它会纳入本平台管理，再点击「发布」才会写回 Cloudflare。"
+          type="warning" show-icon :closable="false" style="margin-bottom: 14px" />
         <el-row :gutter="16">
           <el-col :span="8"><el-form-item label="记录类型"><el-select v-model="record.type"><el-option v-for="type in ['A','AAAA','CNAME','TXT']" :key="type" :label="type" :value="type" /></el-select></el-form-item></el-col>
           <el-col :span="16"><el-form-item label="域名"><el-input v-model="record.name" :placeholder="`proxy.${settings.zone_name || 'example.com'}`" /></el-form-item></el-col>
@@ -316,8 +378,8 @@ onMounted(load)
           <el-col :span="12"><el-form-item label="缓存时间（TTL）"><el-input-number v-model="record.ttl" :min="1" :disabled="record.proxied" style="width: 100%" /></el-form-item></el-col>
           <el-col :span="12"><el-form-item label="Cloudflare 加速"><el-switch v-model="record.proxied" active-text="启用" inactive-text="关闭" /></el-form-item></el-col>
         </el-row>
-        <el-form-item :label="record.proxied ? '对应的接入服务（加速必填）' : '对应的接入服务（可选）'" :required="record.proxied">
-          <el-select v-model="record.listener_id" clearable style="width: 100%" :placeholder="record.proxied ? '选择启用 TLS 的 WebSocket 或 gRPC 接入服务' : '选填，用于在列表中标注归属'" @change="onListenerChange">
+        <el-form-item label="对应的接入服务（可选）">
+          <el-select v-model="record.listener_id" clearable style="width: 100%" placeholder="选填，用于在列表中标注归属" @change="onListenerChange">
             <el-option
               v-for="listener in (record.proxied ? proxyListeners : nodeListeners)"
               :key="listener.id"
@@ -325,11 +387,11 @@ onMounted(load)
               :value="listener.id" />
           </el-select>
         </el-form-item>
-        <el-alert v-if="record.proxied" title="加速仅支持 VLESS + TLS 的 WebSocket / gRPC 接入服务，端口需在 Cloudflare 支持范围内。" type="info" show-icon :closable="false" />
+        <el-alert v-if="record.proxied" title="不关联接入服务也可以保存。若要关联，加速仅支持 VLESS + TLS 的 WebSocket / gRPC 接入服务，端口需在 Cloudflare 支持范围内。" type="info" show-icon :closable="false" />
       </el-form>
       <template #footer>
         <el-button @click="recordOpen = false">取消</el-button>
-        <el-button type="primary" :disabled="!record.name || !record.content || (record.proxied && !record.listener_id)" @click="saveRecord">保存</el-button>
+        <el-button type="primary" :disabled="!record.name || !record.content" @click="saveRecord">保存</el-button>
       </template>
     </el-dialog>
 

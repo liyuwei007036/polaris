@@ -87,7 +87,8 @@ code=$(req POST /api/v1/reality-keys "$CSRF" '{"name":"vk-1"}'); b=$(cat $RESP);
 code=$(req POST /api/v1/operators "$CSRF" '{"email":"op1@example.com","password":"Op1-pass-123","role":"operator"}'); b=$(cat $RESP); ok2xx "$code" && [ -n "$(echo "$b"|jf totp_secret)" ] && ok "POST operators -> totp_secret" || no "operators: $code $b"
 SHA=$(printf 'a%.0s' $(seq 1 64))
 code=$(req POST /api/v1/sing-box/releases "$CSRF" "{\"version\":\"1.9.0\",\"architecture\":\"arm64\",\"url\":\"https://example.com/x\",\"sha256\":\"$SHA\",\"enabled\":true}"); b=$(cat $RESP); ok2xx "$code" && ok "POST sing-box/releases" || no "release: $code $b"
-code=$(req PUT /api/v1/cloudflare/settings "$CSRF" '{"zone_id":"z123","zone_name":"example.com","api_token":"tok-abc"}'); b=$(cat $RESP); ok2xx "$code" && ok "PUT cloudflare/settings" || no "cf settings: $code $b"
+# A bogus token must not be storable: settings are only saved once they reach Cloudflare.
+code=$(req PUT /api/v1/cloudflare/settings "$CSRF" '{"zone_id":"z123","zone_name":"example.com","api_token":"tok-abc"}'); b=$(cat $RESP); [ "$code" = 400 ] && ok "PUT cloudflare/settings rejects an unverified token -> 400" || no "cf settings: $code $b"
 # verify a client subscription can be created once an endpoint would exist: check empty-list 200 already covered.
 
 echo "-- managed outbound library (global, not tied to a node) --"

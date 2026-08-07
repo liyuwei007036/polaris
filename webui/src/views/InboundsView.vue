@@ -18,6 +18,10 @@ const loading = ref(false)
 const saving = ref(false)
 const listeners = ref([])
 const outbounds = ref([])
+// Both lists together are the full zone: records this platform manages plus the
+// ones that only exist at Cloudflare. They drive the domain suggestions for the
+// selected server.
+const dnsRecords = ref([])
 const endpointMap = ref({})
 const formOpen = ref(false)
 const editing = ref(null)
@@ -51,9 +55,25 @@ async function load() {
     ])
     listeners.value = listenerResult.listeners || []
     outbounds.value = outboundResult.outbounds || []
+    // Domain suggestions are secondary, and reading the zone can be slow, so
+    // the list fills in on its own instead of holding up the page.
+    loadDomainSuggestions().catch(() => { dnsRecords.value = [] })
   } finally {
     loading.value = false
   }
+}
+
+async function loadDomainSuggestions() {
+  const settings = await api('/cloudflare/settings')
+  if (!settings.connected) {
+    dnsRecords.value = []
+    return
+  }
+  const [managed, remote] = await Promise.all([
+    api('/cloudflare/records'),
+    api('/cloudflare/remote-records'),
+  ])
+  dnsRecords.value = [...(managed.records || []), ...(remote.records || [])]
 }
 
 async function loadEndpoints(listenerID) {
@@ -239,6 +259,7 @@ onMounted(load)
       :template="copying"
       :nodes="appState.nodes"
       :outbounds="outbounds"
+      :dns-records="dnsRecords"
       :endpoints="formEndpoints"
       :saving="saving"
       @save="saveListener"

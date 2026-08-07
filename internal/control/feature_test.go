@@ -727,13 +727,19 @@ func TestFail2BanJailLifecycleAndPublish(t *testing.T) {
 
 // fakeCloudflare emulates the Cloudflare v4 DNS records API in memory.
 type fakeCloudflare struct {
-	mu      sync.Mutex
+	mu sync.Mutex
+	// denied emulates a revoked or under-scoped token: every call is refused
+	// the way Cloudflare refuses one.
+	denied  bool
 	records map[string]control.CloudflareRecord
 	next    int
 }
 
 func (f *fakeCloudflare) handler() http.Handler {
 	mux := http.NewServeMux()
+	mux.HandleFunc("GET /zones/{zone}", func(w http.ResponseWriter, r *http.Request) {
+		writeCF(w, control.CloudflareZoneInfo{ID: r.PathValue("zone"), Name: "example.com", Status: "active"})
+	})
 	mux.HandleFunc("GET /zones/{zone}/dns_records", func(w http.ResponseWriter, r *http.Request) {
 		f.mu.Lock()
 		defer f.mu.Unlock()
@@ -773,7 +779,17 @@ func (f *fakeCloudflare) handler() http.Handler {
 		delete(f.records, r.PathValue("id"))
 		writeCF(w, map[string]string{"id": r.PathValue("id")})
 	})
-	return mux
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		f.mu.Lock()
+		denied := f.denied
+		f.mu.Unlock()
+		if denied {
+			w.WriteHeader(http.StatusForbidden)
+			_, _ = w.Write([]byte(`{"success":false,"errors":[{"message":"Invalid API Token"}]}`))
+			return
+		}
+		mux.ServeHTTP(w, r)
+	})
 }
 
 func writeCF(w http.ResponseWriter, result any) {
@@ -997,10 +1013,13 @@ func TestCloudflareProxyValidationFollowsListenerType(t *testing.T) {
 	}); err == nil {
 		t.Fatal("allowed orange cloud on a Reality listener")
 	}
+	// An orange-cloud record without a listener binding is accepted: it may
+	// well serve something this platform does not host, and it still has to be
+	// editable here.
 	if _, err := store.CreateCloudflareRecord(t.Context(), control.ManagedCloudflareRecord{
 		Name: "bare.example.com", Type: "A", Content: "192.0.2.12", TTL: 1, Proxied: true,
-	}); err == nil {
-		t.Fatal("allowed orange cloud without a listener binding")
+	}); err != nil {
+		t.Fatalf("rejected orange cloud without a listener binding: %v", err)
 	}
 	if _, err := store.CreateCloudflareRecord(t.Context(), control.ManagedCloudflareRecord{
 		Name: "txt.example.com", Type: "TXT", Content: "v=spf1", TTL: 1, Proxied: true, ListenerID: wsListener.ID,
@@ -1089,5 +1108,86 @@ func TestNodeConnectionsAndClashAPICompilation(t *testing.T) {
 	decodeBody(t, response, &result)
 	if len(result.Connections) != 1 || result.Connections[0]["host"] != "target.example.com" {
 		t.Fatalf("unexpected connections: %#v", result)
+	}
+}
+
+// "已连接" has to mean the token actually reaches the zone. A configuration is
+// stored only after it verifies, and one that stops working stops reporting as
+// connected instead of leaving a stale label behind.
+func TestCloudflareSettingsReportVerifiedConnectionOnly(t *testing.T) {
+	fake := &fakeCloudflare{records: map[string]control.CloudflareRecord{}}
+	fakeServer := httptest.NewServer(fake.handler())
+	defer fakeServer.Close()
+	control.SetCloudflareAPIBaseForTest(fakeServer.URL)
+
+	store, err := control.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	secret, err := store.CreateInitialAdmin(t.Context(), "admin@example.com", "correct horse battery staple")
+	if err != nil {
+		t.Fatal(err)
+	}
+	server, err := control.NewServer(store, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	httpServer := httptest.NewServer(server.Handler())
+	defer httpServer.Close()
+	session, csrfToken := login(t, httpServer.URL, secret)
+	settingsURL := httpServer.URL + "/api/v1/cloudflare/settings"
+	valid := map[string]string{"zone_id": "zone1", "zone_name": "example.com", "api_token": "test-token-1234567890"}
+
+	fake.mu.Lock()
+	fake.denied = true
+	fake.mu.Unlock()
+	response := request(t, http.MethodPut, settingsURL, valid, session, csrfToken)
+	if response.StatusCode != http.StatusBadRequest {
+		t.Fatalf("stored a token Cloudflare rejects: got %d", response.StatusCode)
+	}
+	var failure struct {
+		Error string `json:"error"`
+	}
+	decodeBody(t, response, &failure)
+	if !strings.Contains(failure.Error, "Invalid API Token") {
+		t.Fatalf("upstream reason was swallowed: %q", failure.Error)
+	}
+	response = request(t, http.MethodGet, settingsURL, nil, session, csrfToken)
+	var settings control.CloudflareSettingsView
+	decodeBody(t, response, &settings)
+	if settings.Configured || settings.Connected {
+		t.Fatalf("rejected settings were kept: %#v", settings)
+	}
+
+	fake.mu.Lock()
+	fake.denied = false
+	fake.mu.Unlock()
+	mismatch := map[string]string{"zone_id": "zone1", "zone_name": "other.com", "api_token": "test-token-1234567890"}
+	response = request(t, http.MethodPut, settingsURL, mismatch, session, csrfToken)
+	if response.StatusCode != http.StatusBadRequest {
+		t.Fatalf("accepted a zone name the zone ID does not serve: got %d", response.StatusCode)
+	}
+	response.Body.Close()
+
+	response = request(t, http.MethodPut, settingsURL, valid, session, csrfToken)
+	if response.StatusCode != http.StatusNoContent {
+		t.Fatalf("set verified Cloudflare settings: got %d", response.StatusCode)
+	}
+	response = request(t, http.MethodGet, settingsURL, nil, session, csrfToken)
+	decodeBody(t, response, &settings)
+	if !settings.Configured || !settings.Connected || settings.Error != "" {
+		t.Fatalf("verified settings not reported as connected: %#v", settings)
+	}
+
+	// A token revoked after it was stored must surface, not keep claiming a
+	// connection that no longer exists.
+	fake.mu.Lock()
+	fake.denied = true
+	fake.mu.Unlock()
+	response = request(t, http.MethodGet, settingsURL, nil, session, csrfToken)
+	decodeBody(t, response, &settings)
+	if !settings.Configured || settings.Connected || !strings.Contains(settings.Error, "Invalid API Token") {
+		t.Fatalf("revoked token still reported as connected: %#v", settings)
 	}
 }

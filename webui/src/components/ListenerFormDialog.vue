@@ -20,6 +20,9 @@ const props = defineProps({
   template: { type: Object, default: null },
   nodes: { type: Array, default: () => [] },
   outbounds: { type: Array, default: () => [] },
+  // DNS records of the configured zone, used to offer the domains that already
+  // resolve to the selected server.
+  dnsRecords: { type: Array, default: () => [] },
   endpoints: { type: Array, default: () => [] },
   saving: { type: Boolean, default: false },
 })
@@ -32,11 +35,64 @@ const selectedProfile = computed(() => listenerProfileMap[model.value.profile])
 const showReality = computed(() => model.value.security === 'reality')
 const portManagedBySystem = computed(() => Boolean(props.listener && ['127.0.0.1', '::1'].includes(props.listener.listen_address) && props.listener.backend_port !== props.listener.port))
 
+const nodeAddress = computed(() => props.nodes.find((node) => node.id === model.value.node_id)?.client_address || '')
+
+function recordName(record) {
+  return String(record.name || '').replace(/\.$/, '')
+}
+
+// A domain belongs to this server when an A/AAAA record carries the server's
+// address, or a CNAME leads to such a domain. When the server is reached by a
+// domain instead of an IP, that domain counts as well.
+const matchedDomains = computed(() => {
+  const address = nodeAddress.value
+  if (!address) return []
+  const names = new Set(
+    props.dnsRecords
+      .filter((record) => ['A', 'AAAA'].includes(record.type) && record.content === address)
+      .map(recordName),
+  )
+  if (!/^[0-9.]+$/.test(address) && !address.includes(':')) names.add(address)
+  let grew = true
+  while (grew) {
+    grew = false
+    for (const record of props.dnsRecords) {
+      if (record.type !== 'CNAME' || names.has(recordName(record))) continue
+      const target = String(record.content || '').replace(/\.$/, '')
+      if (target === address || names.has(target)) {
+        names.add(recordName(record))
+        grew = true
+      }
+    }
+  }
+  return [...names].filter(Boolean)
+})
+
+const otherDomains = computed(() => {
+  const matched = new Set(matchedDomains.value)
+  const names = props.dnsRecords
+    .filter((record) => ['A', 'AAAA', 'CNAME'].includes(record.type))
+    .map(recordName)
+    .filter((name) => name && !matched.has(name))
+  return [...new Set(names)]
+})
+
+// Domains that resolve to the selected server come first; anything else is
+// still offered, and any domain can be typed in regardless.
+function suggestDomains(query, callback) {
+  const suggestions = [
+    ...matchedDomains.value.map((domain) => ({ value: domain, note: '解析到本服务器' })),
+    ...otherDomains.value.map((domain) => ({ value: domain, note: '未解析到本服务器' })),
+  ]
+  const keyword = query.trim().toLowerCase()
+  callback(keyword ? suggestions.filter((item) => item.value.toLowerCase().includes(keyword)) : suggestions)
+}
+
 const rules = computed(() => ({
   profile: [{ required: true, message: '请选择接入模式', trigger: 'change' }],
   node_id: [{ required: true, message: '请选择服务器', trigger: 'change' }],
   name: [{ required: true, message: '请输入服务名称', trigger: 'blur' }],
-  connection_domain: [{ required: true, message: '请输入连接域名', trigger: 'blur' }],
+  connection_domain: [{ required: true, message: '请选择或输入连接域名', trigger: ['blur', 'change'] }],
   port: [{ required: true, message: '请输入服务端口', trigger: 'blur' }],
   reality_handshake_server: showReality.value ? [{ required: true, message: '请输入 Reality 目标网站', trigger: 'blur' }] : [],
 }))
@@ -206,8 +262,23 @@ async function save() {
           <el-row :gutter="16">
             <el-col :span="24">
               <el-form-item label="连接域名" prop="connection_domain">
-                <el-input v-model="model.connection_domain" placeholder="proxy.example.com" />
-                <div class="form-hint">客户端连接的域名；经 Cloudflare 的 WS/gRPC 同时作为回源 SNI。</div>
+                <el-autocomplete
+                  v-model="model.connection_domain"
+                  :fetch-suggestions="suggestDomains"
+                  clearable
+                  style="width: 100%"
+                  placeholder="proxy.example.com">
+                  <template #default="{ item }">
+                    <span>{{ item.value }}</span>
+                    <span class="domain-note">{{ item.note }}</span>
+                  </template>
+                </el-autocomplete>
+                <div class="form-hint">
+                  客户端连接的域名；经 Cloudflare 的 WS/gRPC 同时作为回源 SNI。
+                  <template v-if="!nodeAddress">请先选择服务器，再挑选解析到它的域名，也可直接输入。</template>
+                  <template v-else-if="matchedDomains.length">点击输入框可选择解析到 {{ nodeAddress }} 的域名，也可直接输入其它域名。</template>
+                  <template v-else>没有找到解析到 {{ nodeAddress }} 的域名，可直接输入，或先到「域名解析」中添加记录。</template>
+                </div>
               </el-form-item>
             </el-col>
           </el-row>
@@ -299,6 +370,7 @@ async function save() {
 .account-row { display: grid; grid-template-columns: 32px minmax(140px, 1fr) minmax(160px, 1fr) minmax(190px, 1.2fr) 62px 38px; gap: 10px; align-items: center; padding: 10px 0; border-bottom: 1px solid var(--sb-border); }
 .account-index { color: var(--sb-muted); text-align: center; font-variant-numeric: tabular-nums; }
 .form-hint { margin-top: 6px; color: var(--sb-muted); font-size: 12px; }
+.domain-note { float: right; margin-left: 20px; color: var(--sb-muted); font-size: 12px; }
 .dialog-footer { display: flex; justify-content: flex-end; gap: 8px; }
 @media (max-width: 680px) {
   .listener-dialog-body :deep(.el-col) { max-width: 100%; flex: 0 0 100%; }

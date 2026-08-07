@@ -37,13 +37,24 @@ type ManagedCloudflareRecord struct {
 	ListenerPort uint16 `json:"listener_port,omitempty"`
 }
 
+// CloudflareSettingsView separates "an operator saved a zone and a token" from
+// "that token still reaches the zone". Only the latter may be shown as
+// connected, so a revoked token or an unreachable network surfaces instead of
+// staying hidden behind a stale label.
 type CloudflareSettingsView struct {
 	Configured  bool   `json:"configured"`
+	Connected   bool   `json:"connected"`
+	Error       string `json:"error,omitempty"`
 	ZoneID      string `json:"zone_id,omitempty"`
 	ZoneName    string `json:"zone_name,omitempty"`
 	TokenMasked string `json:"token_masked,omitempty"`
 	UpdatedAt   string `json:"updated_at,omitempty"`
 }
+
+// cloudflareProbeTimeout keeps the connection check on the settings page short:
+// a blocked network must fail fast instead of holding the page for the client's
+// full request timeout.
+const cloudflareProbeTimeout = 8 * time.Second
 
 func (s *Store) SetCloudflareSettings(ctx context.Context, zoneID, zoneName, token string) error {
 	zoneID = strings.TrimSpace(zoneID)
@@ -67,6 +78,26 @@ func (s *Store) SetCloudflareSettings(ctx context.Context, zoneID, zoneName, tok
 	return nil
 }
 
+// VerifyCloudflareCredentials proves a zone and token combination works before
+// it is stored, so "connected" can never mean "an operator once typed this in".
+func VerifyCloudflareCredentials(ctx context.Context, zoneID, zoneName, token string) error {
+	client, err := NewCloudflareClient(token)
+	if err != nil {
+		return err
+	}
+	probeCtx, cancel := context.WithTimeout(ctx, cloudflareProbeTimeout)
+	defer cancel()
+	zone, err := client.VerifyZone(probeCtx, strings.TrimSpace(zoneID))
+	if err != nil {
+		return err
+	}
+	wanted := strings.TrimSuffix(strings.ToLower(strings.TrimSpace(zoneName)), ".")
+	if remote := strings.TrimSuffix(strings.ToLower(zone.Name), "."); remote != "" && remote != wanted {
+		return userErrorf("该区域编号对应的域名是 %s，与填写的 %s 不一致", remote, wanted)
+	}
+	return nil
+}
+
 func (s *Store) CloudflareSettings(ctx context.Context) (CloudflareSettingsView, error) {
 	var view CloudflareSettingsView
 	var encrypted []byte
@@ -85,6 +116,20 @@ func (s *Store) CloudflareSettings(ctx context.Context) (CloudflareSettingsView,
 	view.Configured = true
 	view.TokenMasked = maskSecret(string(token))
 	view.UpdatedAt = time.Unix(updatedAt, 0).UTC().Format(time.RFC3339)
+	client, err := NewCloudflareClient(string(token))
+	if err != nil {
+		view.Error = err.Error()
+		return view, nil
+	}
+	probeCtx, cancel := context.WithTimeout(ctx, cloudflareProbeTimeout)
+	defer cancel()
+	if _, err := client.VerifyZone(probeCtx, view.ZoneID); err != nil {
+		// A stored token that no longer works is a state to report, not a
+		// request failure: the page still needs to render and offer a fix.
+		view.Error = err.Error()
+		return view, nil
+	}
+	view.Connected = true
 	return view, nil
 }
 
@@ -165,9 +210,10 @@ func (s *Store) validateCloudflareRecord(ctx context.Context, record *ManagedClo
 				return err
 			}
 		}
-	} else if record.Proxied {
-		return errors.New("proxied records must be bound to a listener so CDN compatibility can be validated")
 	}
+	// An orange-cloud record that is not bound to a listener is left alone:
+	// records already living at Cloudflare often serve something other than an
+	// access service, and refusing to save them made them uneditable here.
 	if record.NodeID != "" {
 		var one int
 		if err := s.db.QueryRowContext(ctx, `SELECT 1 FROM nodes WHERE id=? AND revoked_at IS NULL`, record.NodeID).Scan(&one); errors.Is(err, sql.ErrNoRows) {

@@ -143,6 +143,19 @@ test('浏览器页面回归：真实登录，核心工作区 API 使用路由替
   let createdAccount
   let quickListenerPayload
   let savedClientConfig
+  let savedDNSRecord
+  let adoptedDNSRecord
+  // The DNS page must tell "saved" apart from "reachable", so the connection
+  // state is switched between the two assertions below.
+  let cloudflareConnected = false
+  const managedDNSRecord = {
+    id: 'record-1', name: 'ws.example.com', type: 'A', content: '203.0.113.10', ttl: 1,
+    proxied: false, node_id: 'node-1', status: 'synced', node_name: '测试服务器',
+  }
+  const remoteDNSRecords = [
+    { id: 'remote-1', name: 'cdn.example.com', type: 'CNAME', content: 'ws.example.com', ttl: 1, proxied: true },
+    { id: 'remote-2', name: 'other.example.com', type: 'A', content: '198.51.100.7', ttl: 300, proxied: false },
+  ]
   let proxyGroupSequence = 0
   let rejectFirstProxyGroup = true
   const savedProxyGroups = []
@@ -159,10 +172,29 @@ test('浏览器页面回归：真实登录，核心工作区 API 使用路由替
   await page.route('**/api/v1/**', async (route) => {
     const request = route.request()
     const path = new URL(request.url()).pathname
-    if (request.method() === 'GET' && path === '/api/v1/nodes') return route.fulfill({ json: { nodes: [{ id: 'node-1', name: '测试服务器', client_address: 'test.example.com' }] } })
+    if (request.method() === 'GET' && path === '/api/v1/nodes') return route.fulfill({ json: { nodes: [{ id: 'node-1', name: '测试服务器', client_address: '203.0.113.10' }] } })
     if (request.method() === 'GET' && path === '/api/v1/nodes/node-1/metrics') return route.fulfill({ json: { report: null } })
     if (request.method() === 'GET' && path === '/api/v1/listeners') return route.fulfill({ json: { listeners: [listener] } })
     if (request.method() === 'GET' && path === '/api/v1/outbounds') return route.fulfill({ json: { outbounds: [] } })
+    if (request.method() === 'GET' && path === '/api/v1/cloudflare/settings') {
+      return route.fulfill({ json: cloudflareConnected
+        ? { configured: true, connected: true, zone_id: 'zone1', zone_name: 'example.com', token_masked: 'test…7890' }
+        : { configured: true, connected: false, error: 'Cloudflare 接口返回错误：Invalid API Token', zone_id: 'zone1', zone_name: 'example.com' } })
+    }
+    if (request.method() === 'GET' && path === '/api/v1/cloudflare/records') return route.fulfill({ json: { records: cloudflareConnected ? [managedDNSRecord] : [] } })
+    if (request.method() === 'GET' && path === '/api/v1/cloudflare/remote-records') return route.fulfill({ json: { records: cloudflareConnected ? remoteDNSRecords : [] } })
+    if (request.method() === 'GET' && path === '/api/v1/cloudflare/origin-certificates') return route.fulfill({ json: { certificates: [] } })
+    if (request.method() === 'PUT' && path === '/api/v1/cloudflare/settings') {
+      return route.fulfill({ status: 400, json: { error: 'Cloudflare 接口返回错误：Invalid API Token' } })
+    }
+    if (request.method() === 'PUT' && path === '/api/v1/cloudflare/records/record-1') {
+      savedDNSRecord = request.postDataJSON()
+      return route.fulfill({ json: { ...managedDNSRecord, ...savedDNSRecord } })
+    }
+    if (request.method() === 'POST' && path === '/api/v1/cloudflare/records') {
+      adoptedDNSRecord = request.postDataJSON()
+      return route.fulfill({ status: 201, json: { id: 'record-2', status: 'pending', ...adoptedDNSRecord } })
+    }
     if (request.method() === 'GET' && path === '/api/v1/mihomo/proxy-groups') return route.fulfill({ json: { proxy_groups: savedProxyGroups } })
     if (request.method() === 'GET' && path === '/api/v1/mihomo/rule-providers') return route.fulfill({ json: { rule_providers: savedRuleProviders } })
     if (request.method() === 'POST' && path === '/api/v1/mihomo/rule-providers') {
@@ -410,9 +442,71 @@ test('浏览器页面回归：真实登录，核心工作区 API 使用路由替
   await expect.poll(async () => await page.evaluate(() => document.documentElement.scrollHeight <= innerHeight)).toBe(true)
   await expect.poll(async () => await page.evaluate(() => getComputedStyle(document.querySelector('.page-content')).scrollbarWidth)).toBe('none')
 
+  await page.setViewportSize({ width: 1280, height: 800 })
+  // A stored zone whose token no longer works must say so instead of showing an
+  // empty list under a green "已连接" label.
+  await page.getByRole('button', { name: '域名解析', exact: true }).click()
+  await expect(page.getByRole('heading', { name: '域名解析', exact: true })).toBeVisible()
+  await expect(page.getByText('连接异常', { exact: true })).toBeVisible()
+  await expect(page.getByText('读取 Cloudflare 失败：Cloudflare 接口返回错误：Invalid API Token')).toBeVisible()
+  await expect(page.getByRole('button', { name: '新建', exact: true })).toBeDisabled()
+
+  // A zone and token that Cloudflare refuses must not be stored silently.
+  await page.getByRole('button', { name: '设置', exact: true }).click()
+  const settingsDialog = page.getByRole('dialog', { name: '连接 Cloudflare', exact: true })
+  await settingsDialog.getByRole('textbox', { name: '访问令牌（API Token）' }).fill('bogus-token')
+  await settingsDialog.getByRole('button', { name: '保存', exact: true }).click()
+  await expect(page.getByText('Cloudflare 接口返回错误：Invalid API Token', { exact: true })).toBeVisible()
+  await expect(settingsDialog).toBeVisible()
+  await settingsDialog.getByRole('button', { name: '取消', exact: true }).click()
+
+  cloudflareConnected = true
+  await page.getByRole('button', { name: '刷新', exact: true }).click()
+  await expect(page.getByText('已连接 example.com', { exact: true })).toBeVisible()
+  await page.getByRole('row', { name: /^A ws\.example\.com/ }).getByRole('button', { name: '修改' }).click()
+  const dnsDialog = page.getByRole('dialog', { name: '修改域名记录', exact: true })
+  await expect(dnsDialog).toBeVisible()
+  expect(await dnsDialog.locator('input').evaluateAll((inputs) => inputs.map((input) => input.value)))
+    .toEqual(expect.arrayContaining(['ws.example.com', '203.0.113.10']))
+  await dnsDialog.locator('.el-form-item', { hasText: '指向地址或内容' }).getByRole('textbox').fill('203.0.113.20')
+  await dnsDialog.getByRole('button', { name: '保存', exact: true }).click()
+  await expect(page.getByText('域名记录已保存，请点击“发布”写入 Cloudflare', { exact: true })).toBeVisible()
+  expect(savedDNSRecord).toMatchObject({ name: 'ws.example.com', type: 'A', content: '203.0.113.20' })
+  // A record that only exists upstream is edited by declaring it here first.
+  // cdn.example.com has the CDN switched on and serves no access service, and
+  // that combination still has to be saveable.
+  await page.getByRole('row', { name: /^CNAME cdn\.example\.com/ }).getByRole('button', { name: '修改' }).click()
+  const adoptDialog = page.getByRole('dialog', { name: '修改线上记录', exact: true })
+  await expect(adoptDialog.getByText('该记录目前只存在于 Cloudflare')).toBeVisible()
+  await adoptDialog.locator('.el-form-item', { hasText: '指向地址或内容' }).getByRole('textbox').fill('ws.example.com')
+  await adoptDialog.getByRole('button', { name: '保存', exact: true }).click()
+  await expect(page.getByText('域名记录已保存，请点击“发布”写入 Cloudflare', { exact: true })).toBeVisible()
+  expect(adoptedDNSRecord).toMatchObject({ name: 'cdn.example.com', type: 'CNAME', content: 'ws.example.com', proxied: true, listener_id: '' })
+
+  // The connection domain offers what actually resolves to the selected server.
+  await page.getByRole('button', { name: '接入服务', exact: true }).click()
+  await expect(page.getByRole('heading', { name: '接入服务', exact: true })).toBeVisible()
+  await page.getByRole('button', { name: '新建', exact: true }).click()
+  const domainDialog = page.getByRole('dialog', { name: '新建接入服务', exact: true })
+  await expect(domainDialog.getByText('点击输入框可选择解析到 203.0.113.10 的域名，也可直接输入其它域名。')).toBeVisible()
+  const domainInput = domainDialog.getByRole('textbox', { name: '连接域名' })
+  await domainInput.click()
+  const suggestions = page.locator('.el-autocomplete-suggestion__list li')
+  // ws.example.com carries the server's address; cdn.example.com is a CNAME
+  // that leads to it, so both belong to this server.
+  await expect(suggestions).toHaveText([
+    'ws.example.com解析到本服务器',
+    'cdn.example.com解析到本服务器',
+    'other.example.com未解析到本服务器',
+  ])
+  await suggestions.filter({ hasText: 'cdn.example.com' }).click()
+  await expect(domainInput).toHaveValue('cdn.example.com')
+  await domainDialog.getByRole('button', { name: '取消', exact: true }).click()
+
   expect(consoleErrors).toEqual([])
   // Two of these are the deliberately rejected create and copy attempts.
-  expect(httpErrors).toHaveLength(3)
+  expect(httpErrors).toHaveLength(4)
+  expect(httpErrors.some((entry) => /400 .*\/api\/v1\/cloudflare\/settings$/.test(entry))).toBe(true)
   expect(httpErrors.filter((entry) => /400 .*\/api\/v1\/listeners\/quick$/.test(entry))).toHaveLength(2)
   expect(httpErrors.some((entry) => /400 .*\/api\/v1\/mihomo\/proxy-groups$/.test(entry))).toBe(true)
 })
