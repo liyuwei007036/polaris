@@ -69,6 +69,16 @@ func appendNftablesTableRules(report *FirewallReport, table, listing string) boo
 		case strings.HasPrefix(line, "set ") || strings.HasPrefix(line, "map "):
 			chain = ""
 			continue
+		// Comments nft emits about a table's owner, and a chain's own
+		// type/hook/policy header, match no traffic. Listing them beside real
+		// rules made the console read as if the host had protection it does
+		// not have.
+		case strings.HasPrefix(line, "#"):
+			continue
+		case strings.HasPrefix(line, "type ") && strings.Contains(line, " hook "):
+			continue
+		case strings.HasPrefix(line, "policy "):
+			continue
 		}
 		if len(report.Rules) >= maximumReportedFirewallRules {
 			return true
@@ -87,7 +97,9 @@ func collectIptablesRules(ctx context.Context) *FirewallReport {
 	}
 	for _, raw := range strings.Split(string(output), "\n") {
 		line := strings.TrimSpace(raw)
-		if line == "" {
+		// A chain policy (-P) or a bare chain declaration (-N) is not a rule
+		// either, for the same reason the nftables listing skips its headers.
+		if line == "" || strings.HasPrefix(line, "-P ") || strings.HasPrefix(line, "-N ") {
 			continue
 		}
 		if len(report.Rules) >= maximumReportedFirewallRules {

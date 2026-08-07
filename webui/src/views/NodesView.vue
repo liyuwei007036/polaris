@@ -21,6 +21,9 @@ const tokenDialog = ref(false)
 const token = ref('')
 const expiresAt = ref('')
 const lifetime = ref(900)
+const masterPublicKey = ref('')
+const masterHost = ref('')
+const agentPort = ref(19994)
 const editDialog = ref(false)
 const editNode = ref(null)
 const editForm = ref({ name: '', client_address: '' })
@@ -59,16 +62,34 @@ async function load(silent = false) {
   }
 }
 
+// The console host is only a guess at the address agents should dial: the
+// console is often behind a reverse proxy on a different name than the raw
+// Noise port, so the field stays editable and the command follows it.
+const masterAddress = computed(() => {
+  const host = masterHost.value.trim().replace(/[^A-Za-z0-9.:_[\]-]/g, '')
+  return `${host}:${agentPort.value}`
+})
+const installCommand = computed(() => [
+  'curl -fsSLo install.sh https://raw.githubusercontent.com/liyuwei007036/polaris/main/install.sh',
+  ` && sudo env POLARIS_MASTER_ADDRESS='${masterAddress.value}'`,
+  ` POLARIS_MASTER_PUBKEY='${masterPublicKey.value}'`,
+  ` POLARIS_REGISTRATION_TOKEN='${token.value}'`,
+  ' bash install.sh agent',
+].join(''))
+
 async function generateToken() {
   const result = await post('/nodes/registration-tokens', { lifetime_seconds: Number(lifetime.value) })
   token.value = result.token
   expiresAt.value = result.expires_at
+  masterPublicKey.value = result.master_public_key || ''
+  agentPort.value = result.agent_port || 19994
+  masterHost.value = window.location.hostname
   tokenDialog.value = true
 }
 
-async function copyToken() {
-  await navigator.clipboard.writeText(token.value)
-  ElMessage.success('服务器接入信息已复制')
+async function copyInstallCommand() {
+  await navigator.clipboard.writeText(installCommand.value)
+  ElMessage.success('安装命令已复制')
 }
 
 async function approve(registration) {
@@ -219,13 +240,23 @@ onBeforeUnmount(() => {
       </div>
     </main>
 
-    <el-dialog v-model="tokenDialog" title="服务器接入信息" width="580px">
-      <el-alert title="此信息只显示一次，请立即复制。" type="warning" show-icon :closable="false" />
-      <el-input v-model="token" readonly type="textarea" :rows="4" class="mono" style="margin-top: 16px" />
-      <p class="subtle">有效期至：{{ formatDateTime(expiresAt) }}</p>
+    <el-dialog v-model="tokenDialog" title="服务器接入信息" width="720px">
+      <el-alert title="此命令只显示一次，请立即复制。令牌一次性使用，过期后需重新生成。" type="warning" show-icon :closable="false" />
+      <el-form label-position="top" style="margin-top: 16px">
+        <el-form-item label="Master 地址（agent 拨号用的 主机:端口）">
+          <el-input v-model="masterHost" placeholder="control.example.com">
+            <template #append>:{{ agentPort }}</template>
+          </el-input>
+          <p class="subtle">已按当前控制台域名填入。若 agent 需通过其他域名或公网 IP 连接，请在此改成正确的主机名。</p>
+        </el-form-item>
+        <el-form-item label="在目标服务器上以 root 执行">
+          <el-input :model-value="installCommand" readonly type="textarea" :rows="6" class="mono" />
+        </el-form-item>
+      </el-form>
+      <p class="subtle">令牌有效期至：{{ formatDateTime(expiresAt) }}。命令执行后该服务器会出现在“等待确认的服务器”，需在此页面点“接入”批准。</p>
       <template #footer>
         <el-button @click="tokenDialog = false">完成</el-button>
-        <el-button type="primary" :icon="CopyDocument" @click="copyToken">复制</el-button>
+        <el-button type="primary" :icon="CopyDocument" @click="copyInstallCommand">复制命令</el-button>
       </template>
     </el-dialog>
 

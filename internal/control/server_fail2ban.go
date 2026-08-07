@@ -119,6 +119,7 @@ type BannedAddress struct {
 	RuleName string `json:"rule_name,omitempty"`
 	Managed  bool   `json:"managed"`
 	IP       string `json:"ip"`
+	Location string `json:"location,omitempty"`
 	BannedAt string `json:"banned_at,omitempty"`
 	UnbanAt  string `json:"unban_at,omitempty"`
 }
@@ -156,7 +157,8 @@ func (s *Server) listBannedAddresses(w http.ResponseWriter, r *http.Request) {
 			for _, ban := range jail.Banned {
 				banned = append(banned, BannedAddress{
 					NodeID: nodeID, Jail: jail.Name, RuleName: ruleNames[nodeID+"\x00"+jail.Name],
-					Managed: jail.Managed, IP: ban.IP, BannedAt: ban.BannedAt, UnbanAt: ban.UnbanAt,
+					Managed: jail.Managed, IP: ban.IP, Location: s.ipLocator.Locate(ban.IP),
+					BannedAt: ban.BannedAt, UnbanAt: ban.UnbanAt,
 				})
 			}
 		}

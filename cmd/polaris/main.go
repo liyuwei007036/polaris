@@ -175,6 +175,7 @@ func serveMaster(ctx context.Context, configuration masterConfig) error {
 	if err != nil {
 		return err
 	}
+	server.SetAgentPort(configuration.AgentPort)
 	server.StartMaintenance(ctx)
 	agentAddress := portAddress(configuration.AgentPort)
 	agentListener, err := net.Listen("tcp", agentAddress)

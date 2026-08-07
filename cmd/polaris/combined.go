@@ -154,6 +154,7 @@ func serveCombined(ctx context.Context, masterConfiguration masterConfig, agentC
 	if pinnedMasterKey != server.NoisePublicKey() {
 		return errors.New("agent master_public_key does not match this master")
 	}
+	server.SetAgentPort(masterConfiguration.AgentPort)
 	agentAddress := portAddress(masterConfiguration.AgentPort)
 	agentListener, err := net.Listen("tcp", agentAddress)
 	if err != nil {

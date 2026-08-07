@@ -61,14 +61,16 @@ func TestUnbanRejectsUnsafeInput(t *testing.T) {
 
 func TestNftablesRulesExcludeTheManagedTable(t *testing.T) {
 	report := &FirewallReport{Available: true, Tool: "nftables"}
-	listing := "table inet filter {\n\tchain input {\n\t\ttype filter hook input priority 0; policy drop;\n\t\tct state established accept\n\t}\n}\n"
+	listing := "# Warning: table ip filter is managed by iptables-nft, do not touch!\ntable inet filter {\n\tchain input {\n\t\ttype filter hook input priority 0; policy drop;\n\t\tct state established accept\n\t}\n}\n"
 	if truncated := appendNftablesTableRules(report, "inet filter", listing); truncated {
-		t.Fatal("a two-rule table should not reach the cap")
+		t.Fatal("a one-rule table should not reach the cap")
 	}
-	if len(report.Rules) != 2 {
+	// The owner comment and the chain's type/hook/policy header match no
+	// traffic, so only the one real rule is reported.
+	if len(report.Rules) != 1 {
 		t.Fatalf("unexpected rules: %#v", report.Rules)
 	}
-	if report.Rules[1].Chain != "input" || report.Rules[1].Rule != "ct state established accept" {
-		t.Fatalf("rule was not attributed to its chain: %#v", report.Rules[1])
+	if report.Rules[0].Chain != "input" || report.Rules[0].Rule != "ct state established accept" {
+		t.Fatalf("rule was not attributed to its chain: %#v", report.Rules[0])
 	}
 }

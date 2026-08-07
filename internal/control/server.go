@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"database/sql"
 	"embed"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -26,12 +27,17 @@ import (
 
 const sessionCookieName = "polaris_session"
 
+// defaultAgentPort mirrors the master config default; SetAgentPort overrides it
+// with the port this process actually listens on.
+const defaultAgentPort = 19994
+
 //go:embed web/dist
 var dashboardFS embed.FS
 
 type Server struct {
 	store                  *Store
 	noiseKeypair           wire.Keypair
+	agentPort              int
 	secureCookies          bool
 	controlMu              sync.Mutex
 	controls               map[string]*controlSession
@@ -77,7 +83,7 @@ func NewServer(store *Store, secureCookies bool) (*Server, error) {
 		return nil, fmt.Errorf("load IP location database: %w", err)
 	}
 	return &Server{
-		store: store, noiseKeypair: keypair, secureCookies: secureCookies,
+		store: store, noiseKeypair: keypair, agentPort: defaultAgentPort, secureCookies: secureCookies,
 		controls: make(map[string]*controlSession), autoInstallChecked: make(map[string]bool),
 		latestSingBoxReleaseFn: LatestOfficialSingBoxRelease,
 		connHub:                newConnectionsHub(), liveHub: newLiveHub(), ipLocator: ipLocator,
@@ -109,6 +115,15 @@ func (s *Server) StartMaintenance(ctx context.Context) {
 // show-pubkey") — the WireGuard-style replacement for distributing a CA cert.
 func (s *Server) NoisePublicKey() [wire.KeySize]byte {
 	return s.noiseKeypair.Public
+}
+
+// SetAgentPort records the Noise TCP port agents must dial, so the console can
+// render a complete agent install command. It is the process entry point that
+// knows the configured port, not the Server itself.
+func (s *Server) SetAgentPort(port int) {
+	if port > 0 && port <= 65535 {
+		s.agentPort = port
+	}
 }
 
 // BrowserHandler serves the operator-facing web UI and API: plain HTTP is
@@ -662,7 +677,13 @@ func (s *Server) createRegistrationToken(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	_ = s.store.AppendAudit(r.Context(), operator.ID, "registration_token.created", "registration_token", "", "lifetime recorded; token omitted")
-	writeJSON(w, http.StatusCreated, map[string]string{"token": token.Token, "expires_at": token.ExpiresAt.Format(time.RFC3339)})
+	public := s.NoisePublicKey()
+	writeJSON(w, http.StatusCreated, map[string]any{
+		"token":             token.Token,
+		"expires_at":        token.ExpiresAt.Format(time.RFC3339),
+		"master_public_key": base64.StdEncoding.EncodeToString(public[:]),
+		"agent_port":        s.agentPort,
+	})
 }
 
 // DispatchTask persists before delivery; an offline agent receives it after
