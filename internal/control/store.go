@@ -2340,6 +2340,12 @@ CREATE INDEX IF NOT EXISTS idx_cloudflare_records_binding ON cloudflare_records(
 	if err := s.migrateLegacyVLESSStreamTLS(ctx); err != nil {
 		return err
 	}
+	if err := s.migrateHysteria2ALPN(ctx); err != nil {
+		return err
+	}
+	if err := s.migrateListenersBehindRouter(ctx); err != nil {
+		return err
+	}
 	if err := s.addFail2BanJailColumn(ctx, "ports TEXT NOT NULL DEFAULT ''"); err != nil {
 		return err
 	}

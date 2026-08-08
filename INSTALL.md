@@ -298,7 +298,7 @@ data_dir: /var/lib/polaris-agent
 master_address: '127.0.0.1:19994'
 master_public_key: '${PUBKEY}'
 heartbeat_interval: 30s
-connections_interval: 2s
+connections_interval: 10s
 EOF
 sudo chmod 0600 /etc/polaris/agent.yaml
 
@@ -344,7 +344,7 @@ data_dir: /var/lib/polaris-agent
 master_address: control.example.com:19994
 master_public_key: <MASTER_NOISE_PUBKEY>
 heartbeat_interval: 30s
-connections_interval: 2s
+connections_interval: 10s
 ```
 
 | 字段 | 默认值 | 约束 |
@@ -353,7 +353,7 @@ connections_interval: 2s
 | `master_address` | 无 | 必填，`主机:端口`，不带 URL scheme |
 | `master_public_key` | 无 | 必填，Base64，解码后必须是 32 字节 |
 | `heartbeat_interval` | `30s` | 允许 `5s` – `5m` |
-| `connections_interval` | `5s`（发布模板写的是 `2s`） | 允许 `1s` – `30s` |
+| `connections_interval` | `10s` | 允许 `1s` – `30s` |
 
 可选的 `nginx_passthrough_routes` 用于已有非 Polaris 服务与受管 Nginx stream 共用同一端口：
 

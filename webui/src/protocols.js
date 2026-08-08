@@ -14,6 +14,18 @@ export const listenerProfiles = [
 
 export const listenerProfileMap = Object.fromEntries(listenerProfiles.map((profile) => [profile.value, profile]))
 
+// Hysteria2 runs over QUIC, whose ALPN is h3. The VLESS transports run over
+// TCP, where h3 cannot be negotiated at all: WebSocket upgrades over HTTP/1.1
+// and gRPC needs HTTP/2.
+export function defaultALPNFor(profileValue) {
+  const profile = listenerProfileMap[profileValue]
+  if (!profile) return []
+  if (profile.protocol === 'hysteria2') return ['h3']
+  if (profile.transport === 'grpc') return ['h2']
+  if (profile.transport === 'ws') return ['http/1.1']
+  return []
+}
+
 export const protocols = [
   {
     value: 'vless',
@@ -83,7 +95,7 @@ export function listenerPayload(model) {
   const profile = listenerProfileMap[model.profile]
   const definition = protocolMap[profile.protocol]
   const security = profile.security
-  const defaultALPN = profile.transport === 'grpc' ? ['h2'] : profile.transport === 'ws' ? ['http/1.1'] : []
+  const defaultALPN = defaultALPNFor(model.profile)
   const automaticallyManaged = ['127.0.0.1', '::1'].includes(model.listen_address) && model.backend_port && model.backend_port !== model.original_port
   return {
     node_id: model.node_id,

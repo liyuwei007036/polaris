@@ -54,6 +54,8 @@ type Server struct {
 	ipLocator              *ipLocator
 	listenerNameMu         sync.Mutex
 	listenerNameCache      map[string]listenerNameEntry
+	outboundNameCache      map[string]string
+	outboundNameCachedAt   time.Time
 	reconcileMu            sync.Mutex
 	reconcileState         map[string]reconcileAttempt
 }

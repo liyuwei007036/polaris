@@ -530,7 +530,7 @@ func (s *Store) resolveMihomoProxyGroups(ctx context.Context, rootIDs []string) 
 		byID[group.ID] = group
 	}
 	state := map[string]uint8{}
-	ordered := make([]MihomoProxyGroup, 0, len(groups))
+	reachable := make([]MihomoProxyGroup, 0, len(groups))
 	var visit func(string) error
 	visit = func(groupID string) error {
 		group, exists := byID[groupID]
@@ -552,12 +552,30 @@ func (s *Store) resolveMihomoProxyGroups(ctx context.Context, rootIDs []string) 
 			}
 		}
 		state[groupID] = 2
-		ordered = append(ordered, group)
+		reachable = append(reachable, group)
 		return nil
 	}
 	for _, groupID := range rootIDs {
 		if err := visit(groupID); err != nil {
 			return nil, err
+		}
+	}
+	// Mihomo selects the first entry of proxy-groups by default, so the groups
+	// the operator picked lead the list in the order they picked them. The
+	// groups that are only reachable through a reference follow; Mihomo
+	// resolves group members by name after reading the whole document, so a
+	// group may be referenced before it is defined.
+	isRoot := make(map[string]bool, len(rootIDs))
+	for _, groupID := range rootIDs {
+		isRoot[groupID] = true
+	}
+	ordered := make([]MihomoProxyGroup, 0, len(reachable))
+	for _, groupID := range rootIDs {
+		ordered = append(ordered, byID[groupID])
+	}
+	for _, group := range reachable {
+		if !isRoot[group.ID] {
+			ordered = append(ordered, group)
 		}
 	}
 	return ordered, nil

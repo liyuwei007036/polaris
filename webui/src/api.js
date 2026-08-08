@@ -26,7 +26,7 @@ export function friendlyError(message) {
 }
 
 export async function api(path, options = {}) {
-  const { method = 'GET', body, silentUnauthorized = false } = options
+  const { method = 'GET', body, silentUnauthorized = false, onTask } = options
   const headers = { 'Content-Type': 'application/json' }
   if (csrfToken.value) headers['X-CSRF-Token'] = csrfToken.value
   const response = await fetch(`/api/v1${path}`, {
@@ -39,6 +39,10 @@ export async function api(path, options = {}) {
     window.dispatchEvent(new CustomEvent('sb:unauthorized'))
     throw new Error('会话已过期，请重新登录')
   }
+  // The server reports the configuration deploy it queued in a response header.
+  // A caller that hands it to waitForTask can report what actually reached the
+  // node instead of assuming the write to the database was the whole job.
+  if (onTask) onTask(response.headers.get('X-SB-Auto-Apply-Task') || '')
   if (response.status === 204) return null
   const contentType = response.headers.get('content-type') || ''
   const data = contentType.includes('json')
@@ -53,6 +57,6 @@ export async function api(path, options = {}) {
   return data
 }
 
-export const post = (path, body) => api(path, { method: 'POST', body })
-export const put = (path, body) => api(path, { method: 'PUT', body })
+export const post = (path, body, options) => api(path, { ...options, method: 'POST', body })
+export const put = (path, body, options) => api(path, { ...options, method: 'PUT', body })
 export const del = (path) => api(path, { method: 'DELETE' })

@@ -517,6 +517,9 @@ type storedConnection struct {
 	// User is the access user sing-box authenticated the connection as, which
 	// is what the overview counts when it ranks the busiest nodes.
 	User string `json:"user,omitempty"`
+	// OutboundName is the egress the operator configured, resolved from the
+	// sing-box outbound tag; "直连" for the built-in direct outbound.
+	OutboundName string `json:"outbound_name,omitempty"`
 }
 
 type storedFail2BanJail struct {
@@ -543,24 +546,112 @@ type storedFail2Ban struct {
 func (s *Server) convertConnections(ctx context.Context, nodeID string, in []wire.ConnectionInfo) []storedConnection {
 	names := s.listenerNames(ctx, nodeID)
 	aliases := s.endpointAliases(ctx, nodeID)
+	egress := s.outboundNames(ctx)
 	out := make([]storedConnection, 0, len(in))
 	for _, c := range in {
 		ip := addressIP(c.Source)
-		listenerID := strings.TrimPrefix(c.InboundTag, "listener-")
-		// sing-box reports the account name it authenticated; the console
-		// shows the alias an operator gave that node where there is one.
-		user := c.User
-		if alias, ok := aliases[listenerID+"\x00"+c.User]; ok && alias != "" {
+		listenerID := connectionListenerID(c)
+		// The console shows the alias an operator gave the access node where
+		// there is one, falling back to the account name sing-box matched.
+		account := connectionAccount(c)
+		user := account
+		if alias, ok := aliases[listenerID+"\x00"+account]; ok && alias != "" {
 			user = alias
 		}
 		out = append(out, storedConnection{
 			ID: c.ID, Inbound: c.Inbound, Network: c.Network, Source: c.Source, Destination: c.Destination,
 			SourceIP: ip, SourceLocation: s.ipLocator.Locate(ip), Host: c.Host, Upload: c.Upload, Download: c.Download,
 			StartedAt: c.StartedAt, Outbound: c.Outbound, Rule: c.Rule, RulePayload: c.RulePayload, Chains: c.Chains,
-			ListenerName: names[listenerID], User: user,
+			ListenerName: names[listenerID], User: user, OutboundName: outboundDisplayName(c.Outbound, egress),
 		})
 	}
 	return out
+}
+
+// connectionListenerID resolves the listener a connection arrived on. sing-box
+// reports the inbound in the Clash API's metadata.type, written as
+// "<inbound type>/<inbound tag>"; the separate tag field is only populated by
+// agents new enough to read it from there, so the metadata is the fallback for
+// nodes whose agent has not been upgraded yet.
+func connectionListenerID(c wire.ConnectionInfo) string {
+	if id, found := strings.CutPrefix(c.InboundTag, "listener-"); found {
+		return id
+	}
+	if _, tag, found := strings.Cut(c.Inbound, "/"); found {
+		if id, ok := strings.CutPrefix(tag, "listener-"); ok {
+			return id
+		}
+	}
+	return ""
+}
+
+// connectionAccount resolves which access account a connection authenticated
+// as. The Clash API leaves the user out of its connection metadata, but every
+// account this project compiles gets an auth_user route rule, and the rule the
+// connection matched is reported verbatim — so the account name arrives inside
+// a string that reads like "inbound=listener-x auth_user=user_y => route(z)".
+func connectionAccount(c wire.ConnectionInfo) string {
+	if c.User != "" {
+		return c.User
+	}
+	_, rest, found := strings.Cut(c.Rule, "auth_user=")
+	if !found {
+		return ""
+	}
+	if end := strings.IndexAny(rest, " \t"); end >= 0 {
+		return rest[:end]
+	}
+	return rest
+}
+
+// outboundDisplayName turns a sing-box outbound tag into the egress an
+// operator would recognise. Unknown tags are shown as they are rather than
+// hidden, so a connection is never left without an egress.
+func outboundDisplayName(tag string, names map[string]string) string {
+	switch {
+	case tag == "":
+		return ""
+	case tag == "direct":
+		return "直连"
+	}
+	if id, found := strings.CutPrefix(tag, "outbound-"); found {
+		if name := names[id]; name != "" {
+			return name
+		}
+	}
+	return tag
+}
+
+// outboundNames maps outbound IDs to their configured names. Outbounds are
+// global rather than per node, and they change far more rarely than the
+// connection pushes that read them, so one short-lived cache serves them all.
+func (s *Server) outboundNames(ctx context.Context) map[string]string {
+	s.listenerNameMu.Lock()
+	cached, at := s.outboundNameCache, s.outboundNameCachedAt
+	s.listenerNameMu.Unlock()
+	if cached != nil && time.Since(at) < listenerNameCacheTTL {
+		return cached
+	}
+	names := map[string]string{}
+	rows, err := s.store.db.QueryContext(ctx, `SELECT id, name FROM outbounds`)
+	if err != nil {
+		return names
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id, name string
+		if err := rows.Scan(&id, &name); err != nil {
+			return names
+		}
+		names[id] = name
+	}
+	if rows.Err() != nil {
+		return names
+	}
+	s.listenerNameMu.Lock()
+	s.outboundNameCache, s.outboundNameCachedAt = names, time.Now()
+	s.listenerNameMu.Unlock()
+	return names
 }
 
 // endpointAliases maps a node's "listener ID + account name" to the alias an

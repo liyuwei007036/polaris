@@ -112,7 +112,7 @@ func executeTask(ctx context.Context, task Task, options TaskOptions) TaskResult
 	case "singbox.apply_config":
 		return applySingBoxConfig(ctx, task)
 	case "nginx.apply_config":
-		return applyNginxConfig(ctx, task, options.NginxPassthroughRoutes)
+		return applyNginxConfig(ctx, task, options.DataDir, options.NginxPassthroughRoutes)
 	case "firewall.apply":
 		return applyNftables(ctx, task)
 	case "fail2ban.apply":
@@ -527,7 +527,7 @@ func persistNftables(ctx context.Context, script string) error {
 	return nil
 }
 
-func applyNginxConfig(ctx context.Context, task Task, passthrough []NginxPassthroughRoute) TaskResult {
+func applyNginxConfig(ctx context.Context, task Task, dataDir string, passthrough []NginxPassthroughRoute) (result TaskResult) {
 	var payload struct {
 		Configuration string `json:"configuration"`
 	}
@@ -545,14 +545,53 @@ func applyNginxConfig(ctx context.Context, task Task, passthrough []NginxPassthr
 			BackendAddress: route.BackendAddress, BackendPort: route.BackendPort,
 		})
 	}
+	// Sites moved aside by an earlier deploy no longer hold the public port, so
+	// they cannot be rediscovered below. Their routes come from the record kept
+	// at the time, or rebuilding this file would take those sites offline.
+	known := loadNginxTakeover(dataDir)
+	routes = append(routes, takeoverRecordRoutes(known)...)
 	effectiveConfiguration, err := nginxroute.MergePassthrough(payload.Configuration, routes)
 	if err != nil {
 		return TaskResult{Status: "failed", Summary: "merge Nginx passthrough routes: " + err.Error()}
 	}
-	effectiveDigest := sha256.Sum256([]byte(effectiveConfiguration))
+	if effectiveConfiguration != "" {
+		effectiveConfiguration, err = applyTakeoverDefaults(effectiveConfiguration, known)
+		if err != nil {
+			return TaskResult{Status: "failed", Summary: "恢复现有 Nginx 站点的默认转发失败：" + err.Error()}
+		}
+	}
 	if err := ensureNginxReady(ctx, effectiveConfiguration != ""); err != nil {
 		return TaskResult{Status: "failed", Summary: "prepare automatic TCP port routing: " + err.Error()}
 	}
+	// An Nginx that was installed before polaris may still serve a site on the
+	// port the router needs. Moving that site to loopback and routing its own
+	// names back to it lets both keep working on the same port.
+	var edits []nginxSiteEdit
+	defer func() {
+		if len(edits) > 0 && result.Status != "succeeded" {
+			restoreNginxSites(edits)
+		}
+	}()
+	edits, err = takeOverManagedPorts(ctx, effectiveConfiguration, known)
+	if err != nil {
+		return TaskResult{Status: "failed", Summary: err.Error()}
+	}
+	if len(edits) > 0 {
+		effectiveConfiguration, err = nginxroute.MergePassthrough(effectiveConfiguration, takeOverRoutes(edits))
+		if err != nil {
+			return TaskResult{Status: "failed", Summary: "合并现有 Nginx 站点路由失败：" + err.Error()}
+		}
+		effectiveConfiguration, err = applyTakeoverDefaults(effectiveConfiguration, takeOverDefaults(edits))
+		if err != nil {
+			return TaskResult{Status: "failed", Summary: "设置现有 Nginx 站点的默认转发失败：" + err.Error()}
+		}
+	}
+	// Anything still holding a router port is not Nginx and cannot be moved, so
+	// say who it is now rather than letting Nginx fail to bind later.
+	if owners := foreignPortOwners(ctx, effectiveConfiguration); len(owners) > 0 {
+		return TaskResult{Status: "failed", Summary: "端口冲突：" + strings.Join(owners, "；") + "。请停止占用该端口的程序，或为接入服务改用其他端口"}
+	}
+	effectiveDigest := sha256.Sum256([]byte(effectiveConfiguration))
 	if current, err := os.ReadFile(managedNginxConfig); err == nil {
 		currentDigest := sha256.Sum256(current)
 		if currentDigest == effectiveDigest && nginxServiceActive(ctx) {
@@ -562,7 +601,7 @@ func applyNginxConfig(ctx context.Context, task Task, passthrough []NginxPassthr
 			if reloadOutput, reloadErr := exec.CommandContext(ctx, "systemctl", "reload", "nginx.service").CombinedOutput(); reloadErr != nil {
 				return TaskResult{Status: "failed", Summary: commandSummary("systemctl reload nginx.service", reloadOutput, reloadErr)}
 			}
-			return TaskResult{Status: "succeeded", Summary: "Nginx configuration validated and reloaded"}
+			return nginxApplySucceeded(dataDir, edits)
 		}
 	}
 	directory := filepath.Dir(managedNginxConfig)
@@ -610,10 +649,10 @@ func applyNginxConfig(ctx context.Context, task Task, passthrough []NginxPassthr
 	} else if startOutput, startErr := exec.CommandContext(ctx, "systemctl", "enable", "--now", "nginx.service").CombinedOutput(); startErr != nil {
 		applyErr = commandSummary("systemctl enable --now nginx.service", startOutput, startErr)
 	} else {
-		return TaskResult{Status: "succeeded", Summary: "Nginx configuration validated and reloaded"}
+		return nginxApplySucceeded(dataDir, edits)
 	}
 	if applyErr == "" {
-		return TaskResult{Status: "succeeded", Summary: "Nginx configuration validated and reloaded"}
+		return nginxApplySucceeded(dataDir, edits)
 	}
 	if backup, err := os.ReadFile(backupPath); err == nil {
 		if os.WriteFile(managedNginxConfig, backup, 0o640) == nil {
@@ -972,6 +1011,12 @@ func applySingBoxConfig(ctx context.Context, task Task) TaskResult {
 	}
 	if output, err := exec.CommandContext(ctx, "sing-box", "check", "-c", temporaryPath).CombinedOutput(); err != nil {
 		return TaskResult{Status: "failed", Summary: commandSummary("sing-box check", output, err)}
+	}
+	// Checked before the configuration is put in place: a port owned by another
+	// process only makes sing-box fail on start, and the restart loop that
+	// follows is far harder to read than this message.
+	if conflicts := singBoxPortConflicts(ctx, payload.Configuration); len(conflicts) > 0 {
+		return TaskResult{Status: "failed", Summary: "端口冲突：" + strings.Join(conflicts, "；") + "。请停止占用该端口的程序，或为接入服务改用其他端口"}
 	}
 	backupPath := managedSingBoxConfig + ".polaris.last-good"
 	if current, err := os.ReadFile(managedSingBoxConfig); err == nil {

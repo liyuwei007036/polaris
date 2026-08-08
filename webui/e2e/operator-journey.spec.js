@@ -142,6 +142,8 @@ test('浏览器页面回归：真实登录，核心工作区 API 使用路由替
   let updatedAccount
   let createdAccount
   let quickListenerPayload
+  let quickListenerAttempts = 0
+  const deployFailureSummary = '端口冲突：TCP/443 已被 nginx 占用。请停止占用该端口的程序，或为接入服务改用其他端口'
   let savedClientConfig
   let savedDNSRecord
   let adoptedDNSRecord
@@ -216,7 +218,21 @@ test('浏览器页面回归：真实登录，核心工作区 API 使用路由替
     }
     if (request.method() === 'POST' && path === '/api/v1/listeners/quick') {
       quickListenerPayload = request.postDataJSON()
+      quickListenerAttempts += 1
+      // The second attempt is accepted, but the deploy it queues fails. Saving
+      // only writes the database, so the UI has to wait for that task and show
+      // why it failed instead of reporting a plain success.
+      if (quickListenerAttempts === 2) {
+        return route.fulfill({
+          status: 201,
+          headers: { 'content-type': 'application/json', 'X-SB-Auto-Apply-Task': 'task-1' },
+          body: JSON.stringify({ listener, endpoints: [] }),
+        })
+      }
       return route.fulfill({ status: 400, json: { error: '测试校验错误：请检查接入服务参数' } })
+    }
+    if (request.method() === 'GET' && path === '/api/v1/tasks/task-1') {
+      return route.fulfill({ json: { id: 'task-1', node_id: 'node-1', kind: 'singbox.apply_config', status: 'failed', result_summary: deployFailureSummary } })
     }
     if (request.method() === 'POST' && path === '/api/v1/listeners/listener-1/endpoints/quick') {
       createdAccount = request.postDataJSON()
@@ -259,7 +275,12 @@ test('浏览器页面回归：真实登录，核心工作区 API 使用路由替
   expect(quickListenerPayload.listener.connection_domain).toBe('reality.example.com')
   expect(quickListenerPayload.accounts[0].name).toMatch(/^user_[0-9a-f]{8}$/)
   expect(quickListenerPayload.accounts[0]).toMatchObject({ alias: '测试节点 01', enabled: true, outbound_id: 'direct' })
-  await createDialog.getByRole('button', { name: '取消', exact: true }).click()
+  // The server accepts this one, so the dialog closes; the deploy it queued
+  // still fails, and its reason has to reach the operator verbatim rather than
+  // being replaced by a success message.
+  await createDialog.getByRole('button', { name: '创建', exact: true }).click()
+  await expect(page.getByText(deployFailureSummary, { exact: true })).toBeVisible()
+  await expect(createDialog).toBeHidden()
 
   await page.getByRole('button', { name: '编辑', exact: true }).click()
   const editDialog = page.getByRole('dialog', { name: '修改接入服务', exact: true })

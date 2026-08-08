@@ -250,12 +250,14 @@ func collectConnectionsAndTraffic(ctx context.Context) ([]ConnectionInfo, ProxyT
 		if connection.Metadata.DestinationIP != "" || connection.Metadata.DestinationPort != "" {
 			info.Destination = net.JoinHostPort(connection.Metadata.DestinationIP, connection.Metadata.DestinationPort)
 		}
-		// The Clash API orders chains from the final egress outwards to the
-		// entry point: index 0 is the outbound that actually carried the
-		// traffic and the last index is the inbound it arrived on.
+		// chains only ever lists outbounds, with index 0 the one that actually
+		// carried the traffic. The inbound is reported separately, inside
+		// metadata.type, written as "<inbound type>/<inbound tag>".
 		if len(connection.Chains) > 0 {
 			info.Outbound = connection.Chains[0]
-			info.InboundTag = connection.Chains[len(connection.Chains)-1]
+		}
+		if _, tag, found := strings.Cut(connection.Metadata.Type, "/"); found {
+			info.InboundTag = tag
 		}
 		connections = append(connections, info)
 	}

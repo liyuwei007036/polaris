@@ -3,6 +3,7 @@ import { computed, inject, onMounted, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Delete, DocumentCopy, Edit, Plus, Refresh, Search } from '@element-plus/icons-vue'
 import { api, del, post, put } from '../api'
+import { waitForTask } from '../live'
 import { includesText } from '../format'
 import { protocolMap } from '../protocols'
 import PageHeader from '../components/PageHeader.vue'
@@ -120,18 +121,33 @@ async function openCopy(listener) {
 async function saveListener(payload) {
   saving.value = true
   try {
+    let applyTaskID = ''
+    const trackApply = (id) => { if (id) applyTaskID = id }
     if (editing.value) {
-      await put(`/listeners/${editing.value.id}`, payload.listener)
+      await put(`/listeners/${editing.value.id}`, payload.listener, { onTask: trackApply })
       await syncAccounts(editing.value.id, payload.accounts)
     } else {
       const accounts = payload.accounts.map(({ name, alias, enabled, outbound_id }) => ({ name, alias, enabled, outbound_id }))
-      await post('/listeners/quick', { listener: payload.listener, accounts })
+      await post('/listeners/quick', { listener: payload.listener, accounts }, { onTask: trackApply })
     }
-    ElMessage.success(editing.value ? '接入服务已保存，正在自动应用' : copying.value ? '接入服务已复制并创建，正在自动应用' : '接入服务已创建，正在自动应用')
+    const saved = editing.value ? '接入服务已保存' : copying.value ? '接入服务已复制并创建' : '接入服务已创建'
     formOpen.value = false
     copying.value = null
     copySourceID.value = ''
     await load()
+    // Saving only writes the database; the configuration reaches the server as
+    // a separate task. Reporting success before that task finishes hid every
+    // deploy failure, a port already taken on the node among them.
+    if (!applyTaskID) {
+      ElMessage.success(`${saved}，正在自动应用`)
+      return
+    }
+    const result = await waitForTask(applyTaskID, 60000)
+    if (result.status !== 'succeeded') {
+      ElMessage.error(result.result_summary || '配置未能应用，请到“操作记录”查看原因')
+      return
+    }
+    ElMessage.success(`${saved}并已应用`)
   } catch (error) {
     ElMessage.error(error instanceof Error ? error.message : '接入服务保存失败，请检查填写内容后重试')
   } finally {

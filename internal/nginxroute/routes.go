@@ -32,7 +32,7 @@ func Compile(routes []Route) (string, error) {
 		name := GroupName(key.address, key.port)
 		output.WriteString("map $ssl_preread_server_name $")
 		output.WriteString(name)
-		output.WriteString(" {\n    default \"127.0.0.1:1\";\n")
+		output.WriteString(" {\n    default \"" + DefaultBackendPlaceholder + "\";\n")
 		output.WriteString(Marker(name))
 		for _, route := range groups[key] {
 			writeMapRoute(&output, route)
@@ -73,6 +73,30 @@ func MergePassthrough(configuration string, routes []Route) (string, error) {
 		configuration = configuration[:markerIndex+len(marker)] + additions.String() + configuration[markerIndex+len(marker):]
 	}
 	return configuration, nil
+}
+
+// DefaultBackendPlaceholder is where a group sends traffic whose SNI matches no
+// route: a closed port, so an unrecognised name is refused rather than served.
+const DefaultBackendPlaceholder = "127.0.0.1:1"
+
+// SetDefaultBackend points a group's fallback at a real backend. It is how a
+// catch-all Nginx site keeps working after the router takes over its port:
+// every name the router does not recognise belongs to that site, which is
+// exactly what the site meant by matching everything.
+func SetDefaultBackend(configuration, listenAddress string, port uint16, backendAddress string, backendPort uint16) (string, error) {
+	group := net.JoinHostPort(listenAddress, strconv.Itoa(int(port)))
+	header := "map $ssl_preread_server_name $" + GroupName(listenAddress, port) + " {\n"
+	index := strings.Index(configuration, header)
+	if index < 0 {
+		return "", fmt.Errorf("managed Nginx route group %s is missing", group)
+	}
+	start := index + len(header)
+	placeholder := "    default \"" + DefaultBackendPlaceholder + "\";\n"
+	if !strings.HasPrefix(configuration[start:], placeholder) {
+		return "", fmt.Errorf("managed Nginx route group %s already has a default backend", group)
+	}
+	backend := net.JoinHostPort(backendAddress, strconv.Itoa(int(backendPort)))
+	return configuration[:start] + "    default \"" + backend + "\";\n" + configuration[start+len(placeholder):], nil
 }
 
 func GroupName(address string, port uint16) string {

@@ -5,7 +5,7 @@ master_address: 127.0.0.1:19994
 # 这是 Master 的 Noise 公钥，不是 Reality 公钥、TLS 证书或注册令牌。
 master_public_key: REPLACE_WITH_MASTER_NOISE_PUBLIC_KEY
 heartbeat_interval: 30s
-connections_interval: 2s
+connections_interval: 10s
 # 已有网站需要与 polaris 共用同一个 Nginx stream 端口时，在这里声明其 SNI 后端。
 # nginx_passthrough_routes:
 #   - listen_address: 0.0.0.0

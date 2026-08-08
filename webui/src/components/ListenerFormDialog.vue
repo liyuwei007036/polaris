@@ -4,6 +4,7 @@ import { ElMessage } from 'element-plus'
 import { CircleCheck, Delete, Plus } from '@element-plus/icons-vue'
 import {
   createListenerModel,
+  defaultALPNFor,
   listenerProfileMap,
   listenerProfiles,
   listenerPayload,
@@ -110,7 +111,7 @@ function randomPath() {
 
 function setProfile(value) {
   model.value.profile = value
-  model.value.tls_alpn = value === 'vless-grpc' ? ['h2'] : value === 'vless-ws' ? ['http/1.1'] : []
+  model.value.tls_alpn = defaultALPNFor(value)
   normalizeProfile()
   if (listenerProfileMap[value]?.transport === 'ws' && !model.value.transport_path) {
     model.value.transport_path = randomPath()

@@ -81,12 +81,23 @@ func (s *Store) CreateListenerWithAutomaticPortRouting(ctx context.Context, list
 		// route so it is not mistaken for a competing one.
 		delete(routedSNIs, existing[index].ID)
 	}
-	// The port is contended when another enabled listener already serves it,
-	// or when Nginx already binds it for a managed SNI group. Both cases put
-	// the new listener behind the router regardless of whether it is being
-	// created enabled: a listener left on the public port would collide with
-	// Nginx the moment somebody enables it.
-	managed := len(existing) > 0 || len(routedSNIs) > 0
+	// Every TLS-terminating TCP listener goes behind the managed SNI router,
+	// even when it is the only one on its port. sing-box then never binds a
+	// public port itself, so a service that already owns that port on the host
+	// — an Nginx installed before polaris is the common case — cannot take the
+	// socket away from it and leave sing-box restarting forever.
+	//
+	// Two kinds of listener keep the public port directly: UDP, which the
+	// TCP-only router cannot carry, and a TCP listener with no usable SNI,
+	// which has no ClientHello to be routed by.
+	routeName, routeNameErr := automaticRouteName(listener)
+	managed := listener.Spec.Network == "tcp" && routeNameErr == nil
+	if !managed && (len(existing) > 0 || len(routedSNIs) > 0) {
+		if listener.Spec.Network != "tcp" {
+			return Listener{}, nil, false, userErrorf("端口 %d 已被该服务器上的另一个 UDP 接入服务使用，请选择其他端口", listener.Port)
+		}
+		return Listener{}, nil, false, userErrorf("端口 %d 已被使用；如需自动使用同一端口，TCP 接入服务必须启用 TLS 或 Reality，并使用不同的实际 SNI", listener.Port)
+	}
 	publicAddress := listener.ListenAddr
 	usedPorts, err := occupiedListenerPorts(ctx, tx, listener.NodeID, listener.Spec.Network)
 	if err != nil {
@@ -94,14 +105,7 @@ func (s *Store) CreateListenerWithAutomaticPortRouting(ctx context.Context, list
 	}
 	seenNames := map[string]struct{}{}
 	if managed {
-		if listener.Spec.Network != "tcp" {
-			return Listener{}, nil, false, userErrorf("端口 %d 已被该服务器上的另一个 UDP 接入服务使用，请选择其他端口", listener.Port)
-		}
-		newName, err := automaticRouteName(listener)
-		if err != nil {
-			return Listener{}, nil, false, userErrorf("端口 %d 已被使用；如需自动使用同一端口，TCP 接入服务必须启用 TLS 或 Reality，并使用不同的实际 SNI", listener.Port)
-		}
-		seenNames[newName] = struct{}{}
+		seenNames[routeName] = struct{}{}
 		for _, sni := range routedSNIs {
 			if _, duplicate := seenNames[sni]; duplicate {
 				return Listener{}, nil, false, userErrorf("实际 SNI %s 已用于端口 %d；请修改连接域名，Reality 接入请修改目标网站", sni, listener.Port)

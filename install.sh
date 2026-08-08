@@ -311,7 +311,7 @@ data_dir: /var/lib/polaris-agent
 master_address: '${master_address}'
 master_public_key: '${master_pubkey}'
 heartbeat_interval: 30s
-connections_interval: 2s
+connections_interval: 10s
 EOF
   chmod 0600 "$temporary"
   mv "$temporary" "$target"

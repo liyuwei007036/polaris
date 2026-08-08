@@ -64,8 +64,16 @@ function auditTarget(row) {
 function taskResult(row) {
   if (row.result_summary && /[\u3400-\u9fff]/.test(row.result_summary)) return row.result_summary
   if (row.status === 'succeeded') return '操作已完成'
-  if (row.status === 'rolled_back') return '新设置未能生效，系统已恢复原有配置'
-  if (row.status === 'failed') return '操作未完成，请检查服务器状态和相关日志'
+  // A failure summary carries the systemd and sing-box output verbatim, so it
+  // is in English. Dropping it left the operator with the same sentence for a
+  // port already in use, a rejected certificate and a missing service unit.
+  const detail = (row.result_summary || '').trim()
+  if (row.status === 'rolled_back') {
+    return detail ? `新设置未能生效，系统已恢复原有配置：${detail}` : '新设置未能生效，系统已恢复原有配置'
+  }
+  if (row.status === 'failed') {
+    return detail ? `操作未完成：${detail}` : '操作未完成，请检查服务器状态和相关日志'
+  }
   return '等待处理'
 }
 

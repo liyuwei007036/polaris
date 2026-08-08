@@ -20,10 +20,9 @@ const rows = computed(() => [...connectionSnapshots.value.values()].flatMap((res
     ...connection,
     node_id: result.node_id,
     node_name: node?.name || result.node_id,
-    // chains is ordered egress-first, so index 0 is the outbound that
-    // actually carried the traffic. Everything after it is the path back to
-    // the inbound the client arrived on.
-    exit: connection.outbound || connection.chains?.[0] || 'DIRECT',
+    // The master resolves the sing-box outbound tag to the egress an operator
+    // configured; the raw tag is only shown when that lookup found nothing.
+    exit: connection.outbound_name || connection.outbound || connection.chains?.[0] || 'DIRECT',
     entry: connection.listener_name || '—',
   }))
 }))
@@ -34,7 +33,7 @@ const filteredRows = computed(() => rows.value.filter((row) => {
   if (selectedOutbound.value && row.exit !== selectedOutbound.value) return false
   return includesText([
     row.node_name, row.source, row.source_ip, row.source_location, row.host, row.destination,
-    row.entry, row.exit, row.network,
+    row.entry, row.user, row.exit, row.network,
   ], keyword.value)
 }))
 
@@ -61,7 +60,7 @@ onBeforeUnmount(() => stopConnections?.())
     </PageHeader>
     <main class="page-content page-content--tight">
       <div class="search-toolbar">
-        <el-input v-model="keyword" clearable :prefix-icon="Search" placeholder="搜索 IP、目标、接入服务或出口" style="width: 280px" />
+        <el-input v-model="keyword" clearable :prefix-icon="Search" placeholder="搜索 IP、目标、客户端节点或出口" style="width: 280px" />
         <el-select v-model="selectedNode" clearable placeholder="全部服务器" style="width: 190px">
           <el-option v-for="node in appState.nodes" :key="node.id" :label="node.name" :value="node.id" />
         </el-select>
@@ -74,10 +73,10 @@ onBeforeUnmount(() => stopConnections?.())
       <div class="table-panel">
         <PagedTable :rows="filteredRows" :loading="loading" empty-text="当前没有活动连接">
           <el-table-column label="服务器" prop="node_name" min-width="130" show-overflow-tooltip />
-          <el-table-column label="接入服务" min-width="140" show-overflow-tooltip>
+          <el-table-column label="客户端节点" min-width="150" show-overflow-tooltip>
             <template #default="{ row }">
-              <div>{{ row.entry }}</div>
-              <div class="subtle">{{ (row.network || '').toUpperCase() || '—' }}</div>
+              <div>{{ row.user || '—' }}</div>
+              <div class="subtle">{{ [row.entry, (row.network || '').toUpperCase()].filter((part) => part && part !== '—').join(' · ') || '—' }}</div>
             </template>
           </el-table-column>
           <el-table-column label="客户端 IP" min-width="180" show-overflow-tooltip>

@@ -207,7 +207,9 @@ func TestSharedPortInboundCreatesMultipleUsersAndNginxRoutes(t *testing.T) {
 		return created
 	}
 
-	first := create("Reality A", "a.example.com", "reality-a.example.com", false)
+	// Both go behind the router, the first one included: a TLS-terminating TCP
+	// listener never binds the public port itself.
+	first := create("Reality A", "a.example.com", "reality-a.example.com", true)
 	second := create("Reality B", "b.example.com", "reality-b.example.com", true)
 	if len(first.Endpoints) != 2 || first.Endpoints[0].OutboundID != "direct" || first.Endpoints[1].OutboundID != outbound.ID {
 		t.Fatalf("generated accounts = %#v", first.Endpoints)
@@ -429,7 +431,7 @@ func TestRealityWebSocketGRPCAndHysteria2SharePublicPort443(t *testing.T) {
 	reality := create("Reality 443", "reality.example.com", map[string]any{
 		"protocol": "vless", "network": "tcp", "tls": map[string]any{"enabled": true},
 		"reality": map[string]any{"enabled": true, "handshake_server": "reality-target.example.com", "handshake_port": 443},
-	}, false)
+	}, true)
 	websocket := create("WebSocket 443", "ws.example.com", map[string]any{
 		"protocol": "vless", "network": "tcp", "tls": map[string]any{"enabled": true, "alpn": []string{"http/1.1"}},
 		"transport": map[string]any{"type": "ws", "path": "/ws", "host": "ws.example.com"},

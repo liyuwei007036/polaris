@@ -113,6 +113,13 @@ function renderCharts() {
   }
   charts[0].setOption({
     ...chartBase('实时流量'),
+    // Rates are sampled counters, so they arrive with a long fractional tail.
+    // The default axis tooltip would print that raw number.
+    tooltip: {
+      ...chartTooltip,
+      trigger: 'axis',
+      formatter: (items) => [items[0].axisValue, ...items.map((item) => `${item.marker}${item.seriesName} ${formatBytes(item.value, '/s')}`)].join('<br>'),
+    },
     legend: { ...chartLegend, data: ['下载', '上传'] },
     xAxis: { ...axis, type: 'category', data: trafficHistory.value.map((item) => timeLabel(item.time)), boundaryGap: false },
     yAxis: { ...axis, type: 'value', minInterval: 1, axisLabel: { ...axis.axisLabel, formatter: (value) => formatBytes(value, '/s') } },
@@ -183,16 +190,19 @@ function appendSamples() {
   scheduleRender()
 }
 
-// Nodes are ranked by how often clients connected through them recently, not
-// by how many connections happen to be open at this instant: a node that
-// carried a hundred short requests a minute ago matters more than one holding
-// a single idle connection. Each connection is counted once, when it is first
-// seen, and drops out of the ranking when it ages past the window.
+// Nodes are ranked by how often they connected recently, not by how many
+// connections happen to be open at this instant: a node that carried a hundred
+// short requests a minute ago matters more than one holding a single idle
+// connection. Each connection is counted once, when it is first seen, and
+// drops out of the ranking when it ages past the window.
+// A connection is attributed to the client node that authenticated it; the
+// inbound service stands in only for connections that matched no account rule
+// and therefore carry no account name.
 function recordNodeActivity(now) {
   for (const row of connections.value) {
     const key = `${row.node_id}/${row.id}`
     if (!row.id || nodeActivity.has(key)) continue
-    nodeActivity.set(key, { label: row.user || row.listener_name || '未知节点', at: now })
+    nodeActivity.set(key, { label: row.user || row.listener_name || '未知', at: now })
   }
   for (const [key, entry] of nodeActivity) {
     if (now - entry.at > nodeWindowMinutes * 60_000) nodeActivity.delete(key)

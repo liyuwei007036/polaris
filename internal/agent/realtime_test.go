@@ -13,9 +13,10 @@ import (
 	"time"
 )
 
-// The Clash API orders chains egress-first. Reading the outbound off the last
-// element reported the inbound instead, which is what made "热门代理" and the
-// connection list show the entry point where the exit belonged.
+// chains lists outbounds only, egress first. sing-box reports the inbound in
+// metadata.type as "<inbound type>/<inbound tag>"; reading it off the chain
+// tail picked up an outbound instead, which is why every connection reached
+// the console with no 接入服务 at all.
 func TestCollectConnectionsReadsExitFromChainHead(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/connections" {
@@ -23,7 +24,7 @@ func TestCollectConnectionsReadsExitFromChainHead(t *testing.T) {
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = io.WriteString(w, `{"connections":[{"id":"c1","metadata":{"network":"tcp","type":"vless","sourceIP":"198.51.100.7","sourcePort":"52011","destinationIP":"203.0.113.5","destinationPort":"443","host":"example.test"},"upload":1,"download":2,"chains":["outbound-hk","listener-abc"]}]}`)
+		_, _ = io.WriteString(w, `{"connections":[{"id":"c1","metadata":{"network":"tcp","type":"vless/listener-abc","sourceIP":"198.51.100.7","sourcePort":"52011","destinationIP":"203.0.113.5","destinationPort":"443","host":"example.test"},"upload":1,"download":2,"chains":["outbound-hk"]}]}`)
 	}))
 	defer server.Close()
 	original := clashAPIBase
@@ -41,7 +42,7 @@ func TestCollectConnectionsReadsExitFromChainHead(t *testing.T) {
 		t.Fatalf("outbound = %q, want the chain head outbound-hk", connections[0].Outbound)
 	}
 	if connections[0].InboundTag != "listener-abc" {
-		t.Fatalf("inbound tag = %q, want the chain tail listener-abc", connections[0].InboundTag)
+		t.Fatalf("inbound tag = %q, want listener-abc from metadata.type", connections[0].InboundTag)
 	}
 }
 
