@@ -1,18 +1,19 @@
 <script setup>
 import { computed, inject, onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Delete, Edit, Plus, Promotion, Refresh, Search, Setting } from '@element-plus/icons-vue'
+import { Delete, Edit, Plus, Refresh, Search, Setting } from '@element-plus/icons-vue'
 import { api, del, post, put } from '../api'
 import { formatDateTime, includesText } from '../format'
 import PageHeader from '../components/PageHeader.vue'
 import PagedTable from '../components/PagedTable.vue'
 
-const canWrite = inject('canWrite')
 const isAdmin = inject('isAdmin')
 const appState = inject('appState')
 const loading = ref(false)
 const tab = ref('records')
 const settings = ref({})
+// The table is the Cloudflare zone itself: every save and every delete goes
+// straight upstream, so there is no local copy that could disagree with it.
 const records = ref([])
 const certificates = ref([])
 const listeners = ref([])
@@ -20,11 +21,8 @@ const settingsOpen = ref(false)
 const recordOpen = ref(false)
 const certificateOpen = ref(false)
 const config = reactive({ zone_id: '', zone_name: '', api_token: '' })
-const record = reactive({ id: '', type: 'A', name: '', content: '', ttl: 1, proxied: false, node_id: '', listener_id: '' })
-// A record that only exists at Cloudflare has no local desired state yet, so
-// editing one means declaring it here first; saving creates that declaration
-// and the operator publishes it over the live record.
-const adopting = ref(false)
+const record = reactive({ id: '', type: 'A', name: '', content: '', ttl: 1, proxied: false })
+const saving = ref(false)
 const remoteError = ref('')
 // An origin certificate is matched to an access service by its connection
 // domain, so the operator only pastes the plain "*.example.com" text and the
@@ -32,24 +30,13 @@ const remoteError = ref('')
 const certificate = reactive({ id: '', domain: '', certificate: '', private_key: '' })
 const keyword = ref('')
 const selectedType = ref('')
-const selectedStatus = ref('')
 const selectedNode = ref('')
 
-const nodeNames = computed(() => Object.fromEntries(appState.nodes.map((node) => [node.id, node.name])))
-// Cloudflare's standard proxy only fronts VLESS over WebSocket or gRPC on a
-// fixed port set, so only those listeners can back an orange-cloud record.
-const proxyListeners = computed(() => listeners.value.filter((listener) => {
-  const transport = listener.spec?.transport?.type
-  if (listener.spec?.protocol !== 'vless' || !listener.spec?.tls?.enabled) return false
-  if (transport === 'grpc') return listener.port === 443
-  return transport === 'ws' && [443, 2053, 2083, 2087, 2096, 8443].includes(listener.port)
-}))
-const nodeListeners = computed(() => listeners.value.filter((listener) => !record.node_id || listener.node_id === record.node_id))
+const nodeAddresses = computed(() => appState.nodes.filter((node) => node.client_address))
 const filteredRecords = computed(() => records.value.filter((row) => {
   if (selectedType.value && row.type !== selectedType.value) return false
-  if (selectedStatus.value && row.status !== selectedStatus.value) return false
-  if (selectedNode.value && row.node_id !== selectedNode.value) return false
-  return includesText([row.name, row.content, row.type, row.node_name, row.listener_name, checkResult(row)], keyword.value)
+  if (selectedNode.value && !(row.bindings || []).some((binding) => binding.node_name === selectedNode.value)) return false
+  return includesText([row.name, row.content, row.type, boundTo(row)], keyword.value)
 }))
 const filteredCertificates = computed(() => certificates.value.filter((row) =>
   includesText([row.domain, row.subject, row.issuer, (row.dns_names || []).join(' ')], keyword.value)))
@@ -78,27 +65,23 @@ function domainCovered(pattern, domain) {
 async function load() {
   loading.value = true
   try {
-    const [settingsResult, recordResult, certificateResult, listenerResult] = await Promise.all([
+    const [settingsResult, certificateResult, listenerResult] = await Promise.all([
       api('/cloudflare/settings'),
-      api('/cloudflare/records'),
       api('/cloudflare/origin-certificates'),
       api('/listeners'),
     ])
     remoteError.value = settingsResult.error || ''
-    let remoteResult = { records: [] }
+    let recordResult = { records: [] }
     if (settingsResult.connected) {
       // A failure here means the zone could not be read at all; hiding it
       // behind an empty table is what made this page look broken.
-      remoteResult = await api('/cloudflare/remote-records').catch((error) => {
-        remoteError.value = error instanceof Error ? error.message : '读取 Cloudflare 线上记录失败'
+      recordResult = await api('/cloudflare/records').catch((error) => {
+        remoteError.value = error instanceof Error ? error.message : '读取 Cloudflare 域名记录失败'
         return { records: [] }
       })
     }
     settings.value = settingsResult
-    records.value = [
-      ...(recordResult.records || []).map((row) => ({ ...row, managed: true })),
-      ...(remoteResult.records || []).map((row) => ({ ...row, managed: false, status: 'external' })),
-    ]
+    records.value = recordResult.records || []
     certificates.value = certificateResult.certificates || []
     listeners.value = listenerResult.listeners || []
   } finally { loading.value = false }
@@ -118,61 +101,34 @@ async function saveSettings() {
   }
 }
 function addRecord() {
-  Object.assign(record, { id: '', type: 'A', name: '', content: '', ttl: 1, proxied: false, node_id: '', listener_id: '' })
-  adopting.value = false
+  Object.assign(record, { id: '', type: 'A', name: '', content: '', ttl: 1, proxied: false })
   recordOpen.value = true
 }
 
 function editRecord(row) {
   Object.assign(record, {
-    id: row.managed ? row.id : '',
+    id: row.id,
     type: row.type,
     name: String(row.name || '').replace(/\.$/, ''),
     content: row.content,
     ttl: row.ttl || 1,
     proxied: Boolean(row.proxied),
-    node_id: row.node_id || '',
-    listener_id: row.listener_id || '',
   })
-  adopting.value = !row.managed
   recordOpen.value = true
 }
 
-// Binding a record to a server is the whole point of managing DNS here: the
-// record should point at that server, so its client address is filled in.
-function onNodeChange() {
-  record.listener_id = ''
-  const node = appState.nodes.find((item) => item.id === record.node_id)
-  if (node?.client_address) record.content = node.client_address
-}
-
-function onListenerChange() {
-  const listener = listeners.value.find((item) => item.id === record.listener_id)
-  if (!listener) return
-  record.node_id = listener.node_id
-  const node = appState.nodes.find((item) => item.id === listener.node_id)
-  if (node?.client_address && !record.content) record.content = node.client_address
-}
-
 async function saveRecord() {
-  const body = {
-    type: record.type,
-    name: record.name,
-    content: record.content,
-    ttl: record.ttl,
-    proxied: record.proxied,
-    node_id: record.node_id,
-    listener_id: record.listener_id,
-  }
+  const body = { type: record.type, name: record.name, content: record.content, ttl: record.ttl, proxied: record.proxied }
+  saving.value = true
   try {
     if (record.id) await put(`/cloudflare/records/${record.id}`, body)
     else await post('/cloudflare/records', body)
     recordOpen.value = false
-    ElMessage.success('域名记录已保存，请点击“发布”写入 Cloudflare')
+    ElMessage.success('域名记录已写入 Cloudflare')
     await load()
   } catch (error) {
-    ElMessage.error(error instanceof Error ? error.message : '域名记录保存失败')
-  }
+    ElMessage.error(error instanceof Error ? error.message : '写入 Cloudflare 失败')
+  } finally { saving.value = false }
 }
 
 function addCertificate() {
@@ -207,47 +163,24 @@ async function removeCertificate(row) {
   await load()
 }
 
-async function sync() {
-  try {
-    const result = await post('/cloudflare/sync', {})
-    ElMessage.success(`检查完成，发现 ${result.drifted || 0} 条与 Cloudflare 不一致的记录`)
-    await load()
-  } catch (error) {
-    ElMessage.error(error instanceof Error ? error.message : '检查失败，请确认 Cloudflare 连接设置')
-  }
-}
-
-async function publish(row) {
-  await ElMessageBox.confirm(`将 ${row.type} 记录 ${row.name} 发布到 Cloudflare？`, '发布域名记录')
-  try {
-    await post(`/cloudflare/records/${row.id}/publish`, { confirm: true })
-    ElMessage.success('域名记录已发布')
-    await load()
-  } catch (error) {
-    ElMessage.error(error instanceof Error ? error.message : '发布失败')
-  }
-}
-
 async function remove(row) {
-  await ElMessageBox.confirm(`删除 ${row.type} 记录 ${row.name}？如果该记录已发布，也会同时从 Cloudflare 删除。`, '删除域名记录', { type: 'warning' })
-  await del(`/cloudflare/records/${row.id}?confirm=true`)
-  await load()
+  await ElMessageBox.confirm(`从 Cloudflare 删除 ${row.type} 记录 ${row.name}？`, '删除域名记录', { type: 'warning' })
+  try {
+    await del(`/cloudflare/records/${row.id}`)
+    ElMessage.success('域名记录已从 Cloudflare 删除')
+    await load()
+  } catch (error) {
+    ElMessage.error(error instanceof Error ? error.message : '从 Cloudflare 删除失败')
+  }
 }
 
-function checkResult(row) {
-  if (row.last_error) return '检查失败，请确认 Cloudflare 连接设置和记录内容'
-  if (row.status === 'synced') return '线上记录与当前设置一致'
-  if (row.status === 'drift') return '线上记录与当前设置不一致'
-  if (row.status === 'missing') return '线上记录已被删除，需要重新发布'
-  if (row.status === 'external') return 'Cloudflare 线上已有，当前未由本平台管理'
-  return row.observed ? '已读取线上记录' : '尚未发布'
-}
-
+// The association is read off the access services themselves: a record whose
+// name is a service's connection domain serves that service, and otherwise a
+// content that matches a server's address still names that server.
 function boundTo(row) {
-  if (!row.managed) return '未关联'
-  const node = row.node_name || nodeNames.value[row.node_id]
-  if (!node) return '未关联'
-  return row.listener_name ? `${node} · ${row.listener_name}` : node
+  const bindings = row.bindings || []
+  if (!bindings.length) return '未关联'
+  return bindings.map((binding) => (binding.listener_name ? `${binding.node_name} · ${binding.listener_name}` : binding.node_name)).join('、')
 }
 
 onMounted(load)
@@ -261,7 +194,6 @@ onMounted(load)
         {{ settings.connected ? `已连接 ${settings.zone_name || settings.zone_id}` : settings.configured ? '连接异常' : '未连接 Cloudflare' }}
       </el-tag>
       <el-button :icon="Refresh" @click="load">刷新</el-button>
-      <el-button v-if="canWrite && tab === 'records'" :icon="Refresh" :disabled="!settings.connected" @click="sync">检查</el-button>
       <el-button v-if="isAdmin && tab === 'records'" :icon="Setting" @click="openSettings">设置</el-button>
       <el-button v-if="isAdmin && tab === 'records'" type="primary" :icon="Plus" :disabled="!settings.connected" @click="addRecord">新建</el-button>
       <el-button v-if="isAdmin && tab === 'certificates'" type="primary" :icon="Plus" @click="addCertificate">新建</el-button>
@@ -276,10 +208,9 @@ onMounted(load)
         <el-input v-model="keyword" clearable :prefix-icon="Search" :placeholder="tab === 'records' ? '搜索域名、内容或服务器' : '搜索域名或证书'" style="width: 260px" />
         <template v-if="tab === 'records'">
           <el-select v-model="selectedNode" clearable placeholder="全部服务器" style="width: 180px">
-            <el-option v-for="node in appState.nodes" :key="node.id" :label="node.name" :value="node.id" />
+            <el-option v-for="node in appState.nodes" :key="node.id" :label="node.name" :value="node.name" />
           </el-select>
           <el-select v-model="selectedType" clearable placeholder="全部类型" style="width: 130px"><el-option v-for="type in ['A','AAAA','CNAME','TXT']" :key="type" :label="type" :value="type" /></el-select>
-          <el-select v-model="selectedStatus" clearable placeholder="全部状态" style="width: 140px"><el-option label="线上已有" value="external" /><el-option label="已同步" value="synced" /><el-option label="存在差异" value="drift" /><el-option label="未发布" value="pending" /></el-select>
         </template>
       </div>
       <div class="table-panel">
@@ -289,26 +220,20 @@ onMounted(load)
               <el-table-column label="类型" prop="type" width="88" />
               <el-table-column label="域名" prop="name" min-width="180" show-overflow-tooltip />
               <el-table-column label="指向地址或内容" prop="content" min-width="170" show-overflow-tooltip />
-              <el-table-column label="关联服务器 / 接入服务" min-width="180" show-overflow-tooltip>
+              <el-table-column label="关联服务器 / 接入服务" min-width="200" show-overflow-tooltip>
                 <template #default="{ row }">
-                  <span :class="{ subtle: !row.managed || !row.node_id }">{{ boundTo(row) }}</span>
-                  <div v-if="row.listener_port" class="subtle">端口 {{ row.listener_port }}</div>
+                  <span :class="{ subtle: !(row.bindings || []).length }">{{ boundTo(row) }}</span>
+                  <div v-if="(row.bindings || []).some((binding) => binding.listener_port)" class="subtle">
+                    端口 {{ [...new Set(row.bindings.filter((binding) => binding.listener_port).map((binding) => binding.listener_port))].join('、') }}
+                  </div>
                 </template>
               </el-table-column>
               <el-table-column label="CDN 加速" width="106" align="center"><template #default="{ row }">{{ row.proxied ? '已启用' : '未启用' }}</template></el-table-column>
-              <el-table-column label="同步状态" width="104">
-                <template #default="{ row }">
-                  <el-tag :type="row.status === 'synced' ? 'success' : row.status === 'drift' || row.status === 'missing' ? 'warning' : 'info'">
-                    {{ row.status === 'external' ? '线上已有' : row.status === 'synced' ? '已同步' : row.status === 'drift' ? '存在差异' : row.status === 'missing' ? '线上缺失' : '未发布' }}
-                  </el-tag>
-                </template>
-              </el-table-column>
-              <el-table-column label="检查结果" min-width="180" show-overflow-tooltip><template #default="{ row }">{{ checkResult(row) }}</template></el-table-column>
-              <el-table-column label="操作" width="200" fixed="right" class-name="action-column">
+              <el-table-column label="缓存时间" width="106" align="center"><template #default="{ row }">{{ row.ttl === 1 ? '自动' : `${row.ttl} 秒` }}</template></el-table-column>
+              <el-table-column label="操作" width="150" fixed="right" class-name="action-column">
                 <template #default="{ row }">
                   <el-button v-if="isAdmin" link type="primary" :icon="Edit" @click="editRecord(row)">修改</el-button>
-                  <el-button v-if="isAdmin && row.managed" link type="primary" :icon="Promotion" @click="publish(row)">发布</el-button>
-                  <el-button v-if="isAdmin && row.managed" link type="danger" :icon="Delete" @click="remove(row)">删除</el-button>
+                  <el-button v-if="isAdmin" link type="danger" :icon="Delete" @click="remove(row)">删除</el-button>
                 </template>
               </el-table-column>
             </PagedTable>
@@ -358,40 +283,31 @@ onMounted(load)
       </template>
     </el-dialog>
 
-    <el-dialog v-model="recordOpen" :title="record.id ? '修改域名记录' : adopting ? '修改线上记录' : '新建域名记录'" width="620px">
+    <el-dialog v-model="recordOpen" :title="record.id ? '修改域名记录' : '新建域名记录'" width="620px">
       <el-form label-position="top">
-        <el-alert
-          v-if="adopting"
-          title="该记录目前只存在于 Cloudflare。保存后它会纳入本平台管理，再点击「发布」才会写回 Cloudflare。"
-          type="warning" show-icon :closable="false" style="margin-bottom: 14px" />
         <el-row :gutter="16">
           <el-col :span="8"><el-form-item label="记录类型"><el-select v-model="record.type"><el-option v-for="type in ['A','AAAA','CNAME','TXT']" :key="type" :label="type" :value="type" /></el-select></el-form-item></el-col>
           <el-col :span="16"><el-form-item label="域名"><el-input v-model="record.name" :placeholder="`proxy.${settings.zone_name || 'example.com'}`" /></el-form-item></el-col>
         </el-row>
-        <el-form-item label="关联的服务器">
-          <el-select v-model="record.node_id" clearable style="width: 100%" placeholder="选择后自动填入连接地址" @change="onNodeChange">
-            <el-option v-for="node in appState.nodes" :key="node.id" :label="node.client_address ? `${node.name}（${node.client_address}）` : `${node.name}（未配置连接地址）`" :value="node.id" />
-          </el-select>
+        <el-form-item label="指向地址或内容" required>
+          <el-input v-model="record.content" />
+          <!-- 关联关系由平台自动识别，这里只是省去手抄服务器地址。 -->
+          <div v-if="nodeAddresses.length" class="address-picks">
+            <span class="form-hint">填入服务器地址：</span>
+            <el-tag v-for="node in nodeAddresses" :key="node.id" class="address-pick" @click="record.content = node.client_address">
+              {{ node.name }} · {{ node.client_address }}
+            </el-tag>
+          </div>
         </el-form-item>
-        <el-form-item label="指向地址或内容" required><el-input v-model="record.content" /></el-form-item>
         <el-row :gutter="16">
           <el-col :span="12"><el-form-item label="缓存时间（TTL）"><el-input-number v-model="record.ttl" :min="1" :disabled="record.proxied" style="width: 100%" /></el-form-item></el-col>
           <el-col :span="12"><el-form-item label="Cloudflare 加速"><el-switch v-model="record.proxied" active-text="启用" inactive-text="关闭" /></el-form-item></el-col>
         </el-row>
-        <el-form-item label="对应的接入服务（可选）">
-          <el-select v-model="record.listener_id" clearable style="width: 100%" placeholder="选填，用于在列表中标注归属" @change="onListenerChange">
-            <el-option
-              v-for="listener in (record.proxied ? proxyListeners : nodeListeners)"
-              :key="listener.id"
-              :label="`${nodeNames[listener.node_id] || '服务器'} · ${listener.name} · ${listener.port}`"
-              :value="listener.id" />
-          </el-select>
-        </el-form-item>
-        <el-alert v-if="record.proxied" title="不关联接入服务也可以保存。若要关联，加速仅支持 VLESS + TLS 的 WebSocket / gRPC 接入服务，端口需在 Cloudflare 支持范围内。" type="info" show-icon :closable="false" />
+        <el-alert title="保存后立即写入 Cloudflare，无需再发布。若该域名下已有接入服务，平台会自动识别并在列表中标注。" type="info" show-icon :closable="false" />
       </el-form>
       <template #footer>
         <el-button @click="recordOpen = false">取消</el-button>
-        <el-button type="primary" :disabled="!record.name || !record.content" @click="saveRecord">保存</el-button>
+        <el-button type="primary" :loading="saving" :disabled="!record.name || !record.content" @click="saveRecord">保存</el-button>
       </template>
     </el-dialog>
 
@@ -422,4 +338,6 @@ onMounted(load)
 
 <style scoped>
 .form-hint { margin-top: 6px; color: var(--sb-muted); font-size: 12px; line-height: 1.5; }
+.address-picks { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.address-pick { cursor: pointer; }
 </style>

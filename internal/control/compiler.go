@@ -10,6 +10,11 @@ import (
 	"github.com/liyuwei007036/polaris/internal/security"
 )
 
+// singBoxLogPath is where compiled configurations tell sing-box to write its
+// log. The automatic-banning presets offer jails that watch this file, so both
+// sides have to agree on it.
+const singBoxLogPath = "/var/log/sing-box/sing-box.log"
+
 // CompileNodeConfig translates only typed Listener and Endpoint objects into a
 // sing-box configuration. No caller-supplied configuration JSON is merged.
 func (s *Store) CompileNodeConfig(ctx context.Context, nodeID string) (string, string, error) {
@@ -121,7 +126,7 @@ func (s *Store) CompileNodeConfig(ctx context.Context, nodeID string) (string, s
 		// sing-box logs to a file rather than only the journal so Fail2Ban has
 		// a log path to watch; a jail whose logpath does not exist refuses to
 		// start, which previously made the whole feature unusable.
-		"log":       map[string]any{"level": "info", "timestamp": true, "output": SingBoxLogPath},
+		"log":       map[string]any{"level": "info", "timestamp": true, "output": singBoxLogPath},
 		"inbounds":  inbounds,
 		"outbounds": outbounds,
 		// Loopback-only Clash API: the agent reads current connections from it

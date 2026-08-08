@@ -1,5 +1,5 @@
 <script setup>
-import { computed, inject, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, inject, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { CopyDocument, Edit, Plus, Refresh, RemoveFilled, Search, Top } from '@element-plus/icons-vue'
 import { api, post, put } from '../api'
@@ -10,6 +10,7 @@ import { connectionSnapshots, subscribeConnections } from '../connections'
 import PageHeader from '../components/PageHeader.vue'
 import PagedTable from '../components/PagedTable.vue'
 
+const MASTER_HOST_KEY = 'polaris_master_host'
 const appState = inject('appState')
 const isAdmin = inject('isAdmin')
 const canWrite = inject('canWrite')
@@ -69,6 +70,11 @@ const masterAddress = computed(() => {
   const host = masterHost.value.trim().replace(/[^A-Za-z0-9.:_[\]-]/g, '')
   return `${host}:${agentPort.value}`
 })
+// 改过一次就记住：下次生成令牌直接用上次填的主机名，不必重复修改。
+watch(masterHost, (value) => {
+  const host = value.trim()
+  if (host) window.localStorage.setItem(MASTER_HOST_KEY, host)
+})
 const installCommand = computed(() => [
   'curl -fsSLo install.sh https://raw.githubusercontent.com/liyuwei007036/polaris/main/install.sh',
   ` && sudo env POLARIS_MASTER_ADDRESS='${masterAddress.value}'`,
@@ -83,7 +89,7 @@ async function generateToken() {
   expiresAt.value = result.expires_at
   masterPublicKey.value = result.master_public_key || ''
   agentPort.value = result.agent_port || 19994
-  masterHost.value = window.location.hostname
+  masterHost.value = window.localStorage.getItem(MASTER_HOST_KEY) || window.location.hostname
   tokenDialog.value = true
 }
 
@@ -247,7 +253,7 @@ onBeforeUnmount(() => {
           <el-input v-model="masterHost" placeholder="control.example.com">
             <template #append>:{{ agentPort }}</template>
           </el-input>
-          <p class="subtle">已按当前控制台域名填入。若 agent 需通过其他域名或公网 IP 连接，请在此改成正确的主机名。</p>
+          <p class="subtle">默认按当前控制台域名填入。若 agent 需通过其他域名或公网 IP 连接，请在此改成正确的主机名，本浏览器会记住该地址，下次生成令牌自动带入。</p>
         </el-form-item>
         <el-form-item label="在目标服务器上以 root 执行">
           <el-input :model-value="installCommand" readonly type="textarea" :rows="6" class="mono" />

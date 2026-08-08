@@ -70,11 +70,8 @@ async function loadDomainSuggestions() {
     dnsRecords.value = []
     return
   }
-  const [managed, remote] = await Promise.all([
-    api('/cloudflare/records'),
-    api('/cloudflare/remote-records'),
-  ])
-  dnsRecords.value = [...(managed.records || []), ...(remote.records || [])]
+  const zone = await api('/cloudflare/records')
+  dnsRecords.value = zone.records || []
 }
 
 async function loadEndpoints(listenerID) {

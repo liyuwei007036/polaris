@@ -37,7 +37,11 @@ func approveTestNode(t *testing.T, server *control.Server, baseURL, session, csr
 	return approved.NodeID
 }
 
-func TestFirewallRulesIncludeIPLocations(t *testing.T) {
+// Network protection reads the servers themselves, so a server that cannot
+// answer must say so. Reporting "no rules" for an unreachable server would
+// read as "this server has no access limits", which is the opposite of what
+// is known.
+func TestNetworkProtectionReportsUnreachableServers(t *testing.T) {
 	store, err := control.Open(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
@@ -54,29 +58,47 @@ func TestFirewallRulesIncludeIPLocations(t *testing.T) {
 	httpServer := httptest.NewServer(server.Handler())
 	defer httpServer.Close()
 	session, csrfToken := login(t, httpServer.URL, secret)
-	nodeID := approveTestNode(t, server, httpServer.URL, session, csrfToken, "firewall-location-node")
+	nodeID := approveTestNode(t, server, httpServer.URL, session, csrfToken, "offline-node")
 
+	for _, path := range []string{"/firewall/rules", "/fail2ban/jails"} {
+		response := request(t, http.MethodGet, httpServer.URL+"/api/v1/nodes/"+nodeID+path, nil, session, csrfToken)
+		if response.StatusCode != http.StatusOK {
+			t.Fatalf("read %s: got %d", path, response.StatusCode)
+		}
+		var result struct {
+			Nodes []struct {
+				NodeID    string `json:"node_id"`
+				Available bool   `json:"available"`
+				Error     string `json:"error"`
+			} `json:"nodes"`
+		}
+		decodeBody(t, response, &result)
+		if len(result.Nodes) != 1 || result.Nodes[0].NodeID != nodeID {
+			t.Fatalf("unexpected %s answer: %#v", path, result.Nodes)
+		}
+		if result.Nodes[0].Available || result.Nodes[0].Error == "" {
+			t.Fatalf("an offline server was reported as answering for %s: %#v", path, result.Nodes[0])
+		}
+	}
+
+	// A change to an unreachable server changes nothing, so it must be refused
+	// rather than accepted and quietly queued.
 	response := request(t, http.MethodPost, httpServer.URL+"/api/v1/nodes/"+nodeID+"/firewall/rules", map[string]any{
-		"action": "accept", "protocol": "tcp", "cidr": "8.8.8.8/32", "port": 443, "enabled": true,
+		"operation": "add", "action": "accept", "protocol": "tcp", "cidr": "8.8.8.8/32", "port": 443,
 	}, session, csrfToken)
-	if response.StatusCode != http.StatusCreated {
-		t.Fatalf("create firewall rule: got %d", response.StatusCode)
+	if response.StatusCode == http.StatusOK {
+		t.Fatal("a firewall change to an offline server was reported as done")
 	}
 	response.Body.Close()
-
-	response = request(t, http.MethodGet, httpServer.URL+"/api/v1/nodes/"+nodeID+"/firewall/rules", nil, session, csrfToken)
-	if response.StatusCode != http.StatusOK {
-		t.Fatalf("list firewall rules: got %d", response.StatusCode)
+	response = request(t, http.MethodPost, httpServer.URL+"/api/v1/nodes/"+nodeID+"/fail2ban/jails", map[string]any{
+		"operation": "save", "name": "ssh", "filter_name": "ssh", "log_path": "/var/log/auth.log",
+		"fail_regex": "x <HOST>", "max_retry": 5, "find_time_seconds": 600, "ban_time_seconds": 600,
+	}, session, csrfToken)
+	if response.StatusCode == http.StatusOK {
+		t.Fatal("an automatic-banning change to an offline server was reported as done")
 	}
-	var result struct {
-		Rules []control.FirewallRule `json:"rules"`
-	}
-	decodeBody(t, response, &result)
-	if len(result.Rules) != 1 || !strings.Contains(result.Rules[0].Location, "United States") {
-		t.Fatalf("firewall rules missing IP location: %#v", result.Rules)
-	}
+	response.Body.Close()
 }
-
 func TestInboundMutationCreatesAutomaticApplyTask(t *testing.T) {
 	store, err := control.Open(t.TempDir())
 	if err != nil {
@@ -207,9 +229,10 @@ func TestSharedPortInboundCreatesMultipleUsersAndNginxRoutes(t *testing.T) {
 		return created
 	}
 
-	// Both go behind the router, the first one included: a TLS-terminating TCP
-	// listener never binds the public port itself.
-	first := create("Reality A", "a.example.com", "reality-a.example.com", true)
+	// The first listener has the port to itself, so it binds it directly and
+	// keeps seeing client addresses. The second one contends for that port,
+	// which is what puts both of them behind the router.
+	first := create("Reality A", "a.example.com", "reality-a.example.com", false)
 	second := create("Reality B", "b.example.com", "reality-b.example.com", true)
 	if len(first.Endpoints) != 2 || first.Endpoints[0].OutboundID != "direct" || first.Endpoints[1].OutboundID != outbound.ID {
 		t.Fatalf("generated accounts = %#v", first.Endpoints)
@@ -428,10 +451,12 @@ func TestRealityWebSocketGRPCAndHysteria2SharePublicPort443(t *testing.T) {
 		return created.Listener
 	}
 
+	// The first one owns TCP/443 alone, so it binds it; the ones after it turn
+	// the port into a contended one and pull everybody behind the router.
 	reality := create("Reality 443", "reality.example.com", map[string]any{
 		"protocol": "vless", "network": "tcp", "tls": map[string]any{"enabled": true},
 		"reality": map[string]any{"enabled": true, "handshake_server": "reality-target.example.com", "handshake_port": 443},
-	}, true)
+	}, false)
 	websocket := create("WebSocket 443", "ws.example.com", map[string]any{
 		"protocol": "vless", "network": "tcp", "tls": map[string]any{"enabled": true, "alpn": []string{"http/1.1"}},
 		"transport": map[string]any{"type": "ws", "path": "/ws", "host": "ws.example.com"},
@@ -613,120 +638,6 @@ func TestOfficialSingBoxAcceptsPrimaryInboundVariants(t *testing.T) {
 	}
 }
 
-func TestCompileFail2BanRendersManagedNamespace(t *testing.T) {
-	jail := control.Fail2BanJail{Name: "singbox-auth", LogPath: "/var/log/sing-box.log", FilterName: "singbox-auth", FailRegex: "authentication failed from <HOST>", MaxRetry: 3, FindTimeSeconds: 600, BanTimeSeconds: 3600, Enabled: true}
-	jailFile, filters, err := control.CompileFail2Ban([]control.Fail2BanJail{jail})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(jailFile, "[polaris-singbox-auth]") || !strings.Contains(jailFile, "filter = polaris-singbox-auth") {
-		t.Fatalf("jail file missing managed namespace: %q", jailFile)
-	}
-	filter, ok := filters["polaris-singbox-auth.conf"]
-	if !ok || !strings.Contains(filter, "failregex = authentication failed from <HOST>") {
-		t.Fatalf("filter file missing: %#v", filters)
-	}
-	jail.Name = "bad name"
-	if _, _, err := control.CompileFail2Ban([]control.Fail2BanJail{jail}); err == nil {
-		t.Fatal("accepted jail name with spaces")
-	}
-	jail.Name = "singbox-auth"
-	jail.FailRegex = "line1\nline2"
-	if _, _, err := control.CompileFail2Ban([]control.Fail2BanJail{jail}); err == nil {
-		t.Fatal("accepted multi-line fail regex")
-	}
-	conflicting := []control.Fail2BanJail{
-		{Name: "a", LogPath: "/var/log/a.log", FilterName: "shared", FailRegex: "x <HOST>", MaxRetry: 1, FindTimeSeconds: 1, BanTimeSeconds: 1, Enabled: true},
-		{Name: "b", LogPath: "/var/log/b.log", FilterName: "shared", FailRegex: "y <HOST>", MaxRetry: 1, FindTimeSeconds: 1, BanTimeSeconds: 1, Enabled: true},
-	}
-	if _, _, err := control.CompileFail2Ban(conflicting); err == nil {
-		t.Fatal("accepted one filter name with two different regexes")
-	}
-}
-
-func TestFail2BanJailLifecycleAndPublish(t *testing.T) {
-	store, err := control.Open(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer store.Close()
-	secret, err := store.CreateInitialAdmin(t.Context(), "admin@example.com", "correct horse battery staple")
-	if err != nil {
-		t.Fatal(err)
-	}
-	server, err := control.NewServer(store, false)
-	if err != nil {
-		t.Fatal(err)
-	}
-	httpServer := httptest.NewServer(server.Handler())
-	defer httpServer.Close()
-	session, csrfToken := login(t, httpServer.URL, secret)
-	nodeID := approveTestNode(t, server, httpServer.URL, session, csrfToken, "fail2ban-node")
-
-	response := request(t, http.MethodPost, httpServer.URL+"/api/v1/nodes/"+nodeID+"/fail2ban/jails", map[string]any{
-		"name": "singbox-auth", "log_path": "/var/log/sing-box.log", "filter_name": "singbox-auth",
-		"fail_regex": "authentication failed from <HOST>", "max_retry": 3, "find_time_seconds": 600, "ban_time_seconds": 3600, "enabled": true,
-	}, session, csrfToken)
-	if response.StatusCode != http.StatusCreated {
-		t.Fatalf("create fail2ban jail: got %d", response.StatusCode)
-	}
-	var jail control.Fail2BanJail
-	decodeBody(t, response, &jail)
-	if jail.ID == "" || jail.NodeID != nodeID {
-		t.Fatalf("unexpected jail: %#v", jail)
-	}
-
-	response = request(t, http.MethodGet, httpServer.URL+"/api/v1/nodes/"+nodeID+"/fail2ban/jails", nil, session, csrfToken)
-	var listed struct {
-		Jails []control.Fail2BanJail `json:"jails"`
-	}
-	decodeBody(t, response, &listed)
-	if len(listed.Jails) != 1 {
-		t.Fatalf("expected one jail, got %#v", listed.Jails)
-	}
-
-	response = request(t, http.MethodPost, httpServer.URL+"/api/v1/nodes/"+nodeID+"/fail2ban/publish", nil, session, csrfToken)
-	if response.StatusCode != http.StatusAccepted {
-		t.Fatalf("publish fail2ban: got %d", response.StatusCode)
-	}
-	var task control.Task
-	decodeBody(t, response, &task)
-	if task.Kind != "fail2ban.apply" {
-		t.Fatalf("unexpected task kind %q", task.Kind)
-	}
-	digest := sha256.Sum256([]byte(task.Payload))
-	if !strings.EqualFold(hex.EncodeToString(digest[:]), task.ExpectedHash) {
-		t.Fatal("task hash does not cover the payload")
-	}
-	var payload struct {
-		Jail    string            `json:"jail"`
-		Filters map[string]string `json:"filters"`
-	}
-	if err := json.Unmarshal([]byte(task.Payload), &payload); err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(payload.Jail, "[polaris-singbox-auth]") || len(payload.Filters) != 1 {
-		t.Fatalf("unexpected payload: %#v", payload)
-	}
-
-	response = request(t, http.MethodPut, httpServer.URL+"/api/v1/fail2ban/jails/"+jail.ID, map[string]any{
-		"name": "singbox-auth", "log_path": "/var/log/sing-box.log", "filter_name": "singbox-auth",
-		"fail_regex": "denied from <HOST>", "max_retry": 5, "find_time_seconds": 300, "ban_time_seconds": 600, "enabled": true,
-	}, session, csrfToken)
-	if response.StatusCode != http.StatusOK {
-		t.Fatalf("update jail: got %d", response.StatusCode)
-	}
-	response.Body.Close()
-	response = request(t, http.MethodPost, httpServer.URL+"/api/v1/fail2ban/jails/"+jail.ID+"/enabled", map[string]bool{"enabled": false}, session, csrfToken)
-	if response.StatusCode != http.StatusNoContent {
-		t.Fatalf("disable jail: got %d", response.StatusCode)
-	}
-	response = request(t, http.MethodDelete, httpServer.URL+"/api/v1/fail2ban/jails/"+jail.ID, nil, session, csrfToken)
-	if response.StatusCode != http.StatusNoContent {
-		t.Fatalf("delete jail: got %d", response.StatusCode)
-	}
-}
-
 // fakeCloudflare emulates the Cloudflare v4 DNS records API in memory.
 type fakeCloudflare struct {
 	mu sync.Mutex
@@ -751,6 +662,17 @@ func (f *fakeCloudflare) handler() http.Handler {
 		}
 		writeCF(w, list)
 	})
+	mux.HandleFunc("GET /zones/{zone}/dns_records/{id}", func(w http.ResponseWriter, r *http.Request) {
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		record, ok := f.records[r.PathValue("id")]
+		if !ok {
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = w.Write([]byte(`{"success":false,"errors":[{"message":"record not found"}]}`))
+			return
+		}
+		writeCF(w, record)
+	})
 	mux.HandleFunc("POST /zones/{zone}/dns_records", func(w http.ResponseWriter, r *http.Request) {
 		var record control.CloudflareRecord
 		_ = json.NewDecoder(r.Body).Decode(&record)
@@ -761,16 +683,23 @@ func (f *fakeCloudflare) handler() http.Handler {
 		f.records[record.ID] = record
 		writeCF(w, record)
 	})
-	mux.HandleFunc("PUT /zones/{zone}/dns_records/{id}", func(w http.ResponseWriter, r *http.Request) {
-		var record control.CloudflareRecord
-		_ = json.NewDecoder(r.Body).Decode(&record)
-		record.ID = r.PathValue("id")
+	// PATCH keeps whatever the console set and polaris does not manage, which is
+	// why the comment below survives an edit.
+	mux.HandleFunc("PATCH /zones/{zone}/dns_records/{id}", func(w http.ResponseWriter, r *http.Request) {
+		var patch control.CloudflareRecord
+		_ = json.NewDecoder(r.Body).Decode(&patch)
 		f.mu.Lock()
 		defer f.mu.Unlock()
-		if _, ok := f.records[record.ID]; !ok {
+		record, ok := f.records[r.PathValue("id")]
+		if !ok {
 			w.WriteHeader(http.StatusNotFound)
 			_, _ = w.Write([]byte(`{"success":false,"errors":[{"message":"record not found"}]}`))
 			return
+		}
+		record.Type, record.Name, record.Content = patch.Type, patch.Name, patch.Content
+		record.TTL, record.Proxied = patch.TTL, patch.Proxied
+		if patch.Comment != "" {
+			record.Comment = patch.Comment
 		}
 		f.records[record.ID] = record
 		writeCF(w, record)
@@ -799,7 +728,10 @@ func writeCF(w http.ResponseWriter, result any) {
 	_ = json.NewEncoder(w).Encode(map[string]any{"success": true, "errors": []any{}, "result": result})
 }
 
-func TestCloudflareRecordsDriftAndPublish(t *testing.T) {
+// DNS records live at Cloudflare and nowhere else. The list is the zone as it
+// stands, a save lands upstream in the same request, and a delete needs no
+// confirmation step because there is no local copy that could survive it.
+func TestCloudflareRecordsWriteStraightToTheZone(t *testing.T) {
 	fake := &fakeCloudflare{records: map[string]control.CloudflareRecord{}}
 	fakeServer := httptest.NewServer(fake.handler())
 	defer fakeServer.Close()
@@ -843,20 +775,20 @@ func TestCloudflareRecordsDriftAndPublish(t *testing.T) {
 	if !settings.Configured || settings.TokenMasked == "test-token-1234567890" || settings.TokenMasked == "" {
 		t.Fatalf("settings leak or missing mask: %#v", settings)
 	}
+
+	// A record created in the Cloudflare console is just part of the list: there
+	// is no "unmanaged" bucket to adopt it out of.
 	fake.mu.Lock()
 	fake.records["external-record"] = control.CloudflareRecord{ID: "external-record", Type: "A", Name: "existing.example.com", Content: "192.0.2.1", TTL: 300, Proxied: true}
 	fake.mu.Unlock()
-	response = request(t, http.MethodGet, httpServer.URL+"/api/v1/cloudflare/remote-records", nil, session, csrfToken)
-	var remoteRecords struct {
-		Records []control.CloudflareRecord `json:"records"`
+	var listed struct {
+		Records []control.CloudflareRecordView `json:"records"`
 	}
-	decodeBody(t, response, &remoteRecords)
-	if len(remoteRecords.Records) != 1 || remoteRecords.Records[0].ID != "external-record" {
-		t.Fatalf("remote records not listed: %#v", remoteRecords.Records)
+	response = request(t, http.MethodGet, httpServer.URL+"/api/v1/cloudflare/records", nil, session, csrfToken)
+	decodeBody(t, response, &listed)
+	if len(listed.Records) != 1 || listed.Records[0].ID != "external-record" {
+		t.Fatalf("zone records not listed: %#v", listed.Records)
 	}
-	fake.mu.Lock()
-	delete(fake.records, "external-record")
-	fake.mu.Unlock()
 
 	response = request(t, http.MethodPost, httpServer.URL+"/api/v1/cloudflare/records", map[string]any{
 		"name": "test.example.com", "type": "TXT", "content": "hello", "ttl": 300,
@@ -864,11 +796,15 @@ func TestCloudflareRecordsDriftAndPublish(t *testing.T) {
 	if response.StatusCode != http.StatusCreated {
 		t.Fatalf("create record: got %d", response.StatusCode)
 	}
-	var record control.ManagedCloudflareRecord
-	decodeBody(t, response, &record)
-	if record.Status != "pending" {
-		t.Fatalf("new record status %q", record.Status)
+	var created control.CloudflareRecordView
+	decodeBody(t, response, &created)
+	fake.mu.Lock()
+	upstream, exists := fake.records[created.ID]
+	fake.mu.Unlock()
+	if !exists || upstream.Content != "hello" {
+		t.Fatalf("create did not reach Cloudflare: %#v", upstream)
 	}
+
 	outsideZone := request(t, http.MethodPost, httpServer.URL+"/api/v1/cloudflare/records", map[string]any{
 		"name": "test.other.com", "type": "TXT", "content": "x", "ttl": 300,
 	}, session, csrfToken)
@@ -877,65 +813,46 @@ func TestCloudflareRecordsDriftAndPublish(t *testing.T) {
 	}
 	outsideZone.Body.Close()
 
-	// Preview without confirm must not write upstream.
-	response = request(t, http.MethodPost, httpServer.URL+"/api/v1/cloudflare/records/"+record.ID+"/publish", map[string]bool{"confirm": false}, session, csrfToken)
-	var preview struct {
-		RequiresConfirm bool `json:"requires_confirm"`
-	}
-	decodeBody(t, response, &preview)
-	if !preview.RequiresConfirm || len(fake.records) != 0 {
-		t.Fatalf("publish preview wrote upstream: %#v, %d records", preview, len(fake.records))
-	}
-	response = request(t, http.MethodPost, httpServer.URL+"/api/v1/cloudflare/records/"+record.ID+"/publish", map[string]bool{"confirm": true}, session, csrfToken)
-	var published struct {
-		Record control.ManagedCloudflareRecord `json:"record"`
-	}
-	decodeBody(t, response, &published)
-	if published.Record.Status != "synced" || published.Record.RemoteID == "" || len(fake.records) != 1 {
-		t.Fatalf("publish did not sync: %#v", published.Record)
-	}
-	response = request(t, http.MethodGet, httpServer.URL+"/api/v1/cloudflare/remote-records", nil, session, csrfToken)
-	decodeBody(t, response, &remoteRecords)
-	if len(remoteRecords.Records) != 0 {
-		t.Fatalf("managed record also listed as remote-only: %#v", remoteRecords.Records)
-	}
-
-	// Simulate an out-of-band console change, then detect drift without
-	// overwriting it.
+	// A note added in the Cloudflare console must survive an edit made here.
 	fake.mu.Lock()
-	changed := fake.records[published.Record.RemoteID]
-	changed.Content = "changed-by-console"
-	fake.records[published.Record.RemoteID] = changed
+	commented := fake.records[created.ID]
+	commented.Comment = "set in the Cloudflare console"
+	fake.records[created.ID] = commented
 	fake.mu.Unlock()
-	response = request(t, http.MethodPost, httpServer.URL+"/api/v1/cloudflare/sync", nil, session, csrfToken)
-	var synced struct {
-		Drifted int                               `json:"drifted"`
-		Records []control.ManagedCloudflareRecord `json:"records"`
-	}
-	decodeBody(t, response, &synced)
-	if synced.Drifted != 1 || synced.Records[0].Status != "drift" {
-		t.Fatalf("drift not detected: %#v", synced)
-	}
-	fake.mu.Lock()
-	if fake.records[published.Record.RemoteID].Content != "changed-by-console" {
-		fake.mu.Unlock()
-		t.Fatal("sync overwrote the external change")
-	}
-	fake.mu.Unlock()
-
-	// Deleting a published record needs explicit confirmation.
-	response = request(t, http.MethodDelete, httpServer.URL+"/api/v1/cloudflare/records/"+record.ID, nil, session, csrfToken)
-	if response.StatusCode != http.StatusConflict {
-		t.Fatalf("delete without confirm: got %d", response.StatusCode)
+	response = request(t, http.MethodPut, httpServer.URL+"/api/v1/cloudflare/records/"+created.ID, map[string]any{
+		"name": "test.example.com", "type": "TXT", "content": "hello-again", "ttl": 300,
+	}, session, csrfToken)
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("update record: got %d", response.StatusCode)
 	}
 	response.Body.Close()
-	response = request(t, http.MethodDelete, httpServer.URL+"/api/v1/cloudflare/records/"+record.ID+"?confirm=true", nil, session, csrfToken)
-	if response.StatusCode != http.StatusNoContent || len(fake.records) != 0 {
-		t.Fatalf("confirmed delete failed: %d, %d remote records", response.StatusCode, len(fake.records))
+	fake.mu.Lock()
+	upstream = fake.records[created.ID]
+	fake.mu.Unlock()
+	if upstream.Content != "hello-again" {
+		t.Fatalf("update did not reach Cloudflare: %#v", upstream)
+	}
+	if upstream.Comment != "set in the Cloudflare console" {
+		t.Fatalf("update dropped a field polaris does not manage: %#v", upstream)
+	}
+
+	response = request(t, http.MethodDelete, httpServer.URL+"/api/v1/cloudflare/records/"+created.ID, nil, session, csrfToken)
+	if response.StatusCode != http.StatusNoContent {
+		t.Fatalf("delete record: got %d", response.StatusCode)
+	}
+	response.Body.Close()
+	fake.mu.Lock()
+	_, survived := fake.records[created.ID]
+	fake.mu.Unlock()
+	if survived {
+		t.Fatal("delete left the record at Cloudflare")
 	}
 }
 
-func TestCloudflareProxyValidationFollowsListenerType(t *testing.T) {
+// Turning on the orange cloud is refused when it would break an access service
+// published under the same name. The binding comes from the access service's
+// own connection domain, so nothing is declared twice.
+func TestCloudflareProxyValidationFollowsTheAccessServiceOnThatDomain(t *testing.T) {
 	fake := &fakeCloudflare{records: map[string]control.CloudflareRecord{}}
 	fakeServer := httptest.NewServer(fake.handler())
 	defer fakeServer.Close()
@@ -962,89 +879,53 @@ func TestCloudflareProxyValidationFollowsListenerType(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	wsListener, err := store.CreateListener(t.Context(), control.Listener{
-		NodeID: nodeID, Name: "vless-ws", ListenAddr: "0.0.0.0", Port: 8080, Enabled: true,
-		Spec: control.ProtocolSpec{Protocol: "vless", Network: "tcp", Transport: control.TransportOptions{Type: "ws", Path: "/ws"}},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
 	realityKey, _, err := store.CreateRealityKey(t.Context(), "cdn-reality")
 	if err != nil {
 		t.Fatal(err)
 	}
-	realityListener, err := store.CreateListener(t.Context(), control.Listener{
-		NodeID: nodeID, Name: "vless-reality", ListenAddr: "0.0.0.0", Port: 9443, Enabled: true,
-		Spec: control.ProtocolSpec{Protocol: "vless", Network: "tcp", TLS: control.TLSOptions{Enabled: true}, Reality: control.RealityOptions{Enabled: true, KeyID: realityKey.ID, HandshakeServer: "www.example.com", HandshakePort: 443, ShortIDs: []string{"0123456789abcdef"}}},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	wsTLSListener, err := store.CreateListener(t.Context(), control.Listener{
-		NodeID: nodeID, Name: "vless-ws-tls", Domain: "ws-tls.example.com", ListenAddr: "127.0.0.1", Port: 443, BackendPort: 20443, Enabled: true,
-		Spec: control.ProtocolSpec{Protocol: "vless", Network: "tcp", TLS: control.TLSOptions{Enabled: true}, Transport: control.TransportOptions{Type: "ws", Path: "/ws-tls"}},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	grpcListener, err := store.CreateListener(t.Context(), control.Listener{
-		NodeID: nodeID, Name: "vless-grpc-tls", Domain: "grpc.example.com", ListenAddr: "127.0.0.1", Port: 443, BackendPort: 20444, Enabled: true,
-		Spec: control.ProtocolSpec{Protocol: "vless", Network: "tcp", TLS: control.TLSOptions{Enabled: true}, Transport: control.TransportOptions{Type: "grpc", ServiceName: "grpc-service"}},
-	})
-	if err != nil {
-		t.Fatal(err)
+	for _, listener := range []control.Listener{
+		{NodeID: nodeID, Name: "vless-ws", Domain: "ws.example.com", ListenAddr: "0.0.0.0", Port: 8080, Enabled: true,
+			Spec: control.ProtocolSpec{Protocol: "vless", Network: "tcp", Transport: control.TransportOptions{Type: "ws", Path: "/ws"}}},
+		{NodeID: nodeID, Name: "vless-reality", Domain: "reality.example.com", ListenAddr: "0.0.0.0", Port: 9443, Enabled: true,
+			Spec: control.ProtocolSpec{Protocol: "vless", Network: "tcp", TLS: control.TLSOptions{Enabled: true}, Reality: control.RealityOptions{Enabled: true, KeyID: realityKey.ID, HandshakeServer: "www.example.com", HandshakePort: 443, ShortIDs: []string{"0123456789abcdef"}}}},
+		{NodeID: nodeID, Name: "vless-ws-tls", Domain: "ws-tls.example.com", ListenAddr: "127.0.0.1", Port: 443, BackendPort: 20443, Enabled: true,
+			Spec: control.ProtocolSpec{Protocol: "vless", Network: "tcp", TLS: control.TLSOptions{Enabled: true}, Transport: control.TransportOptions{Type: "ws", Path: "/ws-tls"}}},
+		{NodeID: nodeID, Name: "vless-grpc-tls", Domain: "grpc.example.com", ListenAddr: "127.0.0.1", Port: 443, BackendPort: 20444, Enabled: true,
+			Spec: control.ProtocolSpec{Protocol: "vless", Network: "tcp", TLS: control.TLSOptions{Enabled: true}, Transport: control.TransportOptions{Type: "grpc", ServiceName: "grpc-service"}}},
+		{NodeID: nodeID, Name: "vless-ws-4444", Domain: "badport.example.com", ListenAddr: "0.0.0.0", Port: 4444, Enabled: true,
+			Spec: control.ProtocolSpec{Protocol: "vless", Network: "tcp", Transport: control.TransportOptions{Type: "ws", Path: "/ws"}}},
+	} {
+		if _, err := store.CreateListener(t.Context(), listener); err != nil {
+			t.Fatalf("create listener %s: %v", listener.Name, err)
+		}
 	}
 
-	if _, err := store.CreateCloudflareRecord(t.Context(), control.ManagedCloudflareRecord{
-		Name: "ws.example.com", Type: "A", Content: "192.0.2.10", TTL: 1, Proxied: true, ListenerID: wsListener.ID,
-	}); err != nil {
-		t.Fatalf("rejected orange cloud for WebSocket listener on 8080: %v", err)
+	for _, allowed := range []control.CloudflareRecord{
+		{Name: "ws.example.com", Type: "A", Content: "192.0.2.10", TTL: 1, Proxied: true},
+		{Name: "ws-tls.example.com", Type: "A", Content: "192.0.2.15", TTL: 1, Proxied: true},
+		{Name: "grpc.example.com", Type: "A", Content: "192.0.2.16", TTL: 1, Proxied: true},
+		// No access service claims this name, so the record may well front
+		// something this platform does not host.
+		{Name: "bare.example.com", Type: "A", Content: "192.0.2.12", TTL: 1, Proxied: true},
+		// Grey cloud stays available for every access service.
+		{Name: "reality.example.com", Type: "A", Content: "192.0.2.14", TTL: 300, Proxied: false},
+	} {
+		if _, err := store.CreateCloudflareRecord(t.Context(), allowed); err != nil {
+			t.Fatalf("rejected %s: %v", allowed.Name, err)
+		}
 	}
-	if _, err := store.CreateCloudflareRecord(t.Context(), control.ManagedCloudflareRecord{
-		Name: "ws-tls.example.com", Type: "A", Content: "192.0.2.15", TTL: 1, Proxied: true, ListenerID: wsTLSListener.ID,
-	}); err != nil {
-		t.Fatalf("rejected orange cloud for TLS WebSocket listener on 443: %v", err)
-	}
-	if _, err := store.CreateCloudflareRecord(t.Context(), control.ManagedCloudflareRecord{
-		Name: "grpc.example.com", Type: "A", Content: "192.0.2.16", TTL: 1, Proxied: true, ListenerID: grpcListener.ID,
-	}); err != nil {
-		t.Fatalf("rejected orange cloud for TLS gRPC listener on 443: %v", err)
-	}
-	if _, err := store.CreateCloudflareRecord(t.Context(), control.ManagedCloudflareRecord{
-		Name: "reality.example.com", Type: "A", Content: "192.0.2.11", TTL: 1, Proxied: true, ListenerID: realityListener.ID,
-	}); err == nil {
-		t.Fatal("allowed orange cloud on a Reality listener")
-	}
-	// An orange-cloud record without a listener binding is accepted: it may
-	// well serve something this platform does not host, and it still has to be
-	// editable here.
-	if _, err := store.CreateCloudflareRecord(t.Context(), control.ManagedCloudflareRecord{
-		Name: "bare.example.com", Type: "A", Content: "192.0.2.12", TTL: 1, Proxied: true,
-	}); err != nil {
-		t.Fatalf("rejected orange cloud without a listener binding: %v", err)
-	}
-	if _, err := store.CreateCloudflareRecord(t.Context(), control.ManagedCloudflareRecord{
-		Name: "txt.example.com", Type: "TXT", Content: "v=spf1", TTL: 1, Proxied: true, ListenerID: wsListener.ID,
-	}); err == nil {
-		t.Fatal("allowed orange cloud on a TXT record")
-	}
-	badPort, err := store.CreateListener(t.Context(), control.Listener{
-		NodeID: nodeID, Name: "vless-ws-4444", ListenAddr: "0.0.0.0", Port: 4444, Enabled: true,
-		Spec: control.ProtocolSpec{Protocol: "vless", Network: "tcp", Transport: control.TransportOptions{Type: "ws", Path: "/ws"}},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := store.CreateCloudflareRecord(t.Context(), control.ManagedCloudflareRecord{
-		Name: "badport.example.com", Type: "A", Content: "192.0.2.13", TTL: 1, Proxied: true, ListenerID: badPort.ID,
-	}); err == nil {
-		t.Fatal("allowed orange cloud on a port Cloudflare does not proxy")
-	}
-	// Grey cloud stays available for every listener type.
-	if _, err := store.CreateCloudflareRecord(t.Context(), control.ManagedCloudflareRecord{
-		Name: "grey.example.com", Type: "A", Content: "192.0.2.14", TTL: 300, Proxied: false, ListenerID: realityListener.ID,
-	}); err != nil {
-		t.Fatalf("rejected grey cloud record: %v", err)
+
+	for _, refused := range []struct {
+		reason string
+		record control.CloudflareRecord
+	}{
+		{"orange cloud on a Reality access service", control.CloudflareRecord{Name: "reality.example.com", Type: "AAAA", Content: "2001:db8::11", TTL: 1, Proxied: true}},
+		{"orange cloud on a TXT record", control.CloudflareRecord{Name: "ws.example.com", Type: "TXT", Content: "v=spf1", TTL: 1, Proxied: true}},
+		{"orange cloud on a port Cloudflare does not proxy", control.CloudflareRecord{Name: "badport.example.com", Type: "A", Content: "192.0.2.13", TTL: 1, Proxied: true}},
+	} {
+		if _, err := store.CreateCloudflareRecord(t.Context(), refused.record); err == nil {
+			t.Fatalf("allowed %s", refused.reason)
+		}
 	}
 }
 

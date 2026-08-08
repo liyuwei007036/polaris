@@ -81,18 +81,20 @@ func (s *Store) CreateListenerWithAutomaticPortRouting(ctx context.Context, list
 		// route so it is not mistaken for a competing one.
 		delete(routedSNIs, existing[index].ID)
 	}
-	// Every TLS-terminating TCP listener goes behind the managed SNI router,
-	// even when it is the only one on its port. sing-box then never binds a
-	// public port itself, so a service that already owns that port on the host
-	// — an Nginx installed before polaris is the common case — cannot take the
-	// socket away from it and leave sing-box restarting forever.
+	// A listener goes behind the managed SNI router only when something else
+	// already holds its public port: another enabled listener, or an Nginx SNI
+	// group already bound to it. Alone on its port it binds that port itself,
+	// so sing-box sees the client's own address rather than the router's
+	// loopback one — the router cannot carry a source address across, and for
+	// Reality there is no protocol layer left that could.
 	//
-	// Two kinds of listener keep the public port directly: UDP, which the
-	// TCP-only router cannot carry, and a TCP listener with no usable SNI,
-	// which has no ClientHello to be routed by.
+	// Two kinds of listener can never be routed: UDP, which the TCP-only
+	// router cannot carry, and a TCP listener with no usable SNI, which has no
+	// ClientHello to be routed by. Either one on a contended port is an error.
 	routeName, routeNameErr := automaticRouteName(listener)
-	managed := listener.Spec.Network == "tcp" && routeNameErr == nil
-	if !managed && (len(existing) > 0 || len(routedSNIs) > 0) {
+	contended := len(existing) > 0 || len(routedSNIs) > 0
+	managed := contended && listener.Spec.Network == "tcp" && routeNameErr == nil
+	if contended && !managed {
 		if listener.Spec.Network != "tcp" {
 			return Listener{}, nil, false, userErrorf("端口 %d 已被该服务器上的另一个 UDP 接入服务使用，请选择其他端口", listener.Port)
 		}

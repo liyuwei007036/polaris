@@ -327,6 +327,7 @@ database_path: /var/lib/polaris-master/polaris.db
 agent_port: 19994
 web_port: 19670
 allow_insecure_http: false
+connections_interval: 10s
 ```
 
 | 字段 | 默认值 | 约束 |
@@ -336,6 +337,9 @@ allow_insecure_http: false
 | `agent_port` | `19994` | 1–65535，且不能与 `web_port` 相同 |
 | `web_port` | `19670` | 1–65535 |
 | `allow_insecure_http` | `false` | 置 `true` 时登录 Cookie 去掉 `Secure`，仅限内网测试 |
+| `connections_interval` | `10s` | 允许 `1s` – `30s`；握手时下发给所有节点 |
+
+`connections_interval` 决定所有节点多久上报一次实时连接。Master 在每次握手时把它交给 agent，**agent 采用这个值而不是自己配置文件里的那个**，所以调整上报频率只需改这里并重启 Master，不必登录任何节点，也不必重启 agent。值非法或留空时保持内置默认值 `10s`。
 
 ### 4.2 agent.yaml
 
@@ -353,7 +357,7 @@ connections_interval: 10s
 | `master_address` | 无 | 必填，`主机:端口`，不带 URL scheme |
 | `master_public_key` | 无 | 必填，Base64，解码后必须是 32 字节 |
 | `heartbeat_interval` | `30s` | 允许 `5s` – `5m` |
-| `connections_interval` | `10s` | 允许 `1s` – `30s` |
+| `connections_interval` | `10s` | 允许 `1s` – `30s`；**Master 下发的值优先**，此处仅在 Master 未指定时生效 |
 
 可选的 `nginx_passthrough_routes` 用于已有非 Polaris 服务与受管 Nginx stream 共用同一端口：
 

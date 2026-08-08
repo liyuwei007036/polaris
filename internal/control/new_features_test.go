@@ -1,7 +1,6 @@
 package control_test
 
 import (
-	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -260,87 +259,45 @@ func TestOutboundExpiryRoundTrips(t *testing.T) {
 	}
 }
 
-func TestBannedAddressesAreListedAndCanBeReleased(t *testing.T) {
-	store, server, baseURL, session, csrfToken := newFeatureServer(t)
+func TestReleasingABannedAddressNeedsAValidAddressAndAReachableServer(t *testing.T) {
+	_, server, baseURL, session, csrfToken := newFeatureServer(t)
 	nodeID := approveTestNode(t, server, baseURL, session, csrfToken, "banned-node")
 
-	response := request(t, http.MethodPost, baseURL+"/api/v1/nodes/"+nodeID+"/fail2ban/jails", map[string]any{
-		"name": "ssh-bruteforce", "filter_name": "ssh-bruteforce", "log_path": "/var/log/auth.log",
-		"fail_regex": "^.*sshd.*from <HOST>.*$", "max_retry": 5, "find_time_seconds": 600,
-		"ban_time_seconds": 3600, "enabled": true,
-	}, session, csrfToken)
-	if response.StatusCode != http.StatusCreated {
-		t.Fatalf("create jail: got %d", response.StatusCode)
-	}
-	metrics := map[string]any{"fail2ban": map[string]any{"available": true, "jails": []map[string]any{
-		{"name": "polaris-ssh-bruteforce", "managed": true, "currently_banned": "1", "banned": []map[string]string{
-			{"ip": "203.0.113.7", "banned_at": "2026-08-06T02:00:00Z", "unban_at": "2026-08-06T03:00:00Z"},
-		}},
-		{"name": "operator-own-jail", "managed": false, "banned": []map[string]string{{"ip": "198.51.100.9"}}},
-	}}}
-	encoded, err := json.Marshal(metrics)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := store.UpdateNodeMetrics(t.Context(), nodeID, string(encoded)); err != nil {
-		t.Fatal(err)
-	}
-
-	var banned struct {
-		Banned []struct {
-			NodeID   string `json:"node_id"`
-			Jail     string `json:"jail"`
-			RuleName string `json:"rule_name"`
-			Managed  bool   `json:"managed"`
-			IP       string `json:"ip"`
-			BannedAt string `json:"banned_at"`
-			UnbanAt  string `json:"unban_at"`
-		} `json:"banned"`
-	}
-	response = request(t, http.MethodGet, baseURL+"/api/v1/fail2ban/banned", nil, session, csrfToken)
-	if response.StatusCode != http.StatusOK {
-		t.Fatalf("list banned addresses: got %d", response.StatusCode)
-	}
-	decodeBody(t, response, &banned)
-	if len(banned.Banned) != 2 {
-		t.Fatalf("expected both managed and unmanaged bans, got %#v", banned.Banned)
-	}
-	managed := banned.Banned[0]
-	if managed.IP != "203.0.113.7" || managed.RuleName != "ssh-bruteforce" || !managed.Managed {
-		t.Fatalf("managed ban was not resolved back to its rule: %#v", managed)
-	}
-	if managed.BannedAt != "2026-08-06T02:00:00Z" || managed.UnbanAt != "2026-08-06T03:00:00Z" {
-		t.Fatalf("ban times were not carried through: %#v", managed)
-	}
-	if banned.Banned[1].RuleName != "" || banned.Banned[1].Managed {
-		t.Fatalf("unmanaged ban should not claim a platform rule: %#v", banned.Banned[1])
-	}
-
-	// Releasing an address is dispatched as a task the node executes.
-	var task struct {
-		ID   string `json:"id"`
-		Kind string `json:"kind"`
-	}
-	response = request(t, http.MethodPost, baseURL+"/api/v1/nodes/"+nodeID+"/fail2ban/unban", map[string]any{
-		"jail": "polaris-ssh-bruteforce", "ip": "203.0.113.7",
-	}, session, csrfToken)
-	if response.StatusCode != http.StatusAccepted {
-		t.Fatalf("unban: got %d", response.StatusCode)
-	}
-	decodeBody(t, response, &task)
-	if task.Kind != "fail2ban.unban" {
-		t.Fatalf("unexpected task kind %q", task.Kind)
-	}
-
 	// A value that is not an address never reaches the node.
-	response = request(t, http.MethodPost, baseURL+"/api/v1/nodes/"+nodeID+"/fail2ban/unban", map[string]any{
+	response := request(t, http.MethodPost, baseURL+"/api/v1/nodes/"+nodeID+"/fail2ban/unban", map[string]any{
 		"jail": "polaris-ssh-bruteforce", "ip": "not-an-ip",
 	}, session, csrfToken)
 	if response.StatusCode != http.StatusBadRequest {
 		t.Fatalf("invalid unban address: got %d", response.StatusCode)
 	}
-}
+	response.Body.Close()
 
+	// Releasing an address is something the server does. An unreachable server
+	// releases nobody, so the request must fail rather than report success.
+	response = request(t, http.MethodPost, baseURL+"/api/v1/nodes/"+nodeID+"/fail2ban/unban", map[string]any{
+		"jail": "polaris-ssh-bruteforce", "ip": "203.0.113.7",
+	}, session, csrfToken)
+	if response.StatusCode == http.StatusNoContent {
+		t.Fatal("releasing an address on an offline server was reported as done")
+	}
+	response.Body.Close()
+
+	// The banned list is read from the servers, so an unreachable one is
+	// reported as unreadable rather than as holding nobody.
+	response = request(t, http.MethodGet, baseURL+"/api/v1/fail2ban/banned", nil, session, csrfToken)
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("list banned addresses: got %d", response.StatusCode)
+	}
+	var banned struct {
+		Banned []struct {
+			IP string `json:"ip"`
+		} `json:"banned"`
+	}
+	decodeBody(t, response, &banned)
+	if len(banned.Banned) != 0 {
+		t.Fatalf("an offline server reported bans it cannot know about: %#v", banned.Banned)
+	}
+}
 // createRuleSetClientConfig builds the smallest configuration that can carry a
 // RULE-SET rule: one access account, one proxy group holding it, and a
 // configuration referencing the shared provider.

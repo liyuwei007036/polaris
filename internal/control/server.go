@@ -2,11 +2,9 @@ package control
 
 import (
 	"context"
-	"crypto/sha256"
 	"database/sql"
 	"embed"
 	"encoding/base64"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -56,8 +54,11 @@ type Server struct {
 	listenerNameCache      map[string]listenerNameEntry
 	outboundNameCache      map[string]string
 	outboundNameCachedAt   time.Time
+	connectionsInterval    time.Duration
 	reconcileMu            sync.Mutex
 	reconcileState         map[string]reconcileAttempt
+	taskWaitMu             sync.Mutex
+	taskWaiters            map[string]chan wire.TaskResult
 }
 
 // listenerNameCacheTTL bounds how stale a resolved listener name may be in
@@ -73,6 +74,10 @@ type listenerNameEntry struct {
 type controlSession struct {
 	done  chan struct{}
 	tasks chan Task
+	// questions carries the request-response tasks a screen asks on demand.
+	// They are never stored, so they travel on their own channel rather than
+	// through the task table. See AskNode.
+	questions chan wire.Task
 }
 
 func NewServer(store *Store, secureCookies bool) (*Server, error) {
@@ -87,9 +92,28 @@ func NewServer(store *Store, secureCookies bool) (*Server, error) {
 	return &Server{
 		store: store, noiseKeypair: keypair, agentPort: defaultAgentPort, secureCookies: secureCookies,
 		controls: make(map[string]*controlSession), autoInstallChecked: make(map[string]bool),
+		taskWaiters:            make(map[string]chan wire.TaskResult),
 		latestSingBoxReleaseFn: LatestOfficialSingBoxRelease,
 		connHub:                newConnectionsHub(), liveHub: newLiveHub(), ipLocator: ipLocator,
+		connectionsInterval:    DefaultConnectionsInterval,
 	}, nil
+}
+
+// DefaultConnectionsInterval paces the real-time connection push every node
+// sends. It is deliberately a master-side value: agents adopt whatever the
+// handshake hands them, so changing the cadence never means editing or
+// restarting anything on the nodes themselves.
+const DefaultConnectionsInterval = 10 * time.Second
+
+// SetConnectionsInterval overrides the cadence handed to agents on their next
+// handshake. Values outside the range agents accept are ignored, because an
+// agent that rejects the cadence would fall back to its own and the operator
+// would be left wondering which one is in effect.
+func (s *Server) SetConnectionsInterval(interval time.Duration) {
+	if interval < time.Second || interval > 30*time.Second {
+		return
+	}
+	s.connectionsInterval = interval
 }
 
 // StartMaintenance runs the periodic housekeeping the master owns: today that
@@ -167,33 +191,25 @@ func (s *Server) registerBrowserRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("PUT /api/v1/nodes/{id}/client-address", s.setNodeClientAddress)
 	mux.HandleFunc("GET /api/v1/nodes/metrics", s.allNodeMetrics)
 	mux.HandleFunc("GET /api/v1/nodes/{id}/metrics", s.nodeMetrics)
-	mux.HandleFunc("GET /api/v1/firewall/rules", s.listFirewallRules)
-	mux.HandleFunc("GET /api/v1/fail2ban/jails", s.listFail2BanJails)
-	mux.HandleFunc("GET /api/v1/nodes/{id}/firewall/rules", s.listFirewallRules)
-	mux.HandleFunc("POST /api/v1/nodes/{id}/firewall/rules", s.createFirewallRule)
-	mux.HandleFunc("POST /api/v1/nodes/{id}/firewall/publish", s.publishNodeFirewall)
-	mux.HandleFunc("POST /api/v1/firewall/rules/{id}/enabled", s.setFirewallRuleEnabled)
-	mux.HandleFunc("DELETE /api/v1/firewall/rules/{id}", s.deleteFirewallRule)
+	// Network protection is read from and written to the servers themselves;
+	// none of it is stored here. See server_security.go.
+	mux.HandleFunc("GET /api/v1/firewall/rules", s.listFirewall)
+	mux.HandleFunc("GET /api/v1/nodes/{id}/firewall/rules", s.listFirewall)
+	mux.HandleFunc("POST /api/v1/nodes/{id}/firewall/rules", s.changeFirewallRule)
+	mux.HandleFunc("GET /api/v1/fail2ban/jails", s.listFail2Ban)
+	mux.HandleFunc("GET /api/v1/nodes/{id}/fail2ban/jails", s.listFail2Ban)
+	mux.HandleFunc("POST /api/v1/nodes/{id}/fail2ban/jails", s.changeFail2BanJail)
 	mux.HandleFunc("GET /api/v1/fail2ban/banned", s.listBannedAddresses)
 	mux.HandleFunc("POST /api/v1/nodes/{id}/fail2ban/unban", s.unbanAddress)
-	mux.HandleFunc("GET /api/v1/nodes/{id}/fail2ban/jails", s.listFail2BanJails)
-	mux.HandleFunc("POST /api/v1/nodes/{id}/fail2ban/jails", s.createFail2BanJail)
-	mux.HandleFunc("POST /api/v1/nodes/{id}/fail2ban/publish", s.publishNodeFail2Ban)
-	mux.HandleFunc("PUT /api/v1/fail2ban/jails/{id}", s.updateFail2BanJail)
-	mux.HandleFunc("POST /api/v1/fail2ban/jails/{id}/enabled", s.setFail2BanJailEnabled)
-	mux.HandleFunc("DELETE /api/v1/fail2ban/jails/{id}", s.deleteFail2BanJail)
 	mux.HandleFunc("GET /api/v1/nodes/{id}/connections", s.nodeConnections)
 	mux.HandleFunc("GET /api/v1/events/connections", s.browserConnectionsStream)
 	mux.HandleFunc("GET /api/v1/events/live", s.browserLiveStream)
 	mux.HandleFunc("GET /api/v1/cloudflare/settings", s.cloudflareSettings)
 	mux.HandleFunc("PUT /api/v1/cloudflare/settings", s.setCloudflareSettings)
 	mux.HandleFunc("GET /api/v1/cloudflare/records", s.listCloudflareRecords)
-	mux.HandleFunc("GET /api/v1/cloudflare/remote-records", s.listRemoteCloudflareRecords)
 	mux.HandleFunc("POST /api/v1/cloudflare/records", s.createCloudflareRecord)
 	mux.HandleFunc("PUT /api/v1/cloudflare/records/{id}", s.updateCloudflareRecord)
 	mux.HandleFunc("DELETE /api/v1/cloudflare/records/{id}", s.deleteCloudflareRecord)
-	mux.HandleFunc("POST /api/v1/cloudflare/records/{id}/publish", s.publishCloudflareRecord)
-	mux.HandleFunc("POST /api/v1/cloudflare/sync", s.syncCloudflareRecords)
 	mux.HandleFunc("GET /api/v1/cloudflare/origin-certificates", s.listOriginCertificates)
 	mux.HandleFunc("POST /api/v1/cloudflare/origin-certificates", s.createOriginCertificate)
 	mux.HandleFunc("PUT /api/v1/cloudflare/origin-certificates/{id}", s.updateOriginCertificate)
@@ -1149,116 +1165,6 @@ func (s *Server) nodeMetrics(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"node_id": r.PathValue("id"), "updated_at": updatedAt, "report": report})
-}
-
-func (s *Server) listFirewallRules(w http.ResponseWriter, r *http.Request) {
-	if _, err := s.operator(r, false); err != nil {
-		writeError(w, err)
-		return
-	}
-	rules, err := s.store.ListFirewallRules(r.Context(), r.PathValue("id"))
-	if err != nil {
-		writeError(w, err)
-		return
-	}
-	for index := range rules {
-		rules[index].Location = s.ipLocator.LocateCIDR(rules[index].CIDR)
-	}
-	writeJSON(w, http.StatusOK, map[string]any{"rules": rules})
-}
-
-func (s *Server) createFirewallRule(w http.ResponseWriter, r *http.Request) {
-	operator, err := s.admin(r)
-	if err != nil {
-		writeError(w, err)
-		return
-	}
-	var rule FirewallRule
-	if !decodeJSON(w, r, &rule) {
-		return
-	}
-	rule.NodeID = r.PathValue("id")
-	created, err := s.store.CreateFirewallRule(r.Context(), rule)
-	if err != nil {
-		writeError(w, err)
-		return
-	}
-	if err := s.store.AppendAudit(r.Context(), operator.ID, "firewall_rule.created", "firewall_rule", created.ID, "polaris firewall rule created"); err != nil {
-		writeError(w, err)
-		return
-	}
-	writeJSON(w, http.StatusCreated, created)
-}
-
-func (s *Server) setFirewallRuleEnabled(w http.ResponseWriter, r *http.Request) {
-	operator, err := s.admin(r)
-	if err != nil {
-		writeError(w, err)
-		return
-	}
-	var input struct {
-		Enabled bool `json:"enabled"`
-	}
-	if !decodeJSON(w, r, &input) {
-		return
-	}
-	if err := s.store.SetFirewallRuleEnabled(r.Context(), r.PathValue("id"), input.Enabled); err != nil {
-		writeError(w, err)
-		return
-	}
-	if err := s.store.AppendAudit(r.Context(), operator.ID, "firewall_rule.state_changed", "firewall_rule", r.PathValue("id"), "polaris firewall rule state changed"); err != nil {
-		writeError(w, err)
-		return
-	}
-	w.WriteHeader(http.StatusNoContent)
-}
-
-func (s *Server) deleteFirewallRule(w http.ResponseWriter, r *http.Request) {
-	operator, err := s.admin(r)
-	if err != nil {
-		writeError(w, err)
-		return
-	}
-	if err := s.store.DeleteFirewallRule(r.Context(), r.PathValue("id")); err != nil {
-		writeError(w, err)
-		return
-	}
-	if err := s.store.AppendAudit(r.Context(), operator.ID, "firewall_rule.deleted", "firewall_rule", r.PathValue("id"), "polaris firewall rule deleted"); err != nil {
-		writeError(w, err)
-		return
-	}
-	w.WriteHeader(http.StatusNoContent)
-}
-
-func (s *Server) publishNodeFirewall(w http.ResponseWriter, r *http.Request) {
-	operator, err := s.admin(r)
-	if err != nil {
-		writeError(w, err)
-		return
-	}
-	nodeID := r.PathValue("id")
-	configuration, err := s.store.CompileNodeFirewall(r.Context(), nodeID)
-	if err != nil {
-		writeError(w, err)
-		return
-	}
-	digest := sha256.Sum256([]byte(configuration))
-	hash := hex.EncodeToString(digest[:])
-	payload, err := json.Marshal(map[string]string{"configuration": configuration})
-	if err != nil {
-		writeError(w, err)
-		return
-	}
-	task, err := s.DispatchTask(r.Context(), Task{NodeID: nodeID, OperatorID: operator.ID, Kind: "firewall.apply", IdempotencyKey: "firewall-" + hash, Payload: string(payload), ExpectedHash: hash})
-	if err != nil {
-		writeError(w, err)
-		return
-	}
-	if err := s.store.AppendAudit(r.Context(), operator.ID, "firewall.publish_requested", "node", nodeID, "polaris firewall task requested"); err != nil {
-		writeError(w, err)
-		return
-	}
-	writeJSON(w, http.StatusAccepted, task)
 }
 
 func (s *Server) publishNodeConfiguration(w http.ResponseWriter, r *http.Request) {

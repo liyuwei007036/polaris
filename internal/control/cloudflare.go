@@ -66,6 +66,16 @@ func (c *CloudflareClient) ListRecords(ctx context.Context, zoneID string) ([]Cl
 	return response.Result, nil
 }
 
+func (c *CloudflareClient) GetRecord(ctx context.Context, zoneID, recordID string) (CloudflareRecord, error) {
+	var response struct {
+		Result CloudflareRecord `json:"result"`
+	}
+	if err := c.request(ctx, http.MethodGet, "/zones/"+zoneID+"/dns_records/"+recordID, nil, &response); err != nil {
+		return CloudflareRecord{}, err
+	}
+	return response.Result, nil
+}
+
 func (c *CloudflareClient) CreateRecord(ctx context.Context, zoneID string, record CloudflareRecord) (CloudflareRecord, error) {
 	var response struct {
 		Result CloudflareRecord `json:"result"`
@@ -76,6 +86,9 @@ func (c *CloudflareClient) CreateRecord(ctx context.Context, zoneID string, reco
 	return response.Result, nil
 }
 
+// UpdateRecord patches rather than replaces: a record edited here may carry
+// fields this console does not manage — a comment or tags set in Cloudflare's
+// own UI — and a full PUT would silently drop them.
 func (c *CloudflareClient) UpdateRecord(ctx context.Context, zoneID string, record CloudflareRecord) (CloudflareRecord, error) {
 	if record.ID == "" {
 		return CloudflareRecord{}, errors.New("Cloudflare record ID is required")
@@ -83,7 +96,7 @@ func (c *CloudflareClient) UpdateRecord(ctx context.Context, zoneID string, reco
 	var response struct {
 		Result CloudflareRecord `json:"result"`
 	}
-	if err := c.request(ctx, http.MethodPut, "/zones/"+zoneID+"/dns_records/"+record.ID, record, &response); err != nil {
+	if err := c.request(ctx, http.MethodPatch, "/zones/"+zoneID+"/dns_records/"+record.ID, record, &response); err != nil {
 		return CloudflareRecord{}, err
 	}
 	return response.Result, nil

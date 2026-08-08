@@ -3,3 +3,6 @@ database_path: /var/lib/polaris-master/polaris.db
 agent_port: 19994
 web_port: 19670
 allow_insecure_http: false
+# 所有节点的实时连接上报间隔，由 Master 在握手时下发，改这里即可，无需登录节点。
+# 留空使用内置默认值 10s；允许 1s – 30s。
+connections_interval: 10s

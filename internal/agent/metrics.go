@@ -51,8 +51,9 @@ func CollectMetrics() MetricReport {
 			report.Proxy = map[string]uint64{"received_bytes": traffic.ReceivedBytes, "sent_bytes": traffic.SentBytes}
 		}
 	}
-	report.Fail2Ban = CollectFail2BanStatus(ctx)
-	report.Firewall = CollectFirewallStatus(ctx)
+	// Network protection is deliberately absent from the heartbeat. It is read
+	// from the host on demand instead, so the console can never show a rule
+	// that was true a minute ago but is not in force now.
 	received, sent, ok := NodeTrafficCounters()
 	if !ok {
 		return report

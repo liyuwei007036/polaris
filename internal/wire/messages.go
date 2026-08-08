@@ -38,6 +38,12 @@ type RegisterAck struct {
 	// distinct mechanism from node identity, used to verify signed sing-box
 	// release manifests (see VerifyReleaseTask).
 	ReleaseSigningPublicKeyPEM []byte
+	// ConnectionsIntervalSeconds is how often the master wants this node to
+	// push its connection list. Sending it on every handshake is what lets the
+	// cadence be changed centrally: the agent adopts it in place of its own
+	// configured value, so no node has to be edited or restarted by hand.
+	// Zero means the master has no opinion and the agent keeps its own.
+	ConnectionsIntervalSeconds uint32
 }
 
 // ConnectionInfo mirrors one entry from the local sing-box Clash API.
@@ -60,33 +66,6 @@ type ConnectionInfo struct {
 	InboundTag string
 	// User is the inbound account sing-box authenticated the connection as.
 	User string
-}
-
-// Fail2BanJailStatus mirrors one jail's status.
-type Fail2BanJailStatus struct {
-	Name            string
-	CurrentlyBanned string
-	TotalBanned     string
-	BannedIPs       []string
-	Banned          []Fail2BanBan
-	Error           string
-	Managed         bool
-}
-
-// Fail2BanBan is one currently banned address with the times Fail2Ban recorded
-// for it, in RFC 3339 UTC.
-type Fail2BanBan struct {
-	IP       string
-	BannedAt string
-	UnbanAt  string
-}
-
-// FirewallRuleEntry is one firewall rule already present on the host that
-// polaris did not write.
-type FirewallRuleEntry struct {
-	Table string
-	Chain string
-	Rule  string
 }
 
 // Status is the heartbeat-cadence identity/build/metrics report (everything
@@ -114,15 +93,9 @@ type Status struct {
 	SingBoxService    string
 	ClashAPIAvailable bool
 	TrafficAvailable  bool
-	Fail2BanAvailable bool
-	Fail2BanJails     []Fail2BanJailStatus
-	// The firewall fields describe what the host already enforces outside
-	// polaris's own managed table.
-	FirewallAvailable bool
-	FirewallTool      string
-	FirewallRules     []FirewallRuleEntry
-	FirewallTruncated bool
-	FirewallError     string
+	// Network protection is deliberately not part of the heartbeat: the console
+	// asks a node for its firewall and jails at the moment it shows them, so it
+	// can never present a rule that has since been changed on the server.
 }
 
 // ConnectionsPush is the fast-cadence, independent real-time connections
@@ -157,6 +130,12 @@ type TaskResult struct {
 	Status         string
 	Summary        string
 	SingBoxVersion string
+	// Data carries a structured answer for tasks the master asks in order to
+	// read something back — the live firewall and Fail2Ban state. Summary is a
+	// short sentence for the operations log and is capped there; a query's
+	// answer is far larger than that cap, so it travels separately and is
+	// never stored.
+	Data string
 }
 
 // Encode gob-encodes any of the message body types above.

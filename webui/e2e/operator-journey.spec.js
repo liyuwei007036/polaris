@@ -146,17 +146,20 @@ test('浏览器页面回归：真实登录，核心工作区 API 使用路由替
   const deployFailureSummary = '端口冲突：TCP/443 已被 nginx 占用。请停止占用该端口的程序，或为接入服务改用其他端口'
   let savedClientConfig
   let savedDNSRecord
-  let adoptedDNSRecord
+  let createdDNSRecord
+  let deletedDNSRecordID
   // The DNS page must tell "saved" apart from "reachable", so the connection
   // state is switched between the two assertions below.
   let cloudflareConnected = false
-  const managedDNSRecord = {
-    id: 'record-1', name: 'ws.example.com', type: 'A', content: '203.0.113.10', ttl: 1,
-    proxied: false, node_id: 'node-1', status: 'synced', node_name: '测试服务器',
-  }
-  const remoteDNSRecords = [
-    { id: 'remote-1', name: 'cdn.example.com', type: 'CNAME', content: 'ws.example.com', ttl: 1, proxied: true },
-    { id: 'remote-2', name: 'other.example.com', type: 'A', content: '198.51.100.7', ttl: 300, proxied: false },
+  // One list, straight from the zone. Bindings are resolved by the control
+  // plane, never declared on this page.
+  const zoneDNSRecords = [
+    {
+      id: 'record-1', name: 'ws.example.com', type: 'A', content: '203.0.113.10', ttl: 1, proxied: false,
+      bindings: [{ node_name: '测试服务器', listener_name: 'WebSocket 接入', listener_port: 18444 }],
+    },
+    { id: 'remote-1', name: 'cdn.example.com', type: 'CNAME', content: 'ws.example.com', ttl: 1, proxied: true, bindings: [] },
+    { id: 'remote-2', name: 'other.example.com', type: 'A', content: '198.51.100.7', ttl: 300, proxied: false, bindings: [] },
   ]
   let proxyGroupSequence = 0
   let rejectFirstProxyGroup = true
@@ -183,19 +186,22 @@ test('浏览器页面回归：真实登录，核心工作区 API 使用路由替
         ? { configured: true, connected: true, zone_id: 'zone1', zone_name: 'example.com', token_masked: 'test…7890' }
         : { configured: true, connected: false, error: 'Cloudflare 接口返回错误：Invalid API Token', zone_id: 'zone1', zone_name: 'example.com' } })
     }
-    if (request.method() === 'GET' && path === '/api/v1/cloudflare/records') return route.fulfill({ json: { records: cloudflareConnected ? [managedDNSRecord] : [] } })
-    if (request.method() === 'GET' && path === '/api/v1/cloudflare/remote-records') return route.fulfill({ json: { records: cloudflareConnected ? remoteDNSRecords : [] } })
+    if (request.method() === 'GET' && path === '/api/v1/cloudflare/records') return route.fulfill({ json: { records: cloudflareConnected ? zoneDNSRecords : [] } })
     if (request.method() === 'GET' && path === '/api/v1/cloudflare/origin-certificates') return route.fulfill({ json: { certificates: [] } })
     if (request.method() === 'PUT' && path === '/api/v1/cloudflare/settings') {
       return route.fulfill({ status: 400, json: { error: 'Cloudflare 接口返回错误：Invalid API Token' } })
     }
     if (request.method() === 'PUT' && path === '/api/v1/cloudflare/records/record-1') {
       savedDNSRecord = request.postDataJSON()
-      return route.fulfill({ json: { ...managedDNSRecord, ...savedDNSRecord } })
+      return route.fulfill({ json: { ...zoneDNSRecords[0], ...savedDNSRecord } })
     }
     if (request.method() === 'POST' && path === '/api/v1/cloudflare/records') {
-      adoptedDNSRecord = request.postDataJSON()
-      return route.fulfill({ status: 201, json: { id: 'record-2', status: 'pending', ...adoptedDNSRecord } })
+      createdDNSRecord = request.postDataJSON()
+      return route.fulfill({ status: 201, json: { id: 'record-2', bindings: [], ...createdDNSRecord } })
+    }
+    if (request.method() === 'DELETE' && path === '/api/v1/cloudflare/records/remote-2') {
+      deletedDNSRecordID = 'remote-2'
+      return route.fulfill({ status: 204, body: '' })
     }
     if (request.method() === 'GET' && path === '/api/v1/mihomo/proxy-groups') return route.fulfill({ json: { proxy_groups: savedProxyGroups } })
     if (request.method() === 'GET' && path === '/api/v1/mihomo/rule-providers') return route.fulfill({ json: { rule_providers: savedRuleProviders } })
@@ -490,25 +496,43 @@ test('浏览器页面回归：真实登录，核心工作区 API 使用路由替
   cloudflareConnected = true
   await page.getByRole('button', { name: '刷新', exact: true }).click()
   await expect(page.getByText('已连接 example.com', { exact: true })).toBeVisible()
-  await page.getByRole('row', { name: /^A ws\.example\.com/ }).getByRole('button', { name: '修改' }).click()
+  // Every record in the zone is editable the same way, and the server and
+  // access service behind a name are shown without anyone declaring them.
+  const managedRow = page.getByRole('row', { name: /^A ws\.example\.com/ })
+  await expect(managedRow).toContainText('测试服务器 · WebSocket 接入')
+  await managedRow.getByRole('button', { name: '修改' }).click()
   const dnsDialog = page.getByRole('dialog', { name: '修改域名记录', exact: true })
   await expect(dnsDialog).toBeVisible()
   expect(await dnsDialog.locator('input').evaluateAll((inputs) => inputs.map((input) => input.value)))
     .toEqual(expect.arrayContaining(['ws.example.com', '203.0.113.10']))
   await dnsDialog.locator('.el-form-item', { hasText: '指向地址或内容' }).getByRole('textbox').fill('203.0.113.20')
   await dnsDialog.getByRole('button', { name: '保存', exact: true }).click()
-  await expect(page.getByText('域名记录已保存，请点击“发布”写入 Cloudflare', { exact: true })).toBeVisible()
+  await expect(page.getByText('域名记录已写入 Cloudflare', { exact: true })).toBeVisible()
   expect(savedDNSRecord).toMatchObject({ name: 'ws.example.com', type: 'A', content: '203.0.113.20' })
-  // A record that only exists upstream is edited by declaring it here first.
-  // cdn.example.com has the CDN switched on and serves no access service, and
-  // that combination still has to be saveable.
+
+  // A record created in the Cloudflare console is not a special case: the same
+  // dialog edits it, and no binding fields are asked for.
   await page.getByRole('row', { name: /^CNAME cdn\.example\.com/ }).getByRole('button', { name: '修改' }).click()
-  const adoptDialog = page.getByRole('dialog', { name: '修改线上记录', exact: true })
-  await expect(adoptDialog.getByText('该记录目前只存在于 Cloudflare')).toBeVisible()
-  await adoptDialog.locator('.el-form-item', { hasText: '指向地址或内容' }).getByRole('textbox').fill('ws.example.com')
-  await adoptDialog.getByRole('button', { name: '保存', exact: true }).click()
-  await expect(page.getByText('域名记录已保存，请点击“发布”写入 Cloudflare', { exact: true })).toBeVisible()
-  expect(adoptedDNSRecord).toMatchObject({ name: 'cdn.example.com', type: 'CNAME', content: 'ws.example.com', proxied: true, listener_id: '' })
+  await expect(dnsDialog).toBeVisible()
+  await expect(dnsDialog.getByText('保存后立即写入 Cloudflare，无需再发布。', { exact: false })).toBeVisible()
+  await expect(dnsDialog.getByText('关联的服务器')).toHaveCount(0)
+  await dnsDialog.getByRole('button', { name: '取消', exact: true }).click()
+
+  // Creating asks for the record itself and nothing else; the server address is
+  // one click away so nobody has to copy it across pages.
+  await page.getByRole('button', { name: '新建', exact: true }).click()
+  const newDNSDialog = page.getByRole('dialog', { name: '新建域名记录', exact: true })
+  await newDNSDialog.locator('.el-form-item', { hasText: '域名' }).getByRole('textbox').fill('new.example.com')
+  await newDNSDialog.getByText('测试服务器 · 203.0.113.10', { exact: true }).click()
+  await newDNSDialog.getByRole('button', { name: '保存', exact: true }).click()
+  await expect(page.getByText('域名记录已写入 Cloudflare', { exact: true })).toBeVisible()
+  expect(createdDNSRecord).toMatchObject({ name: 'new.example.com', type: 'A', content: '203.0.113.10' })
+
+  // Anything in the zone can be removed at any time, in one step.
+  await page.getByRole('row', { name: /^A other\.example\.com/ }).getByRole('button', { name: '删除' }).click()
+  await page.getByRole('dialog', { name: '删除域名记录', exact: true }).getByRole('button', { name: '确定' }).click()
+  await expect(page.getByText('域名记录已从 Cloudflare 删除', { exact: true })).toBeVisible()
+  expect(deletedDNSRecordID).toBe('remote-2')
 
   // The connection domain offers what actually resolves to the selected server.
   await page.getByRole('button', { name: '接入服务', exact: true }).click()

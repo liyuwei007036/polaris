@@ -65,7 +65,10 @@ func (s *Server) handleAgentConn(ctx context.Context, raw net.Conn) {
 	if err != nil {
 		return
 	}
-	ackBody, err := wire.Encode(wire.RegisterAck{NodeID: node.ID, Status: "approved", ReleaseSigningPublicKeyPEM: releaseKeyPEM})
+	ackBody, err := wire.Encode(wire.RegisterAck{
+		NodeID: node.ID, Status: "approved", ReleaseSigningPublicKeyPEM: releaseKeyPEM,
+		ConnectionsIntervalSeconds: uint32(s.connectionsInterval / time.Second),
+	})
 	if err != nil {
 		return
 	}
@@ -137,7 +140,7 @@ type agentInboundMessage struct {
 // connection. This replaces the old controlSession NDJSON stream plus the
 // three separate HTTP endpoints (heartbeat, connections push, task result).
 func (s *Server) runAgentSession(ctx context.Context, conn *wire.Conn, node Node) {
-	session := &controlSession{done: make(chan struct{}), tasks: make(chan Task, 16)}
+	session := &controlSession{done: make(chan struct{}), tasks: make(chan Task, 16), questions: make(chan wire.Task, 16)}
 	s.controlMu.Lock()
 	if previous := s.controls[node.ID]; previous != nil {
 		close(previous.done)
@@ -194,6 +197,14 @@ func (s *Server) runAgentSession(ctx context.Context, conn *wire.Conn, node Node
 			}
 		case task := <-session.tasks:
 			if !s.sendTask(conn, node.ID, task) {
+				return
+			}
+		case question := <-session.questions:
+			body, err := wire.Encode(question)
+			if err != nil {
+				continue
+			}
+			if err := conn.WriteMessage(wire.MsgTask, body); err != nil {
 				return
 			}
 		case <-ticker.C:
@@ -272,15 +283,6 @@ func (s *Server) handleAgentMessage(ctx context.Context, node Node, msgType byte
 				Status: st.HealthStatus, Message: st.HealthMessage, SingBoxService: st.SingBoxService,
 				ClashAPIAvailable: st.ClashAPIAvailable, TrafficAvailable: st.TrafficAvailable,
 			}
-			if st.Fail2BanAvailable || len(st.Fail2BanJails) > 0 {
-				m.Fail2Ban = &storedFail2Ban{Available: st.Fail2BanAvailable, Jails: convertFail2BanJails(st.Fail2BanJails)}
-			}
-			if st.FirewallAvailable {
-				m.Firewall = &storedFirewall{
-					Available: st.FirewallAvailable, Tool: st.FirewallTool, Truncated: st.FirewallTruncated,
-					Error: st.FirewallError, Rules: convertFirewallRules(st.FirewallRules),
-				}
-			}
 		}); err != nil {
 			return false
 		}
@@ -289,6 +291,11 @@ func (s *Server) handleAgentMessage(ctx context.Context, node Node, msgType byte
 		var res wire.TaskResult
 		if err := wire.Decode(body, &res); err != nil {
 			return false
+		}
+		// A question asked on demand is never stored, so its answer goes
+		// straight to whoever is waiting and there is nothing to record.
+		if s.deliverTaskAnswer(res) {
+			return true
 		}
 		task, err := s.store.TaskByID(ctx, res.TaskID)
 		if err != nil {
@@ -466,25 +473,7 @@ type storedMetrics struct {
 	// SSH, package updates and everything else on the machine.
 	Proxy       map[string]uint64  `json:"proxy,omitempty"`
 	Connections []storedConnection `json:"connections,omitempty"`
-	Fail2Ban    *storedFail2Ban    `json:"fail2ban,omitempty"`
-	Firewall    *storedFirewall    `json:"firewall,omitempty"`
 	Health      *storedHealth      `json:"health,omitempty"`
-}
-
-// storedFirewall carries the host's own firewall rules — the ones polaris
-// did not write — so the console can show what a server already enforces.
-type storedFirewall struct {
-	Available bool                 `json:"available"`
-	Tool      string               `json:"tool,omitempty"`
-	Rules     []storedFirewallRule `json:"rules,omitempty"`
-	Truncated bool                 `json:"truncated,omitempty"`
-	Error     string               `json:"error,omitempty"`
-}
-
-type storedFirewallRule struct {
-	Table string `json:"table,omitempty"`
-	Chain string `json:"chain,omitempty"`
-	Rule  string `json:"rule"`
 }
 
 type storedHealth struct {
@@ -522,26 +511,7 @@ type storedConnection struct {
 	OutboundName string `json:"outbound_name,omitempty"`
 }
 
-type storedFail2BanJail struct {
-	Name            string              `json:"name"`
-	CurrentlyBanned string              `json:"currently_banned,omitempty"`
-	TotalBanned     string              `json:"total_banned,omitempty"`
-	BannedIPs       []string            `json:"banned_ips,omitempty"`
-	Banned          []storedFail2BanBan `json:"banned,omitempty"`
-	Error           string              `json:"error,omitempty"`
-	Managed         bool                `json:"managed"`
-}
 
-type storedFail2BanBan struct {
-	IP       string `json:"ip"`
-	BannedAt string `json:"banned_at,omitempty"`
-	UnbanAt  string `json:"unban_at,omitempty"`
-}
-
-type storedFail2Ban struct {
-	Available bool                 `json:"available"`
-	Jails     []storedFail2BanJail `json:"jails"`
-}
 
 func (s *Server) convertConnections(ctx context.Context, nodeID string, in []wire.ConnectionInfo) []storedConnection {
 	names := s.listenerNames(ctx, nodeID)
@@ -725,26 +695,6 @@ func (s *Server) listenerNames(ctx context.Context, nodeID string) map[string]st
 	s.listenerNameCache[nodeID] = listenerNameEntry{names: names, at: time.Now()}
 	s.listenerNameMu.Unlock()
 	return names
-}
-
-func convertFail2BanJails(in []wire.Fail2BanJailStatus) []storedFail2BanJail {
-	out := make([]storedFail2BanJail, 0, len(in))
-	for _, j := range in {
-		bans := make([]storedFail2BanBan, 0, len(j.Banned))
-		for _, ban := range j.Banned {
-			bans = append(bans, storedFail2BanBan{IP: ban.IP, BannedAt: ban.BannedAt, UnbanAt: ban.UnbanAt})
-		}
-		out = append(out, storedFail2BanJail{Name: j.Name, CurrentlyBanned: j.CurrentlyBanned, TotalBanned: j.TotalBanned, BannedIPs: j.BannedIPs, Banned: bans, Error: j.Error, Managed: j.Managed})
-	}
-	return out
-}
-
-func convertFirewallRules(in []wire.FirewallRuleEntry) []storedFirewallRule {
-	out := make([]storedFirewallRule, 0, len(in))
-	for _, rule := range in {
-		out = append(out, storedFirewallRule{Table: rule.Table, Chain: rule.Chain, Rule: rule.Rule})
-	}
-	return out
 }
 
 func (s *Server) mergeNodeMetrics(ctx context.Context, nodeID string, mutate func(*storedMetrics)) error {

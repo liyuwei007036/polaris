@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/liyuwei007036/polaris/internal/agent"
+	"github.com/liyuwei007036/polaris/internal/control"
 	"github.com/liyuwei007036/polaris/internal/nginxroute"
 	"gopkg.in/yaml.v3"
 )
@@ -23,6 +24,11 @@ type masterConfig struct {
 	AgentPort         int    `yaml:"agent_port"`
 	WebPort           int    `yaml:"web_port"`
 	AllowInsecureHTTP bool   `yaml:"allow_insecure_http,omitempty"`
+	// ConnectionsInterval paces the real-time connection push on every node.
+	// It is set here rather than per node: the master hands it to each agent
+	// during the handshake, so changing it never means editing a file on a
+	// node or restarting one. Empty keeps the built-in default.
+	ConnectionsInterval string `yaml:"connections_interval,omitempty"`
 }
 
 type agentConfig struct {
@@ -259,6 +265,37 @@ func normalizeAgentConfig(configuration agentConfig, base string) (agentConfig, 
 		}
 	}
 	return configuration, nil
+}
+
+// applyConnectionsInterval hands the master's configured push cadence to the
+// server. An unset or unparseable value leaves the built-in default in place:
+// the cadence only affects how often a node reports, so refusing to start the
+// master over it would cost far more than it saves.
+func applyConnectionsInterval(server *control.Server, value string) {
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" {
+		return
+	}
+	interval, err := time.ParseDuration(trimmed)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "ignoring connections_interval %q: %v\n", trimmed, err)
+		return
+	}
+	server.SetConnectionsInterval(interval)
+}
+
+// sessionConnectionsInterval decides how often this session pushes its
+// connection list. The master paces the whole fleet, so what it asks for on
+// the handshake wins over this node's own configuration file — that is what
+// makes the cadence changeable centrally rather than one SSH session per node.
+// A master that asks for nothing, or for something outside the range the agent
+// accepts, leaves the local value alone.
+func sessionConnectionsInterval(configured time.Duration, requestedSeconds uint32) time.Duration {
+	requested := time.Duration(requestedSeconds) * time.Second
+	if requested < time.Second || requested > 30*time.Second {
+		return configured
+	}
+	return requested
 }
 
 func agentDurations(configuration agentConfig) (time.Duration, time.Duration, error) {

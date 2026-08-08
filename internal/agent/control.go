@@ -38,8 +38,6 @@ type MetricReport struct {
 	Proxy        map[string]uint64           `json:"proxy,omitempty"`
 	Capabilities map[string]MetricCapability `json:"capabilities"`
 	Connections  []ConnectionInfo            `json:"connections,omitempty"`
-	Fail2Ban     *Fail2BanReport             `json:"fail2ban,omitempty"`
-	Firewall     *FirewallReport             `json:"firewall,omitempty"`
 	Health       NodeHealth                  `json:"health"`
 }
 
@@ -101,23 +99,6 @@ type Fail2BanBan struct {
 	UnbanAt  string `json:"unban_at,omitempty"`
 }
 
-// FirewallReport lists the firewall rules already present on the host that
-// polaris did not write. They are read-only: the console shows them so an
-// operator can see what a server is already protected by.
-type FirewallReport struct {
-	Available bool                `json:"available"`
-	Tool      string              `json:"tool,omitempty"`
-	Rules     []FirewallRuleEntry `json:"rules,omitempty"`
-	Truncated bool                `json:"truncated,omitempty"`
-	Error     string              `json:"error,omitempty"`
-}
-
-type FirewallRuleEntry struct {
-	Table string `json:"table,omitempty"`
-	Chain string `json:"chain,omitempty"`
-	Rule  string `json:"rule"`
-}
-
 type MetricCapability struct {
 	CumulativeTraffic bool   `json:"cumulative_traffic"`
 	InstantRate       bool   `json:"instant_rate"`
@@ -139,6 +120,9 @@ type TaskResult struct {
 	Status         string `json:"status"`
 	Summary        string `json:"summary"`
 	SingBoxVersion string `json:"sing_box_version,omitempty"`
+	// Data is the structured answer to a task that asks the agent to read the
+	// host back — the live firewall and Fail2Ban state. See wire.TaskResult.
+	Data string `json:"data,omitempty"`
 	// RestartAgent asks the session loop to re-execute the process after the
 	// result has been reported (set by a successful agent.upgrade).
 	RestartAgent bool `json:"-"`
@@ -266,6 +250,13 @@ func RunSession(ctx context.Context, conn *wire.Conn, handler TaskHandler, heart
 	if err := sendStatus(); err != nil {
 		return err
 	}
+	// Report connections once straight away rather than only on the first tick.
+	// The master hands out the cadence at handshake time, so a node that has
+	// just connected would otherwise show no connections at all for a full
+	// interval — reading as an idle server rather than an unreported one.
+	if err := sendConnections(); err != nil {
+		return err
+	}
 
 	heartbeatTicker := time.NewTicker(heartbeatInterval)
 	defer heartbeatTicker.Stop()
@@ -293,7 +284,7 @@ func RunSession(ctx context.Context, conn *wire.Conn, handler TaskHandler, heart
 			if result.Status == "succeeded" && result.SingBoxVersion != "" {
 				singBoxVersion = result.SingBoxVersion
 			}
-			resBody, err := wire.Encode(wire.TaskResult{TaskID: task.ID, Status: result.Status, Summary: result.Summary, SingBoxVersion: result.SingBoxVersion})
+			resBody, err := wire.Encode(wire.TaskResult{TaskID: task.ID, Status: result.Status, Summary: result.Summary, SingBoxVersion: result.SingBoxVersion, Data: result.Data})
 			if err != nil {
 				return err
 			}
@@ -374,27 +365,6 @@ func toWireStatus(local Status) wire.Status {
 		st.HasProxyTotals = true
 		st.ProxyReceivedBytes = local.Metrics.Proxy["received_bytes"]
 		st.ProxySentBytes = local.Metrics.Proxy["sent_bytes"]
-	}
-	if local.Metrics.Fail2Ban != nil {
-		st.Fail2BanAvailable = local.Metrics.Fail2Ban.Available
-		for _, j := range local.Metrics.Fail2Ban.Jails {
-			bans := make([]wire.Fail2BanBan, 0, len(j.Banned))
-			for _, ban := range j.Banned {
-				bans = append(bans, wire.Fail2BanBan{IP: ban.IP, BannedAt: ban.BannedAt, UnbanAt: ban.UnbanAt})
-			}
-			st.Fail2BanJails = append(st.Fail2BanJails, wire.Fail2BanJailStatus{
-				Name: j.Name, CurrentlyBanned: j.CurrentlyBanned, TotalBanned: j.TotalBanned, BannedIPs: j.BannedIPs, Banned: bans, Error: j.Error, Managed: j.Managed,
-			})
-		}
-	}
-	if local.Metrics.Firewall != nil {
-		st.FirewallAvailable = local.Metrics.Firewall.Available
-		st.FirewallTool = local.Metrics.Firewall.Tool
-		st.FirewallTruncated = local.Metrics.Firewall.Truncated
-		st.FirewallError = local.Metrics.Firewall.Error
-		for _, rule := range local.Metrics.Firewall.Rules {
-			st.FirewallRules = append(st.FirewallRules, wire.FirewallRuleEntry{Table: rule.Table, Chain: rule.Chain, Rule: rule.Rule})
-		}
 	}
 	return st
 }

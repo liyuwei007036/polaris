@@ -113,10 +113,14 @@ func executeTask(ctx context.Context, task Task, options TaskOptions) TaskResult
 		return applySingBoxConfig(ctx, task)
 	case "nginx.apply_config":
 		return applyNginxConfig(ctx, task, options.DataDir, options.NginxPassthroughRoutes)
-	case "firewall.apply":
-		return applyNftables(ctx, task)
-	case "fail2ban.apply":
-		return applyFail2Ban(ctx, task)
+	case "firewall.query":
+		return queryFirewall(ctx)
+	case "firewall.mutate":
+		return mutateFirewall(ctx, task)
+	case "fail2ban.query":
+		return queryFail2Ban(ctx)
+	case "fail2ban.mutate":
+		return mutateFail2Ban(ctx, task)
 	case "fail2ban.unban":
 		return unbanAddress(ctx, task)
 	case "singbox.install", "singbox.upgrade":
@@ -409,64 +413,70 @@ func VerifyReleaseTask(dataDir string, task Task) (releaseManifest, error) {
 	return manifest, nil
 }
 
-func applyNftables(ctx context.Context, task Task) TaskResult {
-	var payload struct {
-		Configuration string `json:"configuration"`
+// queryFirewall answers with what the host is enforcing right now. Nothing is
+// stored anywhere: every time the console shows access limits, it is showing
+// the answer to one of these.
+func queryFirewall(ctx context.Context) TaskResult {
+	live := CollectLiveFirewall(ctx)
+	encoded, err := json.Marshal(live)
+	if err != nil {
+		return TaskResult{Status: "failed", Summary: "编码防火墙规则失败：" + err.Error()}
 	}
-	if err := json.Unmarshal([]byte(task.Payload), &payload); err != nil || payload.Configuration == "" {
-		return TaskResult{Status: "failed", Summary: "invalid nftables configuration payload"}
+	return TaskResult{Status: "succeeded", Summary: fmt.Sprintf("已读取服务器防火墙规则（%d 条）", len(live.Rules)), Data: string(encoded)}
+}
+
+// queryFail2Ban answers with the jails the host actually runs.
+func queryFail2Ban(ctx context.Context) TaskResult {
+	live := CollectLiveFail2Ban(ctx)
+	encoded, err := json.Marshal(live)
+	if err != nil {
+		return TaskResult{Status: "failed", Summary: "编码自动封禁规则失败：" + err.Error()}
 	}
-	digest := sha256.Sum256([]byte(payload.Configuration))
+	return TaskResult{Status: "succeeded", Summary: fmt.Sprintf("已读取服务器自动封禁规则（%d 条）", len(live.Jails)), Data: string(encoded)}
+}
+
+// mutateFail2Ban changes the host's jails and answers with what it runs
+// afterwards, so a rule is only reported as saved once Fail2Ban accepted it.
+func mutateFail2Ban(ctx context.Context, task Task) TaskResult {
+	var mutation Fail2BanMutation
+	if err := json.Unmarshal([]byte(task.Payload), &mutation); err != nil {
+		return TaskResult{Status: "failed", Summary: "自动封禁操作参数无效"}
+	}
+	digest := sha256.Sum256([]byte(task.Payload))
 	if !strings.EqualFold(hex.EncodeToString(digest[:]), task.ExpectedHash) {
-		return TaskResult{Status: "failed", Summary: "nftables configuration SHA-256 does not match task hash"}
+		return TaskResult{Status: "failed", Summary: "自动封禁操作校验失败"}
 	}
-	if err := ensureNftablesReady(ctx); err != nil {
-		return TaskResult{Status: "failed", Summary: "准备防火墙失败：" + err.Error()}
-	}
-	snapshot, _ := exec.CommandContext(ctx, "nft", "list", "table", "inet", "polaris").CombinedOutput()
-	// Replacing the table in one script is what makes a re-publish idempotent.
-	// Loading the definition on its own merges into the existing table, so
-	// every publish used to stack another copy of every rule on top of the
-	// last one.
-	script := replaceableNftablesScript(payload.Configuration)
-	nftTemporaryDirectory := managedSystemPath("/tmp")
-	if err := os.MkdirAll(nftTemporaryDirectory, 0o700); err != nil {
-		return TaskResult{Status: "failed", Summary: "create nftables temporary directory: " + err.Error() + permissionHint(err)}
-	}
-	temporary, err := os.CreateTemp(nftTemporaryDirectory, "polaris-nft-*.nft")
+	live, err := ApplyFail2BanMutation(ctx, mutation)
 	if err != nil {
 		return TaskResult{Status: "failed", Summary: err.Error()}
 	}
-	temporaryPath := temporary.Name()
-	defer os.Remove(temporaryPath)
-	if _, err := temporary.WriteString(script); err != nil {
-		temporary.Close()
+	encoded, err := json.Marshal(live)
+	if err != nil {
+		return TaskResult{Status: "failed", Summary: "编码自动封禁规则失败：" + err.Error()}
+	}
+	return TaskResult{Status: "succeeded", Summary: "自动封禁规则已在服务器上生效", Data: string(encoded)}
+}
+
+// mutateFirewall changes the host's firewall and answers with what it enforces
+// afterwards, so the console never reports a change it cannot see in place.
+func mutateFirewall(ctx context.Context, task Task) TaskResult {
+	var mutation FirewallMutation
+	if err := json.Unmarshal([]byte(task.Payload), &mutation); err != nil {
+		return TaskResult{Status: "failed", Summary: "访问限制操作参数无效"}
+	}
+	digest := sha256.Sum256([]byte(task.Payload))
+	if !strings.EqualFold(hex.EncodeToString(digest[:]), task.ExpectedHash) {
+		return TaskResult{Status: "failed", Summary: "访问限制操作校验失败"}
+	}
+	live, err := ApplyFirewallMutation(ctx, mutation)
+	if err != nil {
 		return TaskResult{Status: "failed", Summary: err.Error()}
 	}
-	if err := temporary.Close(); err != nil {
-		return TaskResult{Status: "failed", Summary: err.Error()}
+	encoded, err := json.Marshal(live)
+	if err != nil {
+		return TaskResult{Status: "failed", Summary: "编码防火墙规则失败：" + err.Error()}
 	}
-	if output, err := exec.CommandContext(ctx, "nft", "-c", "-f", temporaryPath).CombinedOutput(); err != nil {
-		return TaskResult{Status: "failed", Summary: commandSummary("nft -c", output, err)}
-	}
-	if output, err := exec.CommandContext(ctx, "nft", "-f", temporaryPath).CombinedOutput(); err != nil {
-		_ = output
-		if len(snapshot) > 0 {
-			if restore, restoreErr := os.CreateTemp(nftTemporaryDirectory, "polaris-nft-restore-*.nft"); restoreErr == nil {
-				restorePath := restore.Name()
-				if _, writeErr := restore.WriteString(replaceableNftablesScript(string(snapshot))); writeErr == nil {
-					restore.Close()
-					_, _ = exec.CommandContext(ctx, "nft", "-f", restorePath).CombinedOutput()
-				}
-				os.Remove(restorePath)
-			}
-		}
-		return TaskResult{Status: "rolled_back", Summary: "nftables apply failed; attempted restore of polaris table"}
-	}
-	if err := persistNftables(ctx, script); err != nil {
-		return TaskResult{Status: "succeeded", Summary: "防火墙规则已生效，但开机自动恢复未能配置：" + err.Error()}
-	}
-	return TaskResult{Status: "succeeded", Summary: "polaris nftables table applied and persisted across reboots"}
+	return TaskResult{Status: "succeeded", Summary: "访问限制已在服务器防火墙上生效", Data: string(encoded)}
 }
 
 // replaceableNftablesScript wraps a table definition so loading it replaces

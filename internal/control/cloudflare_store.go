@@ -12,27 +12,23 @@ import (
 	"github.com/liyuwei007036/polaris/internal/security"
 )
 
-// ManagedCloudflareRecord stores the operator-declared desired state next to
-// the last state actually observed at Cloudflare. Observed state is never
-// written back automatically; drift only surfaces as a status.
-type ManagedCloudflareRecord struct {
-	ID         string `json:"id"`
-	RemoteID   string `json:"remote_id,omitempty"`
-	Name       string `json:"name"`
-	Type       string `json:"type"`
-	Content    string `json:"content"`
-	TTL        int    `json:"ttl"`
-	Proxied    bool   `json:"proxied"`
-	NodeID     string `json:"node_id,omitempty"`
-	ListenerID string `json:"listener_id,omitempty"`
-	Status     string `json:"status"`
-	LastError  string `json:"last_error,omitempty"`
-	Observed   string `json:"observed,omitempty"`
-	ObservedAt string `json:"observed_at,omitempty"`
-	// NodeName and ListenerName resolve the bindings above to what an
-	// operator recognizes, so the DNS list shows which server and which
-	// access service a record actually points at.
-	NodeName     string `json:"node_name,omitempty"`
+// CloudflareRecordView is a record as it exists at Cloudflare right now,
+// annotated with what this platform serves under that name. Cloudflare is the
+// only store, so there is no desired-versus-observed state to reconcile and no
+// status to keep in sync.
+type CloudflareRecordView struct {
+	CloudflareRecord
+	// Bindings say which server and access service the record actually
+	// serves. They are derived on every read from the access services'
+	// connection domains and the servers' connection addresses, so an
+	// operator never declares them by hand.
+	Bindings []CloudflareBinding `json:"bindings"`
+}
+
+// CloudflareBinding names one access service (or, when only the address
+// matches, one server) that a DNS record reaches.
+type CloudflareBinding struct {
+	NodeName     string `json:"node_name"`
 	ListenerName string `json:"listener_name,omitempty"`
 	ListenerPort uint16 `json:"listener_port,omitempty"`
 }
@@ -163,239 +159,217 @@ func maskSecret(value string) string {
 	return value[:4] + "…" + value[len(value)-4:]
 }
 
-func (s *Store) validateCloudflareRecord(ctx context.Context, record *ManagedCloudflareRecord) error {
+// normalizeCloudflareRecord checks an operator-supplied record and rejects what
+// Cloudflare or the access services behind the name could not serve. Everything
+// that survives is written upstream immediately.
+func (s *Store) normalizeCloudflareRecord(ctx context.Context, record *CloudflareRecord) (*CloudflareClient, string, error) {
 	record.Name = strings.TrimSuffix(strings.ToLower(strings.TrimSpace(record.Name)), ".")
 	record.Type = strings.ToUpper(strings.TrimSpace(record.Type))
 	if record.Type != "A" && record.Type != "AAAA" && record.Type != "CNAME" && record.Type != "TXT" {
-		return errors.New("record type must be A, AAAA, CNAME or TXT")
+		return nil, "", userErrorf("记录类型只支持 A、AAAA、CNAME 或 TXT")
 	}
 	if !validSNI(record.Name) {
-		return errors.New("record name must be a valid DNS name")
+		return nil, "", userErrorf("域名格式不正确")
 	}
-	_, zoneName, _, err := s.CloudflareZone(ctx)
+	zoneID, zoneName, client, err := s.CloudflareZone(ctx)
 	if err != nil {
-		return err
+		return nil, "", err
 	}
 	if record.Name != zoneName && !strings.HasSuffix(record.Name, "."+zoneName) {
-		return fmt.Errorf("record name must be inside zone %s", zoneName)
+		return nil, "", userErrorf("域名必须属于区域 %s", zoneName)
 	}
-	if strings.TrimSpace(record.Content) == "" {
-		return errors.New("record content is required")
+	record.Content = strings.TrimSpace(record.Content)
+	if record.Content == "" {
+		return nil, "", userErrorf("请填写指向地址或内容")
 	}
 	if record.Proxied {
 		// Cloudflare forces automatic TTL on proxied records.
 		record.TTL = 1
 	}
 	if record.TTL != 1 && (record.TTL < 60 || record.TTL > 86400) {
-		return errors.New("record TTL must be 1 (auto) or between 60 and 86400 seconds")
+		return nil, "", userErrorf("缓存时间必须为 1（自动）或 60 到 86400 秒之间")
 	}
-	if record.ListenerID != "" {
-		listener, err := s.listenerByID(ctx, record.ListenerID)
-		if err != nil {
-			return err
-		}
-		if record.NodeID == "" {
-			record.NodeID = listener.NodeID
-		} else if record.NodeID != listener.NodeID {
-			return errors.New("record node binding does not match the listener's node")
-		}
-		if record.Proxied {
-			if listener.Spec.Reality.Enabled {
-				return errors.New("Reality listeners must stay grey-cloud (DNS only)")
-			}
-			if listener.Spec.Network != "tcp" {
-				return errors.New("UDP listeners must stay grey-cloud (DNS only)")
-			}
-			if err := ValidateCloudflareProxy(record.Type, listener.Spec.Protocol, listener.Spec.Transport.Type, listener.Port, listener.Spec.TLS.Enabled, true); err != nil {
-				return err
-			}
-		}
+	if err := s.checkCloudflareProxyFits(ctx, *record); err != nil {
+		return nil, "", err
 	}
-	// An orange-cloud record that is not bound to a listener is left alone:
-	// records already living at Cloudflare often serve something other than an
-	// access service, and refusing to save them made them uneditable here.
-	if record.NodeID != "" {
-		var one int
-		if err := s.db.QueryRowContext(ctx, `SELECT 1 FROM nodes WHERE id=? AND revoked_at IS NULL`, record.NodeID).Scan(&one); errors.Is(err, sql.ErrNoRows) {
-			return ErrNotFound
-		} else if err != nil {
-			return err
+	return client, zoneID, nil
+}
+
+// checkCloudflareProxyFits refuses an orange cloud that would break the access
+// services already published under the same domain. A name this platform does
+// not serve is left to the operator: it may well front something else.
+func (s *Store) checkCloudflareProxyFits(ctx context.Context, record CloudflareRecord) error {
+	if !record.Proxied {
+		return nil
+	}
+	listeners, err := s.listenersByConnectionDomain(ctx, record.Name)
+	if err != nil {
+		return err
+	}
+	for _, listener := range listeners {
+		switch {
+		case listener.Spec.Reality.Enabled:
+			return userErrorf("接入服务「%s」使用 Reality，开启加速后将无法连接", listener.Name)
+		case listener.Spec.Network != "tcp":
+			return userErrorf("接入服务「%s」使用 UDP，开启加速后将无法连接", listener.Name)
+		}
+		if err := ValidateCloudflareProxy(record.Type, listener.Spec.Protocol, listener.Spec.Transport.Type, listener.Port, listener.Spec.TLS.Enabled, true); err != nil {
+			return userErrorf("接入服务「%s」不支持加速：%v", listener.Name, err)
 		}
 	}
 	return nil
 }
 
-func (s *Store) listenerByID(ctx context.Context, listenerID string) (Listener, error) {
-	var listener Listener
-	var spec string
-	err := s.db.QueryRowContext(ctx, `SELECT id, node_id, name, connection_domain, listen_address, port, backend_port, enabled, spec FROM listeners WHERE id = ?`, listenerID).
-		Scan(&listener.ID, &listener.NodeID, &listener.Name, &listener.Domain, &listener.ListenAddr, &listener.Port, &listener.BackendPort, &listener.Enabled, &spec)
-	if errors.Is(err, sql.ErrNoRows) {
-		return Listener{}, ErrNotFound
-	}
+func (s *Store) listenersByConnectionDomain(ctx context.Context, domain string) ([]Listener, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT id, node_id, name, connection_domain, listen_address, port, backend_port, enabled, spec
+		FROM listeners WHERE LOWER(connection_domain) = ? ORDER BY name, id`, domain)
 	if err != nil {
-		return Listener{}, fmt.Errorf("load listener: %w", err)
-	}
-	if err := json.Unmarshal([]byte(spec), &listener.Spec); err != nil {
-		return Listener{}, fmt.Errorf("decode listener spec: %w", err)
-	}
-	return listener, nil
-}
-
-func (s *Store) CreateCloudflareRecord(ctx context.Context, record ManagedCloudflareRecord) (ManagedCloudflareRecord, error) {
-	if err := s.validateCloudflareRecord(ctx, &record); err != nil {
-		return ManagedCloudflareRecord{}, err
-	}
-	id, err := newID()
-	if err != nil {
-		return ManagedCloudflareRecord{}, err
-	}
-	record.ID = id
-	record.Status = "pending"
-	_, err = s.db.ExecContext(ctx, `INSERT INTO cloudflare_records (id,remote_id,name,type,content,ttl,proxied,node_id,listener_id,status,created_at,updated_at)
-		VALUES (?, '', ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)`,
-		record.ID, record.Name, record.Type, record.Content, record.TTL, record.Proxied, nullableString(record.NodeID), nullableString(record.ListenerID), nowUnix(), nowUnix())
-	if err != nil {
-		if strings.Contains(err.Error(), "UNIQUE") {
-			return ManagedCloudflareRecord{}, ErrConflict
-		}
-		return ManagedCloudflareRecord{}, fmt.Errorf("create Cloudflare record: %w", err)
-	}
-	return record, nil
-}
-
-func (s *Store) UpdateCloudflareRecord(ctx context.Context, record ManagedCloudflareRecord) (ManagedCloudflareRecord, error) {
-	if record.ID == "" {
-		return ManagedCloudflareRecord{}, errors.New("Cloudflare record ID is required")
-	}
-	if err := s.validateCloudflareRecord(ctx, &record); err != nil {
-		return ManagedCloudflareRecord{}, err
-	}
-	result, err := s.db.ExecContext(ctx, `UPDATE cloudflare_records SET name=?,type=?,content=?,ttl=?,proxied=?,node_id=?,listener_id=?,status='pending',last_error='',updated_at=? WHERE id=?`,
-		record.Name, record.Type, record.Content, record.TTL, record.Proxied, nullableString(record.NodeID), nullableString(record.ListenerID), nowUnix(), record.ID)
-	if err != nil {
-		if strings.Contains(err.Error(), "UNIQUE") {
-			return ManagedCloudflareRecord{}, ErrConflict
-		}
-		return ManagedCloudflareRecord{}, fmt.Errorf("update Cloudflare record: %w", err)
-	}
-	changed, _ := result.RowsAffected()
-	if changed != 1 {
-		return ManagedCloudflareRecord{}, ErrNotFound
-	}
-	return s.CloudflareRecordByID(ctx, record.ID)
-}
-
-func (s *Store) ListCloudflareRecords(ctx context.Context) ([]ManagedCloudflareRecord, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT r.id,r.remote_id,r.name,r.type,r.content,r.ttl,r.proxied,COALESCE(r.node_id,''),COALESCE(r.listener_id,''),
-		r.status,r.last_error,r.observed,COALESCE(r.observed_at,0),COALESCE(n.name,''),COALESCE(l.name,''),COALESCE(l.port,0)
-		FROM cloudflare_records r
-		LEFT JOIN nodes n ON n.id = r.node_id
-		LEFT JOIN listeners l ON l.id = r.listener_id
-		ORDER BY r.name,r.type,r.id`)
-	if err != nil {
-		return nil, fmt.Errorf("list Cloudflare records: %w", err)
+		return nil, fmt.Errorf("list listeners by connection domain: %w", err)
 	}
 	defer rows.Close()
-	var records []ManagedCloudflareRecord
+	var listeners []Listener
 	for rows.Next() {
-		record, err := scanCloudflareRecordWithBindings(rows.Scan)
-		if err != nil {
+		var listener Listener
+		var spec string
+		if err := rows.Scan(&listener.ID, &listener.NodeID, &listener.Name, &listener.Domain, &listener.ListenAddr,
+			&listener.Port, &listener.BackendPort, &listener.Enabled, &spec); err != nil {
 			return nil, err
 		}
-		records = append(records, record)
-	}
-	return records, rows.Err()
-}
-
-func (s *Store) CloudflareRecordByID(ctx context.Context, recordID string) (ManagedCloudflareRecord, error) {
-	row := s.db.QueryRowContext(ctx, `SELECT id,remote_id,name,type,content,ttl,proxied,COALESCE(node_id,''),COALESCE(listener_id,''),status,last_error,observed,COALESCE(observed_at,0)
-		FROM cloudflare_records WHERE id=?`, recordID)
-	record, err := scanCloudflareRecord(row.Scan)
-	if errors.Is(err, sql.ErrNoRows) {
-		return ManagedCloudflareRecord{}, ErrNotFound
-	}
-	if err != nil {
-		return ManagedCloudflareRecord{}, fmt.Errorf("load Cloudflare record: %w", err)
-	}
-	return record, nil
-}
-
-func scanCloudflareRecordWithBindings(scan func(...any) error) (ManagedCloudflareRecord, error) {
-	var record ManagedCloudflareRecord
-	var observedAt int64
-	if err := scan(&record.ID, &record.RemoteID, &record.Name, &record.Type, &record.Content, &record.TTL, &record.Proxied,
-		&record.NodeID, &record.ListenerID, &record.Status, &record.LastError, &record.Observed, &observedAt,
-		&record.NodeName, &record.ListenerName, &record.ListenerPort); err != nil {
-		return ManagedCloudflareRecord{}, err
-	}
-	if observedAt != 0 {
-		record.ObservedAt = time.Unix(observedAt, 0).UTC().Format(time.RFC3339)
-	}
-	return record, nil
-}
-
-func scanCloudflareRecord(scan func(...any) error) (ManagedCloudflareRecord, error) {
-	var record ManagedCloudflareRecord
-	var observedAt int64
-	if err := scan(&record.ID, &record.RemoteID, &record.Name, &record.Type, &record.Content, &record.TTL, &record.Proxied,
-		&record.NodeID, &record.ListenerID, &record.Status, &record.LastError, &record.Observed, &observedAt); err != nil {
-		return ManagedCloudflareRecord{}, err
-	}
-	if observedAt != 0 {
-		record.ObservedAt = time.Unix(observedAt, 0).UTC().Format(time.RFC3339)
-	}
-	return record, nil
-}
-
-func (s *Store) DeleteCloudflareRecordLocal(ctx context.Context, recordID string) error {
-	result, err := s.db.ExecContext(ctx, `DELETE FROM cloudflare_records WHERE id=?`, recordID)
-	if err != nil {
-		return fmt.Errorf("delete Cloudflare record: %w", err)
-	}
-	changed, _ := result.RowsAffected()
-	if changed != 1 {
-		return ErrNotFound
-	}
-	return nil
-}
-
-// RecordCloudflareObservation persists what was actually read from Cloudflare
-// without touching the desired state. An empty remote means the record is
-// absent upstream.
-func (s *Store) RecordCloudflareObservation(ctx context.Context, recordID, remoteID, status, lastError string, remote *CloudflareRecord) error {
-	observed := ""
-	if remote != nil {
-		encoded, err := json.Marshal(remote)
-		if err != nil {
-			return fmt.Errorf("encode observed Cloudflare record: %w", err)
+		if err := json.Unmarshal([]byte(spec), &listener.Spec); err != nil {
+			return nil, fmt.Errorf("decode listener spec: %w", err)
 		}
-		observed = string(encoded)
+		listeners = append(listeners, listener)
 	}
-	result, err := s.db.ExecContext(ctx, `UPDATE cloudflare_records SET remote_id=?,status=?,last_error=?,observed=?,observed_at=?,updated_at=? WHERE id=?`,
-		remoteID, status, lastError, observed, nowUnix(), nowUnix(), recordID)
-	if err != nil {
-		return fmt.Errorf("record Cloudflare observation: %w", err)
-	}
-	changed, _ := result.RowsAffected()
-	if changed != 1 {
-		return ErrNotFound
-	}
-	return nil
+	return listeners, rows.Err()
 }
 
-// CloudflareRecordEqual reports whether the desired record matches an observed
-// remote record on the fields polaris manages.
-func CloudflareRecordEqual(desired ManagedCloudflareRecord, remote CloudflareRecord) bool {
-	if !strings.EqualFold(desired.Name, strings.TrimSuffix(remote.Name, ".")) || !strings.EqualFold(desired.Type, remote.Type) {
-		return false
+// ListCloudflareRecords reads the zone from Cloudflare and annotates every
+// record with the access services it reaches. Cloudflare is the source of
+// truth, so a record removed in its console simply stops appearing here.
+func (s *Store) ListCloudflareRecords(ctx context.Context) ([]CloudflareRecordView, error) {
+	zoneID, _, client, err := s.CloudflareZone(ctx)
+	if err != nil {
+		return nil, err
 	}
-	if desired.Content != remote.Content || desired.Proxied != remote.Proxied {
-		return false
+	records, err := client.ListRecords(ctx, zoneID)
+	if err != nil {
+		return nil, err
 	}
-	// Proxied records always report TTL 1; only compare TTL when grey-cloud.
-	if !desired.Proxied && desired.TTL != remote.TTL {
-		return false
+	return s.annotateCloudflareRecords(ctx, records)
+}
+
+func (s *Store) CreateCloudflareRecord(ctx context.Context, record CloudflareRecord) (CloudflareRecordView, error) {
+	client, zoneID, err := s.normalizeCloudflareRecord(ctx, &record)
+	if err != nil {
+		return CloudflareRecordView{}, err
 	}
-	return true
+	record.ID = ""
+	created, err := client.CreateRecord(ctx, zoneID, record)
+	if err != nil {
+		return CloudflareRecordView{}, err
+	}
+	return s.annotateCloudflareRecord(ctx, created)
+}
+
+func (s *Store) UpdateCloudflareRecord(ctx context.Context, record CloudflareRecord) (CloudflareRecordView, error) {
+	if strings.TrimSpace(record.ID) == "" {
+		return CloudflareRecordView{}, userErrorf("缺少域名记录编号")
+	}
+	client, zoneID, err := s.normalizeCloudflareRecord(ctx, &record)
+	if err != nil {
+		return CloudflareRecordView{}, err
+	}
+	updated, err := client.UpdateRecord(ctx, zoneID, record)
+	if err != nil {
+		return CloudflareRecordView{}, err
+	}
+	return s.annotateCloudflareRecord(ctx, updated)
+}
+
+// DeleteCloudflareRecord removes the record at Cloudflare and returns what was
+// removed, so the audit trail names the record rather than only its ID.
+func (s *Store) DeleteCloudflareRecord(ctx context.Context, recordID string) (CloudflareRecord, error) {
+	zoneID, _, client, err := s.CloudflareZone(ctx)
+	if err != nil {
+		return CloudflareRecord{}, err
+	}
+	record, err := client.GetRecord(ctx, zoneID, recordID)
+	if err != nil {
+		return CloudflareRecord{}, err
+	}
+	if err := client.DeleteRecord(ctx, zoneID, recordID); err != nil {
+		return CloudflareRecord{}, err
+	}
+	return record, nil
+}
+
+func (s *Store) annotateCloudflareRecord(ctx context.Context, record CloudflareRecord) (CloudflareRecordView, error) {
+	views, err := s.annotateCloudflareRecords(ctx, []CloudflareRecord{record})
+	if err != nil {
+		return CloudflareRecordView{}, err
+	}
+	return views[0], nil
+}
+
+// annotateCloudflareRecords resolves each record to what this platform serves
+// under it: an access service whose connection domain is that name, or, failing
+// that, the server the record points at.
+func (s *Store) annotateCloudflareRecords(ctx context.Context, records []CloudflareRecord) ([]CloudflareRecordView, error) {
+	byDomain, byAddress, err := s.cloudflareBindingIndex(ctx)
+	if err != nil {
+		return nil, err
+	}
+	views := make([]CloudflareRecordView, 0, len(records))
+	for _, record := range records {
+		name := strings.TrimSuffix(strings.ToLower(record.Name), ".")
+		bindings := byDomain[name]
+		if len(bindings) == 0 {
+			for _, nodeName := range byAddress[strings.TrimSuffix(strings.ToLower(record.Content), ".")] {
+				bindings = append(bindings, CloudflareBinding{NodeName: nodeName})
+			}
+		}
+		if bindings == nil {
+			bindings = []CloudflareBinding{}
+		}
+		views = append(views, CloudflareRecordView{CloudflareRecord: record, Bindings: bindings})
+	}
+	return views, nil
+}
+
+func (s *Store) cloudflareBindingIndex(ctx context.Context) (map[string][]CloudflareBinding, map[string][]string, error) {
+	byDomain := map[string][]CloudflareBinding{}
+	rows, err := s.db.QueryContext(ctx, `SELECT LOWER(l.connection_domain), n.name, l.name, l.port
+		FROM listeners l JOIN nodes n ON n.id = l.node_id
+		WHERE l.connection_domain <> '' AND n.revoked_at IS NULL
+		ORDER BY n.name, l.name, l.id`)
+	if err != nil {
+		return nil, nil, fmt.Errorf("index access service domains: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var domain string
+		var binding CloudflareBinding
+		if err := rows.Scan(&domain, &binding.NodeName, &binding.ListenerName, &binding.ListenerPort); err != nil {
+			return nil, nil, err
+		}
+		byDomain[domain] = append(byDomain[domain], binding)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, nil, err
+	}
+	byAddress := map[string][]string{}
+	addressRows, err := s.db.QueryContext(ctx, `SELECT LOWER(client_address), name FROM nodes
+		WHERE client_address <> '' AND revoked_at IS NULL ORDER BY name, id`)
+	if err != nil {
+		return nil, nil, fmt.Errorf("index server addresses: %w", err)
+	}
+	defer addressRows.Close()
+	for addressRows.Next() {
+		var address, nodeName string
+		if err := addressRows.Scan(&address, &nodeName); err != nil {
+			return nil, nil, err
+		}
+		byAddress[address] = append(byAddress[address], nodeName)
+	}
+	return byDomain, byAddress, addressRows.Err()
 }

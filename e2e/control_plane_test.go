@@ -265,24 +265,43 @@ func TestControlPlaneProcessJourneyWithRealAgent(t *testing.T) {
 		t.Fatalf("same-numbered UDP 443 Hysteria2 listener is missing from applied configuration:\n%s", configuration)
 	}
 
+	// Access limits are applied to the server's own firewall and read back from
+	// it. The answer to the change is what the server enforces afterwards, so a
+	// rule that did not reach the kernel cannot be reported as saved.
+	var firewallAfterAdd nodeFirewallResponse
 	api.mustJSON(t, http.MethodPost, "/api/v1/nodes/"+approval.NodeID+"/firewall/rules", map[string]any{
-		"action": "accept", "protocol": "tcp", "cidr": "192.0.2.0/24", "port": 443, "enabled": true,
-	}, true, http.StatusCreated, nil)
-	var firewallTask taskResponse
-	api.mustJSON(t, http.MethodPost, "/api/v1/nodes/"+approval.NodeID+"/firewall/publish", map[string]any{}, true, http.StatusAccepted, &firewallTask)
-	if completed := waitForTask(t, api, firewallTask.ID, 20*time.Second); completed.Status != "succeeded" {
-		t.Fatalf("firewall task did not succeed: %#v", completed)
+		"operation": "add", "action": "accept", "protocol": "tcp", "cidr": "192.0.2.0/24", "port": 443,
+	}, true, http.StatusOK, &firewallAfterAdd)
+	if !hasFirewallRule(firewallAfterAdd, "accept", "tcp", 443, "192.0.2.0/24") {
+		t.Fatalf("the new access limit is not in force on the server: %#v", firewallAfterAdd.Rules)
+	}
+
+	// Reading the rules again goes to the server, not to any record here.
+	var firewallListing struct {
+		Nodes []nodeFirewallResponse `json:"nodes"`
+	}
+	api.mustJSON(t, http.MethodGet, "/api/v1/nodes/"+approval.NodeID+"/firewall/rules", nil, true, http.StatusOK, &firewallListing)
+	if len(firewallListing.Nodes) != 1 || !hasFirewallRule(firewallListing.Nodes[0], "accept", "tcp", 443, "192.0.2.0/24") {
+		t.Fatalf("the server did not report the access limit back: %#v", firewallListing.Nodes)
+	}
+	// An allowance turns its port into a whitelist, which only means anything
+	// if the closing denial reached the kernel too.
+	if !hasFirewallRule(firewallListing.Nodes[0], "drop", "tcp", 443, "") {
+		t.Fatalf("the whitelist's closing denial is not in force: %#v", firewallListing.Nodes[0].Rules)
+	}
+
+	var firewallAfterDelete nodeFirewallResponse
+	api.mustJSON(t, http.MethodPost, "/api/v1/nodes/"+approval.NodeID+"/firewall/rules", map[string]any{
+		"operation": "delete", "action": "accept", "protocol": "tcp", "cidr": "192.0.2.0/24", "port": 443,
+	}, true, http.StatusOK, &firewallAfterDelete)
+	if hasFirewallRule(firewallAfterDelete, "accept", "tcp", 443, "192.0.2.0/24") {
+		t.Fatalf("the deleted access limit is still in force: %#v", firewallAfterDelete.Rules)
 	}
 
 	api.mustJSON(t, http.MethodPost, "/api/v1/nodes/"+approval.NodeID+"/fail2ban/jails", map[string]any{
-		"name": "e2e-auth", "log_path": "/var/log/sing-box/access.log", "filter_name": "e2e-auth",
-		"fail_regex": "^.*authentication failed.*$", "max_retry": 3, "find_time_seconds": 600, "ban_time_seconds": 3600, "enabled": true,
-	}, true, http.StatusCreated, nil)
-	var fail2banTask taskResponse
-	api.mustJSON(t, http.MethodPost, "/api/v1/nodes/"+approval.NodeID+"/fail2ban/publish", map[string]any{}, true, http.StatusAccepted, &fail2banTask)
-	if completed := waitForTask(t, api, fail2banTask.ID, 20*time.Second); completed.Status != "succeeded" {
-		t.Fatalf("Fail2Ban task did not succeed: %#v", completed)
-	}
+		"operation": "save", "name": "e2e-auth", "log_path": "/var/log/sing-box/access.log", "filter_name": "e2e-auth",
+		"fail_regex": "^.*authentication failed.*$", "max_retry": 3, "find_time_seconds": 600, "ban_time_seconds": 3600,
+	}, true, http.StatusOK, nil)
 	assertFileExists(t, filepath.Join(managedRoot, "etc", "fail2ban", "jail.d", "polaris.local"))
 	commandInvocations = readFile(t, commandLog)
 	for _, expected := range []string{
@@ -385,6 +404,30 @@ type taskResponse struct {
 	ID            string `json:"id"`
 	Status        string `json:"status"`
 	ResultSummary string `json:"result_summary"`
+}
+
+// nodeFirewallResponse is what one server reports about its own firewall.
+type nodeFirewallResponse struct {
+	NodeID    string `json:"node_id"`
+	Available bool   `json:"available"`
+	Error     string `json:"error"`
+	Rules     []struct {
+		Managed   bool   `json:"managed"`
+		Action    string `json:"action"`
+		Protocol  string `json:"protocol"`
+		Port      uint16 `json:"port"`
+		CIDR      string `json:"cidr"`
+		Automatic bool   `json:"automatic"`
+	} `json:"rules"`
+}
+
+func hasFirewallRule(node nodeFirewallResponse, action, protocol string, port uint16, cidr string) bool {
+	for _, rule := range node.Rules {
+		if rule.Managed && rule.Action == action && rule.Protocol == protocol && rule.Port == port && rule.CIDR == cidr {
+			return true
+		}
+	}
+	return false
 }
 
 type quickListenerResponse struct {
@@ -528,7 +571,7 @@ func startClashAPI(t *testing.T) *httptest.Server {
 func verifyEmbeddedWebApplication(t *testing.T, baseURL string) {
 	t.Helper()
 	status, _, index := rawRequest(t, http.DefaultClient, http.MethodGet, baseURL+"/", nil, "")
-	if status != http.StatusOK || !bytes.Contains(index, []byte("polaris")) {
+	if status != http.StatusOK || !bytes.Contains(bytes.ToLower(index), []byte("polaris")) {
 		t.Fatalf("embedded web application is unavailable: HTTP %d", status)
 	}
 	assetMatch := regexp.MustCompile(`(?:src|href)="(/[^"]+\.(?:js|css))"`).FindSubmatch(index)

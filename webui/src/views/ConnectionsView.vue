@@ -14,6 +14,23 @@ const selectedOutbound = ref('')
 const keyword = ref('')
 let stopConnections
 
+// sing-box reports the destination as an address, and the sniffed domain
+// separately. The console shows one target, written the way an operator would
+// type it: the domain when there is one, always with the port.
+function splitAddress(address) {
+  const text = String(address || '')
+  const separator = text.lastIndexOf(':')
+  if (separator < 0) return { host: text, port: '' }
+  return { host: text.slice(0, separator).replace(/^\[|\]$/g, ''), port: text.slice(separator + 1) }
+}
+
+function targetLabel(connection) {
+  const address = splitAddress(connection.destination)
+  const host = connection.host || address.host
+  if (!host) return address.port ? `:${address.port}` : '—'
+  return address.port ? `${host}:${address.port}` : host
+}
+
 const rows = computed(() => [...connectionSnapshots.value.values()].flatMap((result) => {
   const node = appState.nodes.find((item) => item.id === result.node_id)
   return (result.connections || []).map((connection) => ({
@@ -24,6 +41,7 @@ const rows = computed(() => [...connectionSnapshots.value.values()].flatMap((res
     // configured; the raw tag is only shown when that lookup found nothing.
     exit: connection.outbound_name || connection.outbound || connection.chains?.[0] || 'DIRECT',
     entry: connection.listener_name || '—',
+    target: targetLabel(connection),
   }))
 }))
 const collectedAt = computed(() => [...connectionSnapshots.value.values()].map((result) => result.collected_at).filter(Boolean).sort().at(-1) || '')
@@ -32,7 +50,7 @@ const filteredRows = computed(() => rows.value.filter((row) => {
   if (selectedNode.value && row.node_id !== selectedNode.value) return false
   if (selectedOutbound.value && row.exit !== selectedOutbound.value) return false
   return includesText([
-    row.node_name, row.source, row.source_ip, row.source_location, row.host, row.destination,
+    row.node_name, row.source, row.source_ip, row.source_location, row.target,
     row.entry, row.user, row.exit, row.network,
   ], keyword.value)
 }))
@@ -60,7 +78,7 @@ onBeforeUnmount(() => stopConnections?.())
     </PageHeader>
     <main class="page-content page-content--tight">
       <div class="search-toolbar">
-        <el-input v-model="keyword" clearable :prefix-icon="Search" placeholder="搜索 IP、目标、客户端节点或出口" style="width: 280px" />
+        <el-input v-model="keyword" clearable :prefix-icon="Search" placeholder="搜索 IP、目标、入站节点或出口" style="width: 280px" />
         <el-select v-model="selectedNode" clearable placeholder="全部服务器" style="width: 190px">
           <el-option v-for="node in appState.nodes" :key="node.id" :label="node.name" :value="node.id" />
         </el-select>
@@ -73,26 +91,26 @@ onBeforeUnmount(() => stopConnections?.())
       <div class="table-panel">
         <PagedTable :rows="filteredRows" :loading="loading" empty-text="当前没有活动连接">
           <el-table-column label="服务器" prop="node_name" min-width="130" show-overflow-tooltip />
-          <el-table-column label="客户端节点" min-width="150" show-overflow-tooltip>
-            <template #default="{ row }">
-              <div>{{ row.user || '—' }}</div>
-              <div class="subtle">{{ [row.entry, (row.network || '').toUpperCase()].filter((part) => part && part !== '—').join(' · ') || '—' }}</div>
-            </template>
-          </el-table-column>
-          <el-table-column label="客户端 IP" min-width="180" show-overflow-tooltip>
+          <el-table-column label="客户端" min-width="180" show-overflow-tooltip>
             <template #default="{ row }">
               <div class="mono">{{ row.source_ip || row.source || '—' }}</div>
-              <div class="subtle">{{ row.source_location || '未知' }}</div>
+              <div class="subtle">{{ [row.user, row.source_location].filter(Boolean).join(' · ') || '未知' }}</div>
             </template>
           </el-table-column>
-          <el-table-column label="访问目标" min-width="200" show-overflow-tooltip>
-            <template #default="{ row }"><strong>{{ row.host || row.destination || '—' }}</strong><div v-if="row.host" class="subtle">{{ row.destination }}</div></template>
+          <el-table-column label="目标" min-width="220" show-overflow-tooltip>
+            <template #default="{ row }"><strong>{{ row.target }}</strong></template>
+          </el-table-column>
+          <el-table-column label="入站节点" min-width="140" show-overflow-tooltip>
+            <template #default="{ row }">
+              <div>{{ row.entry }}</div>
+              <div class="subtle">{{ (row.network || '').toUpperCase() || '—' }}</div>
+            </template>
           </el-table-column>
           <el-table-column label="出口" min-width="150" show-overflow-tooltip>
             <template #default="{ row }"><el-tag size="small" effect="plain">{{ row.exit }}</el-tag></template>
           </el-table-column>
           <el-table-column label="流量" min-width="156"><template #default="{ row }"><span class="mono">↓ {{ formatBytes(row.download) }} · ↑ {{ formatBytes(row.upload) }}</span></template></el-table-column>
-          <el-table-column label="开始时间" width="152"><template #default="{ row }">{{ formatDateTime(row.started_at) }}</template></el-table-column>
+          <el-table-column label="时间" width="152"><template #default="{ row }">{{ formatDateTime(row.started_at) }}</template></el-table-column>
         </PagedTable>
       </div>
     </main>

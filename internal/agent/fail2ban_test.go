@@ -8,33 +8,54 @@ import (
 	"testing"
 )
 
-func TestApplyFail2BanRejectsTamperedOrUnsafePayloads(t *testing.T) {
-	payload, err := json.Marshal(map[string]any{
-		"jail":    "[polaris-test]\nenabled = true\n",
-		"filters": map[string]string{"polaris-test.conf": "[Definition]\nfailregex = x <HOST>\n"},
-	})
-	if err != nil {
-		t.Fatal(err)
+func TestFail2BanMutationsRejectTamperedOrUnsafePayloads(t *testing.T) {
+	hashed := func(mutation Fail2BanMutation) Task {
+		encoded, err := json.Marshal(mutation)
+		if err != nil {
+			t.Fatal(err)
+		}
+		digest := sha256.Sum256(encoded)
+		return Task{ID: "0123456789abcdef0123456789abcdef", Kind: "fail2ban.mutate", Payload: string(encoded), ExpectedHash: hex.EncodeToString(digest[:])}
 	}
-	digest := sha256.Sum256(payload)
-	task := Task{ID: "0123456789abcdef0123456789abcdef", Kind: "fail2ban.apply", Payload: string(payload), ExpectedHash: "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"}
-	if result := applyFail2Ban(context.Background(), task); result.Status != "failed" {
+	valid := Fail2BanMutation{Operation: "save", Jail: LiveFail2BanJail{
+		Name: "test", FilterName: "test", LogPath: "/var/log/auth.log", FailRegex: "x <HOST>",
+		MaxRetry: 5, FindTimeSeconds: 600, BanTimeSeconds: 600,
+	}}
+	tampered := hashed(valid)
+	tampered.ExpectedHash = "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+	if result := mutateFail2Ban(context.Background(), tampered); result.Status != "failed" {
 		t.Fatalf("accepted payload with a wrong hash: %#v", result)
 	}
-	escaping, err := json.Marshal(map[string]any{
-		"jail":    "[polaris-test]\n",
-		"filters": map[string]string{"../evil.conf": "[Definition]\nfailregex = x\n"},
-	})
+	// A jail name is written straight into an INI section and a filter file
+	// name, so anything that could escape either has to be refused.
+	escaping := valid
+	escaping.Jail.FilterName = "../evil"
+	if result := mutateFail2Ban(context.Background(), hashed(escaping)); result.Status != "failed" {
+		t.Fatalf("accepted a filter name outside the managed namespace: %#v", result)
+	}
+	unknown := valid
+	unknown.Operation = "drop-everything"
+	if result := mutateFail2Ban(context.Background(), hashed(unknown)); result.Status != "failed" {
+		t.Fatalf("accepted an unsupported operation: %#v", result)
+	}
+	malformed := Task{ID: "0123456789abcdef0123456789abcdef", Kind: "fail2ban.mutate", Payload: "not-json", ExpectedHash: "00"}
+	if result := mutateFail2Ban(context.Background(), malformed); result.Status != "failed" {
+		t.Fatalf("accepted invalid payload: %#v", result)
+	}
+}
+
+func TestFirewallMutationsRejectTamperedPayloads(t *testing.T) {
+	mutation := FirewallMutation{Operation: "add", Rule: LiveFirewallRule{Action: "accept", Protocol: "tcp", Port: 443}}
+	encoded, err := json.Marshal(mutation)
 	if err != nil {
 		t.Fatal(err)
 	}
-	escapingDigest := sha256.Sum256(escaping)
-	task = Task{ID: task.ID, Kind: task.Kind, Payload: string(escaping), ExpectedHash: hex.EncodeToString(escapingDigest[:])}
-	if result := applyFail2Ban(context.Background(), task); result.Status != "failed" {
-		t.Fatalf("accepted filter outside the managed namespace: %#v", result)
+	tampered := Task{ID: "0123456789abcdef0123456789abcdef", Kind: "firewall.mutate", Payload: string(encoded), ExpectedHash: "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"}
+	if result := mutateFirewall(context.Background(), tampered); result.Status != "failed" {
+		t.Fatalf("accepted payload with a wrong hash: %#v", result)
 	}
-	task = Task{ID: task.ID, Kind: task.Kind, Payload: "not-json", ExpectedHash: hex.EncodeToString(digest[:])}
-	if result := applyFail2Ban(context.Background(), task); result.Status != "failed" {
+	malformed := Task{ID: tampered.ID, Kind: tampered.Kind, Payload: "not-json", ExpectedHash: "00"}
+	if result := mutateFirewall(context.Background(), malformed); result.Status != "failed" {
 		t.Fatalf("accepted invalid payload: %#v", result)
 	}
 }

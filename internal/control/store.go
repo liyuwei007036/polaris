@@ -1205,7 +1205,9 @@ func (s *Store) CreateTask(ctx context.Context, task Task) (Task, error) {
 	if len(task.Payload) > 4*1024*1024 || len(task.ResultSummary) > 8*1024 {
 		return Task{}, errors.New("task payload or result exceeds allowed size")
 	}
-	if task.Kind != "singbox.apply_config" && task.Kind != "singbox.install" && task.Kind != "singbox.upgrade" && task.Kind != "nginx.apply_config" && task.Kind != "firewall.apply" && task.Kind != "fail2ban.apply" && task.Kind != "fail2ban.unban" && task.Kind != "outbound.test" && task.Kind != "agent.upgrade" {
+	// Network protection asks its questions over the session directly and stores
+	// nothing, so its kinds are deliberately absent here. See Server.AskNode.
+	if task.Kind != "singbox.apply_config" && task.Kind != "singbox.install" && task.Kind != "singbox.upgrade" && task.Kind != "nginx.apply_config" && task.Kind != "outbound.test" && task.Kind != "agent.upgrade" {
 		return Task{}, errors.New("unsupported task kind")
 	}
 	if task.OperatorID != "" {
@@ -2259,29 +2261,16 @@ CREATE TABLE IF NOT EXISTS subscription_rules (
 CREATE TABLE IF NOT EXISTS node_metrics (
   node_id TEXT PRIMARY KEY REFERENCES nodes(id), report TEXT NOT NULL, updated_at INTEGER NOT NULL
 );
-CREATE TABLE IF NOT EXISTS firewall_rules (
-  id TEXT PRIMARY KEY, node_id TEXT NOT NULL REFERENCES nodes(id), action TEXT NOT NULL, protocol TEXT NOT NULL,
-  cidr TEXT NOT NULL, port INTEGER NOT NULL, expires_at INTEGER, enabled INTEGER NOT NULL,
-  created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL
-);
-CREATE TABLE IF NOT EXISTS fail2ban_jails (
-  id TEXT PRIMARY KEY, node_id TEXT NOT NULL REFERENCES nodes(id), name TEXT NOT NULL,
-  log_path TEXT NOT NULL, filter_name TEXT NOT NULL, fail_regex TEXT NOT NULL,
-  max_retry INTEGER NOT NULL, find_time_seconds INTEGER NOT NULL, ban_time_seconds INTEGER NOT NULL,
-  enabled INTEGER NOT NULL, ports TEXT NOT NULL DEFAULT '', created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
-  UNIQUE(node_id, name)
-);
+-- Network protection is read from and written to the servers themselves. These
+-- tables held a copy of what the console believed each server enforced, and a
+-- copy is exactly what could be — and was — out of step with the kernel doing
+-- the enforcing. They are dropped rather than left behind so nothing can read
+-- from them again.
+DROP TABLE IF EXISTS firewall_rules;
+DROP TABLE IF EXISTS fail2ban_jails;
 CREATE TABLE IF NOT EXISTS cloudflare_settings (
   id INTEGER PRIMARY KEY CHECK (id = 1), zone_id TEXT NOT NULL, zone_name TEXT NOT NULL,
   api_token BLOB NOT NULL, updated_at INTEGER NOT NULL
-);
-CREATE TABLE IF NOT EXISTS cloudflare_records (
-  id TEXT PRIMARY KEY, remote_id TEXT NOT NULL DEFAULT '', name TEXT NOT NULL, type TEXT NOT NULL,
-  content TEXT NOT NULL, ttl INTEGER NOT NULL, proxied INTEGER NOT NULL,
-  node_id TEXT REFERENCES nodes(id), listener_id TEXT REFERENCES listeners(id),
-  status TEXT NOT NULL, last_error TEXT NOT NULL DEFAULT '', observed TEXT NOT NULL DEFAULT '', observed_at INTEGER,
-  created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
-  UNIQUE(name, type)
 );
 CREATE INDEX IF NOT EXISTS idx_sessions_expiry ON sessions(expires_at);
 CREATE INDEX IF NOT EXISTS idx_registrations_public_key ON registrations(public_key);
@@ -2300,9 +2289,6 @@ CREATE INDEX IF NOT EXISTS idx_subscription_rules_subscription ON subscription_r
 CREATE INDEX IF NOT EXISTS idx_subscription_access_time ON subscription_access_logs(accessed_at DESC);
 CREATE INDEX IF NOT EXISTS idx_subscription_access_config ON subscription_access_logs(config_id, accessed_at DESC);
 CREATE INDEX IF NOT EXISTS idx_node_metrics_updated ON node_metrics(updated_at);
-CREATE INDEX IF NOT EXISTS idx_firewall_rules_node ON firewall_rules(node_id, enabled, expires_at);
-CREATE INDEX IF NOT EXISTS idx_fail2ban_jails_node ON fail2ban_jails(node_id, enabled);
-CREATE INDEX IF NOT EXISTS idx_cloudflare_records_binding ON cloudflare_records(node_id, listener_id, status);
 `)
 	if err != nil {
 		return fmt.Errorf("migrate database: %w", err)
@@ -2343,14 +2329,16 @@ CREATE INDEX IF NOT EXISTS idx_cloudflare_records_binding ON cloudflare_records(
 	if err := s.migrateHysteria2ALPN(ctx); err != nil {
 		return err
 	}
-	if err := s.migrateListenersBehindRouter(ctx); err != nil {
-		return err
-	}
-	if err := s.addFail2BanJailColumn(ctx, "ports TEXT NOT NULL DEFAULT ''"); err != nil {
+	if err := s.reconcileListenerPortRouting(ctx); err != nil {
 		return err
 	}
 	if _, err := s.db.ExecContext(ctx, `DROP TABLE IF EXISTS managed_certificates`); err != nil {
 		return fmt.Errorf("remove managed certificates table: %w", err)
+	}
+	// DNS records are read from and written to Cloudflare directly, so the
+	// local mirror of desired and observed state has nothing left to hold.
+	if _, err := s.db.ExecContext(ctx, `DROP TABLE IF EXISTS cloudflare_records`); err != nil {
+		return fmt.Errorf("remove Cloudflare records table: %w", err)
 	}
 	if err := s.addEndpointColumn(ctx, "outbound_id TEXT NOT NULL DEFAULT ''"); err != nil {
 		return err
@@ -2489,14 +2477,6 @@ func (s *Store) addOutboundColumn(ctx context.Context, definition string) error 
 		return nil
 	}
 	return fmt.Errorf("migrate outbounds table: %w", err)
-}
-
-func (s *Store) addFail2BanJailColumn(ctx context.Context, definition string) error {
-	_, err := s.db.ExecContext(ctx, "ALTER TABLE fail2ban_jails ADD COLUMN "+definition)
-	if err == nil || strings.Contains(err.Error(), "duplicate column name") {
-		return nil
-	}
-	return fmt.Errorf("migrate fail2ban jails table: %w", err)
 }
 
 func (s *Store) addMihomoProxyGroupColumn(ctx context.Context, definition string) error {

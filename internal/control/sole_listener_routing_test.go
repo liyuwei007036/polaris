@@ -5,11 +5,12 @@ import (
 	"testing"
 )
 
-// A node with a single TLS-terminating TCP listener still puts it behind the
-// managed SNI router. sing-box binding the public port itself only works while
-// nothing else on the host wants that port; an Nginx installed before polaris
-// takes it first and leaves sing-box failing to start on every retry.
-func TestSoleTCPListenerIsRoutedInsteadOfBindingThePublicPort(t *testing.T) {
+// A node with a single TLS-terminating TCP listener binds the public port
+// itself. Routing it through Nginx would gain nothing — there is no second
+// listener to tell apart — and would cost every connection its client address,
+// because Nginx forwards from loopback and a Reality connection has no layer
+// left that could carry the original address across.
+func TestSoleTCPListenerBindsThePublicPortItself(t *testing.T) {
 	store, err := Open(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
@@ -34,25 +35,21 @@ func TestSoleTCPListenerIsRoutedInsteadOfBindingThePublicPort(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !managed || route == nil {
-		t.Fatalf("sole listener was not routed: managed=%v route=%#v", managed, route)
+	if managed || route != nil {
+		t.Fatalf("sole listener was routed: managed=%v route=%#v", managed, route)
 	}
-	if listener.ListenAddr != "127.0.0.1" || listener.BackendPort == 443 || listener.Port != 443 {
-		t.Fatalf("sole listener kept the public socket: %#v", listener)
+	if listener.ListenAddr != "0.0.0.0" || listener.BackendPort != 443 || listener.Port != 443 {
+		t.Fatalf("sole listener did not keep the public socket: %#v", listener)
 	}
-	if route.Port != 443 || route.SNI != "sole.example.com" || route.BackendPort != listener.BackendPort {
-		t.Fatalf("route does not front the listener: %#v", route)
-	}
-	// The compiled Nginx configuration has to actually carry that mapping,
-	// otherwise nothing listens on the public port at all.
+	// With nothing to route, Nginx has no managed configuration at all — the
+	// listener owns the port, so a stream block would only fight it for the
+	// socket.
 	configuration, _, err := store.CompileNodeNginx(t.Context(), nodeID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, expected := range []string{"listen 0.0.0.0:443;", "ssl_preread on;", "sole.example.com"} {
-		if !strings.Contains(configuration, expected) {
-			t.Fatalf("compiled Nginx configuration is missing %q:\n%s", expected, configuration)
-		}
+	if strings.TrimSpace(configuration) != "" {
+		t.Fatalf("compiled Nginx configuration should be empty:\n%s", configuration)
 	}
 }
 

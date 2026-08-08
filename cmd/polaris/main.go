@@ -176,6 +176,7 @@ func serveMaster(ctx context.Context, configuration masterConfig) error {
 		return err
 	}
 	server.SetAgentPort(configuration.AgentPort)
+	applyConnectionsInterval(server, configuration.ConnectionsInterval)
 	server.StartMaintenance(ctx)
 	agentAddress := portAddress(configuration.AgentPort)
 	agentListener, err := net.Listen("tcp", agentAddress)
@@ -361,7 +362,8 @@ func runAgentLoop(ctx context.Context, dataDir, masterAddr string, masterPub [wi
 			return err
 		}
 		backoff = 5 * time.Second
-		sessionErr := agent.RunSession(ctx, conn, handler, interval, connInterval, singBoxVersion, dataDir)
+		sessionErr := agent.RunSession(ctx, conn, handler, interval,
+			sessionConnectionsInterval(connInterval, ack.ConnectionsIntervalSeconds), singBoxVersion, dataDir)
 		conn.Close()
 		if ctx.Err() != nil {
 			return nil

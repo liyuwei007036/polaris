@@ -299,40 +299,45 @@ func TestCompiledConfigurationWritesTheFail2BanLogPath(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(configuration, SingBoxLogPath) {
-		t.Fatalf("compiled configuration does not log to %s:\n%s", SingBoxLogPath, configuration)
+	if !strings.Contains(configuration, singBoxLogPath) {
+		t.Fatalf("compiled configuration does not log to %s:\n%s", singBoxLogPath, configuration)
 	}
 }
 
 // The DNS list is only useful if it says which server and service a record
-// serves, so the bindings are resolved to names alongside the record.
-func TestListCloudflareRecordsResolvesItsBindings(t *testing.T) {
+// serves. Nobody should have to declare that by hand: the access service's own
+// connection domain already says it, and a bare address still names its server.
+func TestCloudflareRecordsBindThemselvesToAccessServices(t *testing.T) {
 	store, err := Open(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer store.Close()
 	nodeID := newTestNode(t, store, "dns-node", "d")
-	listener, err := store.CreateListener(t.Context(), tlsListener(nodeID, "网页接入", "dns.example.com", 8443, true))
+	if err := store.SetNodeClientAddress(t.Context(), nodeID, "203.0.113.10"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.CreateListener(t.Context(), tlsListener(nodeID, "网页接入", "dns.example.com", 8443, true)); err != nil {
+		t.Fatal(err)
+	}
+	records, err := store.annotateCloudflareRecords(t.Context(), []CloudflareRecord{
+		{ID: "r1", Type: "A", Name: "dns.example.com", Content: "203.0.113.10", TTL: 1},
+		{ID: "r2", Type: "A", Name: "other.example.com", Content: "203.0.113.10", TTL: 300},
+		{ID: "r3", Type: "TXT", Name: "spf.example.com", Content: "v=spf1 -all", TTL: 300},
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := store.SetCloudflareSettings(t.Context(), "zone-1", "example.com", "token-value"); err != nil {
-		t.Fatal(err)
+	if len(records[0].Bindings) != 1 || records[0].Bindings[0].NodeName != "dns-node" ||
+		records[0].Bindings[0].ListenerName != "网页接入" || records[0].Bindings[0].ListenerPort != 8443 {
+		t.Fatalf("record on an access service domain = %+v, want the node and listener named", records[0].Bindings)
 	}
-	if _, err := store.CreateCloudflareRecord(t.Context(), ManagedCloudflareRecord{
-		Type: "A", Name: "dns.example.com", Content: "203.0.113.10", TTL: 1, NodeID: nodeID, ListenerID: listener.ID,
-	}); err != nil {
-		t.Fatal(err)
+	// No access service claims this name, but the address still identifies the
+	// server the record points at.
+	if len(records[1].Bindings) != 1 || records[1].Bindings[0].NodeName != "dns-node" || records[1].Bindings[0].ListenerName != "" {
+		t.Fatalf("record pointing at a server = %+v, want only the node named", records[1].Bindings)
 	}
-	records, err := store.ListCloudflareRecords(t.Context())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(records) != 1 {
-		t.Fatalf("expected one record, got %d", len(records))
-	}
-	if records[0].NodeName != "dns-node" || records[0].ListenerName != "网页接入" || records[0].ListenerPort != 8443 {
-		t.Fatalf("record bindings = %+v, want the node and listener resolved to names", records[0])
+	if len(records[2].Bindings) != 0 {
+		t.Fatalf("unrelated record = %+v, want no binding invented", records[2].Bindings)
 	}
 }
