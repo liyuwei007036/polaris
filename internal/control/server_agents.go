@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/liyuwei007036/polaris/internal/nginxroute"
 	"github.com/liyuwei007036/polaris/internal/wire"
 )
 
@@ -151,6 +152,9 @@ func (s *Server) runAgentSession(ctx context.Context, conn *wire.Conn, node Node
 		s.controlMu.Lock()
 		if s.controls[node.ID] == session {
 			delete(s.controls, node.ID)
+			// Inside the same critical section: once a newer session has taken
+			// the slot, its stream report must survive this session's exit.
+			s.clearForeignStreamListens(node.ID)
 		}
 		s.controlMu.Unlock()
 	}()
@@ -265,6 +269,7 @@ func (s *Server) handleAgentMessage(ctx context.Context, node Node, msgType byte
 			return false
 		}
 		s.maybeInstallSingBox(ctx, node.ID, st.OS, st.Architecture, st.SingBoxVersion)
+		s.setForeignStreamListens(node.ID, st.ForeignStreamListens)
 		if st.Capabilities["configuration_hashes"] == "true" {
 			s.reconcileNodeDesiredState(ctx, node.ID, st.SingBoxVersion, st.SingBoxConfigHash, st.NginxConfigHash)
 		}
@@ -386,6 +391,42 @@ func (s *Server) clearReconcileState(nodeID string) {
 	defer s.reconcileMu.Unlock()
 	delete(s.reconcileState, nodeID+"/singbox")
 	delete(s.reconcileState, nodeID+"/nginx")
+}
+
+// setForeignStreamListens records a node's report of the Nginx stream sockets
+// polaris does not manage. An older agent reports nothing, which reads as no
+// conflicts — the deploy-time checks on the agent still apply.
+func (s *Server) setForeignStreamListens(nodeID string, listens []wire.StreamListen) {
+	s.foreignStreamMu.Lock()
+	defer s.foreignStreamMu.Unlock()
+	if s.foreignStreamListens == nil {
+		s.foreignStreamListens = make(map[string][]wire.StreamListen)
+	}
+	s.foreignStreamListens[nodeID] = listens
+}
+
+func (s *Server) clearForeignStreamListens(nodeID string) {
+	s.foreignStreamMu.Lock()
+	defer s.foreignStreamMu.Unlock()
+	delete(s.foreignStreamListens, nodeID)
+}
+
+// refuseForeignStreamPort returns a user-facing error when the node's own
+// Nginx configuration already binds a stream server to the socket a service
+// is being saved onto. Refusing at save time is what keeps the database in a
+// state the node can actually reach: deployed anyway, the configuration would
+// only fail `nginx -t` there and be rolled back, while the console kept
+// reporting the save as successful.
+func (s *Server) refuseForeignStreamPort(nodeID, address string, port uint16) error {
+	normalized := nginxroute.NormalizeListenAddress(address)
+	s.foreignStreamMu.Lock()
+	defer s.foreignStreamMu.Unlock()
+	for _, listen := range s.foreignStreamListens[nodeID] {
+		if listen.Port == port && nginxroute.NormalizeListenAddress(listen.Address) == normalized {
+			return userErrorf("端口 %d 已被服务器 Nginx 配置文件 %s 中的 stream 服务占用，请先调整该配置或改用其他端口", port, listen.File)
+		}
+	}
+	return nil
 }
 
 func (s *Server) reconcileNodeDesiredState(ctx context.Context, nodeID, singBoxVersion, singBoxConfigHash, nginxConfigHash string) {

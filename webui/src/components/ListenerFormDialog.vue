@@ -34,7 +34,6 @@ const model = ref(createListenerModel(null, ''))
 const accounts = ref([])
 const selectedProfile = computed(() => listenerProfileMap[model.value.profile])
 const showReality = computed(() => model.value.security === 'reality')
-const portManagedBySystem = computed(() => Boolean(props.listener && ['127.0.0.1', '::1'].includes(props.listener.listen_address) && props.listener.backend_port !== props.listener.port))
 
 const nodeAddress = computed(() => props.nodes.find((node) => node.id === model.value.node_id)?.client_address || '')
 
@@ -260,7 +259,8 @@ async function save() {
             </el-col>
             <el-col :span="8">
               <el-form-item label="服务端口" prop="port">
-                <el-input-number v-model="model.port" :min="1" :max="65535" :disabled="portManagedBySystem" controls-position="right" style="width: 100%" />
+                <el-input-number v-model="model.port" :min="1" :max="65535" controls-position="right" style="width: 100%" />
+                <div v-if="listener" class="form-hint">修改端口后会自动重新生成并下发 sing-box 与 Nginx 配置，客户端需按新端口更新。</div>
               </el-form-item>
             </el-col>
           </el-row>

@@ -27,23 +27,26 @@ const keyword = ref('')
 const nodeNames = computed(() => Object.fromEntries(appState.nodes.map((node) => [node.id, node.name])))
 const nodeName = (nodeID) => nodeNames.value[nodeID] || nodeID
 
-// Servers that could not be read are listed on their own. Showing an empty
+// Servers that could not be read are called out on their own. Showing an empty
 // table for them would read as "this server has no restrictions", which is the
-// opposite of what is known about it.
+// opposite of what is known about it. They are summarised in one line rather
+// than one each, so a handful of offline servers cannot push the rules off the
+// screen.
 const unreachable = computed(() => {
   const reasons = {}
   for (const node of firewallNodes.value) if (node.error) reasons[node.node_id] = node.error
   for (const node of fail2banNodes.value) if (node.error && !reasons[node.node_id]) reasons[node.node_id] = node.error
-  return Object.entries(reasons)
-    .filter(([nodeID]) => !selectedNode.value || nodeID === selectedNode.value)
-    .map(([nodeID, reason]) => ({ nodeID, reason }))
+  const entries = Object.entries(reasons).filter(([nodeID]) => !selectedNode.value || nodeID === selectedNode.value)
+  if (!entries.length) return ''
+  const names = entries.map(([nodeID]) => nodeName(nodeID)).join('、')
+  return `${names}：${entries[0][1]}`
 })
 
 const firewallRules = computed(() => firewallNodes.value.flatMap((node) => (node.rules || [])
   .map((rule, index) => ({ ...rule, key: `${node.node_id}-${index}`, tool: node.tool })))
   .filter((row) => {
     if (selectedNode.value && row.node_id !== selectedNode.value) return false
-    return includesText([nodeName(row.node_id), row.action, row.protocol, row.cidr, row.location, row.port, row.raw, row.table, row.chain], keyword.value)
+    return includesText([nodeName(row.node_id), row.action, row.protocol, row.cidr, row.location, row.port, row.raw, row.family, row.table, row.chain], keyword.value)
   }))
 
 const jails = computed(() => fail2banNodes.value.flatMap((node) => (node.jails || [])
@@ -174,14 +177,16 @@ async function saveFirewall() {
   if (applied) firewallOpen.value = false
 }
 
+// Deleting names where the rule sits rather than what it says: two rules can
+// read identically, and the server has to remove the one on screen.
 async function removeFirewall(row) {
   await ElMessageBox.confirm(
-    `确认从 ${nodeName(row.node_id)} 的防火墙中删除这条规则？删除后立即生效。`,
-    '删除访问限制', { type: 'warning' },
+    `确认从 ${nodeName(row.node_id)} 的防火墙中删除这条规则？删除后立即生效。\n\n${row.raw}`,
+    '删除防火墙规则', { type: 'warning' },
   )
   await changeFirewall(row.node_id, {
-    operation: 'delete', action: row.action, protocol: row.protocol, port: row.port, cidr: row.cidr,
-  }, '访问限制已从服务器防火墙移除')
+    operation: 'delete', family: row.family, table: row.table, chain: row.chain, handle: row.handle, raw: row.raw,
+  }, '规则已从服务器防火墙移除')
 }
 
 function addJail() {
@@ -249,11 +254,12 @@ async function unban(row) {
   }
 }
 
-function ruleSource(row) {
-  if (!row.managed) return { text: '系统已有', type: 'info' }
-  if (row.automatic) return { text: '自动生成', type: 'warning' }
-  return { text: '本平台', type: 'success' }
+const actionLabels = {
+  accept: { text: '允许', type: 'success' },
+  drop: { text: '拒绝', type: 'danger' },
+  reject: { text: '拒绝', type: 'danger' },
 }
+function actionLabel(row) { return actionLabels[row.action] || null }
 
 function jailRuntime(row) {
   if (row.error) return { text: '未生效：' + row.error, type: 'danger' }
@@ -272,8 +278,7 @@ onMounted(load)
         title="这里显示的是各台服务器上正在生效的防火墙与封禁规则，每次打开或刷新都会实时读取；添加和删除会立即写入服务器。"
         type="info" show-icon :closable="false" style="margin-bottom: 12px" />
       <el-alert
-        v-for="node in unreachable" :key="node.nodeID"
-        :title="`${nodeName(node.nodeID)}：${node.reason}`"
+        v-if="unreachable" :title="unreachable"
         type="warning" show-icon :closable="false" style="margin-bottom: 8px" />
       <div class="search-toolbar">
         <el-input v-model="keyword" clearable :prefix-icon="Search" placeholder="搜索服务器、地址或规则" style="width: 270px" />
@@ -285,42 +290,36 @@ onMounted(load)
         <el-tabs v-model="tab" class="panel-tabs">
           <el-tab-pane :label="`访问限制（${firewallRules.length}）`" name="firewall">
             <div class="tab-actions"><el-button v-if="isAdmin" type="primary" :icon="Plus" :disabled="!appState.nodes.length" @click="addFirewall">添加</el-button></div>
-            <PagedTable :rows="firewallRules" :loading="loading" empty-text="服务器上没有生效的入站防火墙规则">
-              <el-table-column label="服务器" min-width="140" show-overflow-tooltip><template #default="{ row }">{{ nodeName(row.node_id) }}</template></el-table-column>
-              <el-table-column label="规则来源" width="110" align="center">
-                <template #default="{ row }"><el-tag :type="ruleSource(row).type" effect="plain">{{ ruleSource(row).text }}</el-tag></template>
-              </el-table-column>
-              <el-table-column label="处理方式" width="100" align="center">
+            <PagedTable :rows="firewallRules" :loading="loading" empty-text="服务器上没有生效的防火墙规则">
+              <el-table-column label="服务器" min-width="110" show-overflow-tooltip><template #default="{ row }">{{ nodeName(row.node_id) }}</template></el-table-column>
+              <el-table-column label="处理方式" width="88" align="center">
                 <template #default="{ row }">
-                  <el-tag v-if="row.action" :type="row.action === 'accept' ? 'success' : 'danger'">{{ row.action === 'accept' ? '允许' : '拒绝' }}</el-tag>
-                  <span v-else>—</span>
+                  <el-tag v-if="actionLabel(row)" :type="actionLabel(row).type">{{ actionLabel(row).text }}</el-tag>
+                  <span v-else class="subtle">—</span>
                 </template>
               </el-table-column>
-              <el-table-column label="协议" width="80"><template #default="{ row }">{{ row.protocol || '—' }}</template></el-table-column>
-              <el-table-column label="端口" width="80"><template #default="{ row }">{{ row.port || '—' }}</template></el-table-column>
-              <el-table-column label="来源地址范围 / IP 归属地" min-width="220">
+              <el-table-column label="协议 / 端口" width="96" align="center">
+                <template #default="{ row }">{{ row.protocol ? `${row.protocol} ${row.port}` : '—' }}</template>
+              </el-table-column>
+              <el-table-column label="来源地址范围 / IP 归属地" min-width="200" show-overflow-tooltip>
                 <template #default="{ row }">
-                  <template v-if="row.automatic">
-                    <div>其余未被允许的来源</div>
-                    <div class="subtle">由上方的允许规则自动产生</div>
-                  </template>
-                  <template v-else-if="row.managed">
-                    <div class="mono">{{ row.cidr || '所有来源' }}</div>
-                    <div class="subtle">{{ row.location || '未知' }}</div>
-                  </template>
-                  <span v-else class="mono">{{ row.raw }}</span>
+                  <span class="mono">{{ row.cidr || '所有来源' }}</span>
+                  <span v-if="row.cidr" class="subtle"> · {{ row.location || '未知' }}</span>
                 </template>
               </el-table-column>
-              <el-table-column label="所在表 / 链" min-width="160" show-overflow-tooltip>
-                <template #default="{ row }"><span class="subtle">{{ row.table || '—' }} / {{ row.chain || '—' }}</span></template>
+              <el-table-column label="规则内容" min-width="220" show-overflow-tooltip>
+                <template #default="{ row }"><span class="mono">{{ row.raw }}</span></template>
               </el-table-column>
-              <el-table-column label="操作" width="100" class-name="action-column">
+              <el-table-column label="所在位置" min-width="130" show-overflow-tooltip>
+                <template #default="{ row }"><span class="subtle">{{ [row.family, row.table, row.chain].filter(Boolean).join(' / ') || '—' }}</span></template>
+              </el-table-column>
+              <el-table-column label="操作" width="84" class-name="action-column">
                 <template #default="{ row }">
                   <el-button
-                    v-if="isAdmin && row.managed && !row.automatic" link type="danger" :icon="Delete"
+                    v-if="isAdmin && (row.handle || row.raw)" link type="danger" :icon="Delete"
                     :loading="saving" @click="removeFirewall(row)"
                   >删除</el-button>
-                  <span v-else class="subtle">仅查看</span>
+                  <span v-else class="subtle">—</span>
                 </template>
               </el-table-column>
             </PagedTable>

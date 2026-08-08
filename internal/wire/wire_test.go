@@ -42,7 +42,8 @@ func TestHandshakeAndFraming(t *testing.T) {
 	}
 
 	// Small message.
-	st := Status{AgentVersion: "dev", OS: "linux", Architecture: "arm64", SingBoxConfigHash: "singbox-hash", NginxConfigHash: "nginx-hash", Capabilities: map[string]string{"systemd": "true"}}
+	st := Status{AgentVersion: "dev", OS: "linux", Architecture: "arm64", SingBoxConfigHash: "singbox-hash", NginxConfigHash: "nginx-hash", Capabilities: map[string]string{"systemd": "true"},
+		ForeignStreamListens: []StreamListen{{Address: "0.0.0.0", Port: 443, File: "/etc/nginx/nginx.conf"}}}
 	body, err := Encode(st)
 	if err != nil {
 		t.Fatal(err)
@@ -65,6 +66,9 @@ func TestHandshakeAndFraming(t *testing.T) {
 	}
 	if gotSt.AgentVersion != "dev" || gotSt.SingBoxConfigHash != "singbox-hash" || gotSt.NginxConfigHash != "nginx-hash" || gotSt.Capabilities["systemd"] != "true" {
 		t.Fatalf("unexpected decoded status: %#v", gotSt)
+	}
+	if len(gotSt.ForeignStreamListens) != 1 || gotSt.ForeignStreamListens[0] != (StreamListen{Address: "0.0.0.0", Port: 443, File: "/etc/nginx/nginx.conf"}) {
+		t.Fatalf("unexpected decoded foreign stream listens: %#v", gotSt.ForeignStreamListens)
 	}
 
 	// Large message spanning multiple Noise chunks (bigger than

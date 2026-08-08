@@ -28,8 +28,8 @@ func TestFirewallAnswersCarryTheSourceLocation(t *testing.T) {
 	answer, err := json.Marshal(map[string]any{
 		"available": true, "tool": "nftables",
 		"rules": []map[string]any{
-			{"managed": true, "action": "accept", "protocol": "tcp", "port": 443, "cidr": "8.8.8.8/32", "table": "inet polaris", "chain": "input"},
-			{"managed": false, "table": "inet filter", "chain": "input", "raw": "ct state established accept"},
+			{"family": "inet", "table": "polaris", "chain": "input", "handle": "7", "action": "accept", "protocol": "tcp", "port": 443, "cidr": "8.8.8.8/32", "raw": "ip saddr 8.8.8.8 tcp dport 443 accept"},
+			{"family": "inet", "table": "filter", "chain": "input", "handle": "21", "raw": "meta l4proto tcp ip saddr @blocked drop"},
 		},
 	})
 	if err != nil {
@@ -40,12 +40,13 @@ func TestFirewallAnswersCarryTheSourceLocation(t *testing.T) {
 		t.Fatalf("unexpected answer: %#v", node)
 	}
 	if node.Rules[0].NodeID != "node-1" || !strings.Contains(node.Rules[0].Location, "United States") {
-		t.Fatalf("a managed rule lost its source location: %#v", node.Rules[0])
+		t.Fatalf("a rule lost its source location: %#v", node.Rules[0])
 	}
-	// A rule the platform did not write keeps the host's own wording and is
-	// never presented as something the console may rewrite.
-	if node.Rules[1].Managed || node.Rules[1].Raw == "" {
-		t.Fatalf("an external rule was misreported: %#v", node.Rules[1])
+	// A rule the node could not make sense of is still carried through with the
+	// handle that lets an operator delete it — nothing a server enforces is
+	// hidden just because it was not recognized.
+	if node.Rules[1].Raw == "" || node.Rules[1].Handle != "21" {
+		t.Fatalf("an unrecognized rule was misreported: %#v", node.Rules[1])
 	}
 }
 

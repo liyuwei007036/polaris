@@ -23,8 +23,12 @@ type Status struct {
 	SingBox           string
 	SingBoxConfigHash string
 	NginxConfigHash   string
-	Capabilities      map[string]any
-	Metrics           MetricReport
+	// ForeignStreamListens are the TCP sockets bound by Nginx stream
+	// configuration polaris does not manage, so the master can refuse to save
+	// a service onto one of them instead of deploying into a certain failure.
+	ForeignStreamListens []wire.StreamListen
+	Capabilities         map[string]any
+	Metrics              MetricReport
 }
 
 // MetricReport deliberately separates host-interface counters from
@@ -132,12 +136,13 @@ type TaskHandler func(context.Context, Task) TaskResult
 func DefaultStatus(singBoxVersion, dataDir string) Status {
 	singBoxConfigHash, _ := configurationFileHash(managedSingBoxConfig)
 	return Status{
-		AgentVersion:      version.Version,
-		OS:                runtime.GOOS,
-		Architecture:      runtime.GOARCH,
-		SingBox:           singBoxVersion,
-		SingBoxConfigHash: singBoxConfigHash,
-		NginxConfigHash:   reportedNginxConfigurationHash(dataDir),
+		AgentVersion:         version.Version,
+		OS:                   runtime.GOOS,
+		Architecture:         runtime.GOARCH,
+		SingBox:              singBoxVersion,
+		SingBoxConfigHash:    singBoxConfigHash,
+		NginxConfigHash:      reportedNginxConfigurationHash(dataDir),
+		ForeignStreamListens: collectForeignStreamListens(),
 		Capabilities: map[string]any{
 			"systemd": runtime.GOOS == "linux", "control_channel": "noise-tcp", "configuration_hashes": true,
 		},
@@ -342,19 +347,20 @@ func toWireStatus(local Status) wire.Status {
 		caps[k] = fmt.Sprint(v)
 	}
 	st := wire.Status{
-		CollectedAt:       local.Metrics.CollectedAt,
-		AgentVersion:      local.AgentVersion,
-		OS:                local.OS,
-		Architecture:      local.Architecture,
-		SingBoxVersion:    local.SingBox,
-		SingBoxConfigHash: local.SingBoxConfigHash,
-		NginxConfigHash:   local.NginxConfigHash,
-		Capabilities:      caps,
-		HealthStatus:      local.Metrics.Health.Status,
-		HealthMessage:     local.Metrics.Health.Message,
-		SingBoxService:    local.Metrics.Health.SingBoxService,
-		ClashAPIAvailable: local.Metrics.Health.ClashAPIAvailable,
-		TrafficAvailable:  local.Metrics.Health.TrafficAvailable,
+		CollectedAt:          local.Metrics.CollectedAt,
+		AgentVersion:         local.AgentVersion,
+		OS:                   local.OS,
+		Architecture:         local.Architecture,
+		SingBoxVersion:       local.SingBox,
+		SingBoxConfigHash:    local.SingBoxConfigHash,
+		NginxConfigHash:      local.NginxConfigHash,
+		ForeignStreamListens: local.ForeignStreamListens,
+		Capabilities:         caps,
+		HealthStatus:         local.Metrics.Health.Status,
+		HealthMessage:        local.Metrics.Health.Message,
+		SingBoxService:       local.Metrics.Health.SingBoxService,
+		ClashAPIAvailable:    local.Metrics.Health.ClashAPIAvailable,
+		TrafficAvailable:     local.Metrics.Health.TrafficAvailable,
 	}
 	if local.Metrics.Node != nil {
 		st.HasNodeTotals = true

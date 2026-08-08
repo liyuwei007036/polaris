@@ -103,6 +103,18 @@ func GroupName(address string, port uint16) string {
 	return "polaris_" + strings.NewReplacer(".", "_", ":", "_").Replace(address) + "_" + strconv.Itoa(int(port))
 }
 
+// NormalizeListenAddress maps the spellings of an Nginx listen address that
+// bind the same socket onto one form, so two listen directives can be compared
+// for the exact "duplicate address and port pair" nginx -t rejects. A bare
+// port, "*" and "0.0.0.0" all bind the IPv4 wildcard.
+func NormalizeListenAddress(address string) string {
+	address = strings.Trim(strings.TrimSpace(address), "[]")
+	if address == "" || address == "*" {
+		return "0.0.0.0"
+	}
+	return address
+}
+
 func Marker(groupName string) string {
 	return "    # polaris-passthrough:" + groupName + "\n"
 }

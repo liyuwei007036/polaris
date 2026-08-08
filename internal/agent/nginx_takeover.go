@@ -7,11 +7,14 @@ import (
 	"net"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/liyuwei007036/polaris/internal/nginxroute"
+	"github.com/liyuwei007036/polaris/internal/wire"
 )
 
 // nginxSiteEdit is a site file rewritten to free a port, kept together with its
@@ -291,6 +294,30 @@ func takeOverSummary(edits []nginxSiteEdit) string {
 	return strings.Join(summaries, "；")
 }
 
+// managedListens reads the normalized address and port pairs the compiled
+// router configuration binds. File stays empty: these are polaris's own.
+func managedListens(configuration string) []wire.StreamListen {
+	var listens []wire.StreamListen
+	seen := map[wire.StreamListen]bool{}
+	for _, raw := range strings.Split(configuration, "\n") {
+		line := strings.TrimSpace(strings.SplitN(raw, "#", 2)[0])
+		if !strings.HasPrefix(line, "listen ") {
+			continue
+		}
+		argument := strings.Fields(strings.TrimSuffix(strings.TrimPrefix(line, "listen "), ";"))
+		if len(argument) == 0 {
+			continue
+		}
+		address, port, ok := nginxListenAddressPort(argument[0])
+		if !ok || seen[wire.StreamListen{Address: address, Port: port}] {
+			continue
+		}
+		seen[wire.StreamListen{Address: address, Port: port}] = true
+		listens = append(listens, wire.StreamListen{Address: address, Port: port})
+	}
+	return listens
+}
+
 // managedListenPorts reads the ports the compiled router configuration binds.
 func managedListenPorts(configuration string) []uint16 {
 	var ports []uint16
@@ -337,6 +364,159 @@ func loopbackPortFree(port uint16) bool {
 		return false
 	}
 	return listener.Close() == nil
+}
+
+// nginxForeignStreamListens finds the TCP listens declared by stream server
+// blocks polaris does not manage, given the output of `nginx -T`. A stream
+// block cannot be moved aside the way an http site can, so a listen equal to
+// one the compiled router binds makes `nginx -t` reject the whole merged
+// configuration ("duplicate address and port pair").
+//
+// `nginx -T` prints included files verbatim at the top level, so a server
+// block is recognized as stream in two ways: it sits inside a literal stream
+// context, or its file lives in polaris's own stream include directory —
+// where an operator may have dropped a file of their own next to polaris's.
+func nginxForeignStreamListens(dump string) []wire.StreamListen {
+	// Nginx reports its files with forward slashes on every platform.
+	managedFile := filepath.ToSlash(managedNginxConfig)
+	streamDirectory := path.Dir(managedFile) + "/"
+	var listens []wire.StreamListen
+	seen := map[wire.StreamListen]bool{}
+	file := ""
+	depth := 0
+	contexts := map[int]string{}
+	inStreamServer := false
+	serverDepth := 0
+	for _, raw := range strings.Split(dump, "\n") {
+		if marker := strings.TrimPrefix(raw, "# configuration file "); marker != raw {
+			file = strings.TrimSuffix(strings.TrimSpace(marker), ":")
+			continue
+		}
+		line := strings.TrimSpace(strings.SplitN(raw, "#", 2)[0])
+		if line == "" {
+			continue
+		}
+		if strings.HasPrefix(line, "}") {
+			if inStreamServer && depth == serverDepth {
+				inStreamServer = false
+			}
+			delete(contexts, depth)
+			depth--
+			continue
+		}
+		if strings.HasSuffix(line, "{") {
+			name := strings.Fields(strings.TrimSuffix(line, "{"))
+			depth++
+			if len(name) > 0 {
+				contexts[depth] = name[0]
+			}
+			if len(name) > 0 && name[0] == "server" && !inStreamServer &&
+				(contexts[depth-1] == "stream" || (depth == 1 && strings.HasPrefix(file, streamDirectory) && file != managedFile)) {
+				inStreamServer = true
+				serverDepth = depth
+			}
+			continue
+		}
+		if !inStreamServer || file == managedFile {
+			continue
+		}
+		fields := strings.Fields(strings.TrimSuffix(line, ";"))
+		if len(fields) < 2 || fields[0] != "listen" {
+			continue
+		}
+		if streamListenIsUDP(fields[2:]) {
+			continue
+		}
+		address, port, ok := nginxListenAddressPort(fields[1])
+		if !ok {
+			continue
+		}
+		listen := wire.StreamListen{Address: address, Port: port, File: file}
+		if seen[listen] {
+			continue
+		}
+		seen[listen] = true
+		listens = append(listens, listen)
+	}
+	return listens
+}
+
+func streamListenIsUDP(options []string) bool {
+	for _, option := range options {
+		if option == "udp" {
+			return true
+		}
+	}
+	return false
+}
+
+// nginxListenAddressPort splits a listen directive's first argument into a
+// normalized address and port. A bare port binds the IPv4 wildcard; a unix:
+// socket has no port and reports false.
+func nginxListenAddressPort(argument string) (string, uint16, bool) {
+	host := ""
+	if index := strings.LastIndex(argument, ":"); index >= 0 {
+		host = argument[:index]
+		argument = argument[index+1:]
+	}
+	port, err := strconv.ParseUint(argument, 10, 16)
+	if err != nil {
+		return "", 0, false
+	}
+	return nginxroute.NormalizeListenAddress(host), uint16(port), true
+}
+
+// collectForeignStreamListens reads the stream listens currently declared by
+// Nginx configuration polaris does not manage, for the heartbeat. The master
+// uses them to refuse saving a service onto a socket that could never deploy.
+func collectForeignStreamListens() []wire.StreamListen {
+	if strings.TrimSpace(os.Getenv("POLARIS_E2E_ROOT")) != "" {
+		return nil
+	}
+	if _, err := exec.LookPath("nginx"); err != nil {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	dump, err := exec.CommandContext(ctx, "nginx", "-T").CombinedOutput()
+	if err != nil {
+		return nil
+	}
+	return nginxForeignStreamListens(string(dump))
+}
+
+// foreignStreamConflicts names the stream listens in the node's own Nginx
+// configuration that collide with what the compiled router is about to bind.
+// Deploying anyway only makes `nginx -t` reject the merged configuration and
+// roll back; this check turns that into a message naming the file to fix.
+func foreignStreamConflicts(ctx context.Context, configuration string) []string {
+	if strings.TrimSpace(os.Getenv("POLARIS_E2E_ROOT")) != "" {
+		return nil
+	}
+	dump, err := exec.CommandContext(ctx, "nginx", "-T").CombinedOutput()
+	if err != nil {
+		return nil
+	}
+	return streamConflictSummaries(configuration, nginxForeignStreamListens(string(dump)))
+}
+
+func streamConflictSummaries(configuration string, foreign []wire.StreamListen) []string {
+	var conflicts []string
+	reported := map[string]bool{}
+	for _, managed := range managedListens(configuration) {
+		for _, listen := range foreign {
+			if listen.Port != managed.Port || listen.Address != managed.Address {
+				continue
+			}
+			message := "TCP/" + strconv.Itoa(int(listen.Port)) + " 已被 Nginx 配置文件 " + listen.File + " 中的 stream 服务占用"
+			if reported[message] {
+				continue
+			}
+			reported[message] = true
+			conflicts = append(conflicts, message)
+		}
+	}
+	return conflicts
 }
 
 // foreignPortOwners names the processes other than Nginx still holding a port

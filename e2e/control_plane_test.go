@@ -290,12 +290,24 @@ func TestControlPlaneProcessJourneyWithRealAgent(t *testing.T) {
 		t.Fatalf("the whitelist's closing denial is not in force: %#v", firewallListing.Nodes[0].Rules)
 	}
 
+	// Deleting names where a rule sits, not what it says, so any rule on the
+	// server can be removed — including ones this platform never wrote.
+	target := findFirewallRule(firewallListing.Nodes[0], "accept", "tcp", 443, "192.0.2.0/24")
+	if target == nil || target.Handle == "" {
+		t.Fatalf("the rule to delete has no handle: %#v", firewallListing.Nodes[0].Rules)
+	}
 	var firewallAfterDelete nodeFirewallResponse
 	api.mustJSON(t, http.MethodPost, "/api/v1/nodes/"+approval.NodeID+"/firewall/rules", map[string]any{
-		"operation": "delete", "action": "accept", "protocol": "tcp", "cidr": "192.0.2.0/24", "port": 443,
+		"operation": "delete", "family": target.Family, "table": target.Table, "chain": target.Chain,
+		"handle": target.Handle, "raw": target.Raw,
 	}, true, http.StatusOK, &firewallAfterDelete)
 	if hasFirewallRule(firewallAfterDelete, "accept", "tcp", 443, "192.0.2.0/24") {
 		t.Fatalf("the deleted access limit is still in force: %#v", firewallAfterDelete.Rules)
+	}
+	// The closing denial is a rule like any other and stays until it too is
+	// removed; nothing else may disappear along with the rule that was deleted.
+	if !hasFirewallRule(firewallAfterDelete, "drop", "tcp", 443, "") {
+		t.Fatalf("deleting one rule removed another: %#v", firewallAfterDelete.Rules)
 	}
 
 	api.mustJSON(t, http.MethodPost, "/api/v1/nodes/"+approval.NodeID+"/fail2ban/jails", map[string]any{
@@ -305,7 +317,15 @@ func TestControlPlaneProcessJourneyWithRealAgent(t *testing.T) {
 	assertFileExists(t, filepath.Join(managedRoot, "etc", "fail2ban", "jail.d", "polaris.local"))
 	commandInvocations = readFile(t, commandLog)
 	for _, expected := range []string{
-		"nginx -t", "systemctl reload nginx.service", "nft -c -f", "nft -f",
+		"nginx -t", "systemctl reload nginx.service",
+		// The firewall is changed rule by rule on the running kernel and read
+		// back with handles, rather than by replacing a table wholesale from a
+		// copy of what the console believed was there.
+		"nft add rule inet polaris input ip saddr 192.0.2.0/24 tcp dport 443 accept",
+		"nft -a list ruleset", "nft delete rule inet polaris input handle",
+		// An allowance is only meaningful once everything else on that port is
+		// refused, so the closing denial has to reach the kernel too.
+		"nft add rule inet polaris input tcp dport 443 drop",
 		// Fail2Ban is restarted, not reloaded: a reload re-reads the jails but
 		// never runs a ban action's actionstart, so the nftables table the
 		// bans go into is never created and nothing is actually blocked.
@@ -408,26 +428,35 @@ type taskResponse struct {
 
 // nodeFirewallResponse is what one server reports about its own firewall.
 type nodeFirewallResponse struct {
-	NodeID    string `json:"node_id"`
-	Available bool   `json:"available"`
-	Error     string `json:"error"`
-	Rules     []struct {
-		Managed   bool   `json:"managed"`
-		Action    string `json:"action"`
-		Protocol  string `json:"protocol"`
-		Port      uint16 `json:"port"`
-		CIDR      string `json:"cidr"`
-		Automatic bool   `json:"automatic"`
-	} `json:"rules"`
+	NodeID    string             `json:"node_id"`
+	Available bool               `json:"available"`
+	Error     string             `json:"error"`
+	Rules     []firewallRuleView `json:"rules"`
+}
+
+type firewallRuleView struct {
+	Family   string `json:"family"`
+	Table    string `json:"table"`
+	Chain    string `json:"chain"`
+	Handle   string `json:"handle"`
+	Action   string `json:"action"`
+	Protocol string `json:"protocol"`
+	Port     uint16 `json:"port"`
+	CIDR     string `json:"cidr"`
+	Raw      string `json:"raw"`
 }
 
 func hasFirewallRule(node nodeFirewallResponse, action, protocol string, port uint16, cidr string) bool {
-	for _, rule := range node.Rules {
-		if rule.Managed && rule.Action == action && rule.Protocol == protocol && rule.Port == port && rule.CIDR == cidr {
-			return true
+	return findFirewallRule(node, action, protocol, port, cidr) != nil
+}
+
+func findFirewallRule(node nodeFirewallResponse, action, protocol string, port uint16, cidr string) *firewallRuleView {
+	for index, rule := range node.Rules {
+		if rule.Action == action && rule.Protocol == protocol && rule.Port == port && rule.CIDR == cidr {
+			return &node.Rules[index]
 		}
 	}
-	return false
+	return nil
 }
 
 type quickListenerResponse struct {

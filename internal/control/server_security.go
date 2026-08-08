@@ -14,19 +14,21 @@ import (
 // exists in a record but not in a kernel protects nobody, which is exactly what
 // showing stored rules used to hide.
 
-// LiveFirewallRule is one rule a node reports as being in force.
+// LiveFirewallRule is one rule a node reports as being in force. Raw is the
+// server's own wording; the rest is what could be made out of it, and stays
+// empty for a rule shaped in a way the node's parser does not recognize.
 type LiveFirewallRule struct {
-	NodeID    string `json:"node_id"`
-	Managed   bool   `json:"managed"`
-	Table     string `json:"table,omitempty"`
-	Chain     string `json:"chain,omitempty"`
-	Action    string `json:"action,omitempty"`
-	Protocol  string `json:"protocol,omitempty"`
-	Port      uint16 `json:"port,omitempty"`
-	CIDR      string `json:"cidr,omitempty"`
-	Location  string `json:"location,omitempty"`
-	Automatic bool   `json:"automatic,omitempty"`
-	Raw       string `json:"raw,omitempty"`
+	NodeID   string `json:"node_id"`
+	Family   string `json:"family,omitempty"`
+	Table    string `json:"table,omitempty"`
+	Chain    string `json:"chain,omitempty"`
+	Handle   string `json:"handle,omitempty"`
+	Action   string `json:"action,omitempty"`
+	Protocol string `json:"protocol,omitempty"`
+	Port     uint16 `json:"port,omitempty"`
+	CIDR     string `json:"cidr,omitempty"`
+	Location string `json:"location,omitempty"`
+	Raw      string `json:"raw"`
 }
 
 // nodeFirewall is one node's answer, including the reason there is none.
@@ -71,15 +73,15 @@ type agentFirewall struct {
 	Available bool `json:"available"`
 	Tool      string `json:"tool"`
 	Rules     []struct {
-		Managed   bool   `json:"managed"`
-		Table     string `json:"table"`
-		Chain     string `json:"chain"`
-		Action    string `json:"action"`
-		Protocol  string `json:"protocol"`
-		Port      uint16 `json:"port"`
-		CIDR      string `json:"cidr"`
-		Automatic bool   `json:"automatic"`
-		Raw       string `json:"raw"`
+		Family   string `json:"family"`
+		Table    string `json:"table"`
+		Chain    string `json:"chain"`
+		Handle   string `json:"handle"`
+		Action   string `json:"action"`
+		Protocol string `json:"protocol"`
+		Port     uint16 `json:"port"`
+		CIDR     string `json:"cidr"`
+		Raw      string `json:"raw"`
 	} `json:"rules"`
 	Truncated bool   `json:"truncated"`
 	Error     string `json:"error"`
@@ -144,6 +146,14 @@ func (s *Server) changeFirewallRule(w http.ResponseWriter, r *http.Request) {
 		Protocol  string `json:"protocol"`
 		Port      uint16 `json:"port"`
 		CIDR      string `json:"cidr"`
+		// A deletion names the rule's place in the ruleset rather than its
+		// contents: two rules can read identically, and the server has to
+		// remove the one the operator is looking at.
+		Family string `json:"family"`
+		Table  string `json:"table"`
+		Chain  string `json:"chain"`
+		Handle string `json:"handle"`
+		Raw    string `json:"raw"`
 	}
 	if !decodeJSON(w, r, &input) {
 		return
@@ -153,16 +163,22 @@ func (s *Server) changeFirewallRule(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	input.CIDR = strings.TrimSpace(input.CIDR)
-	if input.CIDR != "" {
+	if input.Operation == "add" && input.CIDR != "" {
 		if _, _, err := net.ParseCIDR(input.CIDR); err != nil {
 			writeError(w, userErrorf("来源地址范围无效，请使用类似 192.168.1.0/24 的写法"))
 			return
 		}
 	}
+	if input.Operation == "delete" && input.Handle == "" && input.Raw == "" {
+		writeError(w, userErrorf("这条规则缺少位置信息，无法删除"))
+		return
+	}
 	payload, err := json.Marshal(map[string]any{
 		"operation": input.Operation,
 		"rule": map[string]any{
 			"action": input.Action, "protocol": input.Protocol, "port": input.Port, "cidr": input.CIDR,
+			"family": input.Family, "table": input.Table, "chain": input.Chain,
+			"handle": input.Handle, "raw": input.Raw,
 		},
 	})
 	if err != nil {
@@ -366,9 +382,9 @@ func (s *Server) decodeNodeFirewall(nodeID string, answer liveAnswer) nodeFirewa
 	node.Available, node.Tool, node.Truncated, node.Error = reported.Available, reported.Tool, reported.Truncated, reported.Error
 	for _, rule := range reported.Rules {
 		node.Rules = append(node.Rules, LiveFirewallRule{
-			NodeID: nodeID, Managed: rule.Managed, Table: rule.Table, Chain: rule.Chain,
+			NodeID: nodeID, Family: rule.Family, Table: rule.Table, Chain: rule.Chain, Handle: rule.Handle,
 			Action: rule.Action, Protocol: rule.Protocol, Port: rule.Port, CIDR: rule.CIDR,
-			Location: s.ipLocator.LocateCIDR(rule.CIDR), Automatic: rule.Automatic, Raw: rule.Raw,
+			Location: s.ipLocator.LocateCIDR(rule.CIDR), Raw: rule.Raw,
 		})
 	}
 	return node

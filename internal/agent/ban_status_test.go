@@ -58,22 +58,3 @@ func TestUnbanRejectsUnsafeInput(t *testing.T) {
 		t.Fatalf("accepted a payload whose hash does not match: %#v", result)
 	}
 }
-
-func TestNftablesRulesReportOnlyWhatMatchesTraffic(t *testing.T) {
-	live := &LiveFirewall{Available: true, Tool: "nftables"}
-	listing := "# Warning: table ip filter is managed by iptables-nft, do not touch!\ntable inet filter {\n\tchain input {\n\t\ttype filter hook input priority 0; policy drop;\n\t\tct state established accept\n\t}\n}\n"
-	if truncated := appendNftablesTableRules(live, "inet filter", listing, false); truncated {
-		t.Fatal("a one-rule table should not reach the cap")
-	}
-	// The owner comment and the chain's type/hook/policy header match no
-	// traffic, so only the one real rule is reported.
-	if len(live.Rules) != 1 {
-		t.Fatalf("unexpected rules: %#v", live.Rules)
-	}
-	if live.Rules[0].Chain != "input" || live.Rules[0].Raw != "ct state established accept" {
-		t.Fatalf("rule was not attributed to its chain: %#v", live.Rules[0])
-	}
-	if live.Rules[0].Managed {
-		t.Fatal("a rule outside the managed table must not be reported as managed")
-	}
-}

@@ -283,15 +283,57 @@ func TestSharedPortInboundCreatesMultipleUsersAndNginxRoutes(t *testing.T) {
 			t.Fatalf("automatic route name was not updated: %#v", route)
 		}
 	}
+	// Editing the port moves a managed listener off its shared port: it leaves
+	// the SNI group and binds the free port directly, and the Nginx setup is
+	// re-applied for the group it left.
 	editedSecond.Port = 444
 	portEdit := request(t, http.MethodPut, httpServer.URL+"/api/v1/listeners/"+secondListener.ID, editedSecond, session, csrfToken)
-	if portEdit.StatusCode != http.StatusBadRequest {
+	if portEdit.StatusCode != http.StatusOK {
 		t.Fatalf("managed port edit status = %d", portEdit.StatusCode)
 	}
-	var portEditError map[string]string
-	decodeBody(t, portEdit, &portEditError)
-	if !strings.Contains(portEditError["error"], "系统自动分配") {
-		t.Fatalf("managed port edit error = %#v", portEditError)
+	if portEdit.Header.Get("X-SB-Auto-Apply-Nginx-Task") == "" {
+		t.Fatal("moving off the shared port did not queue the Nginx task")
+	}
+	var movedSecond control.Listener
+	decodeBody(t, portEdit, &movedSecond)
+	if movedSecond.Port != 444 || movedSecond.BackendPort != 444 || movedSecond.ListenAddr != "0.0.0.0" {
+		t.Fatalf("listener moved off the shared port = %#v", movedSecond)
+	}
+	routes, err = store.ListIngressRoutes(t.Context(), nodeID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(routes) != 1 || routes[0].ListenerID != first.Listener.ID {
+		t.Fatalf("routes after leaving the shared port = %#v", routes)
+	}
+	// Moving back onto the contended port joins the SNI group again, with a
+	// fresh internal port and route.
+	editedSecond.Port = 443
+	backEdit := request(t, http.MethodPut, httpServer.URL+"/api/v1/listeners/"+secondListener.ID, editedSecond, session, csrfToken)
+	if backEdit.StatusCode != http.StatusOK {
+		t.Fatalf("move back onto the shared port status = %d", backEdit.StatusCode)
+	}
+	if backEdit.Header.Get("X-SB-Auto-Apply-Nginx-Task") == "" {
+		t.Fatal("rejoining the shared port did not queue the Nginx task")
+	}
+	var rejoinedSecond control.Listener
+	decodeBody(t, backEdit, &rejoinedSecond)
+	if rejoinedSecond.Port != 443 || rejoinedSecond.BackendPort == 443 || rejoinedSecond.ListenAddr != "127.0.0.1" {
+		t.Fatalf("listener rejoining the shared port = %#v", rejoinedSecond)
+	}
+	routes, err = store.ListIngressRoutes(t.Context(), nodeID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(routes) != 2 {
+		t.Fatalf("routes after rejoining the shared port = %#v", routes)
+	}
+	routeByListener = map[string]control.IngressRoute{}
+	for _, route := range routes {
+		routeByListener[route.ListenerID] = route
+	}
+	if routeByListener[second.Listener.ID].SNI != "reality-b-new.example.com" {
+		t.Fatalf("rejoined route = %#v", routeByListener[second.Listener.ID])
 	}
 
 	duplicateDomain := request(t, http.MethodPost, httpServer.URL+"/api/v1/listeners/quick", map[string]any{
@@ -334,7 +376,11 @@ func TestSharedPortInboundCreatesMultipleUsersAndNginxRoutes(t *testing.T) {
 	if udp.StatusCode != http.StatusCreated || udp.Header.Get("X-SB-Auto-Apply-Nginx-Task") != "" {
 		t.Fatalf("TCP and UDP coexistence status = %d, automatic route task = %q", udp.StatusCode, udp.Header.Get("X-SB-Auto-Apply-Nginx-Task"))
 	}
-	udp.Body.Close()
+	var udpCreated struct {
+		Listener control.Listener `json:"listener"`
+	}
+	decodeBody(t, udp, &udpCreated)
+
 	secondUDP := request(t, http.MethodPost, httpServer.URL+"/api/v1/listeners/quick", map[string]any{
 		"listener": map[string]any{
 			"node_id": nodeID, "name": "重复 UDP 443", "port": 443, "enabled": true,
@@ -349,6 +395,30 @@ func TestSharedPortInboundCreatesMultipleUsersAndNginxRoutes(t *testing.T) {
 	decodeBody(t, secondUDP, &udpError)
 	if !strings.Contains(udpError["error"], "UDP") || !strings.Contains(udpError["error"], "其他端口") {
 		t.Fatalf("duplicate UDP error = %#v", udpError)
+	}
+	// A listener alone on its port moves ports directly: sing-box is
+	// re-applied and no Nginx work is queued because no route is involved.
+	renamedUDP := udpCreated.Listener
+	renamedUDP.Name = "UDP 443 · 改名"
+	renameEdit := request(t, http.MethodPut, httpServer.URL+"/api/v1/listeners/"+udpCreated.Listener.ID, renamedUDP, session, csrfToken)
+	if renameEdit.StatusCode != http.StatusOK {
+		t.Fatalf("rename without port change status = %d", renameEdit.StatusCode)
+	}
+	renameEdit.Body.Close()
+	movedUDP := renamedUDP
+	movedUDP.Port = 8443
+	movedUDP.BackendPort = 0
+	directPortEdit := request(t, http.MethodPut, httpServer.URL+"/api/v1/listeners/"+udpCreated.Listener.ID, movedUDP, session, csrfToken)
+	if directPortEdit.StatusCode != http.StatusOK {
+		t.Fatalf("direct listener port edit status = %d", directPortEdit.StatusCode)
+	}
+	if directPortEdit.Header.Get("X-SB-Auto-Apply-Nginx-Task") != "" {
+		t.Fatal("moving an unrouted listener queued an Nginx task")
+	}
+	var movedUDPListener control.Listener
+	decodeBody(t, directPortEdit, &movedUDPListener)
+	if movedUDPListener.Port != 8443 || movedUDPListener.BackendPort != 8443 || movedUDPListener.ListenAddr != "0.0.0.0" {
+		t.Fatalf("moved UDP listener = %#v", movedUDPListener)
 	}
 	nginx, _, err := store.CompileNodeNginx(t.Context(), nodeID)
 	if err != nil {

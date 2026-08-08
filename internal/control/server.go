@@ -59,6 +59,13 @@ type Server struct {
 	reconcileState         map[string]reconcileAttempt
 	taskWaitMu             sync.Mutex
 	taskWaiters            map[string]chan wire.TaskResult
+	// foreignStreamListens is each connected node's report of the Nginx stream
+	// sockets polaris does not manage. Saving a service onto one of these is
+	// refused up front: the compiled router configuration could only fail
+	// `nginx -t` on the node. Cleared when the node's session ends, so a stale
+	// report can never block a save after the operator fixes their Nginx.
+	foreignStreamMu      sync.Mutex
+	foreignStreamListens map[string][]wire.StreamListen
 }
 
 // listenerNameCacheTTL bounds how stale a resolved listener name may be in
@@ -96,6 +103,7 @@ func NewServer(store *Store, secureCookies bool) (*Server, error) {
 		latestSingBoxReleaseFn: LatestOfficialSingBoxRelease,
 		connHub:                newConnectionsHub(), liveHub: newLiveHub(), ipLocator: ipLocator,
 		connectionsInterval:    DefaultConnectionsInterval,
+		foreignStreamListens:   make(map[string][]wire.StreamListen),
 	}, nil
 }
 
@@ -1340,6 +1348,12 @@ func (s *Server) createListener(w http.ResponseWriter, r *http.Request) {
 	if !decodeJSON(w, r, &listener) {
 		return
 	}
+	if listener.Spec.Network == "tcp" {
+		if err := s.refuseForeignStreamPort(listener.NodeID, listener.ListenAddr, listener.Port); err != nil {
+			writeError(w, err)
+			return
+		}
+	}
 	automaticRealityKeyID, err := s.prepareAutomaticReality(r.Context(), &listener)
 	if err != nil {
 		writeError(w, err)
@@ -1384,6 +1398,14 @@ func (s *Server) createListenerWithDefaultAccount(w http.ResponseWriter, r *http
 	}
 	if !decodeJSON(w, r, &input) {
 		return
+	}
+	// The public bind address is system-managed to the wildcard (below), so
+	// that is the socket to check the node's own Nginx against.
+	if input.Listener.Spec.Network == "tcp" {
+		if err := s.refuseForeignStreamPort(input.Listener.NodeID, "0.0.0.0", input.Listener.Port); err != nil {
+			writeError(w, err)
+			return
+		}
 	}
 	automaticRealityKeyID, err := s.prepareAutomaticReality(r.Context(), &input.Listener)
 	if err != nil {
@@ -1489,26 +1511,56 @@ func (s *Server) updateListener(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	listener.ID = r.PathValue("id")
+	if listener.Spec.Network == "tcp" {
+		if err := s.refuseForeignStreamPort(listener.NodeID, listener.ListenAddr, listener.Port); err != nil {
+			writeError(w, err)
+			return
+		}
+	}
 	automaticRealityKeyID, err := s.prepareAutomaticReality(r.Context(), &listener)
 	if err != nil {
 		writeError(w, err)
 		return
 	}
 	defer func() { _ = s.store.DeleteRealityKeyIfUnused(r.Context(), automaticRealityKeyID) }()
-	automaticRoute, err := s.store.prepareAutomaticRouteUpdate(r.Context(), listener)
-	if err != nil {
+	var currentPort uint16
+	if err := s.store.db.QueryRowContext(r.Context(), `SELECT port FROM listeners WHERE id = ?`, listener.ID).Scan(&currentPort); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			writeError(w, ErrNotFound)
+			return
+		}
 		writeError(w, err)
 		return
 	}
-	updated, err := s.store.UpdateListener(r.Context(), listener)
-	if err != nil {
-		writeError(w, err)
-		return
-	}
-	if automaticRoute != nil {
-		if _, err := s.store.UpdateIngressRoute(r.Context(), *automaticRoute); err != nil {
+	// A port change re-runs the automatic placement the listener got when it
+	// was created, then both sing-box and (when routes moved) Nginx are
+	// re-generated and re-applied below.
+	nginxNeeded := false
+	var updated Listener
+	if listener.Port != currentPort {
+		var routingChanged bool
+		updated, routingChanged, err = s.store.RelocateListenerPort(r.Context(), listener)
+		if err != nil {
 			writeError(w, err)
 			return
+		}
+		nginxNeeded = routingChanged
+	} else {
+		automaticRoute, err := s.store.prepareAutomaticRouteUpdate(r.Context(), listener)
+		if err != nil {
+			writeError(w, err)
+			return
+		}
+		updated, err = s.store.UpdateListener(r.Context(), listener)
+		if err != nil {
+			writeError(w, err)
+			return
+		}
+		if automaticRoute != nil {
+			if _, err := s.store.UpdateIngressRoute(r.Context(), *automaticRoute); err != nil {
+				writeError(w, err)
+				return
+			}
 		}
 	}
 	if err := s.store.AppendAudit(r.Context(), operator.ID, "listener.updated", "listener", updated.ID, "listener definition updated"); err != nil {
@@ -1526,7 +1578,7 @@ func (s *Server) updateListener(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
-	if hasIngress {
+	if nginxNeeded || hasIngress {
 		nginxTask, err := s.dispatchNodeNginx(r.Context(), updated.NodeID, operator.ID)
 		if err != nil {
 			writeError(w, err)
@@ -2046,6 +2098,10 @@ func (s *Server) createIngressRoute(w http.ResponseWriter, r *http.Request) {
 	if !decodeJSON(w, r, &route) {
 		return
 	}
+	if err := s.refuseForeignStreamPort(route.NodeID, route.ListenAddress, route.Port); err != nil {
+		writeError(w, err)
+		return
+	}
 	created, err := s.store.CreateIngressRoute(r.Context(), route)
 	if err != nil {
 		writeError(w, err)
@@ -2076,6 +2132,10 @@ func (s *Server) updateIngressRoute(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	route.ID = r.PathValue("id")
+	if err := s.refuseForeignStreamPort(route.NodeID, route.ListenAddress, route.Port); err != nil {
+		writeError(w, err)
+		return
+	}
 	updated, err := s.store.UpdateIngressRoute(r.Context(), route)
 	if err != nil {
 		writeError(w, err)

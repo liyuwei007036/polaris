@@ -63,101 +63,9 @@ func (s *Store) CreateListenerWithAutomaticPortRouting(ctx context.Context, list
 		return Listener{}, nil, false, fmt.Errorf("check listener name conflict: %w", err)
 	}
 
-	existing, err := listenersOnPublicPort(ctx, tx, listener.NodeID, listener.Spec.Network, listener.Port)
+	publicAddress, managed, err := resolveListenerPlacement(ctx, tx, &listener)
 	if err != nil {
 		return Listener{}, nil, false, err
-	}
-	// Managed routes are TCP-only (Nginx stream), so a UDP listener never
-	// competes with them even on the same port number.
-	routedAddress, routedSNIs := "", map[string]string{}
-	if listener.Spec.Network == "tcp" {
-		routedAddress, routedSNIs, err = ingressRoutesOnPort(ctx, tx, listener.NodeID, listener.Port)
-		if err != nil {
-			return Listener{}, nil, false, err
-		}
-	}
-	for index := range existing {
-		// A listener in `existing` gets its SNI recomputed below; drop its own
-		// route so it is not mistaken for a competing one.
-		delete(routedSNIs, existing[index].ID)
-	}
-	// A listener goes behind the managed SNI router only when something else
-	// already holds its public port: another enabled listener, or an Nginx SNI
-	// group already bound to it. Alone on its port it binds that port itself,
-	// so sing-box sees the client's own address rather than the router's
-	// loopback one — the router cannot carry a source address across, and for
-	// Reality there is no protocol layer left that could.
-	//
-	// Two kinds of listener can never be routed: UDP, which the TCP-only
-	// router cannot carry, and a TCP listener with no usable SNI, which has no
-	// ClientHello to be routed by. Either one on a contended port is an error.
-	routeName, routeNameErr := automaticRouteName(listener)
-	contended := len(existing) > 0 || len(routedSNIs) > 0
-	managed := contended && listener.Spec.Network == "tcp" && routeNameErr == nil
-	if contended && !managed {
-		if listener.Spec.Network != "tcp" {
-			return Listener{}, nil, false, userErrorf("端口 %d 已被该服务器上的另一个 UDP 接入服务使用，请选择其他端口", listener.Port)
-		}
-		return Listener{}, nil, false, userErrorf("端口 %d 已被使用；如需自动使用同一端口，TCP 接入服务必须启用 TLS 或 Reality，并使用不同的实际 SNI", listener.Port)
-	}
-	publicAddress := listener.ListenAddr
-	usedPorts, err := occupiedListenerPorts(ctx, tx, listener.NodeID, listener.Spec.Network)
-	if err != nil {
-		return Listener{}, nil, false, err
-	}
-	seenNames := map[string]struct{}{}
-	if managed {
-		seenNames[routeName] = struct{}{}
-		for _, sni := range routedSNIs {
-			if _, duplicate := seenNames[sni]; duplicate {
-				return Listener{}, nil, false, userErrorf("实际 SNI %s 已用于端口 %d；请修改连接域名，Reality 接入请修改目标网站", sni, listener.Port)
-			}
-			seenNames[sni] = struct{}{}
-		}
-		for index := range existing {
-			name, nameErr := automaticRouteName(existing[index])
-			if nameErr != nil {
-				return Listener{}, nil, false, userErrorf("端口 %d 已被“%s”使用，且该服务无法按实际 SNI 自动区分，请启用 TLS 或选择其他端口", listener.Port, existing[index].Name)
-			}
-			if _, duplicate := seenNames[name]; duplicate {
-				return Listener{}, nil, false, userErrorf("实际 SNI %s 已用于端口 %d；请修改连接域名，Reality 接入请修改目标网站", name, listener.Port)
-			}
-			seenNames[name] = struct{}{}
-		}
-
-		if routedAddress != "" {
-			publicAddress = routedAddress
-		} else if len(existing) > 0 {
-			publicAddress = existing[0].ListenAddr
-		}
-		if publicAddress == "127.0.0.1" || publicAddress == "::1" || net.ParseIP(publicAddress) == nil {
-			publicAddress = "0.0.0.0"
-		}
-
-		for index := range existing {
-			if existing[index].BackendPort == existing[index].Port || (existing[index].ListenAddr != "127.0.0.1" && existing[index].ListenAddr != "::1") {
-				backendPort, portErr := takeBackendPort(usedPorts)
-				if portErr != nil {
-					return Listener{}, nil, false, portErr
-				}
-				existing[index].ListenAddr = "127.0.0.1"
-				existing[index].BackendPort = backendPort
-				if _, updateErr := tx.ExecContext(ctx, `UPDATE listeners SET listen_address = '127.0.0.1', backend_port = ?, updated_at = ? WHERE id = ?`, backendPort, nowUnix(), existing[index].ID); updateErr != nil {
-					return Listener{}, nil, false, fmt.Errorf("move existing listener to an internal port: %w", updateErr)
-				}
-			}
-			name, _ := automaticRouteName(existing[index])
-			if err := upsertAutomaticRoute(ctx, tx, existing[index], publicAddress, name); err != nil {
-				return Listener{}, nil, false, err
-			}
-		}
-		listener.ListenAddr = "127.0.0.1"
-		listener.BackendPort, err = takeBackendPort(usedPorts)
-		if err != nil {
-			return Listener{}, nil, false, err
-		}
-	} else if listener.BackendPort == 0 {
-		listener.BackendPort = listener.Port
 	}
 
 	spec, err := json.Marshal(listener.Spec)
@@ -185,6 +93,112 @@ func (s *Store) CreateListenerWithAutomaticPortRouting(ctx context.Context, list
 		return Listener{}, nil, false, err
 	}
 	return listener, route, managed, nil
+}
+
+// resolveListenerPlacement decides how a listener binds its public port and
+// mutates its ListenAddr/BackendPort accordingly: alone on the port it binds
+// it directly, contended it goes behind the managed SNI router, moving the
+// current holders behind the router too. The caller persists the listener row
+// itself and, when managed, creates the listener's own route on the returned
+// public address.
+func resolveListenerPlacement(ctx context.Context, tx *sql.Tx, listener *Listener) (string, bool, error) {
+	existing, err := listenersOnPublicPort(ctx, tx, listener.NodeID, listener.Spec.Network, listener.Port)
+	if err != nil {
+		return "", false, err
+	}
+	// Managed routes are TCP-only (Nginx stream), so a UDP listener never
+	// competes with them even on the same port number.
+	routedAddress, routedSNIs := "", map[string]string{}
+	if listener.Spec.Network == "tcp" {
+		routedAddress, routedSNIs, err = ingressRoutesOnPort(ctx, tx, listener.NodeID, listener.Port)
+		if err != nil {
+			return "", false, err
+		}
+	}
+	for index := range existing {
+		// A listener in `existing` gets its SNI recomputed below; drop its own
+		// route so it is not mistaken for a competing one.
+		delete(routedSNIs, existing[index].ID)
+	}
+	// A listener goes behind the managed SNI router only when something else
+	// already holds its public port: another enabled listener, or an Nginx SNI
+	// group already bound to it. Alone on its port it binds that port itself,
+	// so sing-box sees the client's own address rather than the router's
+	// loopback one — the router cannot carry a source address across, and for
+	// Reality there is no protocol layer left that could.
+	//
+	// Two kinds of listener can never be routed: UDP, which the TCP-only
+	// router cannot carry, and a TCP listener with no usable SNI, which has no
+	// ClientHello to be routed by. Either one on a contended port is an error.
+	routeName, routeNameErr := automaticRouteName(*listener)
+	contended := len(existing) > 0 || len(routedSNIs) > 0
+	managed := contended && listener.Spec.Network == "tcp" && routeNameErr == nil
+	if contended && !managed {
+		if listener.Spec.Network != "tcp" {
+			return "", false, userErrorf("端口 %d 已被该服务器上的另一个 UDP 接入服务使用，请选择其他端口", listener.Port)
+		}
+		return "", false, userErrorf("端口 %d 已被使用；如需自动使用同一端口，TCP 接入服务必须启用 TLS 或 Reality，并使用不同的实际 SNI", listener.Port)
+	}
+	publicAddress := listener.ListenAddr
+	usedPorts, err := occupiedListenerPorts(ctx, tx, listener.NodeID, listener.Spec.Network)
+	if err != nil {
+		return "", false, err
+	}
+	seenNames := map[string]struct{}{}
+	if managed {
+		seenNames[routeName] = struct{}{}
+		for _, sni := range routedSNIs {
+			if _, duplicate := seenNames[sni]; duplicate {
+				return "", false, userErrorf("实际 SNI %s 已用于端口 %d；请修改连接域名，Reality 接入请修改目标网站", sni, listener.Port)
+			}
+			seenNames[sni] = struct{}{}
+		}
+		for index := range existing {
+			name, nameErr := automaticRouteName(existing[index])
+			if nameErr != nil {
+				return "", false, userErrorf("端口 %d 已被“%s”使用，且该服务无法按实际 SNI 自动区分，请启用 TLS 或选择其他端口", listener.Port, existing[index].Name)
+			}
+			if _, duplicate := seenNames[name]; duplicate {
+				return "", false, userErrorf("实际 SNI %s 已用于端口 %d；请修改连接域名，Reality 接入请修改目标网站", name, listener.Port)
+			}
+			seenNames[name] = struct{}{}
+		}
+
+		if routedAddress != "" {
+			publicAddress = routedAddress
+		} else if len(existing) > 0 {
+			publicAddress = existing[0].ListenAddr
+		}
+		if publicAddress == "127.0.0.1" || publicAddress == "::1" || net.ParseIP(publicAddress) == nil {
+			publicAddress = "0.0.0.0"
+		}
+
+		for index := range existing {
+			if existing[index].BackendPort == existing[index].Port || (existing[index].ListenAddr != "127.0.0.1" && existing[index].ListenAddr != "::1") {
+				backendPort, portErr := takeBackendPort(usedPorts)
+				if portErr != nil {
+					return "", false, portErr
+				}
+				existing[index].ListenAddr = "127.0.0.1"
+				existing[index].BackendPort = backendPort
+				if _, updateErr := tx.ExecContext(ctx, `UPDATE listeners SET listen_address = '127.0.0.1', backend_port = ?, updated_at = ? WHERE id = ?`, backendPort, nowUnix(), existing[index].ID); updateErr != nil {
+					return "", false, fmt.Errorf("move existing listener to an internal port: %w", updateErr)
+				}
+			}
+			name, _ := automaticRouteName(existing[index])
+			if err := upsertAutomaticRoute(ctx, tx, existing[index], publicAddress, name); err != nil {
+				return "", false, err
+			}
+		}
+		listener.ListenAddr = "127.0.0.1"
+		listener.BackendPort, err = takeBackendPort(usedPorts)
+		if err != nil {
+			return "", false, err
+		}
+	} else if listener.BackendPort == 0 {
+		listener.BackendPort = listener.Port
+	}
+	return publicAddress, managed, nil
 }
 
 func listenersOnPublicPort(ctx context.Context, tx *sql.Tx, nodeID, network string, port uint16) ([]Listener, error) {
@@ -287,6 +301,109 @@ func automaticRouteName(listener Listener) (string, error) {
 		return "", errors.New("listener TLS SNI is invalid")
 	}
 	return name, nil
+}
+
+// RelocateListenerPort moves an existing listener to a different public port.
+// The listener leaves its old port group — its automatic route is dropped and
+// the remaining members keep the router, the same state deleting it would
+// leave — and is then placed on the new port exactly like a freshly created
+// one: alone it binds the port directly, contended it joins the SNI router.
+// The second return reports whether any automatic route changed, i.e. whether
+// the node's Nginx configuration must be re-applied.
+func (s *Store) RelocateListenerPort(ctx context.Context, listener Listener) (Listener, bool, error) {
+	if listener.ID == "" || listener.NodeID == "" || listener.Name == "" || len(listener.Name) > 128 {
+		return Listener{}, false, errors.New("listener ID, node and a name up to 128 characters are required")
+	}
+	if err := ValidateProtocolSpec(listener.Spec); err != nil {
+		return Listener{}, false, err
+	}
+	listener.Domain = normalizeConnectionDomain(listener.Domain)
+	if err := validateConnectionDomain(listener.Domain); err != nil {
+		return Listener{}, false, err
+	}
+	// How the listener binds the new port is the system's decision, exactly as
+	// it is for a new listener.
+	listener.ListenAddr = "0.0.0.0"
+	listener.BackendPort = 0
+	if err := ValidateListenerAddress(listener.ListenAddr, listener.Port); err != nil {
+		return Listener{}, false, err
+	}
+	if err := ValidateListenerTLS(listener.Spec, listener.Port); err != nil {
+		return Listener{}, false, err
+	}
+	if err := s.ensureOutboundExists(ctx, listener.OutboundID); err != nil {
+		return Listener{}, false, err
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return Listener{}, false, err
+	}
+	defer tx.Rollback()
+	var existingNode, existingProtocol string
+	err = tx.QueryRowContext(ctx, `SELECT node_id, protocol FROM listeners WHERE id = ?`, listener.ID).Scan(&existingNode, &existingProtocol)
+	if errors.Is(err, sql.ErrNoRows) {
+		return Listener{}, false, ErrNotFound
+	}
+	if err != nil {
+		return Listener{}, false, fmt.Errorf("load listener: %w", err)
+	}
+	if existingNode != listener.NodeID {
+		return Listener{}, false, ErrForbidden
+	}
+	if existingProtocol != listener.Spec.Protocol {
+		var endpointCount int
+		if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM endpoints WHERE listener_id = ?`, listener.ID).Scan(&endpointCount); err != nil {
+			return Listener{}, false, fmt.Errorf("count listener endpoints: %w", err)
+		}
+		if endpointCount != 0 {
+			return Listener{}, false, errors.New("delete the listener endpoints before changing its protocol")
+		}
+	}
+	var conflict string
+	err = tx.QueryRowContext(ctx, `SELECT id FROM listeners WHERE node_id = ? AND name = ? AND id <> ?`, listener.NodeID, listener.Name, listener.ID).Scan(&conflict)
+	if err == nil {
+		return Listener{}, false, ErrConflict
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return Listener{}, false, fmt.Errorf("check listener name conflict: %w", err)
+	}
+	dropped, err := tx.ExecContext(ctx, `DELETE FROM ingress_routes WHERE listener_id = ?`, listener.ID)
+	if err != nil {
+		return Listener{}, false, fmt.Errorf("drop automatic port route: %w", err)
+	}
+	droppedRoutes, err := dropped.RowsAffected()
+	if err != nil {
+		return Listener{}, false, err
+	}
+	publicAddress, managed, err := resolveListenerPlacement(ctx, tx, &listener)
+	if err != nil {
+		return Listener{}, false, err
+	}
+	spec, err := json.Marshal(listener.Spec)
+	if err != nil {
+		return Listener{}, false, fmt.Errorf("encode listener spec: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE listeners SET name = ?, connection_domain = ?, protocol = ?, network = ?, listen_address = ?, port = ?, backend_port = ?, enabled = ?, spec = ?, outbound_id = ?, updated_at = ? WHERE id = ?`,
+		listener.Name, listener.Domain, listener.Spec.Protocol, listener.Spec.Network, listener.ListenAddr, listener.Port, listener.BackendPort, listener.Enabled, string(spec), listener.OutboundID, nowUnix(), listener.ID); err != nil {
+		return Listener{}, false, fmt.Errorf("update listener: %w", err)
+	}
+	if managed {
+		name, _ := automaticRouteName(listener)
+		if _, err := insertAutomaticRoute(ctx, tx, listener, publicAddress, name); err != nil {
+			return Listener{}, false, err
+		}
+		// A route always follows its listener's enabled state, as the
+		// port-unchanged edit path keeps them in sync too.
+		if !listener.Enabled {
+			if _, err := tx.ExecContext(ctx, `UPDATE ingress_routes SET enabled = 0, updated_at = ? WHERE listener_id = ?`, nowUnix(), listener.ID); err != nil {
+				return Listener{}, false, fmt.Errorf("disable automatic port route: %w", err)
+			}
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return Listener{}, false, err
+	}
+	return listener, droppedRoutes > 0 || managed, nil
 }
 
 func (s *Store) prepareAutomaticRouteUpdate(ctx context.Context, listener Listener) (*IngressRoute, error) {

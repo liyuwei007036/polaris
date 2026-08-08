@@ -5,115 +5,168 @@ import (
 	"testing"
 )
 
-// The console shows what a server enforces, so what the platform writes has to
-// survive being read back off that server unchanged. These tests take the
-// round trip that the console depends on: compile rules, list them the way nft
-// prints them, parse them again.
+// The console shows what a server enforces, so the parser has to cope with the
+// way nft actually prints rules — counters, comments, match expressions this
+// platform never wrote — rather than only the shapes it writes itself.
 
-func TestCompiledRulesSurviveBeingReadBack(t *testing.T) {
-	rules := []LiveFirewallRule{
-		{Action: "accept", Protocol: "tcp", Port: 443, CIDR: "10.0.0.0/8"},
-		{Action: "drop", Protocol: "udp", Port: 53, CIDR: "203.0.113.7/32"},
-		{Action: "drop", Protocol: "tcp", Port: 22},
+// A listing in the shape `nft -a list ruleset` produces on a real host: the
+// platform's own table, the distribution's, one Docker leftover, and a set
+// (whose members are addresses, not rules).
+const sampleRuleset = `table inet polaris {
+	chain input {
+		type filter hook input priority filter; policy accept;
+		ct state established,related accept # handle 4
+		iif "lo" accept # handle 5
+		ip saddr 172.64.0.0/13 tcp dport 443 counter packets 258481 bytes 35305964 accept # handle 7
+		ip6 saddr 2001:db8::1 udp dport 443 accept # handle 8
+		tcp dport 443 drop # handle 9
+		tcp dport 22 counter packets 3 bytes 180 drop comment "keep everyone out" # handle 11
 	}
-	script, err := CompileManagedNftables(rules)
-	if err != nil {
-		t.Fatal(err)
+}
+table inet filter {
+	set blocked {
+		type ipv4_addr
+		elements = { 203.0.113.9, 198.51.100.4 }
 	}
-	live := &LiveFirewall{}
-	appendNftablesTableRules(live, "inet polaris", nftPrints(script), true)
+	chain forward {
+		type filter hook forward priority filter; policy drop;
+		meta l4proto tcp ip saddr @blocked drop # handle 21
+	}
+}
+table ip nat {
+	chain PREROUTING {
+		type nat hook prerouting priority dstnat; policy accept;
+		iifname "docker0" counter packets 0 bytes 0 return # handle 33
+	}
+}
+`
 
-	// The two base rules are in force but are not access limits, so they stay
-	// out of what an operator is shown.
-	for _, rule := range live.Rules {
-		if strings.Contains(rule.Raw, baseRuleComment) {
-			t.Fatalf("a base rule reached the console: %#v", rule)
+func TestEveryRuleOnTheHostIsReportedWithItsHandle(t *testing.T) {
+	rules, truncated := parseNftablesRuleset(sampleRuleset)
+	if truncated {
+		t.Fatal("a small ruleset should not reach the cap")
+	}
+	// Eight rules across three tables. A set's members and the chain headers
+	// match no traffic and are not rules.
+	if len(rules) != 8 {
+		for _, rule := range rules {
+			t.Logf("%s %s %s handle=%s raw=%q", rule.Family, rule.Table, rule.Chain, rule.Handle, rule.Raw)
+		}
+		t.Fatalf("unexpected rule count: %d", len(rules))
+	}
+	for _, rule := range rules {
+		if rule.Handle == "" {
+			t.Fatalf("a rule without a handle cannot be deleted: %#v", rule)
+		}
+		if rule.Family == "" || rule.Table == "" || rule.Chain == "" {
+			t.Fatalf("a rule was not attributed to its place in the ruleset: %#v", rule)
+		}
+		if strings.Contains(rule.Raw, "handle") {
+			t.Fatalf("the handle comment leaked into the rule text: %#v", rule)
 		}
 	}
-	for _, want := range rules {
-		if !containsRule(live.Rules, want) {
-			t.Fatalf("rule %#v did not survive the round trip: %#v", want, live.Rules)
-		}
-	}
-	// An allowance turns its port into a whitelist, and the closing denial that
-	// does so is reported as the platform's own so nobody deletes half of it.
-	closing := findRule(live.Rules, LiveFirewallRule{Action: "drop", Protocol: "tcp", Port: 443})
-	if closing == nil {
-		t.Fatalf("the whitelist's closing denial is missing: %#v", live.Rules)
-	}
-	if !closing.Automatic || !closing.Managed {
-		t.Fatalf("the closing denial was not marked automatic: %#v", closing)
-	}
-	// An operator's own "deny everyone" rule is worded identically, so it must
-	// not be mistaken for the generated one.
-	own := findRule(live.Rules, LiveFirewallRule{Action: "drop", Protocol: "tcp", Port: 22})
-	if own == nil || own.Automatic {
-		t.Fatalf("an operator's denial was reported as automatic: %#v", own)
+	// Order is what a firewall runs on: the first match wins, so the list has
+	// to stay in the order the kernel evaluates it.
+	if rules[0].Handle != "4" || rules[len(rules)-1].Handle != "33" {
+		t.Fatalf("rules were reordered: %#v", rules)
 	}
 }
 
-func TestReadingBackRestoresThePrefixLengthNftDrops(t *testing.T) {
-	// nft prints a single address without /32, and the console has to show the
-	// operator the range they entered.
-	rule, ok := parseManagedNftablesRule("ip saddr 203.0.113.7 tcp dport 443 accept")
-	if !ok {
-		t.Fatal("a rule this platform writes was not recognized")
+// This is the rule that used to be reported as unreadable. nft prints a
+// counter in the middle of it, which an exact-word-order parser could not get
+// past, so a perfectly ordinary CDN allowance showed up as raw text.
+func TestCountersAndCommentsDoNotHideARule(t *testing.T) {
+	rules, _ := parseNftablesRuleset(sampleRuleset)
+	counted := findByHandle(rules, "7")
+	if counted == nil {
+		t.Fatal("the counted rule is missing")
 	}
-	if rule.CIDR != "203.0.113.7/32" {
-		t.Fatalf("CIDR = %q, want 203.0.113.7/32", rule.CIDR)
+	if counted.Action != "accept" || counted.Protocol != "tcp" || counted.Port != 443 || counted.CIDR != "172.64.0.0/13" {
+		t.Fatalf("a counted rule was not read correctly: %#v", counted)
 	}
-	if rule, ok := parseManagedNftablesRule("ip6 saddr 2001:db8::1 udp dport 443 drop"); !ok || rule.CIDR != "2001:db8::1/128" {
-		t.Fatalf("IPv6 rule read back as %#v (ok=%v)", rule, ok)
+	// A comment is the operator's own text and must never be mistaken for part
+	// of the rule — this one contains the word "out", next to a real verdict.
+	commented := findByHandle(rules, "11")
+	if commented == nil || commented.Action != "drop" || commented.Port != 22 {
+		t.Fatalf("a commented rule was not read correctly: %#v", commented)
 	}
-	// Anything the platform did not write stays raw rather than being guessed at.
-	if _, ok := parseManagedNftablesRule("meta l4proto tcp counter accept"); ok {
-		t.Fatal("an unrecognized rule was reported as structured")
+	// nft prints a single address without its prefix length; the console has to
+	// show the range the operator entered.
+	if v6 := findByHandle(rules, "8"); v6 == nil || v6.CIDR != "2001:db8::1/128" {
+		t.Fatalf("an IPv6 address lost its prefix length: %#v", v6)
+	}
+	// Whatever cannot be made out still gets listed, in the host's own words,
+	// so nothing a server enforces is hidden from the operator.
+	unparsed := findByHandle(rules, "21")
+	if unparsed == nil || unparsed.Raw == "" {
+		t.Fatalf("an unrecognized rule was dropped: %#v", unparsed)
+	}
+	if unparsed.Action != "drop" || unparsed.Port != 0 {
+		t.Fatalf("an unrecognized rule was over-interpreted: %#v", unparsed)
 	}
 }
 
-func TestMutationsApplyToWhatTheServerAlreadyHas(t *testing.T) {
-	existing := []LiveFirewallRule{{Managed: true, Action: "accept", Protocol: "tcp", Port: 443, CIDR: "10.0.0.0/8"}}
-	added, err := applyMutation(existing, FirewallMutation{
-		Operation: "add",
-		Rule:      LiveFirewallRule{Action: "drop", Protocol: "tcp", Port: 22, CIDR: "203.0.113.0/24"},
-	})
+func TestTheReportedRuleCountIsCapped(t *testing.T) {
+	var builder strings.Builder
+	builder.WriteString("table inet polaris {\n\tchain input {\n")
+	for index := 0; index < maximumReportedFirewallRules+50; index++ {
+		builder.WriteString("\t\ttcp dport 443 accept # handle 100\n")
+	}
+	builder.WriteString("\t}\n}\n")
+	rules, truncated := parseNftablesRuleset(builder.String())
+	if !truncated || len(rules) != maximumReportedFirewallRules {
+		t.Fatalf("the cap was not applied: truncated=%v count=%d", truncated, len(rules))
+	}
+}
+
+func TestIptablesRulesAreReadTheSameWay(t *testing.T) {
+	rule := parseIptablesRule("-A INPUT -s 172.64.0.0/13 -p tcp -m tcp --dport 443 -j ACCEPT")
+	if rule.Chain != "INPUT" || rule.CIDR != "172.64.0.0/13" || rule.Protocol != "tcp" || rule.Port != 443 || rule.Action != "accept" {
+		t.Fatalf("an iptables rule was not read correctly: %#v", rule)
+	}
+	if rule.Raw == "" {
+		t.Fatal("an iptables rule lost the host's own wording")
+	}
+}
+
+func TestClosingDenialIsFoundSoAnAllowanceStaysReachable(t *testing.T) {
+	rules, _ := parseNftablesRuleset(sampleRuleset)
+	// The denial that refuses everything else on 443 names no source; the one
+	// on 22 does the same for its port.
+	if handle := closingDenial(rules, "tcp", 443); handle != "9" {
+		t.Fatalf("closing denial for 443 = %q, want 9", handle)
+	}
+	// A port with no blanket denial has none to find, so an allowance for it
+	// gets one written alongside.
+	if handle := closingDenial(rules, "udp", 443); handle != "" {
+		t.Fatalf("closing denial for udp/443 = %q, want none", handle)
+	}
+}
+
+func TestAddedRulesAreValidatedBeforeReachingTheHost(t *testing.T) {
+	valid := LiveFirewallRule{Action: "accept", Protocol: "tcp", Port: 443, CIDR: "10.0.0.0/8"}
+	if err := validateManagedRule(valid); err != nil {
+		t.Fatal(err)
+	}
+	for name, rule := range map[string]LiveFirewallRule{
+		"unknown action":   {Action: "log", Protocol: "tcp", Port: 443},
+		"unknown protocol": {Action: "accept", Protocol: "icmp", Port: 443},
+		"missing port":     {Action: "accept", Protocol: "tcp"},
+		"bad source":       {Action: "accept", Protocol: "tcp", Port: 443, CIDR: "not-a-range"},
+	} {
+		if err := validateManagedRule(rule); err == nil {
+			t.Fatalf("%s was accepted", name)
+		}
+	}
+	expression, err := nftablesExpression(valid)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(added) != 2 {
-		t.Fatalf("unexpected rules after add: %#v", added)
+	if expression != "ip saddr 10.0.0.0/8 tcp dport 443" {
+		t.Fatalf("unexpected expression: %q", expression)
 	}
-	// Adding what the server already enforces is reported rather than silently
-	// duplicated.
-	if _, err := applyMutation(added, FirewallMutation{
-		Operation: "add",
-		Rule:      LiveFirewallRule{Action: "accept", Protocol: "tcp", Port: 443, CIDR: "10.0.0.0/8"},
-	}); err == nil {
-		t.Fatal("a duplicate rule was accepted")
-	}
-	removed, err := applyMutation(added, FirewallMutation{
-		Operation: "delete",
-		Rule:      LiveFirewallRule{Action: "accept", Protocol: "tcp", Port: 443, CIDR: "10.0.0.0/8"},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(removed) != 1 || removed[0].Port != 22 {
-		t.Fatalf("unexpected rules after delete: %#v", removed)
-	}
-	// Deleting a rule the server no longer has must say so rather than report
-	// a change that did not happen.
-	if _, err := applyMutation(removed, FirewallMutation{
-		Operation: "delete",
-		Rule:      LiveFirewallRule{Action: "accept", Protocol: "tcp", Port: 443, CIDR: "10.0.0.0/8"},
-	}); err == nil {
-		t.Fatal("deleting an absent rule was reported as done")
-	}
-	if _, err := applyMutation(removed, FirewallMutation{
-		Operation: "add",
-		Rule:      LiveFirewallRule{Action: "accept", Protocol: "tcp", Port: 443, CIDR: "not-a-range"},
-	}); err == nil {
-		t.Fatal("an invalid source range was accepted")
+	if expression, err := nftablesExpression(LiveFirewallRule{Action: "drop", Protocol: "udp", Port: 53, CIDR: "2001:db8::/32"}); err != nil || expression != "ip6 saddr 2001:db8::/32 udp dport 53" {
+		t.Fatalf("unexpected IPv6 expression %q (err=%v)", expression, err)
 	}
 }
 
@@ -181,20 +234,9 @@ func TestSavingAJailReplacesTheOneWithTheSameName(t *testing.T) {
 	}
 }
 
-// nftPrints turns a loaded script into the shape `nft list table` prints it in:
-// tab indentation and a quoted loopback interface.
-func nftPrints(script string) string {
-	listing := strings.ReplaceAll(script, "    ", "\t\t")
-	return strings.ReplaceAll(listing, "iif lo accept", `iif "lo" accept`)
-}
-
-func containsRule(rules []LiveFirewallRule, want LiveFirewallRule) bool {
-	return findRule(rules, want) != nil
-}
-
-func findRule(rules []LiveFirewallRule, want LiveFirewallRule) *LiveFirewallRule {
-	for index, rule := range rules {
-		if rule.Action == want.Action && rule.Protocol == want.Protocol && rule.Port == want.Port && rule.CIDR == want.CIDR {
+func findByHandle(rules []LiveFirewallRule, handle string) *LiveFirewallRule {
+	for index := range rules {
+		if rules[index].Handle == handle {
 			return &rules[index]
 		}
 	}

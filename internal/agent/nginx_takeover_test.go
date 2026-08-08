@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/liyuwei007036/polaris/internal/nginxroute"
+	"github.com/liyuwei007036/polaris/internal/wire"
 )
 
 const sampleNginxDump = `# configuration file /etc/nginx/nginx.conf:
@@ -115,6 +116,103 @@ func TestRewriteNginxListenPortLeavesUnrelatedConfigurationAlone(t *testing.T) {
 	rewritten, changed := rewriteNginxListenPort(original, 443, 8443)
 	if changed || rewritten != original {
 		t.Fatalf("unrelated configuration was rewritten: %q", rewritten)
+	}
+}
+
+const foreignStreamDump = `# configuration file /etc/nginx/nginx.conf:
+user www-data;
+http {
+    server {
+        listen 443 ssl;
+        server_name www.example.com;
+    }
+}
+stream {
+    server {
+        listen 443;
+        proxy_pass 127.0.0.1:8443;
+    }
+    server {
+        listen [::]:8853;
+        proxy_pass 127.0.0.1:5353;
+    }
+    server {
+        listen 8854 udp;
+        proxy_pass 127.0.0.1:5354;
+    }
+    server {
+        listen unix:/run/nginx.sock;
+        proxy_pass 127.0.0.1:5355;
+    }
+}
+
+# configuration file /etc/nginx/stream-conf.d/operator.conf:
+server {
+    listen 0.0.0.0:9443;
+    proxy_pass 127.0.0.1:9444;
+}
+
+# configuration file /etc/nginx/stream-conf.d/polaris.conf:
+server {
+    listen 0.0.0.0:443;
+    ssl_preread on;
+    proxy_pass $polaris_0_0_0_0_443;
+}
+
+# configuration file /etc/nginx/sites-enabled/blog:
+server {
+    listen 8080;
+    server_name blog.example.com;
+}
+`
+
+// The http server on 443 and polaris's own file must never be reported; the
+// operator's stream blocks — inline in nginx.conf or dropped into polaris's
+// include directory — must be, minus UDP and unix-socket listens.
+func TestNginxForeignStreamListensReportsOnlyUnmanagedTCPStreamListens(t *testing.T) {
+	original := managedNginxConfig
+	managedNginxConfig = "/etc/nginx/stream-conf.d/polaris.conf"
+	defer func() { managedNginxConfig = original }()
+	listens := nginxForeignStreamListens(foreignStreamDump)
+	expected := []wire.StreamListen{
+		{Address: "0.0.0.0", Port: 443, File: "/etc/nginx/nginx.conf"},
+		{Address: "::", Port: 8853, File: "/etc/nginx/nginx.conf"},
+		{Address: "0.0.0.0", Port: 9443, File: "/etc/nginx/stream-conf.d/operator.conf"},
+	}
+	if len(listens) != len(expected) {
+		t.Fatalf("foreign stream listens = %#v", listens)
+	}
+	for index, listen := range expected {
+		if listens[index] != listen {
+			t.Fatalf("foreign stream listens[%d] = %#v, want %#v", index, listens[index], listen)
+		}
+	}
+}
+
+func TestStreamConflictSummariesMatchesOnlyTheExactSocket(t *testing.T) {
+	configuration := "map $ssl_preread_server_name $polaris_0_0_0_0_443 {\n    default \"127.0.0.1:1\";\n}\nserver {\n    listen 0.0.0.0:443;\n    ssl_preread on;\n}\n"
+	foreign := []wire.StreamListen{
+		{Address: "0.0.0.0", Port: 443, File: "/etc/nginx/nginx.conf"},
+		{Address: "127.0.0.1", Port: 443, File: "/etc/nginx/loopback.conf"},
+		{Address: "0.0.0.0", Port: 8443, File: "/etc/nginx/other.conf"},
+	}
+	conflicts := streamConflictSummaries(configuration, foreign)
+	if len(conflicts) != 1 || conflicts[0] != "TCP/443 已被 Nginx 配置文件 /etc/nginx/nginx.conf 中的 stream 服务占用" {
+		t.Fatalf("stream conflicts = %#v", conflicts)
+	}
+}
+
+// A bare-port listen in the operator's stream block binds the IPv4 wildcard,
+// exactly the socket the compiled "listen 0.0.0.0:443" would bind.
+func TestStreamConflictSummariesNormalizesWildcardSpellings(t *testing.T) {
+	original := managedNginxConfig
+	managedNginxConfig = "/etc/nginx/stream-conf.d/polaris.conf"
+	defer func() { managedNginxConfig = original }()
+	dump := "# configuration file /etc/nginx/nginx.conf:\nstream {\n    server {\n        listen 443;\n        proxy_pass 127.0.0.1:8443;\n    }\n}\n"
+	configuration := "server {\n    listen 0.0.0.0:443;\n}\n"
+	conflicts := streamConflictSummaries(configuration, nginxForeignStreamListens(dump))
+	if len(conflicts) != 1 {
+		t.Fatalf("stream conflicts = %#v", conflicts)
 	}
 }
 

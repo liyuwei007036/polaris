@@ -5,62 +5,47 @@ import (
 	"errors"
 	"fmt"
 	"net"
-	"os"
 	"os/exec"
-	"sort"
 	"strconv"
 	"strings"
 )
 
 // The console shows and edits what the host is actually enforcing, so the
 // host — not a record kept somewhere else — is the only source of truth here.
-// Everything below either reads the live ruleset back or rewrites it.
+// Every rule on the machine is listed and every rule can be removed, whoever
+// wrote it; a firewall does not distinguish between rules by origin and
+// neither does this.
 
-// managedTableFamily and managedTableName identify the one table this platform
-// writes. Every other table on the host is reported as it stands and never
-// touched.
+// managedTableFamily and managedTableName identify the table new rules are
+// added to. Rules anywhere else are listed and can be deleted, they are just
+// not where an addition goes.
 const managedTableFamily = "inet"
 const managedTableName = "polaris"
 
-// automaticRuleComment marks the closing denial that turns a port into a
-// whitelist. It is written into the rule itself because the console has to be
-// able to tell it apart from an operator's own "deny everyone" rule, which is
-// otherwise worded identically.
-const automaticRuleComment = "polaris-auto"
-
-// baseRuleComment marks the two rules every managed chain needs in order for
-// the operator's rules to mean what they say: replies to connections this host
-// opened, and loopback traffic. They are not access limits and are left out of
-// what the console lists.
-const baseRuleComment = "polaris-base"
-
-// maximumReportedFirewallRules bounds how much of a host's existing firewall
-// one answer carries. A busy gateway can hold thousands of rules and the
-// console only needs enough of them to show what a server is protected by.
-const maximumReportedFirewallRules = 200
+// maximumReportedFirewallRules bounds how much of a host's firewall one answer
+// carries. A gateway fronted by a CDN routinely holds hundreds of source
+// ranges, so this has to be generous enough to show them all.
+const maximumReportedFirewallRules = 500
 
 // LiveFirewallRule is one rule in force on the host at the moment it was read.
+// Raw is always the host's own wording; the other fields are what could be made
+// out of it, and stay empty for a rule shaped in a way this parser does not
+// recognize. Nothing is hidden because it could not be parsed.
 type LiveFirewallRule struct {
-	// Managed marks a rule this platform wrote. Those can be removed from the
-	// console; everything else is reported exactly as the host words it.
-	Managed bool   `json:"managed"`
-	Table   string `json:"table,omitempty"`
-	Chain   string `json:"chain,omitempty"`
-	// The structured fields are filled in for managed rules only — this
-	// platform wrote them, so it can read them back with confidence.
+	Family string `json:"family,omitempty"`
+	Table  string `json:"table,omitempty"`
+	Chain  string `json:"chain,omitempty"`
+	// Handle is what nft deletes a rule by. A rule without one cannot be
+	// removed, which is why the console only offers deletion where it is set.
+	Handle   string `json:"handle,omitempty"`
 	Action   string `json:"action,omitempty"`
 	Protocol string `json:"protocol,omitempty"`
 	Port     uint16 `json:"port,omitempty"`
 	CIDR     string `json:"cidr,omitempty"`
-	// Automatic marks the closing denial described at automaticRuleComment. It
-	// is in force like any other rule, but it belongs to the allowance above it
-	// rather than to an operator, so the console will not offer to delete it.
-	Automatic bool `json:"automatic,omitempty"`
-	// Raw is the host's own wording, kept for rules this platform did not write.
-	Raw string `json:"raw,omitempty"`
+	Raw      string `json:"raw"`
 }
 
-// LiveFirewall is everything a host enforces on inbound traffic right now.
+// LiveFirewall is everything a host enforces on traffic right now.
 type LiveFirewall struct {
 	Available bool               `json:"available"`
 	Tool      string             `json:"tool,omitempty"`
@@ -69,17 +54,15 @@ type LiveFirewall struct {
 	Error     string             `json:"error,omitempty"`
 }
 
-// FirewallMutation is one change to the managed rules. The console never sends
-// a whole ruleset: the node reads its own current rules, applies this change to
-// them, and writes the result back, so two operators working at once cannot
-// silently discard each other's rule.
+// FirewallMutation is one change to the host's rules. An addition carries the
+// rule to write; a deletion carries the location of the rule to remove, which
+// is how any rule on the machine can be taken out regardless of who wrote it.
 type FirewallMutation struct {
 	Operation string           `json:"operation"` // "add" | "delete"
 	Rule      LiveFirewallRule `json:"rule"`
 }
 
-// CollectLiveFirewall reads the host's inbound rules back. Rules this platform
-// wrote come back structured; the rest come back as the host words them.
+// CollectLiveFirewall reads the host's rules back.
 func CollectLiveFirewall(ctx context.Context) LiveFirewall {
 	switch {
 	case commandExists("nft"):
@@ -93,118 +76,136 @@ func CollectLiveFirewall(ctx context.Context) LiveFirewall {
 
 func collectLiveNftables(ctx context.Context) LiveFirewall {
 	live := LiveFirewall{Available: true, Tool: "nftables", Rules: []LiveFirewallRule{}}
-	output, err := exec.CommandContext(ctx, "nft", "list", "tables").CombinedOutput()
+	// -a is what makes deletion possible: without the handles nft prints here
+	// there is no way to name a rule when removing it.
+	output, err := exec.CommandContext(ctx, "nft", "-a", "list", "ruleset").CombinedOutput()
 	if err != nil {
-		live.Error = commandSummary("nft list tables", output, err)
+		live.Error = commandSummary("nft -a list ruleset", output, err)
 		return live
 	}
-	for _, line := range strings.Split(string(output), "\n") {
-		fields := strings.Fields(strings.TrimSpace(line))
-		// `table inet filter`
-		if len(fields) != 3 || fields[0] != "table" {
-			continue
-		}
-		family, name := fields[1], fields[2]
-		listing, err := exec.CommandContext(ctx, "nft", "list", "table", family, name).CombinedOutput()
-		if err != nil {
-			continue
-		}
-		managed := family == managedTableFamily && name == managedTableName
-		if appendNftablesTableRules(&live, family+" "+name, string(listing), managed) {
-			live.Truncated = true
-			break
-		}
-	}
-	sortLiveFirewallRules(live.Rules)
+	live.Rules, live.Truncated = parseNftablesRuleset(string(output))
 	return live
 }
 
-// appendNftablesTableRules turns one table's listing into rule entries and
-// reports whether the cap was reached.
-func appendNftablesTableRules(live *LiveFirewall, table, listing string, managed bool) bool {
-	chain := ""
+// parseNftablesRuleset walks a whole ruleset listing and returns every rule in
+// it, in the order the kernel evaluates them. Order is preserved deliberately:
+// in a firewall the first match wins, so a list sorted by anything else would
+// misrepresent what the server does.
+func parseNftablesRuleset(listing string) ([]LiveFirewallRule, bool) {
+	rules := []LiveFirewallRule{}
+	var family, table, chain string
+	// skipDepth marks a block whose contents are not rules — a set, a map, or
+	// anything else nft nests inside a table.
+	skipDepth := 0
+	depth := 0
 	for _, raw := range strings.Split(listing, "\n") {
 		line := strings.TrimSpace(raw)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		opens := strings.Count(line, "{")
+		closes := strings.Count(line, "}")
 		switch {
-		case line == "" || line == "}" || strings.HasPrefix(line, "table "):
+		case opens > closes:
+			depth += opens - closes
+			fields := strings.Fields(line)
+			switch {
+			case skipDepth > 0:
+				// Already inside something that holds no rules.
+			case fields[0] == "table" && len(fields) >= 3:
+				family, table, chain = fields[1], fields[2], ""
+			case fields[0] == "chain" && len(fields) >= 2:
+				chain = fields[1]
+			default:
+				skipDepth = depth
+			}
 			continue
-		case strings.HasPrefix(line, "chain "):
-			chain = strings.TrimSpace(strings.TrimSuffix(strings.TrimPrefix(line, "chain "), "{"))
-			continue
-		case strings.HasPrefix(line, "set ") || strings.HasPrefix(line, "map "):
-			chain = ""
-			continue
-		// Comments nft emits about a table's owner, and a chain's own
-		// type/hook/policy header, match no traffic. Listing them beside real
-		// rules made the console read as if the host had protection it does
-		// not have.
-		case strings.HasPrefix(line, "#"):
-			continue
-		case strings.HasPrefix(line, "type ") && strings.Contains(line, " hook "):
-			continue
-		case strings.HasPrefix(line, "policy "):
+		case closes > opens:
+			depth -= closes - opens
+			if skipDepth > depth {
+				skipDepth = 0
+			}
+			if depth < 2 {
+				chain = ""
+			}
+			if depth < 1 {
+				family, table = "", ""
+			}
 			continue
 		}
-		if managed {
-			// The two rules described at baseRuleComment are in force but are
-			// not access limits; listing them would only make an operator
-			// wonder which of their rules they are.
-			if strings.Contains(line, baseRuleComment) {
-				continue
-			}
-			rule, ok := parseManagedNftablesRule(line)
-			if !ok {
-				// A rule inside the managed table that this platform does not
-				// recognize is still in force, so it is reported — just not as
-				// something the console may rewrite.
-				rule = LiveFirewallRule{Raw: line}
-			}
-			rule.Table, rule.Chain = table, chain
-			if len(live.Rules) >= maximumReportedFirewallRules {
-				return true
-			}
-			live.Rules = append(live.Rules, rule)
+		if skipDepth > 0 || chain == "" {
 			continue
 		}
-		if len(live.Rules) >= maximumReportedFirewallRules {
-			return true
+		// A set or map written on one line, and a chain's own type/hook/policy
+		// header, match no traffic.
+		if opens > 0 && (strings.HasPrefix(line, "set ") || strings.HasPrefix(line, "map ") || strings.HasPrefix(line, "elements")) {
+			continue
 		}
-		live.Rules = append(live.Rules, LiveFirewallRule{Table: table, Chain: chain, Raw: line})
+		if strings.HasPrefix(line, "type ") && strings.Contains(line, " hook ") {
+			continue
+		}
+		if strings.HasPrefix(line, "policy ") {
+			continue
+		}
+		if len(rules) >= maximumReportedFirewallRules {
+			return rules, true
+		}
+		rule := parseNftablesRule(line)
+		rule.Family, rule.Table, rule.Chain = family, table, chain
+		rules = append(rules, rule)
 	}
-	return false
+	return rules, false
 }
 
-// parseManagedNftablesRule reads back a rule this platform wrote. nft
-// normalizes what it prints, so the parser accepts the forms nft emits rather
-// than only the exact text that was loaded.
-func parseManagedNftablesRule(line string) (LiveFirewallRule, bool) {
-	rule := LiveFirewallRule{Managed: true}
-	fields := strings.Fields(line)
-	index := 0
-	if index+2 < len(fields) && (fields[index] == "ip" || fields[index] == "ip6") && fields[index+1] == "saddr" {
-		cidr, ok := normalizeCIDR(fields[index+2])
-		if !ok {
-			return LiveFirewallRule{}, false
+// parseNftablesRule makes out what it can of one rule. It scans for the parts
+// it understands rather than expecting a fixed shape, because nft prints
+// counters, comments and match expressions this platform never wrote — an
+// earlier version demanded an exact word order and so reported a perfectly
+// ordinary `ip saddr … counter packets … accept` as unreadable.
+func parseNftablesRule(line string) LiveFirewallRule {
+	rule := LiveFirewallRule{}
+	if index := strings.LastIndex(line, "# handle "); index >= 0 {
+		rule.Handle = strings.TrimSpace(line[index+len("# handle "):])
+		line = strings.TrimSpace(line[:index])
+	}
+	rule.Raw = line
+	fields := strings.Fields(stripRuleComment(line))
+	for index, field := range fields {
+		switch field {
+		case "saddr":
+			if index > 0 && (fields[index-1] == "ip" || fields[index-1] == "ip6") && index+1 < len(fields) {
+				if cidr, ok := normalizeCIDR(fields[index+1]); ok {
+					rule.CIDR = cidr
+				}
+			}
+		case "dport":
+			if index > 0 && (fields[index-1] == "tcp" || fields[index-1] == "udp") && index+1 < len(fields) {
+				if port, err := strconv.ParseUint(fields[index+1], 10, 16); err == nil && port > 0 {
+					rule.Protocol, rule.Port = fields[index-1], uint16(port)
+				}
+			}
+		// The verdict is whatever the rule ends with, so the last one seen
+		// wins: `counter packets 1 bytes 2 accept` decides on accept.
+		case "accept", "drop", "reject":
+			rule.Action = field
 		}
-		rule.CIDR = cidr
-		index += 3
 	}
-	if index+2 >= len(fields) || (fields[index] != "tcp" && fields[index] != "udp") || fields[index+1] != "dport" {
-		return LiveFirewallRule{}, false
+	return rule
+}
+
+// stripRuleComment removes an operator's comment text so words inside it are
+// never mistaken for parts of the rule.
+func stripRuleComment(line string) string {
+	index := strings.Index(line, `comment "`)
+	if index < 0 {
+		return line
 	}
-	rule.Protocol = fields[index]
-	port, err := strconv.ParseUint(fields[index+2], 10, 16)
-	if err != nil || port == 0 {
-		return LiveFirewallRule{}, false
+	rest := line[index+len(`comment "`):]
+	end := strings.Index(rest, `"`)
+	if end < 0 {
+		return line[:index]
 	}
-	rule.Port = uint16(port)
-	index += 3
-	if index >= len(fields) || (fields[index] != "accept" && fields[index] != "drop") {
-		return LiveFirewallRule{}, false
-	}
-	rule.Action = fields[index]
-	rule.Automatic = strings.Contains(line, automaticRuleComment)
-	return rule, true
+	return line[:index] + rest[end+1:]
 }
 
 // normalizeCIDR restores the prefix length nft drops when printing a single
@@ -235,8 +236,7 @@ func collectLiveIptables(ctx context.Context) LiveFirewall {
 	}
 	for _, raw := range strings.Split(string(output), "\n") {
 		line := strings.TrimSpace(raw)
-		// A chain policy (-P) or a bare chain declaration (-N) is not a rule
-		// either, for the same reason the nftables listing skips its headers.
+		// A chain policy (-P) or a bare chain declaration (-N) is not a rule.
 		if line == "" || strings.HasPrefix(line, "-P ") || strings.HasPrefix(line, "-N ") {
 			continue
 		}
@@ -244,117 +244,186 @@ func collectLiveIptables(ctx context.Context) LiveFirewall {
 			live.Truncated = true
 			break
 		}
-		chain := ""
-		if fields := strings.Fields(line); len(fields) >= 2 {
-			chain = fields[1]
-		}
-		live.Rules = append(live.Rules, LiveFirewallRule{Table: "filter", Chain: chain, Raw: line})
+		rule := parseIptablesRule(line)
+		rule.Family, rule.Table = "ip", "filter"
+		live.Rules = append(live.Rules, rule)
 	}
 	return live
 }
 
-func sortLiveFirewallRules(rules []LiveFirewallRule) {
-	sort.SliceStable(rules, func(left, right int) bool {
-		if rules[left].Managed != rules[right].Managed {
-			return rules[left].Managed
+// parseIptablesRule reads one `iptables -S` line the same way: take what is
+// recognizable, keep the whole line either way.
+func parseIptablesRule(line string) LiveFirewallRule {
+	rule := LiveFirewallRule{Raw: line}
+	fields := strings.Fields(line)
+	for index, field := range fields {
+		if index+1 >= len(fields) {
+			break
 		}
-		if !rules[left].Managed {
-			return false
+		switch field {
+		case "-A", "--append":
+			rule.Chain = fields[index+1]
+		case "-s", "--source":
+			if cidr, ok := normalizeCIDR(fields[index+1]); ok {
+				rule.CIDR = cidr
+			}
+		case "-p", "--protocol":
+			if fields[index+1] == "tcp" || fields[index+1] == "udp" {
+				rule.Protocol = fields[index+1]
+			}
+		case "--dport", "--destination-port":
+			if port, err := strconv.ParseUint(fields[index+1], 10, 16); err == nil && port > 0 {
+				rule.Port = uint16(port)
+			}
+		case "-j", "--jump":
+			switch fields[index+1] {
+			case "ACCEPT":
+				rule.Action = "accept"
+			case "DROP":
+				rule.Action = "drop"
+			case "REJECT":
+				rule.Action = "reject"
+			}
 		}
-		if rules[left].Protocol != rules[right].Protocol {
-			return rules[left].Protocol < rules[right].Protocol
-		}
-		if rules[left].Port != rules[right].Port {
-			return rules[left].Port < rules[right].Port
-		}
-		return rules[left].CIDR < rules[right].CIDR
-	})
+	}
+	return rule
 }
 
-// ApplyFirewallMutation changes one managed rule on the host and returns what
-// the host enforces afterwards. The node reads its own rules first, so the
-// change is applied to reality rather than to whatever the console last saw.
+// ApplyFirewallMutation changes the host's firewall and returns what it
+// enforces afterwards.
 func ApplyFirewallMutation(ctx context.Context, mutation FirewallMutation) (LiveFirewall, error) {
 	if err := ensureNftablesReady(ctx); err != nil {
 		return LiveFirewall{}, errors.New("准备防火墙失败：" + err.Error())
 	}
-	current, err := readManagedRules(ctx)
-	if err != nil {
-		return LiveFirewall{}, err
+	var err error
+	switch mutation.Operation {
+	case "add":
+		err = addFirewallRule(ctx, mutation.Rule)
+	case "delete":
+		err = deleteFirewallRule(ctx, mutation.Rule)
+	default:
+		err = errors.New("不支持的访问限制操作")
 	}
-	next, err := applyMutation(current, mutation)
 	if err != nil {
-		return LiveFirewall{}, err
-	}
-	script, err := CompileManagedNftables(next)
-	if err != nil {
-		return LiveFirewall{}, err
-	}
-	if err := loadManagedNftables(ctx, script); err != nil {
 		return LiveFirewall{}, err
 	}
 	return CollectLiveFirewall(ctx), nil
 }
 
-// readManagedRules returns the operator-authored rules currently in the managed
-// table, without the closing denials the platform derives from them — those are
-// regenerated on every write.
-func readManagedRules(ctx context.Context) ([]LiveFirewallRule, error) {
-	output, err := exec.CommandContext(ctx, "nft", "list", "table", managedTableFamily, managedTableName).CombinedOutput()
+// deleteFirewallRule removes one rule wherever it lives. nft deletes by handle,
+// which is the only way to name a rule unambiguously — two rules can otherwise
+// read identically.
+func deleteFirewallRule(ctx context.Context, rule LiveFirewallRule) error {
+	if commandExists("nft") && rule.Handle != "" {
+		if rule.Family == "" || rule.Table == "" || rule.Chain == "" {
+			return errors.New("这条规则缺少位置信息，无法删除")
+		}
+		output, err := exec.CommandContext(ctx, "nft", "delete", "rule", rule.Family, rule.Table, rule.Chain, "handle", rule.Handle).CombinedOutput()
+		if err != nil {
+			return errors.New(commandSummary("nft delete rule", output, err))
+		}
+		return persistManagedTable(ctx)
+	}
+	if commandExists("iptables") && strings.HasPrefix(rule.Raw, "-A ") {
+		arguments := append([]string{"-D"}, strings.Fields(rule.Raw)[1:]...)
+		output, err := exec.CommandContext(ctx, "iptables", arguments...).CombinedOutput()
+		if err != nil {
+			return errors.New(commandSummary("iptables -D", output, err))
+		}
+		return nil
+	}
+	return errors.New("这条规则无法从服务器上删除")
+}
+
+// addFirewallRule writes a new rule into the managed table. An allowance is
+// placed before the closing denial for its port so it is actually reached: the
+// first matching rule decides, so appending it after the denial would leave it
+// dead.
+func addFirewallRule(ctx context.Context, rule LiveFirewallRule) error {
+	if err := validateManagedRule(rule); err != nil {
+		return err
+	}
+	if err := ensureManagedChain(ctx); err != nil {
+		return err
+	}
+	expression, err := nftablesExpression(rule)
 	if err != nil {
-		// No managed table yet is the normal state of a server that has never
-		// had an access limit, not a failure.
-		if strings.Contains(strings.ToLower(string(output)), "no such file or directory") {
-			return nil, nil
-		}
-		return nil, errors.New(commandSummary("nft list table inet polaris", output, err))
+		return err
 	}
-	var live LiveFirewall
-	appendNftablesTableRules(&live, managedTableFamily+" "+managedTableName, string(output), true)
-	rules := make([]LiveFirewallRule, 0, len(live.Rules))
-	for _, rule := range live.Rules {
-		if rule.Managed && !rule.Automatic {
-			rules = append(rules, rule)
+	current := managedTableRules(ctx)
+	for _, existing := range current {
+		if existing.Action == rule.Action && existing.Protocol == rule.Protocol && existing.Port == rule.Port && existing.CIDR == rule.CIDR {
+			return errors.New("这条访问限制已经在服务器上生效了")
 		}
 	}
-	return rules, nil
+	arguments := []string{"add", "rule", managedTableFamily, managedTableName, managedChainName}
+	if rule.Action == "accept" {
+		if closing := closingDenial(current, rule.Protocol, rule.Port); closing != "" {
+			arguments = []string{"insert", "rule", managedTableFamily, managedTableName, managedChainName, "position", closing}
+		}
+	}
+	arguments = append(arguments, strings.Fields(expression+" "+rule.Action)...)
+	if output, err := exec.CommandContext(ctx, "nft", arguments...).CombinedOutput(); err != nil {
+		return errors.New(commandSummary("nft add rule", output, err))
+	}
+	// An allowance only means something once everything else on that port is
+	// refused; the chain accepts by default.
+	if rule.Action == "accept" && closingDenial(current, rule.Protocol, rule.Port) == "" {
+		closing := []string{"add", "rule", managedTableFamily, managedTableName, managedChainName, rule.Protocol, "dport", strconv.Itoa(int(rule.Port)), "drop"}
+		if output, err := exec.CommandContext(ctx, "nft", closing...).CombinedOutput(); err != nil {
+			return errors.New(commandSummary("nft add rule", output, err))
+		}
+	}
+	return persistManagedTable(ctx)
 }
 
-func applyMutation(rules []LiveFirewallRule, mutation FirewallMutation) ([]LiveFirewallRule, error) {
-	target := mutation.Rule
-	if err := validateManagedRule(target); err != nil {
-		return nil, err
+// closingDenial finds the handle of the rule that refuses everything else on a
+// port — a denial naming no source.
+func closingDenial(rules []LiveFirewallRule, protocol string, port uint16) string {
+	for _, rule := range rules {
+		if rule.Action == "drop" && rule.Protocol == protocol && rule.Port == port && rule.CIDR == "" {
+			return rule.Handle
+		}
 	}
-	switch mutation.Operation {
-	case "add":
-		for _, rule := range rules {
-			if sameManagedRule(rule, target) {
-				return nil, errors.New("这条访问限制已经在服务器上生效了")
-			}
-		}
-		return append(rules, target), nil
-	case "delete":
-		kept := make([]LiveFirewallRule, 0, len(rules))
-		found := false
-		for _, rule := range rules {
-			if sameManagedRule(rule, target) {
-				found = true
-				continue
-			}
-			kept = append(kept, rule)
-		}
-		if !found {
-			return nil, errors.New("服务器上已经没有这条访问限制了")
-		}
-		return kept, nil
-	default:
-		return nil, errors.New("不支持的访问限制操作")
-	}
+	return ""
 }
 
-func sameManagedRule(left, right LiveFirewallRule) bool {
-	return left.Action == right.Action && left.Protocol == right.Protocol &&
-		left.Port == right.Port && left.CIDR == right.CIDR
+const managedChainName = "input"
+
+// ensureManagedChain creates the table and chain if they are not there yet, and
+// seeds the chain with the two rules the operator's own rules depend on:
+// without them a denial would also cut the node's replies and local services.
+func ensureManagedChain(ctx context.Context) error {
+	if output, err := exec.CommandContext(ctx, "nft", "add", "table", managedTableFamily, managedTableName).CombinedOutput(); err != nil {
+		return errors.New(commandSummary("nft add table", output, err))
+	}
+	created := len(managedTableRules(ctx)) == 0
+	chain := []string{"add", "chain", managedTableFamily, managedTableName, managedChainName, "{ type filter hook input priority filter; policy accept; }"}
+	if output, err := exec.CommandContext(ctx, "nft", chain...).CombinedOutput(); err != nil {
+		return errors.New(commandSummary("nft add chain", output, err))
+	}
+	if !created {
+		return nil
+	}
+	for _, base := range [][]string{
+		{"add", "rule", managedTableFamily, managedTableName, managedChainName, "ct", "state", "established,related", "accept"},
+		{"add", "rule", managedTableFamily, managedTableName, managedChainName, "iif", "lo", "accept"},
+	} {
+		if output, err := exec.CommandContext(ctx, "nft", base...).CombinedOutput(); err != nil {
+			return errors.New(commandSummary("nft add rule", output, err))
+		}
+	}
+	return nil
+}
+
+// managedTableRules reads back just the table additions go into.
+func managedTableRules(ctx context.Context) []LiveFirewallRule {
+	output, err := exec.CommandContext(ctx, "nft", "-a", "list", "table", managedTableFamily, managedTableName).CombinedOutput()
+	if err != nil {
+		return nil
+	}
+	rules, _ := parseNftablesRuleset(string(output))
+	return rules
 }
 
 func validateManagedRule(rule LiveFirewallRule) error {
@@ -376,136 +445,7 @@ func validateManagedRule(rule LiveFirewallRule) error {
 	return nil
 }
 
-// loadManagedNftables replaces the managed table in one atomic script and
-// records it so the rules survive a reboot. Loading a table definition on its
-// own merges into what is already there, which would stack another copy of
-// every rule on each write.
-func loadManagedNftables(ctx context.Context, script string) error {
-	full := replaceableNftablesScript(script)
-	temporaryDirectory := managedSystemPath("/tmp")
-	if err := os.MkdirAll(temporaryDirectory, 0o700); err != nil {
-		return errors.New("创建临时目录失败：" + err.Error() + permissionHint(err))
-	}
-	path, err := writeTemporaryNftablesScript(temporaryDirectory, full)
-	if err != nil {
-		return err
-	}
-	defer os.Remove(path)
-	// Checking before loading matters more here than anywhere else: the script
-	// deletes the managed table before recreating it, so a script that fails
-	// halfway would leave the server with no access limits at all.
-	if output, err := exec.CommandContext(ctx, "nft", "-c", "-f", path).CombinedOutput(); err != nil {
-		return errors.New(commandSummary("nft -c", output, err))
-	}
-	snapshot, _ := exec.CommandContext(ctx, "nft", "list", "table", managedTableFamily, managedTableName).CombinedOutput()
-	if output, err := exec.CommandContext(ctx, "nft", "-f", path).CombinedOutput(); err != nil {
-		restoreManagedNftables(ctx, temporaryDirectory, string(snapshot))
-		return errors.New(commandSummary("nft -f", output, err))
-	}
-	return persistNftables(ctx, full)
-}
-
-func writeTemporaryNftablesScript(directory, script string) (string, error) {
-	file, err := os.CreateTemp(directory, "polaris-nft-*.nft")
-	if err != nil {
-		return "", errors.New("创建临时文件失败：" + err.Error() + permissionHint(err))
-	}
-	path := file.Name()
-	if _, err := file.WriteString(script); err != nil {
-		file.Close()
-		os.Remove(path)
-		return "", errors.New("写入防火墙脚本失败：" + err.Error())
-	}
-	if err := file.Close(); err != nil {
-		os.Remove(path)
-		return "", errors.New("写入防火墙脚本失败：" + err.Error())
-	}
-	return path, nil
-}
-
-// restoreManagedNftables puts back what the table held before a failed load,
-// so a rejected change leaves the server exactly as protected as it was.
-func restoreManagedNftables(ctx context.Context, directory, snapshot string) {
-	if strings.TrimSpace(snapshot) == "" {
-		return
-	}
-	path, err := writeTemporaryNftablesScript(directory, replaceableNftablesScript(snapshot))
-	if err != nil {
-		return
-	}
-	defer os.Remove(path)
-	_, _ = exec.CommandContext(ctx, "nft", "-f", path).CombinedOutput()
-}
-
-// CompileManagedNftables renders the managed input chain from the rules that
-// should be in force.
-//
-// Rules are grouped per protocol and port, and each group is emitted in a
-// fixed order — denials first, then allowances, then a closing denial when
-// the group has any allowance at all. That last part is what makes an
-// "allow" rule mean something: the chain policy is accept, so an allow rule
-// on its own matched traffic that was already going to be accepted, and a
-// deny rule's effect depended on where the source address happened to sort.
-// An allowance turns its port into a whitelist; a group with only denials
-// stays a blacklist.
-func CompileManagedNftables(rules []LiveFirewallRule) (string, error) {
-	type portKey struct {
-		protocol string
-		port     uint16
-	}
-	groups := map[portKey][]LiveFirewallRule{}
-	var order []portKey
-	for _, rule := range rules {
-		if err := validateManagedRule(rule); err != nil {
-			return "", err
-		}
-		key := portKey{protocol: rule.Protocol, port: rule.Port}
-		if _, seen := groups[key]; !seen {
-			order = append(order, key)
-		}
-		groups[key] = append(groups[key], rule)
-	}
-	sort.Slice(order, func(i, j int) bool {
-		if order[i].protocol != order[j].protocol {
-			return order[i].protocol < order[j].protocol
-		}
-		return order[i].port < order[j].port
-	})
-
-	var lines []string
-	// Replies to connections this host opened, and anything on loopback, are
-	// never subject to the managed rules: without this a deny rule would also
-	// break the node's own outbound traffic and local services.
-	lines = append(lines, `    ct state established,related accept comment "`+baseRuleComment+`"`)
-	lines = append(lines, `    iif lo accept comment "`+baseRuleComment+`"`)
-	for _, key := range order {
-		group := groups[key]
-		sort.SliceStable(group, func(i, j int) bool {
-			if group[i].Action != group[j].Action {
-				return group[i].Action == "drop"
-			}
-			return group[i].CIDR < group[j].CIDR
-		})
-		allows := false
-		for _, rule := range group {
-			expression, err := nftablesMatch(rule)
-			if err != nil {
-				return "", err
-			}
-			lines = append(lines, "    "+expression+" "+rule.Action)
-			if rule.Action == "accept" {
-				allows = true
-			}
-		}
-		if allows {
-			lines = append(lines, "    "+key.protocol+" dport "+strconv.Itoa(int(key.port))+` drop comment "`+automaticRuleComment+`"`)
-		}
-	}
-	return "table inet polaris {\n  chain input {\n    type filter hook input priority filter; policy accept;\n" +
-		strings.Join(lines, "\n") + "\n  }\n}\n", nil
-}
-
-func nftablesMatch(rule LiveFirewallRule) (string, error) {
+func nftablesExpression(rule LiveFirewallRule) (string, error) {
 	match := rule.Protocol + " dport " + strconv.Itoa(int(rule.Port))
 	if rule.CIDR == "" {
 		return match, nil
@@ -518,4 +458,21 @@ func nftablesMatch(rule LiveFirewallRule) (string, error) {
 		return "ip saddr " + rule.CIDR + " " + match, nil
 	}
 	return "ip6 saddr " + rule.CIDR + " " + match, nil
+}
+
+// persistManagedTable records the managed table so its rules come back after a
+// reboot. Rules loaded into the running kernel alone live only until the next
+// restart, which used to drop the whole firewall silently.
+//
+// Only this platform's own table is persisted. Rules in a host's other tables
+// are removed from the running kernel when deleted here, and whatever put them
+// there — the distribution's own firewall service, Docker, a hand-written
+// script — remains responsible for whether they come back.
+func persistManagedTable(ctx context.Context) error {
+	output, err := exec.CommandContext(ctx, "nft", "list", "table", managedTableFamily, managedTableName).CombinedOutput()
+	if err != nil {
+		// Nothing left to persist: the table is gone.
+		return nil
+	}
+	return persistNftables(ctx, replaceableNftablesScript(string(output)))
 }
