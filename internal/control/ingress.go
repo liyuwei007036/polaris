@@ -95,110 +95,97 @@ func (s *Store) CreateListenerWithAutomaticPortRouting(ctx context.Context, list
 	return listener, route, managed, nil
 }
 
-// resolveListenerPlacement decides how a listener binds its public port and
-// mutates its ListenAddr/BackendPort accordingly: alone on the port it binds
-// it directly, contended it goes behind the managed SNI router, moving the
-// current holders behind the router too. The caller persists the listener row
-// itself and, when managed, creates the listener's own route on the returned
-// public address.
+// resolveListenerPlacement records that a listener binds its public port, and
+// checks only what the control plane can know for certain from its own data.
+//
+// Where a service actually ends up listening is the node's decision, taken
+// when the configuration is applied: only the node can see whether something
+// else already holds the port, and a service that has to share one is moved
+// behind the managed SNI router there. What the control plane does know is its
+// own services, so it refuses the one arrangement that could never deploy on
+// any host: services on a shared port that no TLS name can tell apart.
 func resolveListenerPlacement(ctx context.Context, tx *sql.Tx, listener *Listener) (string, bool, error) {
-	existing, err := listenersOnPublicPort(ctx, tx, listener.NodeID, listener.Spec.Network, listener.Port)
+	listener.ListenAddr = "0.0.0.0"
+	listener.BackendPort = listener.Port
+	sharing, err := otherListenersOnPort(ctx, tx, listener)
 	if err != nil {
 		return "", false, err
 	}
-	// Managed routes are TCP-only (Nginx stream), so a UDP listener never
-	// competes with them even on the same port number.
-	routedAddress, routedSNIs := "", map[string]string{}
-	if listener.Spec.Network == "tcp" {
-		routedAddress, routedSNIs, err = ingressRoutesOnPort(ctx, tx, listener.NodeID, listener.Port)
-		if err != nil {
-			return "", false, err
-		}
+	if len(sharing) == 0 {
+		return "", false, nil
 	}
-	for index := range existing {
-		// A listener in `existing` gets its SNI recomputed below; drop its own
-		// route so it is not mistaken for a competing one.
-		delete(routedSNIs, existing[index].ID)
+	// The SNI router is TCP-only, so two UDP services on one port have nothing
+	// that could ever separate them.
+	if listener.Spec.Network != "tcp" {
+		return "", false, userErrorf("端口 %d 已被该服务器上的另一个 UDP 接入服务使用，请选择其他端口", listener.Port)
 	}
-	// A listener goes behind the managed SNI router only when something else
-	// already holds its public port: another enabled listener, or an Nginx SNI
-	// group already bound to it. Alone on its port it binds that port itself,
-	// so sing-box sees the client's own address rather than the router's
-	// loopback one — the router cannot carry a source address across, and for
-	// Reality there is no protocol layer left that could.
-	//
-	// Two kinds of listener can never be routed: UDP, which the TCP-only
-	// router cannot carry, and a TCP listener with no usable SNI, which has no
-	// ClientHello to be routed by. Either one on a contended port is an error.
-	routeName, routeNameErr := automaticRouteName(*listener)
-	contended := len(existing) > 0 || len(routedSNIs) > 0
-	managed := contended && listener.Spec.Network == "tcp" && routeNameErr == nil
-	if contended && !managed {
-		if listener.Spec.Network != "tcp" {
-			return "", false, userErrorf("端口 %d 已被该服务器上的另一个 UDP 接入服务使用，请选择其他端口", listener.Port)
-		}
-		return "", false, userErrorf("端口 %d 已被使用；如需自动使用同一端口，TCP 接入服务必须启用 TLS 或 Reality，并使用不同的实际 SNI", listener.Port)
-	}
-	publicAddress := listener.ListenAddr
-	usedPorts, err := occupiedListenerPorts(ctx, tx, listener.NodeID, listener.Spec.Network)
+	name, err := automaticRouteName(*listener)
 	if err != nil {
-		return "", false, err
+		return "", false, userErrorf("端口 %d 已被使用；如需与其他服务共用同一端口，TCP 接入服务必须启用 TLS 或 Reality，并使用不同的实际 SNI", listener.Port)
 	}
-	seenNames := map[string]struct{}{}
-	if managed {
-		seenNames[routeName] = struct{}{}
-		for _, sni := range routedSNIs {
-			if _, duplicate := seenNames[sni]; duplicate {
-				return "", false, userErrorf("实际 SNI %s 已用于端口 %d；请修改连接域名，Reality 接入请修改目标网站", sni, listener.Port)
-			}
-			seenNames[sni] = struct{}{}
+	for _, other := range sharing {
+		otherName, otherErr := automaticRouteName(other)
+		if otherErr != nil {
+			return "", false, userErrorf("端口 %d 已被“%s”使用，且该服务无法按实际 SNI 自动区分，请为它启用 TLS 或选择其他端口", listener.Port, other.Name)
 		}
-		for index := range existing {
-			name, nameErr := automaticRouteName(existing[index])
-			if nameErr != nil {
-				return "", false, userErrorf("端口 %d 已被“%s”使用，且该服务无法按实际 SNI 自动区分，请启用 TLS 或选择其他端口", listener.Port, existing[index].Name)
-			}
-			if _, duplicate := seenNames[name]; duplicate {
-				return "", false, userErrorf("实际 SNI %s 已用于端口 %d；请修改连接域名，Reality 接入请修改目标网站", name, listener.Port)
-			}
-			seenNames[name] = struct{}{}
+		if strings.EqualFold(otherName, name) {
+			return "", false, userErrorf("实际 SNI %s 已用于端口 %d；请修改连接域名，Reality 接入请修改目标网站", name, listener.Port)
 		}
-
-		if routedAddress != "" {
-			publicAddress = routedAddress
-		} else if len(existing) > 0 {
-			publicAddress = existing[0].ListenAddr
-		}
-		if publicAddress == "127.0.0.1" || publicAddress == "::1" || net.ParseIP(publicAddress) == nil {
-			publicAddress = "0.0.0.0"
-		}
-
-		for index := range existing {
-			if existing[index].BackendPort == existing[index].Port || (existing[index].ListenAddr != "127.0.0.1" && existing[index].ListenAddr != "::1") {
-				backendPort, portErr := takeBackendPort(usedPorts)
-				if portErr != nil {
-					return "", false, portErr
-				}
-				existing[index].ListenAddr = "127.0.0.1"
-				existing[index].BackendPort = backendPort
-				if _, updateErr := tx.ExecContext(ctx, `UPDATE listeners SET listen_address = '127.0.0.1', backend_port = ?, updated_at = ? WHERE id = ?`, backendPort, nowUnix(), existing[index].ID); updateErr != nil {
-					return "", false, fmt.Errorf("move existing listener to an internal port: %w", updateErr)
-				}
-			}
-			name, _ := automaticRouteName(existing[index])
-			if err := upsertAutomaticRoute(ctx, tx, existing[index], publicAddress, name); err != nil {
-				return "", false, err
-			}
-		}
-		listener.ListenAddr = "127.0.0.1"
-		listener.BackendPort, err = takeBackendPort(usedPorts)
-		if err != nil {
-			return "", false, err
-		}
-	} else if listener.BackendPort == 0 {
-		listener.BackendPort = listener.Port
 	}
-	return publicAddress, managed, nil
+	return "", false, nil
+}
+
+// refuseIndistinguishableSharedPort rejects a service the node could not tell
+// apart from one already on the same public port. Sharing a port is ordinary —
+// the node puts the services behind its router and separates them by TLS name
+// — but two that carry the same name, or none at all, leave it nothing to
+// separate them by on any host.
+func (s *Store) refuseIndistinguishableSharedPort(ctx context.Context, listener Listener) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	sharing, err := otherListenersOnPort(ctx, tx, &listener)
+	if err != nil {
+		return err
+	}
+	if len(sharing) == 0 {
+		return nil
+	}
+	if listener.Spec.Network != "tcp" {
+		return userErrorf("端口 %d 已被该服务器上的另一个 UDP 接入服务使用，请选择其他端口", listener.Port)
+	}
+	name, err := automaticRouteName(listener)
+	if err != nil {
+		return userErrorf("端口 %d 已被使用；如需与其他服务共用同一端口，TCP 接入服务必须启用 TLS 或 Reality，并使用不同的实际 SNI", listener.Port)
+	}
+	for _, other := range sharing {
+		otherName, otherErr := automaticRouteName(other)
+		if otherErr != nil {
+			return userErrorf("端口 %d 已被“%s”使用，且该服务无法按实际 SNI 自动区分，请为它启用 TLS 或选择其他端口", listener.Port, other.Name)
+		}
+		if strings.EqualFold(otherName, name) {
+			return userErrorf("实际 SNI %s 已用于端口 %d；请修改连接域名，Reality 接入请修改目标网站", name, listener.Port)
+		}
+	}
+	return nil
+}
+
+// otherListenersOnPort are the enabled services already on this listener's
+// public port and network, excluding the listener itself.
+func otherListenersOnPort(ctx context.Context, tx *sql.Tx, listener *Listener) ([]Listener, error) {
+	found, err := listenersOnPublicPort(ctx, tx, listener.NodeID, listener.Spec.Network, listener.Port)
+	if err != nil {
+		return nil, err
+	}
+	others := make([]Listener, 0, len(found))
+	for _, other := range found {
+		if other.ID != listener.ID {
+			others = append(others, other)
+		}
+	}
+	return others, nil
 }
 
 func listenersOnPublicPort(ctx context.Context, tx *sql.Tx, nodeID, network string, port uint16) ([]Listener, error) {
@@ -286,6 +273,30 @@ func takeBackendPort(occupied map[uint16]bool) (uint16, error) {
 		}
 	}
 	return 0, userErrorf("没有可用的内部端口，请清理未使用的接入服务后重试")
+}
+
+// NodeRoutingNames maps each compiled inbound tag to the TLS name clients
+// reach that service by. It is a statement of fact about the services, not a
+// decision about how they are deployed: the node reads it when it has to tell
+// two services on one port apart. A service with no usable name is simply
+// absent, which is what tells the node it cannot be routed.
+func (s *Store) NodeRoutingNames(ctx context.Context, nodeID string) (map[string]string, error) {
+	listeners, err := s.ListListeners(ctx, nodeID)
+	if err != nil {
+		return nil, err
+	}
+	names := map[string]string{}
+	for _, listener := range listeners {
+		if !listener.Enabled {
+			continue
+		}
+		name, err := automaticRouteName(listener)
+		if err != nil {
+			continue
+		}
+		names["listener-"+listener.ID] = name
+	}
+	return names, nil
 }
 
 func automaticRouteName(listener Listener) (string, error) {

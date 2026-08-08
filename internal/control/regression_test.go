@@ -82,24 +82,29 @@ func TestReconcileBacksOffInsteadOfQueueingATaskPerHeartbeat(t *testing.T) {
 		t.Fatalf("five failed heartbeats queued %d tasks, want at most one per configuration kind: %#v", total, tasks)
 	}
 
-	// An operator action must still take effect immediately.
-	operator, _, err := store.EnsureDefaultAdmin(t.Context())
+	// Counting rows cannot show the wait itself: a desired state that is still
+	// queued is reused rather than queued twice. The wait is the thing under
+	// test, so it is asked about directly.
+	_, desiredHash, err := store.CompileNodeConfig(t.Context(), nodeID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := server.dispatchNodeNginx(t.Context(), nodeID, operator.ID); err != nil {
-		t.Fatal(err)
+	if server.shouldReconcile(nodeID, "singbox", desiredHash) {
+		t.Fatal("a node that keeps reporting the same drift was retried without waiting")
 	}
-	server.reconcileNodeDesiredState(t.Context(), nodeID, "1.13.0", "stale", "stale")
-	if _, afterOperator, err := store.ListTasks(t.Context(), nodeID, "", 1, 100); err != nil || afterOperator <= total {
-		t.Fatalf("an operator action did not clear the backoff: total=%d after=%d err=%v", total, afterOperator, err)
+	// An operator action must still take effect immediately, however long the
+	// node has been failing to converge.
+	server.clearReconcileState(nodeID)
+	if !server.shouldReconcile(nodeID, "singbox", desiredHash) {
+		t.Fatal("an operator action did not clear the backoff")
 	}
 }
 
-// Nginx binds the shared public port for the managed SNI group. A listener
-// left on that same port fights it for the socket, so whichever starts second
-// fails and the port serves nothing at all.
-func TestListenerCannotBindAPortTheManagedRouterOwns(t *testing.T) {
+// Services asked to share a public port are recorded on that port, and the
+// control plane supplies the name each is reached by. Deciding which of them
+// binds the socket and which sits behind the router belongs to the node, which
+// is the only side that can see what else is already there.
+func TestSharedPortServicesKeepTheirPublicPortAndCarryDistinctNames(t *testing.T) {
 	store, err := Open(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
@@ -107,28 +112,35 @@ func TestListenerCannotBindAPortTheManagedRouterOwns(t *testing.T) {
 	defer store.Close()
 	nodeID := newTestNode(t, store, "port-node", "p")
 
-	if _, _, _, err := store.CreateListenerWithAutomaticPortRouting(t.Context(), tlsListener(nodeID, "第一个", "a.example.com", 443, true)); err != nil {
-		t.Fatal(err)
+	first, _, managed, err := store.CreateListenerWithAutomaticPortRouting(t.Context(), tlsListener(nodeID, "第一个", "a.example.com", 443, true))
+	if err != nil || managed {
+		t.Fatalf("first service on 443 = managed:%v err:%v", managed, err)
 	}
-	// The second listener on 443 moves both behind the router.
-	if _, _, managed, err := store.CreateListenerWithAutomaticPortRouting(t.Context(), tlsListener(nodeID, "第二个", "b.example.com", 443, true)); err != nil || !managed {
-		t.Fatalf("second listener on 443 was not routed: managed=%v err=%v", managed, err)
-	}
-
-	// A listener created disabled on the same port must also be routed rather
-	// than left holding 443, which would collide once it is enabled.
-	third, _, managed, err := store.CreateListenerWithAutomaticPortRouting(t.Context(), tlsListener(nodeID, "第三个", "c.example.com", 443, false))
+	second, _, _, err := store.CreateListenerWithAutomaticPortRouting(t.Context(), tlsListener(nodeID, "第二个", "b.example.com", 443, true))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !managed {
-		t.Fatal("a disabled listener on a routed port was left on the public port")
+	for _, listener := range []Listener{first, second} {
+		if listener.ListenAddr != "0.0.0.0" || listener.BackendPort != 443 {
+			t.Fatalf("service on the shared port was placed centrally: %#v", listener)
+		}
 	}
-	if third.ListenAddr != "127.0.0.1" || third.BackendPort == 443 {
-		t.Fatalf("routed listener binds %s:%d, want a loopback backend port", third.ListenAddr, third.BackendPort)
+	routes, err := store.ListIngressRoutes(t.Context(), nodeID)
+	if err != nil || len(routes) != 0 {
+		t.Fatalf("automatic routes were created centrally: %#v err:%v", routes, err)
 	}
-	if err := store.SetListenerEnabled(t.Context(), third.ID, true); err != nil {
-		t.Fatalf("enabling a correctly routed listener failed: %v", err)
+	names, err := store.NodeRoutingNames(t.Context(), nodeID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if names["listener-"+first.ID] != "a.example.com" || names["listener-"+second.ID] != "b.example.com" {
+		t.Fatalf("routing names = %#v", names)
+	}
+
+	// Two services on one port that no name can tell apart could not deploy on
+	// any host, and that is something the control plane can see for itself.
+	if _, _, _, err := store.CreateListenerWithAutomaticPortRouting(t.Context(), tlsListener(nodeID, "重名", "a.example.com", 443, true)); err == nil {
+		t.Fatal("a second service with the same name on one port was accepted")
 	}
 }
 
@@ -158,9 +170,9 @@ func TestUDPListenerMayReusePortHeldByTheTCPRouter(t *testing.T) {
 	}
 }
 
-// A disabled listener's SNI must leave the Nginx map, otherwise Nginx keeps
-// forwarding that hostname into a backend port sing-box no longer binds.
-func TestDisabledListenerLeavesTheCompiledNginxConfiguration(t *testing.T) {
+// A disabled service's name must stop being published, otherwise the node
+// would keep routing that hostname to a backend sing-box no longer binds.
+func TestDisabledListenerLeavesThePublishedRoutingNames(t *testing.T) {
 	store, err := Open(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
@@ -175,25 +187,25 @@ func TestDisabledListenerLeavesTheCompiledNginxConfiguration(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	configuration, _, err := store.CompileNodeNginx(t.Context(), nodeID)
+	names, err := store.NodeRoutingNames(t.Context(), nodeID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(configuration, "drop.example.com") {
-		t.Fatal("an enabled listener is missing from the compiled configuration")
+	if names["listener-"+dropped.ID] != "drop.example.com" {
+		t.Fatalf("an enabled service is missing from the published names: %#v", names)
 	}
 	if _, err := store.db.ExecContext(t.Context(), `UPDATE listeners SET enabled = 0 WHERE id = ?`, dropped.ID); err != nil {
 		t.Fatal(err)
 	}
-	configuration, _, err = store.CompileNodeNginx(t.Context(), nodeID)
+	names, err = store.NodeRoutingNames(t.Context(), nodeID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(configuration, "drop.example.com") {
-		t.Fatalf("a disabled listener is still routed by Nginx:\n%s", configuration)
+	if _, present := names["listener-"+dropped.ID]; present {
+		t.Fatalf("a disabled service is still published: %#v", names)
 	}
-	if !strings.Contains(configuration, "keep.example.com") {
-		t.Fatalf("the remaining listener was dropped too:\n%s", configuration)
+	if len(names) != 1 {
+		t.Fatalf("the remaining service was dropped too: %#v", names)
 	}
 }
 
@@ -390,12 +402,9 @@ func TestPortEditKeepsCompiledConfigAndSubscriptionInSync(t *testing.T) {
 	}
 	moved := second
 	moved.Port = 8443
-	moved, routingChanged, err := store.RelocateListenerPort(t.Context(), moved)
+	moved, _, err = store.RelocateListenerPort(t.Context(), moved)
 	if err != nil {
 		t.Fatal(err)
-	}
-	if !routingChanged {
-		t.Fatal("leaving the shared port did not report a routing change")
 	}
 	if moved.Port != 8443 || moved.BackendPort != 8443 || moved.ListenAddr != "0.0.0.0" {
 		t.Fatalf("listener after the port edit = %#v", moved)
@@ -420,12 +429,14 @@ func TestPortEditKeepsCompiledConfigAndSubscriptionInSync(t *testing.T) {
 	if listenByPort[8443] != "0.0.0.0" {
 		t.Fatalf("compiled inbounds = %#v, want 8443 bound on 0.0.0.0", compiled.Inbounds)
 	}
-	nginx, _, err := store.CompileNodeNginx(t.Context(), nodeID)
+	// Both services keep publishing their names; which of them the node ends up
+	// routing follows from the ports, and 8443 is now free of company.
+	names, err := store.NodeRoutingNames(t.Context(), nodeID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(nginx, "b.example.com") || !strings.Contains(nginx, "a.example.com") {
-		t.Fatalf("Nginx after the edit = %q", nginx)
+	if names["listener-"+moved.ID] != "b.example.com" || len(names) != 2 {
+		t.Fatalf("published routing names after the edit = %#v", names)
 	}
 	if after := subscription(); !strings.Contains(after, "b.example.com:8443") {
 		t.Fatalf("subscription after the edit = %q", after)

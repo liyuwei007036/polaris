@@ -731,7 +731,15 @@ func (s *Server) dispatchNodeConfiguration(ctx context.Context, nodeID, operator
 	if err != nil {
 		return Task{}, err
 	}
-	payload, err := json.Marshal(map[string]string{"configuration": configuration})
+	// The node decides how each service binds its port, so it is sent
+	// everything that decision needs: the compiled services, and the TLS name
+	// each one is reached by. Which name belongs to which service is the
+	// control plane's to know; what to do about it is the node's.
+	names, err := s.store.NodeRoutingNames(ctx, nodeID)
+	if err != nil {
+		return Task{}, err
+	}
+	payload, err := json.Marshal(map[string]any{"configuration": configuration, "sni": names})
 	if err != nil {
 		return Task{}, err
 	}
@@ -767,10 +775,19 @@ func setAutoApplyTaskHeaders(w http.ResponseWriter, tasks []Task) {
 	}
 }
 
+// dispatchNodeNginx no longer sends anything. The node builds its own router
+// from the services it is asked to run, so there is no separate router state to
+// push and nothing on the agent that would accept one. The remaining callers
+// are the manual ingress-route endpoints, which the console does not use; they
+// stay inert until those endpoints are removed with the rest of the table.
 func (s *Server) dispatchNodeNginx(ctx context.Context, nodeID, operatorID string) (Task, error) {
 	if operatorID != "" {
 		s.clearReconcileState(nodeID)
 	}
+	return Task{}, nil
+}
+
+func (s *Server) dispatchNodeNginxUnused(ctx context.Context, nodeID, operatorID string) (Task, error) {
 	configuration, hash, err := s.store.CompileNodeNginx(ctx, nodeID)
 	if err != nil {
 		return Task{}, err
@@ -786,6 +803,9 @@ func (s *Server) dispatchNodeNginx(ctx context.Context, nodeID, operatorID strin
 }
 
 func setAutoApplyNginxTaskHeader(w http.ResponseWriter, task Task) {
+	if task.ID == "" {
+		return
+	}
 	w.Header().Set("X-SB-Auto-Apply-Nginx-Task", task.ID)
 }
 

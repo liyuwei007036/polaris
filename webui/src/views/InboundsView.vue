@@ -193,20 +193,35 @@ async function syncAccounts(listenerID, accounts) {
 }
 
 async function toggle(listener) {
-  await post(`/listeners/${listener.id}/enabled`, { enabled: !listener.enabled })
-  ElMessage.success('状态已更新，系统正在自动应用')
-  await load()
+  try {
+    await post(`/listeners/${listener.id}/enabled`, { enabled: !listener.enabled })
+    ElMessage.success('状态已更新，系统正在自动应用')
+    await load()
+  } catch (error) {
+    ElMessage.error(error instanceof Error ? error.message : '状态更新失败，请稍后重试')
+  }
 }
 
+// The refusal has to reach the operator. Without it a delete the server rejects
+// — a user still referenced by a client configuration is the common case —
+// leaves the row on screen with no message at all, reading as a dead button.
 async function removeListener(listener) {
-  await ElMessageBox.confirm(
-    `删除“${listener.name}”会同时删除其中的所有用户，且无法恢复。`,
-    '删除接入服务',
-    { type: 'warning', confirmButtonText: '确认删除' },
-  )
-  await del(`/listeners/${listener.id}`)
-  ElMessage.success('接入服务已删除，正在自动应用')
-  await load()
+  try {
+    await ElMessageBox.confirm(
+      `删除“${listener.name}”会同时删除其中的所有用户，且无法恢复。`,
+      '删除接入服务',
+      { type: 'warning', confirmButtonText: '确认删除' },
+    )
+  } catch {
+    return
+  }
+  try {
+    await del(`/listeners/${listener.id}`)
+    ElMessage.success('接入服务已删除，正在自动应用')
+    await load()
+  } catch (error) {
+    ElMessage.error(error instanceof Error ? error.message : '接入服务删除失败，请稍后重试')
+  }
 }
 
 onMounted(load)

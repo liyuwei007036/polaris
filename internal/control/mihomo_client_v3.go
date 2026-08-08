@@ -861,6 +861,125 @@ func (s *Store) migrateEmbeddedMihomoClientGroups(ctx context.Context) error {
 	return nil
 }
 
+// removeEndpointReferences drops endpoints from every proxy group and client
+// subscription that lists them.
+//
+// Deleting a service deletes its users, and the references have to go with
+// them: a group or subscription still naming a user that no longer exists
+// renders a member pointing at nothing. Refusing the delete instead — which is
+// what this replaced — left the operator to hunt down every reference by hand
+// before the console would let them remove anything.
+func removeEndpointReferences(ctx context.Context, tx *sql.Tx, endpointIDs map[string]bool) error {
+	if len(endpointIDs) == 0 {
+		return nil
+	}
+	groups, err := tx.QueryContext(ctx, `SELECT id, members_json, endpoint_ids FROM mihomo_proxy_groups`)
+	if err != nil {
+		return fmt.Errorf("load proxy groups for endpoint removal: %w", err)
+	}
+	type groupUpdate struct{ id, members, legacy string }
+	var updates []groupUpdate
+	for groups.Next() {
+		var id, membersJSON, legacyJSON string
+		if err := groups.Scan(&id, &membersJSON, &legacyJSON); err != nil {
+			groups.Close()
+			return err
+		}
+		var members []MihomoGroupMember
+		if err := json.Unmarshal([]byte(membersJSON), &members); err != nil {
+			groups.Close()
+			return err
+		}
+		var legacy []string
+		if err := json.Unmarshal([]byte(legacyJSON), &legacy); err != nil {
+			groups.Close()
+			return err
+		}
+		keptMembers := make([]MihomoGroupMember, 0, len(members))
+		for _, member := range members {
+			if member.Kind == "endpoint" && endpointIDs[member.ID] {
+				continue
+			}
+			keptMembers = append(keptMembers, member)
+		}
+		keptLegacy := make([]string, 0, len(legacy))
+		for _, endpointID := range legacy {
+			if endpointIDs[endpointID] {
+				continue
+			}
+			keptLegacy = append(keptLegacy, endpointID)
+		}
+		if len(keptMembers) == len(members) && len(keptLegacy) == len(legacy) {
+			continue
+		}
+		encodedMembers, err := json.Marshal(keptMembers)
+		if err != nil {
+			groups.Close()
+			return err
+		}
+		encodedLegacy, err := json.Marshal(keptLegacy)
+		if err != nil {
+			groups.Close()
+			return err
+		}
+		updates = append(updates, groupUpdate{id: id, members: string(encodedMembers), legacy: string(encodedLegacy)})
+	}
+	if err := groups.Close(); err != nil {
+		return err
+	}
+	for _, update := range updates {
+		if _, err := tx.ExecContext(ctx, `UPDATE mihomo_proxy_groups SET members_json = ?, endpoint_ids = ?, updated_at = ? WHERE id = ?`,
+			update.members, update.legacy, nowUnix(), update.id); err != nil {
+			return fmt.Errorf("remove deleted users from proxy group: %w", err)
+		}
+	}
+
+	subscriptions, err := tx.QueryContext(ctx, `SELECT id, endpoint_ids FROM subscriptions WHERE kind = 'client'`)
+	if err != nil {
+		return fmt.Errorf("load subscriptions for endpoint removal: %w", err)
+	}
+	type subscriptionUpdate struct{ id, endpoints string }
+	var subscriptionUpdates []subscriptionUpdate
+	for subscriptions.Next() {
+		var id, endpointJSON string
+		if err := subscriptions.Scan(&id, &endpointJSON); err != nil {
+			subscriptions.Close()
+			return err
+		}
+		var listed []string
+		if err := json.Unmarshal([]byte(endpointJSON), &listed); err != nil {
+			subscriptions.Close()
+			return err
+		}
+		kept := make([]string, 0, len(listed))
+		for _, endpointID := range listed {
+			if endpointIDs[endpointID] {
+				continue
+			}
+			kept = append(kept, endpointID)
+		}
+		if len(kept) == len(listed) {
+			continue
+		}
+		encoded, err := json.Marshal(kept)
+		if err != nil {
+			subscriptions.Close()
+			return err
+		}
+		subscriptionUpdates = append(subscriptionUpdates, subscriptionUpdate{id: id, endpoints: string(encoded)})
+	}
+	if err := subscriptions.Close(); err != nil {
+		return err
+	}
+	for _, update := range subscriptionUpdates {
+		if _, err := tx.ExecContext(ctx, `UPDATE subscriptions SET endpoint_ids = ?, updated_at = ? WHERE id = ?`,
+			update.endpoints, nowUnix(), update.id); err != nil {
+			return fmt.Errorf("remove deleted users from subscription: %w", err)
+		}
+	}
+	return nil
+}
+
 func (s *Store) clientConfigReferencesAnyEndpoint(ctx context.Context, endpointIDs map[string]bool) (bool, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT members_json, endpoint_ids FROM mihomo_proxy_groups`)
 	if err != nil {

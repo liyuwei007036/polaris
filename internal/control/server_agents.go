@@ -399,14 +399,9 @@ func (s *Server) reconcileNodeDesiredState(ctx context.Context, nodeID, singBoxV
 			}
 		}
 	}
-	_, desiredNginxHash, err := s.store.CompileNodeNginx(ctx, nodeID)
-	if err != nil {
-		log.Printf("compile desired Nginx configuration for node %s: %v", nodeID, err)
-	} else if !strings.EqualFold(desiredNginxHash, nginxConfigHash) && s.shouldReconcile(nodeID, "nginx", desiredNginxHash) {
-		if _, err := s.dispatchNodeNginx(ctx, nodeID, ""); err != nil {
-			log.Printf("reconcile Nginx configuration for node %s: %v", nodeID, err)
-		}
-	}
+	// The router configuration is no longer a desired state of its own: the
+	// node derives it from the services it was asked to run, so converging the
+	// sing-box configuration converges the router with it.
 }
 
 func (s *Server) maybeInstallSingBox(ctx context.Context, nodeID, operatingSystem, architecture, version string) {

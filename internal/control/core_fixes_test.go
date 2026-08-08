@@ -113,10 +113,35 @@ func TestNodeRenameAutomaticRealityAndEndpointAliasFlow(t *testing.T) {
 	if !strings.Contains(string(decoded), "listener.example.com:443") || !strings.Contains(string(decoded), "sni=www.microsoft.com") || !strings.Contains(string(decoded), "%E6%96%B0%E5%8A%A0%E5%9D%A1%E4%B8%93%E7%BA%BF+01") {
 		t.Fatalf("subscription did not keep the connection domain, Reality target and endpoint alias separate: %s", decoded)
 	}
-	if err := store.DeleteEndpoint(t.Context(), created.Endpoints[0].ID); err != control.ErrConflict {
-		t.Fatalf("referenced endpoint deletion = %v, want conflict", err)
+	// Deleting a user takes it out of every group and subscription listing it.
+	// Refusing instead left the operator to hunt down each reference by hand
+	// before the console would remove anything.
+	if err := store.DeleteEndpoint(t.Context(), created.Endpoints[0].ID); err != nil {
+		t.Fatalf("delete a referenced user: %v", err)
 	}
-	if err := store.DeleteListener(t.Context(), created.Listener.ID); err != control.ErrConflict {
-		t.Fatalf("listener with referenced endpoint deletion = %v, want conflict", err)
+	groups, err := store.ListMihomoProxyGroups(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, group := range groups {
+		for _, member := range group.Members {
+			if member.Kind == "endpoint" && member.ID == created.Endpoints[0].ID {
+				t.Fatalf("deleted user survived in proxy group %q: %#v", group.Name, group.Members)
+			}
+		}
+	}
+	subscriptions, err := store.ListSubscriptions(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, subscription := range subscriptions {
+		for _, endpointID := range subscription.EndpointIDs {
+			if endpointID == created.Endpoints[0].ID {
+				t.Fatalf("deleted user survived in subscription %q", subscription.Name)
+			}
+		}
+	}
+	if err := store.DeleteListener(t.Context(), created.Listener.ID); err != nil {
+		t.Fatalf("delete a listener whose users were referenced: %v", err)
 	}
 }

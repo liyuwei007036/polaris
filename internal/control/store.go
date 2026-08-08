@@ -1330,13 +1330,12 @@ func (s *Store) CreateListener(ctx context.Context, listener Listener) (Listener
 		return Listener{}, err
 	}
 	var conflict string
+	// Sharing a public port is ordinary now — the node separates the services
+	// behind its own router — so only an arrangement it could never separate
+	// is refused here.
 	if listener.Enabled {
-		err := s.db.QueryRowContext(ctx, `SELECT id FROM listeners WHERE node_id = ? AND network = ? AND backend_port = ? AND enabled = 1`, listener.NodeID, listener.Spec.Network, listener.BackendPort).Scan(&conflict)
-		if err == nil {
-			return Listener{}, ErrConflict
-		}
-		if !errors.Is(err, sql.ErrNoRows) {
-			return Listener{}, fmt.Errorf("check listener port conflict: %w", err)
+		if err := s.refuseIndistinguishableSharedPort(ctx, listener); err != nil {
+			return Listener{}, err
 		}
 	}
 	if err := s.db.QueryRowContext(ctx, `SELECT id FROM listeners WHERE node_id = ? AND name = ?`, listener.NodeID, listener.Name).Scan(&conflict); err == nil {
@@ -1405,14 +1404,7 @@ func (s *Store) UpdateListener(ctx context.Context, listener Listener) (Listener
 	}
 	var conflict string
 	if listener.Enabled {
-		err = s.db.QueryRowContext(ctx, `SELECT id FROM listeners WHERE node_id = ? AND network = ? AND backend_port = ? AND enabled = 1 AND id <> ?`, listener.NodeID, listener.Spec.Network, listener.BackendPort, listener.ID).Scan(&conflict)
-		if err == nil {
-			return Listener{}, ErrConflict
-		}
-		if !errors.Is(err, sql.ErrNoRows) {
-			return Listener{}, fmt.Errorf("check listener port conflict: %w", err)
-		}
-		if err := s.ensureBackendPortFreeOfNginx(ctx, listener.NodeID, listener.ID, listener.Spec.Network, listener.BackendPort); err != nil {
+		if err := s.refuseIndistinguishableSharedPort(ctx, listener); err != nil {
 			return Listener{}, err
 		}
 	}
@@ -1519,41 +1511,32 @@ func (s *Store) SetListenerEnabled(ctx context.Context, listenerID string, enabl
 }
 
 func (s *Store) DeleteListener(ctx context.Context, listenerID string) error {
-	var references int
 	rows, err := s.db.QueryContext(ctx, `SELECT id FROM endpoints WHERE listener_id = ?`, listenerID)
 	if err != nil {
-		return fmt.Errorf("check listener client config references: %w", err)
+		return fmt.Errorf("load listener users: %w", err)
 	}
 	endpointIDs := map[string]bool{}
 	for rows.Next() {
 		var endpointID string
 		if err := rows.Scan(&endpointID); err != nil {
 			rows.Close()
-			return fmt.Errorf("check listener client config references: %w", err)
+			return fmt.Errorf("load listener users: %w", err)
 		}
 		endpointIDs[endpointID] = true
 	}
 	if err := rows.Close(); err != nil {
-		return fmt.Errorf("check listener client config references: %w", err)
-	}
-	referenced, err := s.clientConfigReferencesAnyEndpoint(ctx, endpointIDs)
-	if err != nil {
-		return fmt.Errorf("check listener client config references: %w", err)
-	}
-	if referenced {
-		return ErrConflict
-	}
-	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM subscriptions s, json_each(s.endpoint_ids) e WHERE s.kind = 'client' AND e.value IN (SELECT id FROM endpoints WHERE listener_id = ?)`, listenerID).Scan(&references); err != nil {
-		return fmt.Errorf("check listener subscription references: %w", err)
-	}
-	if references != 0 {
-		return ErrConflict
+		return fmt.Errorf("load listener users: %w", err)
 	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
+	// The users go with the service, so every group and subscription listing
+	// them is cleaned up in the same transaction rather than blocking it.
+	if err := removeEndpointReferences(ctx, tx, endpointIDs); err != nil {
+		return err
+	}
 	if _, err := tx.ExecContext(ctx, `DELETE FROM ingress_routes WHERE listener_id = ?`, listenerID); err != nil {
 		return fmt.Errorf("delete listener ingress routes: %w", err)
 	}
@@ -1725,21 +1708,17 @@ func (s *Store) SetEndpointEnabled(ctx context.Context, endpointID string, enabl
 }
 
 func (s *Store) DeleteEndpoint(ctx context.Context, endpointID string) error {
-	var references int
-	referenced, err := s.clientConfigReferencesAnyEndpoint(ctx, map[string]bool{endpointID: true})
+	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
-		return fmt.Errorf("check client config references: %w", err)
+		return err
 	}
-	if referenced {
-		return ErrConflict
+	defer tx.Rollback()
+	// A deleted user is dropped from the groups and subscriptions listing it,
+	// the same way deleting its service is.
+	if err := removeEndpointReferences(ctx, tx, map[string]bool{endpointID: true}); err != nil {
+		return err
 	}
-	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM subscriptions s, json_each(s.endpoint_ids) e WHERE s.kind = 'client' AND e.value = ?`, endpointID).Scan(&references); err != nil {
-		return fmt.Errorf("check subscription references: %w", err)
-	}
-	if references != 0 {
-		return ErrConflict
-	}
-	result, err := s.db.ExecContext(ctx, `DELETE FROM endpoints WHERE id = ?`, endpointID)
+	result, err := tx.ExecContext(ctx, `DELETE FROM endpoints WHERE id = ?`, endpointID)
 	if err != nil {
 		return fmt.Errorf("delete endpoint: %w", err)
 	}
@@ -1750,7 +1729,7 @@ func (s *Store) DeleteEndpoint(ctx context.Context, endpointID string) error {
 	if changed != 1 {
 		return ErrNotFound
 	}
-	return nil
+	return tx.Commit()
 }
 
 // ListEndpoints returns one listener's users, or every listener's when

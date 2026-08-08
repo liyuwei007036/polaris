@@ -10,18 +10,23 @@ import (
 	"strings"
 )
 
-type nginxConfigurationState struct {
+// configurationState remembers both sides of a deploy: the hash the control
+// plane asked for, and the hash of what the node actually wrote. They differ
+// whenever the node adapts a configuration to the host — moving a service
+// behind the SNI router, merging routes for sites already on the port. The
+// control plane is told the desired hash, so it sees a converged node; the
+// effective hash is what proves the file has not been changed since.
+type configurationState struct {
 	DesiredHash   string `json:"desired_hash"`
 	EffectiveHash string `json:"effective_hash"`
 }
 
-func saveNginxConfigurationState(dataDir, desiredHash string) error {
-	effectiveHash, err := configurationFileHash(managedNginxConfig)
+func saveConfigurationState(dataDir, name, configurationPath, desiredHash string) error {
+	effectiveHash, err := configurationFileHash(configurationPath)
 	if err != nil {
 		return err
 	}
-	state := nginxConfigurationState{DesiredHash: strings.ToLower(desiredHash), EffectiveHash: effectiveHash}
-	content, err := json.Marshal(state)
+	content, err := json.Marshal(configurationState{DesiredHash: strings.ToLower(desiredHash), EffectiveHash: effectiveHash})
 	if err != nil {
 		return err
 	}
@@ -29,7 +34,7 @@ func saveNginxConfigurationState(dataDir, desiredHash string) error {
 	if err := os.MkdirAll(directory, 0o700); err != nil {
 		return err
 	}
-	temporary, err := os.CreateTemp(directory, ".nginx-*.json")
+	temporary, err := os.CreateTemp(directory, "."+strings.TrimSuffix(name, ".json")+"-*.json")
 	if err != nil {
 		return err
 	}
@@ -46,23 +51,43 @@ func saveNginxConfigurationState(dataDir, desiredHash string) error {
 	if err := temporary.Close(); err != nil {
 		return err
 	}
-	return os.Rename(temporaryPath, filepath.Join(directory, "nginx.json"))
+	return os.Rename(temporaryPath, filepath.Join(directory, name))
 }
 
-func reportedNginxConfigurationHash(dataDir string) string {
-	content, err := os.ReadFile(filepath.Join(dataDir, "desired-state", "nginx.json"))
+// reportedConfigurationHash is the desired hash to report, but only while the
+// file on disk still matches what this node wrote. Anything else — an edit by
+// hand, a half-finished deploy — reports nothing, which asks the control plane
+// to send the configuration again.
+func reportedConfigurationHash(dataDir, name, configurationPath string) string {
+	content, err := os.ReadFile(filepath.Join(dataDir, "desired-state", name))
 	if err != nil {
 		return ""
 	}
-	var state nginxConfigurationState
+	var state configurationState
 	if json.Unmarshal(content, &state) != nil || len(state.DesiredHash) != sha256.Size*2 || len(state.EffectiveHash) != sha256.Size*2 {
 		return ""
 	}
-	actualHash, err := configurationFileHash(managedNginxConfig)
+	actualHash, err := configurationFileHash(configurationPath)
 	if err != nil || !strings.EqualFold(actualHash, state.EffectiveHash) {
 		return ""
 	}
 	return strings.ToLower(state.DesiredHash)
+}
+
+func saveNginxConfigurationState(dataDir, desiredHash string) error {
+	return saveConfigurationState(dataDir, "nginx.json", managedNginxConfig, desiredHash)
+}
+
+func reportedNginxConfigurationHash(dataDir string) string {
+	return reportedConfigurationHash(dataDir, "nginx.json", managedNginxConfig)
+}
+
+func saveSingBoxConfigurationState(dataDir, desiredHash string) error {
+	return saveConfigurationState(dataDir, "singbox.json", managedSingBoxConfig, desiredHash)
+}
+
+func reportedSingBoxConfigurationHash(dataDir string) string {
+	return reportedConfigurationHash(dataDir, "singbox.json", managedSingBoxConfig)
 }
 
 func configurationFileHash(path string) (string, error) {

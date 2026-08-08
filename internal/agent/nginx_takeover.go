@@ -356,11 +356,15 @@ func managedListenPorts(configuration string) []uint16 {
 // range the control plane hands to sing-box backends so the two allocators
 // cannot collide.
 func freeLoopbackPort(sockets []listeningSocket, reserved map[uint16]bool) (uint16, bool) {
+	return freeLoopbackPortFrom(40000, 50000, sockets, reserved)
+}
+
+func freeLoopbackPortFrom(first, last uint16, sockets []listeningSocket, reserved map[uint16]bool) (uint16, bool) {
 	taken := map[uint16]bool{}
 	for _, socket := range sockets {
 		taken[socket.port] = true
 	}
-	for port := uint16(40000); port < 50000; port++ {
+	for port := first; port < last; port++ {
 		if taken[port] || reserved[port] || !loopbackPortFree(port) {
 			continue
 		}

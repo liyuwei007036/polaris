@@ -195,7 +195,7 @@ func TestSharedPortInboundCreatesMultipleUsersAndNginxRoutes(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	create := func(name, connectionDomain, realitySNI string, expectAutomaticRouting bool) struct {
+	create := func(name, connectionDomain, realitySNI string) struct {
 		Listener  control.Listener      `json:"listener"`
 		Endpoints []control.Endpoint    `json:"endpoints"`
 		Ingress   *control.IngressRoute `json:"ingress_route"`
@@ -217,8 +217,10 @@ func TestSharedPortInboundCreatesMultipleUsersAndNginxRoutes(t *testing.T) {
 		if response.Header.Get("X-SB-Auto-Apply-Task") == "" {
 			t.Fatal("listener automatic task header missing")
 		}
-		if got := response.Header.Get("X-SB-Auto-Apply-Nginx-Task") != ""; got != expectAutomaticRouting {
-			t.Fatalf("automatic port task header present = %v, want %v", got, expectAutomaticRouting)
+		// One task, carrying everything the node needs. There is no separate
+		// router task any more: the node derives the router from the services.
+		if header := response.Header.Get("X-SB-Auto-Apply-Nginx-Task"); header != "" {
+			t.Fatalf("a separate router task was queued: %q", header)
 		}
 		var created struct {
 			Listener  control.Listener      `json:"listener"`
@@ -226,14 +228,17 @@ func TestSharedPortInboundCreatesMultipleUsersAndNginxRoutes(t *testing.T) {
 			Ingress   *control.IngressRoute `json:"ingress_route"`
 		}
 		decodeBody(t, response, &created)
+		if created.Ingress != nil {
+			t.Fatalf("the control plane placed the service itself: %#v", created.Ingress)
+		}
 		return created
 	}
 
-	// The first listener has the port to itself, so it binds it directly and
-	// keeps seeing client addresses. The second one contends for that port,
-	// which is what puts both of them behind the router.
-	first := create("Reality A", "a.example.com", "reality-a.example.com", false)
-	second := create("Reality B", "b.example.com", "reality-b.example.com", true)
+	// Both services are recorded on the public port they asked for. Which of
+	// them binds the socket and which sits behind the router is worked out on
+	// the node, where what else holds that port is actually visible.
+	first := create("Reality A", "a.example.com", "reality-a.example.com")
+	second := create("Reality B", "b.example.com", "reality-b.example.com")
 	if len(first.Endpoints) != 2 || first.Endpoints[0].OutboundID != "direct" || first.Endpoints[1].OutboundID != outbound.ID {
 		t.Fatalf("generated accounts = %#v", first.Endpoints)
 	}
@@ -247,93 +252,50 @@ func TestSharedPortInboundCreatesMultipleUsersAndNginxRoutes(t *testing.T) {
 	}
 	firstListener := listenerByID[first.Listener.ID]
 	secondListener := listenerByID[second.Listener.ID]
-	if firstListener.Port != 443 || secondListener.Port != 443 || firstListener.BackendPort == secondListener.BackendPort {
-		t.Fatalf("automatically routed listener ports = %#v / %#v", firstListener, secondListener)
-	}
-	if firstListener.ListenAddr != "127.0.0.1" || secondListener.ListenAddr != "127.0.0.1" || second.Ingress == nil {
-		t.Fatalf("automatically routed listeners = %#v / %#v, route %#v", firstListener, secondListener, second.Ingress)
+	for _, listener := range []control.Listener{firstListener, secondListener} {
+		if listener.Port != 443 || listener.BackendPort != 443 || listener.ListenAddr != "0.0.0.0" {
+			t.Fatalf("service on the shared port was placed centrally: %#v", listener)
+		}
 	}
 	routes, err := store.ListIngressRoutes(t.Context(), nodeID)
+	if err != nil || len(routes) != 0 {
+		t.Fatalf("automatic routes were created centrally: %#v err:%v", routes, err)
+	}
+	names, err := store.NodeRoutingNames(t.Context(), nodeID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(routes) != 2 {
-		t.Fatalf("automatic routes = %#v", routes)
+	if names["listener-"+firstListener.ID] != "reality-a.example.com" || names["listener-"+secondListener.ID] != "reality-b.example.com" {
+		t.Fatalf("published routing names = %#v", names)
 	}
-	routeByListener := map[string]control.IngressRoute{}
-	for _, route := range routes {
-		routeByListener[route.ListenerID] = route
-	}
-	if routeByListener[first.Listener.ID].BackendPort != firstListener.BackendPort || routeByListener[second.Listener.ID].BackendPort != secondListener.BackendPort {
-		t.Fatalf("automatic route backends = %#v", routes)
-	}
+
+	// Editing the Reality target changes the name the node routes by.
 	editedSecond := secondListener
 	editedSecond.Spec.Reality.HandshakeServer = "reality-b-new.example.com"
 	editResponse := request(t, http.MethodPut, httpServer.URL+"/api/v1/listeners/"+secondListener.ID, editedSecond, session, csrfToken)
 	if editResponse.StatusCode != http.StatusOK {
-		t.Fatalf("edit automatically routed listener: got %d", editResponse.StatusCode)
+		t.Fatalf("edit service sharing a port: got %d", editResponse.StatusCode)
 	}
 	editResponse.Body.Close()
-	routes, err = store.ListIngressRoutes(t.Context(), nodeID)
-	if err != nil {
+	if names, err = store.NodeRoutingNames(t.Context(), nodeID); err != nil {
 		t.Fatal(err)
+	} else if names["listener-"+secondListener.ID] != "reality-b-new.example.com" {
+		t.Fatalf("published name was not updated: %#v", names)
 	}
-	for _, route := range routes {
-		if route.ListenerID == secondListener.ID && route.SNI != "reality-b-new.example.com" {
-			t.Fatalf("automatic route name was not updated: %#v", route)
+
+	// Moving to a free port and back is just a port change now; nothing about
+	// where it binds is decided here either way.
+	for _, port := range []uint16{444, 443} {
+		editedSecond.Port = port
+		portEdit := request(t, http.MethodPut, httpServer.URL+"/api/v1/listeners/"+secondListener.ID, editedSecond, session, csrfToken)
+		if portEdit.StatusCode != http.StatusOK {
+			t.Fatalf("port edit to %d: got %d", port, portEdit.StatusCode)
 		}
-	}
-	// Editing the port moves a managed listener off its shared port: it leaves
-	// the SNI group and binds the free port directly, and the Nginx setup is
-	// re-applied for the group it left.
-	editedSecond.Port = 444
-	portEdit := request(t, http.MethodPut, httpServer.URL+"/api/v1/listeners/"+secondListener.ID, editedSecond, session, csrfToken)
-	if portEdit.StatusCode != http.StatusOK {
-		t.Fatalf("managed port edit status = %d", portEdit.StatusCode)
-	}
-	if portEdit.Header.Get("X-SB-Auto-Apply-Nginx-Task") == "" {
-		t.Fatal("moving off the shared port did not queue the Nginx task")
-	}
-	var movedSecond control.Listener
-	decodeBody(t, portEdit, &movedSecond)
-	if movedSecond.Port != 444 || movedSecond.BackendPort != 444 || movedSecond.ListenAddr != "0.0.0.0" {
-		t.Fatalf("listener moved off the shared port = %#v", movedSecond)
-	}
-	routes, err = store.ListIngressRoutes(t.Context(), nodeID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(routes) != 1 || routes[0].ListenerID != first.Listener.ID {
-		t.Fatalf("routes after leaving the shared port = %#v", routes)
-	}
-	// Moving back onto the contended port joins the SNI group again, with a
-	// fresh internal port and route.
-	editedSecond.Port = 443
-	backEdit := request(t, http.MethodPut, httpServer.URL+"/api/v1/listeners/"+secondListener.ID, editedSecond, session, csrfToken)
-	if backEdit.StatusCode != http.StatusOK {
-		t.Fatalf("move back onto the shared port status = %d", backEdit.StatusCode)
-	}
-	if backEdit.Header.Get("X-SB-Auto-Apply-Nginx-Task") == "" {
-		t.Fatal("rejoining the shared port did not queue the Nginx task")
-	}
-	var rejoinedSecond control.Listener
-	decodeBody(t, backEdit, &rejoinedSecond)
-	if rejoinedSecond.Port != 443 || rejoinedSecond.BackendPort == 443 || rejoinedSecond.ListenAddr != "127.0.0.1" {
-		t.Fatalf("listener rejoining the shared port = %#v", rejoinedSecond)
-	}
-	routes, err = store.ListIngressRoutes(t.Context(), nodeID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(routes) != 2 {
-		t.Fatalf("routes after rejoining the shared port = %#v", routes)
-	}
-	routeByListener = map[string]control.IngressRoute{}
-	for _, route := range routes {
-		routeByListener[route.ListenerID] = route
-	}
-	if routeByListener[second.Listener.ID].SNI != "reality-b-new.example.com" {
-		t.Fatalf("rejoined route = %#v", routeByListener[second.Listener.ID])
+		var moved control.Listener
+		decodeBody(t, portEdit, &moved)
+		if moved.Port != port || moved.BackendPort != port || moved.ListenAddr != "0.0.0.0" {
+			t.Fatalf("service after the port edit = %#v", moved)
+		}
 	}
 
 	duplicateDomain := request(t, http.MethodPost, httpServer.URL+"/api/v1/listeners/quick", map[string]any{
@@ -420,13 +382,18 @@ func TestSharedPortInboundCreatesMultipleUsersAndNginxRoutes(t *testing.T) {
 	if movedUDPListener.Port != 8443 || movedUDPListener.BackendPort != 8443 || movedUDPListener.ListenAddr != "0.0.0.0" {
 		t.Fatalf("moved UDP listener = %#v", movedUDPListener)
 	}
-	nginx, _, err := store.CompileNodeNginx(t.Context(), nodeID)
-	if err != nil {
+	// Both names on the shared port stay published, which is what the node uses
+	// to build the router it decides it needs.
+	if names, err = store.NodeRoutingNames(t.Context(), nodeID); err != nil {
 		t.Fatal(err)
 	}
-	for _, expected := range []string{"listen 0.0.0.0:443", "reality-a.example.com", "reality-b-new.example.com"} {
-		if !strings.Contains(nginx, expected) {
-			t.Fatalf("Nginx configuration missing %q:\n%s", expected, nginx)
+	published := map[string]bool{}
+	for _, name := range names {
+		published[name] = true
+	}
+	for _, expected := range []string{"reality-a.example.com", "reality-b-new.example.com"} {
+		if !published[expected] {
+			t.Fatalf("published routing names missing %q: %#v", expected, names)
 		}
 	}
 	compiled, _, err := store.CompileNodeConfig(t.Context(), nodeID)
@@ -445,24 +412,16 @@ func TestSharedPortInboundCreatesMultipleUsersAndNginxRoutes(t *testing.T) {
 		t.Fatalf("account rules are not first: %#v", configuration.Route.Rules)
 	}
 
-	response := request(t, http.MethodDelete, httpServer.URL+"/api/v1/ingress-routes/"+routeByListener[first.Listener.ID].ID, nil, session, csrfToken)
+	// Deleting a service stops publishing its name, which is how the node
+	// learns to take it out of the router on the next apply.
+	response := request(t, http.MethodDelete, httpServer.URL+"/api/v1/listeners/"+second.Listener.ID, nil, session, csrfToken)
 	if response.StatusCode != http.StatusNoContent {
-		t.Fatalf("delete first shared ingress route: got %d", response.StatusCode)
+		t.Fatalf("delete a service sharing the port: got %d", response.StatusCode)
 	}
-	response = request(t, http.MethodDelete, httpServer.URL+"/api/v1/ingress-routes/"+routeByListener[second.Listener.ID].ID, nil, session, csrfToken)
-	if response.StatusCode != http.StatusNoContent {
-		t.Fatalf("delete last shared ingress route: got %d", response.StatusCode)
-	}
-	if response.Header.Get("X-SB-Auto-Apply-Nginx-Task") == "" {
-		t.Fatal("deleting the last ingress route did not queue the Nginx clear task")
-	}
-	nginx, hash, err := store.CompileNodeNginx(t.Context(), nodeID)
-	if err != nil {
+	if names, err = store.NodeRoutingNames(t.Context(), nodeID); err != nil {
 		t.Fatal(err)
-	}
-	digest := sha256.Sum256(nil)
-	if nginx != "" || hash != hex.EncodeToString(digest[:]) {
-		t.Fatalf("cleared Nginx configuration = %q, %q", nginx, hash)
+	} else if _, present := names["listener-"+second.Listener.ID]; present {
+		t.Fatalf("a deleted service is still published: %#v", names)
 	}
 }
 
@@ -496,7 +455,7 @@ func TestRealityWebSocketGRPCAndHysteria2SharePublicPort443(t *testing.T) {
 	session, csrfToken := login(t, httpServer.URL, secret)
 	nodeID := approveTestNode(t, server, httpServer.URL, session, csrfToken, "four-protocol-443-node")
 
-	create := func(name, domain string, spec map[string]any, expectIngress bool) control.Listener {
+	create := func(name, domain string, spec map[string]any) control.Listener {
 		t.Helper()
 		response := request(t, http.MethodPost, httpServer.URL+"/api/v1/listeners/quick", map[string]any{
 			"listener": map[string]any{
@@ -515,29 +474,29 @@ func TestRealityWebSocketGRPCAndHysteria2SharePublicPort443(t *testing.T) {
 			Ingress  *control.IngressRoute `json:"ingress_route"`
 		}
 		decodeBody(t, response, &created)
-		if (created.Ingress != nil) != expectIngress {
-			t.Fatalf("create %s ingress = %#v, want present %v", name, created.Ingress, expectIngress)
+		if created.Ingress != nil {
+			t.Fatalf("the control plane placed %s itself: %#v", name, created.Ingress)
 		}
 		return created.Listener
 	}
 
-	// The first one owns TCP/443 alone, so it binds it; the ones after it turn
-	// the port into a contended one and pull everybody behind the router.
+	// All four are recorded on the public port they were asked for. Separating
+	// the three TCP ones is the node's job, and it has the names to do it.
 	reality := create("Reality 443", "reality.example.com", map[string]any{
 		"protocol": "vless", "network": "tcp", "tls": map[string]any{"enabled": true},
 		"reality": map[string]any{"enabled": true, "handshake_server": "reality-target.example.com", "handshake_port": 443},
-	}, false)
+	})
 	websocket := create("WebSocket 443", "ws.example.com", map[string]any{
 		"protocol": "vless", "network": "tcp", "tls": map[string]any{"enabled": true, "alpn": []string{"http/1.1"}},
 		"transport": map[string]any{"type": "ws", "path": "/ws", "host": "ws.example.com"},
-	}, true)
+	})
 	grpc := create("gRPC 443", "grpc.example.com", map[string]any{
 		"protocol": "vless", "network": "tcp", "tls": map[string]any{"enabled": true, "alpn": []string{"h2"}},
 		"transport": map[string]any{"type": "grpc", "service_name": "grpc-service"},
-	}, true)
+	})
 	hysteria := create("HY2 443", "hy2.example.com", map[string]any{
 		"protocol": "hysteria2", "network": "udp", "tls": map[string]any{"enabled": true},
-	}, false)
+	})
 
 	listeners, err := store.ListListeners(t.Context(), nodeID)
 	if err != nil {
@@ -550,43 +509,34 @@ func TestRealityWebSocketGRPCAndHysteria2SharePublicPort443(t *testing.T) {
 			t.Fatalf("listener %s public port = %d, want 443", listener.Name, listener.Port)
 		}
 	}
-	seenBackends := map[uint16]bool{}
 	for _, id := range []string{reality.ID, websocket.ID, grpc.ID} {
 		listener := byID[id]
-		if listener.ListenAddr != "127.0.0.1" || listener.BackendPort == 443 || seenBackends[listener.BackendPort] {
-			t.Fatalf("TCP listener was not assigned a unique loopback backend: %#v", listener)
+		if listener.ListenAddr != "0.0.0.0" || listener.BackendPort != 443 {
+			t.Fatalf("TCP service on the shared port was placed centrally: %#v", listener)
 		}
-		seenBackends[listener.BackendPort] = true
 	}
 	if got := byID[hysteria.ID]; got.Spec.Network != "udp" || got.ListenAddr != "0.0.0.0" || got.BackendPort != 443 {
 		t.Fatalf("HY2 did not remain on UDP/443: %#v", got)
 	}
 
 	routes, err := store.ListIngressRoutes(t.Context(), nodeID)
+	if err != nil || len(routes) != 0 {
+		t.Fatalf("automatic routes were created centrally: %#v err:%v", routes, err)
+	}
+	// Each TCP service publishes the name the node separates it by. The UDP one
+	// publishes none it needs: nothing on UDP competes for the TCP socket.
+	names, err := store.NodeRoutingNames(t.Context(), nodeID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(routes) != 3 {
-		t.Fatalf("TCP/443 SNI routes = %#v, want 3", routes)
-	}
-	wantSNI := map[string]string{
+	wantNames := map[string]string{
 		reality.ID:   "reality-target.example.com",
 		websocket.ID: "ws.example.com",
 		grpc.ID:      "grpc.example.com",
 	}
-	for _, route := range routes {
-		if route.Port != 443 || route.SNI != wantSNI[route.ListenerID] {
-			t.Fatalf("unexpected SNI route: %#v, want SNI %q", route, wantSNI[route.ListenerID])
-		}
-	}
-
-	nginx, _, err := store.CompileNodeNginx(t.Context(), nodeID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, expected := range []string{"listen 0.0.0.0:443", "reality-target.example.com", "ws.example.com", "grpc.example.com"} {
-		if !strings.Contains(nginx, expected) {
-			t.Fatalf("shared TCP/443 configuration missing %q:\n%s", expected, nginx)
+	for id, want := range wantNames {
+		if names["listener-"+id] != want {
+			t.Fatalf("published name for %s = %q, want %q", byID[id].Name, names["listener-"+id], want)
 		}
 	}
 	configuration, _, err := store.CompileNodeConfig(t.Context(), nodeID)

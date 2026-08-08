@@ -110,9 +110,7 @@ func NewTaskHandlerWithOptions(options TaskOptions) TaskHandler {
 func executeTask(ctx context.Context, task Task, options TaskOptions) TaskResult {
 	switch task.Kind {
 	case "singbox.apply_config":
-		return applySingBoxConfig(ctx, task)
-	case "nginx.apply_config":
-		return applyNginxConfig(ctx, task, options.DataDir, options.NginxPassthroughRoutes)
+		return applySingBoxConfig(ctx, task, options.DataDir, options.NginxPassthroughRoutes)
 	case "firewall.query":
 		return queryFirewall(ctx)
 	case "firewall.mutate":
@@ -537,17 +535,12 @@ func persistNftables(ctx context.Context, script string) error {
 	return nil
 }
 
-func applyNginxConfig(ctx context.Context, task Task, dataDir string, passthrough []NginxPassthroughRoute) (result TaskResult) {
-	var payload struct {
-		Configuration string `json:"configuration"`
-	}
-	if err := json.Unmarshal([]byte(task.Payload), &payload); err != nil {
-		return TaskResult{Status: "failed", Summary: "invalid Nginx configuration payload"}
-	}
-	digest := sha256.Sum256([]byte(payload.Configuration))
-	if !strings.EqualFold(hex.EncodeToString(digest[:]), task.ExpectedHash) {
-		return TaskResult{Status: "failed", Summary: "Nginx configuration SHA-256 does not match task hash"}
-	}
+// applyNginxConfiguration puts a compiled SNI router configuration in place.
+// The configuration is derived on this node from the services it was asked to
+// run (see planListenerPlacement), so nothing here checks it against a hash
+// the control plane sent — there is none.
+func applyNginxConfiguration(ctx context.Context, configuration, dataDir string, passthrough []NginxPassthroughRoute) (result TaskResult) {
+	payload := struct{ Configuration string }{Configuration: configuration}
 	routes := make([]nginxroute.Route, 0, len(passthrough))
 	for _, route := range passthrough {
 		routes = append(routes, nginxroute.Route{
@@ -978,9 +971,13 @@ func installPackages(ctx context.Context, packages ...string) error {
 	return nil
 }
 
-func applySingBoxConfig(ctx context.Context, task Task) TaskResult {
+func applySingBoxConfig(ctx context.Context, task Task, dataDir string, passthrough []NginxPassthroughRoute) TaskResult {
 	var payload struct {
 		Configuration string `json:"configuration"`
+		// SNI is the TLS name each inbound is reached by, keyed by tag. The
+		// control plane knows which service owns which name; the node decides
+		// what to do with that, so the two travel together but stay separate.
+		SNI map[string]string `json:"sni"`
 	}
 	if err := json.Unmarshal([]byte(task.Payload), &payload); err != nil || payload.Configuration == "" {
 		return TaskResult{Status: "failed", Summary: "invalid sing-box configuration payload"}
@@ -989,11 +986,16 @@ func applySingBoxConfig(ctx context.Context, task Task) TaskResult {
 	if !strings.EqualFold(hex.EncodeToString(digest[:]), task.ExpectedHash) {
 		return TaskResult{Status: "failed", Summary: "configuration SHA-256 does not match task hash"}
 	}
-	if current, err := os.ReadFile(managedSingBoxConfig); err == nil {
-		currentDigest := sha256.Sum256(current)
-		if strings.EqualFold(hex.EncodeToString(currentDigest[:]), task.ExpectedHash) && singBoxServiceActive(ctx) {
-			return TaskResult{Status: "succeeded", Summary: "requested sing-box configuration is already active"}
-		}
+	if strings.EqualFold(reportedSingBoxConfigurationHash(dataDir), task.ExpectedHash) && singBoxServiceActive(ctx) {
+		return TaskResult{Status: "succeeded", Summary: "requested sing-box configuration is already active"}
+	}
+	// Placement is decided here, on the node: only the node can see what else
+	// holds the ports the services were asked to bind. The rewritten
+	// configuration is what gets written; the control plane still hears the
+	// hash it asked for, so it sees a converged node rather than drift.
+	plan, err := planNodePlacement(ctx, payload.Configuration, payload.SNI, dataDir)
+	if err != nil {
+		return TaskResult{Status: "failed", Summary: err.Error()}
 	}
 	configDir := filepath.Dir(managedSingBoxConfig)
 	if err := os.MkdirAll(configDir, 0o750); err != nil {
@@ -1010,7 +1012,7 @@ func applySingBoxConfig(ctx context.Context, task Task) TaskResult {
 	}
 	temporaryPath := temporary.Name()
 	defer os.Remove(temporaryPath)
-	if _, err := temporary.WriteString(payload.Configuration); err != nil {
+	if _, err := temporary.WriteString(plan.configuration); err != nil {
 		temporary.Close()
 		return TaskResult{Status: "failed", Summary: "write temporary configuration: " + err.Error()}
 	}
@@ -1030,9 +1032,29 @@ func applySingBoxConfig(ctx context.Context, task Task) TaskResult {
 	}
 	// Checked before the configuration is put in place: a port owned by another
 	// process only makes sing-box fail on start, and the restart loop that
-	// follows is far harder to read than this message.
-	if conflicts := singBoxPortConflicts(ctx, payload.Configuration); len(conflicts) > 0 {
+	// follows is far harder to read than this message. Placement has already
+	// moved every service it could off a contended port, so whatever is left
+	// here genuinely cannot be resolved on the node.
+	if conflicts := singBoxPortConflicts(ctx, plan.configuration); len(conflicts) > 0 {
 		return TaskResult{Status: "failed", Summary: "端口冲突：" + strings.Join(conflicts, "；") + "。请停止占用该端口的程序，或为接入服务改用其他端口"}
+	}
+	// Nginx has to let go of any port a service is about to bind directly
+	// before sing-box starts, and may only take over a port after sing-box has
+	// released it. Hence the two passes around the restart: the first drops
+	// what the router must give up, the second binds what it now serves. The
+	// second is a no-op whenever nothing changed.
+	routerConfiguration, digestErr := nginxroute.Compile(plan.routes)
+	if digestErr != nil {
+		return TaskResult{Status: "failed", Summary: "生成 Nginx 分流配置失败：" + digestErr.Error()}
+	}
+	releasing, releaseErr := nginxroute.Compile(plan.routesExcept(currentlySingBoxHeldPorts(ctx)))
+	if releaseErr != nil {
+		return TaskResult{Status: "failed", Summary: "生成 Nginx 分流配置失败：" + releaseErr.Error()}
+	}
+	if releasing != routerConfiguration {
+		if released := applyNginxConfiguration(ctx, releasing, dataDir, passthrough); released.Status == "failed" {
+			return released
+		}
 	}
 	backupPath := managedSingBoxConfig + ".polaris.last-good"
 	if current, err := os.ReadFile(managedSingBoxConfig); err == nil {
@@ -1047,6 +1069,19 @@ func applySingBoxConfig(ctx context.Context, task Task) TaskResult {
 	}
 	result := restartSingBox(ctx)
 	if result.Status == "succeeded" {
+		router := applyNginxConfiguration(ctx, routerConfiguration, dataDir, passthrough)
+		if router.Status == "failed" {
+			// sing-box is already serving the new services; the router is what
+			// is missing, and saying so beats a rollback that would take the
+			// working half down with it.
+			return TaskResult{Status: "failed", Summary: "接入服务已生效，但 Nginx 分流未能应用：" + router.Summary}
+		}
+		if err := saveSingBoxConfigurationState(dataDir, task.ExpectedHash); err != nil {
+			result.Summary += "；记录配置状态失败：" + err.Error()
+		}
+		if len(plan.summaries) > 0 {
+			result.Summary += "；" + strings.Join(plan.summaries, "；")
+		}
 		return result
 	}
 	if backup, err := os.ReadFile(backupPath); err == nil {
@@ -1061,6 +1096,22 @@ func applySingBoxConfig(ctx context.Context, task Task) TaskResult {
 	// message an operator sees, and it is often their very first deploy with
 	// no prior backup to roll back to.
 	return TaskResult{Status: "failed", Summary: "new configuration failed and automatic rollback did not complete: " + result.Summary}
+}
+
+// currentlySingBoxHeldPorts are the TCP ports sing-box binds right now. The
+// router cannot take one over until the restart below releases it.
+func currentlySingBoxHeldPorts(ctx context.Context) map[uint16]bool {
+	held := map[uint16]bool{}
+	sockets, ok := listeningSockets(ctx)
+	if !ok {
+		return held
+	}
+	for _, socket := range sockets {
+		if socket.network == "tcp" && socket.process == "sing-box" {
+			held[socket.port] = true
+		}
+	}
+	return held
 }
 
 var managedSingBoxUnit = managedSystemPath("/etc/systemd/system/sing-box.service")

@@ -158,8 +158,11 @@ func TestStartupReconcilesListenerPortRouting(t *testing.T) {
 		t.Fatalf("listener without a usable SNI was moved: %#v", got)
 	}
 	first, second := byID[sharedFirst], byID[sharedSecond]
-	if first.ListenAddr != "127.0.0.1" || second.ListenAddr != "127.0.0.1" || first.BackendPort == second.BackendPort {
-		t.Fatalf("contended port was not routed: %#v / %#v", first, second)
+	// A shared port is no longer resolved here. The node works out that two
+	// services want one socket and puts them behind its own router; the control
+	// plane records only the public port each was asked for.
+	if first.ListenAddr != "0.0.0.0" || first.BackendPort != 8443 || second.ListenAddr != "0.0.0.0" || second.BackendPort != 8443 {
+		t.Fatalf("services on a shared port were still placed centrally: %#v / %#v", first, second)
 	}
 	if got := byID[stranded]; got.ListenAddr != "0.0.0.0" || got.BackendPort != 9443 {
 		t.Fatalf("listener alone on its port was not taken back off loopback: %#v", got)
@@ -168,17 +171,15 @@ func TestStartupReconcilesListenerPortRouting(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	routeByListener := map[string]IngressRoute{}
-	for _, route := range routes {
-		routeByListener[route.ListenerID] = route
+	if len(routes) != 0 {
+		t.Fatalf("automatic routes survived the migration: %#v", routes)
 	}
-	if len(routes) != 2 {
-		t.Fatalf("routes = %#v, want one per listener on the contended port", routes)
+	// The names the node needs to tell the two apart still come from here.
+	names, err := store.NodeRoutingNames(t.Context(), nodeID)
+	if err != nil {
+		t.Fatal(err)
 	}
-	for id, listener := range map[string]Listener{sharedFirst: first, sharedSecond: second} {
-		route, ok := routeByListener[id]
-		if !ok || route.Port != 8443 || route.BackendPort != listener.BackendPort {
-			t.Fatalf("route for %s does not front its listener: %#v", listener.Name, route)
-		}
+	if names["listener-"+sharedFirst] != "first.example.com" || names["listener-"+sharedSecond] != "second.example.com" {
+		t.Fatalf("routing names for the shared port = %#v", names)
 	}
 }
