@@ -112,6 +112,10 @@ test('浏览器页面回归：真实登录，核心工作区 API 使用路由替
   await page.getByRole('button', { name: '网络防护', exact: true }).click()
   await expect(page.locator('.page-shell')).toHaveCount(1)
   await expect(page.locator('.page-shell').getByText('全部服务器', { exact: true })).toBeVisible()
+  // The page opens on what the servers' own firewalls admit; the unabridged
+  // rule listing stays one tab away.
+  await expect(page.getByText('允许的来源', { exact: true })).toBeVisible()
+  await page.locator('.page-shell').getByRole('tab', { name: /^全部规则/ }).click()
   await expect(page.getByText('来源地址范围 / IP 归属地', { exact: true })).toBeVisible()
   await page.getByRole('button', { name: '操作记录', exact: true }).click()
   await expect(page.getByRole('tabpanel', { name: '系统操作', exact: true }).getByText('共 0 条', { exact: true })).toBeVisible()

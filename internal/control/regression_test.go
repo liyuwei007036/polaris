@@ -1,6 +1,8 @@
 package control
 
 import (
+	"encoding/base64"
+	"encoding/json"
 	"strings"
 	"testing"
 	"time"
@@ -339,5 +341,93 @@ func TestCloudflareRecordsBindThemselvesToAccessServices(t *testing.T) {
 	}
 	if len(records[2].Bindings) != 0 {
 		t.Fatalf("unrelated record = %+v, want no binding invented", records[2].Bindings)
+	}
+}
+
+// Editing a listener onto another port must carry the whole chain with it:
+// the compiled sing-box inbound, the Nginx SNI group it leaves, and the
+// subscription clients download.
+func TestPortEditKeepsCompiledConfigAndSubscriptionInSync(t *testing.T) {
+	store, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	nodeID := newTestNode(t, store, "port-edit-node", "p")
+	if err := store.SetNodeClientAddress(t.Context(), nodeID, "203.0.113.10"); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, _, err := store.CreateListenerWithAutomaticPortRouting(t.Context(), tlsListener(nodeID, "服务 A", "a.example.com", 443, true)); err != nil {
+		t.Fatal(err)
+	}
+	second, _, _, err := store.CreateListenerWithAutomaticPortRouting(t.Context(), tlsListener(nodeID, "服务 B", "b.example.com", 443, true))
+	if err != nil {
+		t.Fatal(err)
+	}
+	endpoint, err := store.CreateEndpoint(t.Context(), Endpoint{ListenerID: second.ID, Name: "user", Enabled: true},
+		EndpointCredentials{UUID: "bf000d23-0752-40b4-affe-68f7707a9661"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, token, err := store.CreateSubscription(t.Context(), SubscriptionInput{Kind: ClientSubscription, Name: "订阅", EndpointIDs: []string{endpoint.ID}, Enabled: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	subscription := func() string {
+		t.Helper()
+		encoded, err := store.GenerateClientSubscription(t.Context(), token)
+		if err != nil {
+			t.Fatal(err)
+		}
+		decoded, err := base64.StdEncoding.DecodeString(encoded)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return string(decoded)
+	}
+	if before := subscription(); !strings.Contains(before, "b.example.com:443") {
+		t.Fatalf("subscription before the edit = %q", before)
+	}
+	moved := second
+	moved.Port = 8443
+	moved, routingChanged, err := store.RelocateListenerPort(t.Context(), moved)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !routingChanged {
+		t.Fatal("leaving the shared port did not report a routing change")
+	}
+	if moved.Port != 8443 || moved.BackendPort != 8443 || moved.ListenAddr != "0.0.0.0" {
+		t.Fatalf("listener after the port edit = %#v", moved)
+	}
+	configuration, _, err := store.CompileNodeConfig(t.Context(), nodeID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var compiled struct {
+		Inbounds []struct {
+			Listen     string `json:"listen"`
+			ListenPort uint16 `json:"listen_port"`
+		} `json:"inbounds"`
+	}
+	if err := json.Unmarshal([]byte(configuration), &compiled); err != nil {
+		t.Fatal(err)
+	}
+	listenByPort := map[uint16]string{}
+	for _, inbound := range compiled.Inbounds {
+		listenByPort[inbound.ListenPort] = inbound.Listen
+	}
+	if listenByPort[8443] != "0.0.0.0" {
+		t.Fatalf("compiled inbounds = %#v, want 8443 bound on 0.0.0.0", compiled.Inbounds)
+	}
+	nginx, _, err := store.CompileNodeNginx(t.Context(), nodeID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(nginx, "b.example.com") || !strings.Contains(nginx, "a.example.com") {
+		t.Fatalf("Nginx after the edit = %q", nginx)
+	}
+	if after := subscription(); !strings.Contains(after, "b.example.com:8443") {
+		t.Fatalf("subscription after the edit = %q", after)
 	}
 }

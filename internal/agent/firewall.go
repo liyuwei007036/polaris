@@ -45,13 +45,20 @@ type LiveFirewallRule struct {
 	Raw      string `json:"raw"`
 }
 
-// LiveFirewall is everything a host enforces on traffic right now.
+// LiveFirewall is everything a host enforces on traffic right now. Manager is
+// the tool the host manages its firewall with, DefaultIncoming its policy for
+// traffic nothing else matches, and OpenPorts the ports it does let in — the
+// question the console exists to answer. Rules stays the unabridged listing
+// behind that summary.
 type LiveFirewall struct {
-	Available bool               `json:"available"`
-	Tool      string             `json:"tool,omitempty"`
-	Rules     []LiveFirewallRule `json:"rules"`
-	Truncated bool               `json:"truncated,omitempty"`
-	Error     string             `json:"error,omitempty"`
+	Available       bool               `json:"available"`
+	Tool            string             `json:"tool,omitempty"`
+	Manager         string             `json:"manager,omitempty"`
+	DefaultIncoming string             `json:"default_incoming,omitempty"`
+	OpenPorts       []OpenPort         `json:"open_ports"`
+	Rules           []LiveFirewallRule `json:"rules"`
+	Truncated       bool               `json:"truncated,omitempty"`
+	Error           string             `json:"error,omitempty"`
 }
 
 // FirewallMutation is one change to the host's rules. An addition carries the
@@ -62,16 +69,23 @@ type FirewallMutation struct {
 	Rule      LiveFirewallRule `json:"rule"`
 }
 
-// CollectLiveFirewall reads the host's rules back.
+// CollectLiveFirewall reads the host's rules back, then has the host's own
+// firewall tool say which ports it admits. The kernel listing alone cannot
+// answer that on a host running ufw or firewalld: their rules reach it through
+// chains and sets whose shape is theirs, and only they know the zones and
+// service names behind it.
 func CollectLiveFirewall(ctx context.Context) LiveFirewall {
+	var live LiveFirewall
 	switch {
 	case commandExists("nft"):
-		return collectLiveNftables(ctx)
+		live = collectLiveNftables(ctx)
 	case commandExists("iptables"):
-		return collectLiveIptables(ctx)
+		live = collectLiveIptables(ctx)
 	default:
-		return LiveFirewall{Rules: []LiveFirewallRule{}, Error: "服务器上没有安装 nftables 或 iptables，无法读取防火墙规则"}
+		live = LiveFirewall{Rules: []LiveFirewallRule{}, Error: "服务器上没有安装 nftables 或 iptables，无法读取防火墙规则"}
 	}
+	describeHostFirewall(ctx, &live)
+	return live
 }
 
 func collectLiveNftables(ctx context.Context) LiveFirewall {
@@ -290,19 +304,38 @@ func parseIptablesRule(line string) LiveFirewallRule {
 }
 
 // ApplyFirewallMutation changes the host's firewall and returns what it
-// enforces afterwards.
+// enforces afterwards. The change goes through the host's own firewall tool
+// whenever it has one: ufw and firewalld rebuild the kernel ruleset from their
+// own stores, so a rule written past them into a private table is absent from
+// their listings and discarded at their next reload.
 func ApplyFirewallMutation(ctx context.Context, mutation FirewallMutation) (LiveFirewall, error) {
-	if err := ensureNftablesReady(ctx); err != nil {
-		return LiveFirewall{}, errors.New("准备防火墙失败：" + err.Error())
+	if mutation.Operation != "add" && mutation.Operation != "delete" {
+		return LiveFirewall{}, errors.New("不支持的访问限制操作")
+	}
+	// Only a rule stated as protocol-and-port is one the host's own tool can
+	// express. A deletion that names a raw kernel rule instead — a handle in
+	// some table, which is how the full listing identifies rules — has to go
+	// out the way it came in, because ufw and firewalld have no wording for it.
+	manager := detectFirewallManager(ctx)
+	if mutation.Rule.Protocol == "" || mutation.Rule.Port == 0 {
+		manager = ""
 	}
 	var err error
-	switch mutation.Operation {
-	case "add":
-		err = addFirewallRule(ctx, mutation.Rule)
-	case "delete":
-		err = deleteFirewallRule(ctx, mutation.Rule)
+	switch manager {
+	case managerUFW:
+		err = applyUFWMutation(ctx, mutation)
+	case managerFirewalld:
+		err = applyFirewalldMutation(ctx, mutation)
 	default:
-		err = errors.New("不支持的访问限制操作")
+		if err = ensureNftablesReady(ctx); err == nil {
+			if mutation.Operation == "add" {
+				err = addFirewallRule(ctx, mutation.Rule)
+			} else {
+				err = deleteFirewallRule(ctx, mutation.Rule)
+			}
+		} else {
+			err = errors.New("准备防火墙失败：" + err.Error())
+		}
 	}
 	if err != nil {
 		return LiveFirewall{}, err

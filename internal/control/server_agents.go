@@ -423,7 +423,7 @@ func (s *Server) refuseForeignStreamPort(nodeID, address string, port uint16) er
 	defer s.foreignStreamMu.Unlock()
 	for _, listen := range s.foreignStreamListens[nodeID] {
 		if listen.Port == port && nginxroute.NormalizeListenAddress(listen.Address) == normalized {
-			return userErrorf("端口 %d 已被服务器 Nginx 配置文件 %s 中的 stream 服务占用，请先调整该配置或改用其他端口", port, listen.File)
+			return userErrorf("端口 %d 已被服务器 Nginx 配置文件 %s 中的 stream 服务占用；请先移除该配置、改用其他端口，或将其规则迁移为 agent 配置中的 nginx_passthrough_routes", port, listen.File)
 		}
 	}
 	return nil

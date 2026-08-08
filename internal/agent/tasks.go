@@ -600,7 +600,7 @@ func applyNginxConfig(ctx context.Context, task Task, dataDir string, passthroug
 	// aside the way an http site was above; the same listen in the merged
 	// configuration would only fail `nginx -t` and roll everything back.
 	if conflicts := foreignStreamConflicts(ctx, effectiveConfiguration); len(conflicts) > 0 {
-		return TaskResult{Status: "failed", Summary: "端口冲突：" + strings.Join(conflicts, "；") + "。请调整该 Nginx 配置，或为接入服务改用其他端口"}
+		return TaskResult{Status: "failed", Summary: "端口冲突：" + strings.Join(conflicts, "；") + "。请移除该 stream 配置或为接入服务改用其他端口；若需共用端口，请将其规则改写为 agent 配置中的 nginx_passthrough_routes（见 INSTALL.md）"}
 	}
 	// Anything still holding a router port is not Nginx and cannot be moved, so
 	// say who it is now rather than letting Nginx fail to bind later.

@@ -31,14 +31,32 @@ type LiveFirewallRule struct {
 	Raw      string `json:"raw"`
 }
 
+// OpenPort is one port a node's own firewall admits traffic on. Sources are
+// the address ranges allowed to reach it; empty means any source.
+type OpenPort struct {
+	NodeID   string   `json:"node_id,omitempty"`
+	Protocol string   `json:"protocol,omitempty"`
+	Port     uint16   `json:"port,omitempty"`
+	PortEnd  uint16   `json:"port_end,omitempty"`
+	Sources  []string `json:"sources,omitempty"`
+	Service  string   `json:"service,omitempty"`
+}
+
 // nodeFirewall is one node's answer, including the reason there is none.
+// Manager names the tool the server manages its firewall with, and
+// DefaultIncoming its policy for traffic no rule matches — without which an
+// open-port list cannot be read: under an accepting default every port is
+// open, listed or not.
 type nodeFirewall struct {
-	NodeID    string             `json:"node_id"`
-	Available bool               `json:"available"`
-	Tool      string             `json:"tool,omitempty"`
-	Rules     []LiveFirewallRule `json:"rules"`
-	Truncated bool               `json:"truncated,omitempty"`
-	Error     string             `json:"error,omitempty"`
+	NodeID          string             `json:"node_id"`
+	Available       bool               `json:"available"`
+	Tool            string             `json:"tool,omitempty"`
+	Manager         string             `json:"manager,omitempty"`
+	DefaultIncoming string             `json:"default_incoming,omitempty"`
+	OpenPorts       []OpenPort         `json:"open_ports"`
+	Rules           []LiveFirewallRule `json:"rules"`
+	Truncated       bool               `json:"truncated,omitempty"`
+	Error           string             `json:"error,omitempty"`
 }
 
 // LiveFail2BanJail is one automatic-banning rule a node reports as configured,
@@ -70,9 +88,12 @@ type nodeFail2Ban struct {
 // agentFirewall mirrors what the agent encodes. It is decoded here rather than
 // imported so the master never links the agent's host-command code.
 type agentFirewall struct {
-	Available bool `json:"available"`
-	Tool      string `json:"tool"`
-	Rules     []struct {
+	Available       bool       `json:"available"`
+	Tool            string     `json:"tool"`
+	Manager         string     `json:"manager"`
+	DefaultIncoming string     `json:"default_incoming"`
+	OpenPorts       []OpenPort `json:"open_ports"`
+	Rules           []struct {
 		Family   string `json:"family"`
 		Table    string `json:"table"`
 		Chain    string `json:"chain"`
@@ -169,7 +190,11 @@ func (s *Server) changeFirewallRule(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	if input.Operation == "delete" && input.Handle == "" && input.Raw == "" {
+	// A deletion identifies its rule one of two ways: as an allowance the
+	// server's own firewall tool can withdraw (protocol and port), or as a raw
+	// kernel rule at a place in the ruleset. Neither one present means there is
+	// nothing to act on.
+	if input.Operation == "delete" && input.Handle == "" && input.Raw == "" && (input.Protocol == "" || input.Port == 0) {
 		writeError(w, userErrorf("这条规则缺少位置信息，无法删除"))
 		return
 	}
@@ -369,7 +394,7 @@ func (s *Server) securityNodeIDs(r *http.Request) ([]string, error) {
 }
 
 func (s *Server) decodeNodeFirewall(nodeID string, answer liveAnswer) nodeFirewall {
-	node := nodeFirewall{NodeID: nodeID, Rules: []LiveFirewallRule{}}
+	node := nodeFirewall{NodeID: nodeID, Rules: []LiveFirewallRule{}, OpenPorts: []OpenPort{}}
 	if answer.err != nil {
 		node.Error = answer.err.Error()
 		return node
@@ -380,6 +405,11 @@ func (s *Server) decodeNodeFirewall(nodeID string, answer liveAnswer) nodeFirewa
 		return node
 	}
 	node.Available, node.Tool, node.Truncated, node.Error = reported.Available, reported.Tool, reported.Truncated, reported.Error
+	node.Manager, node.DefaultIncoming = reported.Manager, reported.DefaultIncoming
+	for _, port := range reported.OpenPorts {
+		port.NodeID = nodeID
+		node.OpenPorts = append(node.OpenPorts, port)
+	}
 	for _, rule := range reported.Rules {
 		node.Rules = append(node.Rules, LiveFirewallRule{
 			NodeID: nodeID, Family: rule.Family, Table: rule.Table, Chain: rule.Chain, Handle: rule.Handle,

@@ -17,7 +17,7 @@ const isAdmin = inject('isAdmin')
 const loading = ref(false)
 const saving = ref(false)
 const unbanning = ref('')
-const tab = ref('firewall')
+const tab = ref('ports')
 const firewallNodes = ref([])
 const fail2banNodes = ref([])
 const banned = ref([])
@@ -41,6 +41,29 @@ const unreachable = computed(() => {
   const names = entries.map(([nodeID]) => nodeName(nodeID)).join('、')
   return `${names}：${entries[0][1]}`
 })
+
+// What the servers admit, read from their own firewall tool. This is the
+// question the page exists to answer, so it leads; the full rule listing
+// stays available behind it for anyone who needs the exact wording.
+const openPorts = computed(() => firewallNodes.value.flatMap((node) => (node.open_ports || [])
+  .map((port, index) => ({ ...port, key: `${node.node_id}-open-${index}`, manager: node.manager })))
+  .filter((row) => {
+    if (selectedNode.value && row.node_id !== selectedNode.value) return false
+    return includesText([nodeName(row.node_id), row.protocol, row.port, row.service, (row.sources || []).join(' ')], keyword.value)
+  }))
+
+function portLabel(row) {
+  if (!row.port) return row.service || '—'
+  return row.port_end ? `${row.port}-${row.port_end}` : String(row.port)
+}
+
+// A server whose firewall lets everything in has no meaningful port list: the
+// ports below are only the ones written down, not the only ones reachable.
+// Saying so is the difference between a useful list and a misleading one.
+const wideOpenNodes = computed(() => firewallNodes.value
+  .filter((node) => node.available && node.default_incoming === 'accept')
+  .filter((node) => !selectedNode.value || node.node_id === selectedNode.value)
+  .map((node) => nodeName(node.node_id)))
 
 const firewallRules = computed(() => firewallNodes.value.flatMap((node) => (node.rules || [])
   .map((rule, index) => ({ ...rule, key: `${node.node_id}-${index}`, tool: node.tool })))
@@ -177,6 +200,21 @@ async function saveFirewall() {
   if (applied) firewallOpen.value = false
 }
 
+// Closing a port states the allowance to withdraw, which is how the server's
+// own firewall tool names it — ufw and firewalld have no concept of the kernel
+// rule handles the full listing deletes by.
+async function closePort(row) {
+  const sources = (row.sources || []).length ? row.sources.join('、') : '所有来源'
+  await ElMessageBox.confirm(
+    `确认在 ${nodeName(row.node_id)} 上关闭 ${row.protocol.toUpperCase()} ${row.port}（来源：${sources}）？关闭后立即生效。`,
+    '关闭端口', { type: 'warning' },
+  )
+  await changeFirewall(row.node_id, {
+    operation: 'delete', action: 'accept', protocol: row.protocol,
+    port: Number(row.port), cidr: (row.sources || [])[0] || '',
+  }, '端口已在服务器防火墙上关闭')
+}
+
 // Deleting names where the rule sits rather than what it says: two rules can
 // read identically, and the server has to remove the one on screen.
 async function removeFirewall(row) {
@@ -286,9 +324,44 @@ onMounted(load)
           <el-option v-for="node in appState.nodes" :key="node.id" :label="node.name" :value="node.id" />
         </el-select>
       </div>
+      <el-alert
+        v-if="wideOpenNodes.length" :closable="false" show-icon type="warning"
+        :title="`${wideOpenNodes.join('、')} 的防火墙默认放行所有入站流量，下面列出的端口不是全部可访问的端口。`"
+        style="margin-bottom: 8px" />
       <div class="table-panel">
         <el-tabs v-model="tab" class="panel-tabs">
-          <el-tab-pane :label="`访问限制（${firewallRules.length}）`" name="firewall">
+          <el-tab-pane :label="`开放端口（${openPorts.length}）`" name="ports">
+            <div class="tab-actions"><el-button v-if="isAdmin" type="primary" :icon="Plus" :disabled="!appState.nodes.length" @click="addFirewall">添加</el-button></div>
+            <PagedTable :rows="openPorts" :loading="loading" empty-text="服务器防火墙没有放行任何端口">
+              <el-table-column label="服务器" min-width="130" show-overflow-tooltip><template #default="{ row }">{{ nodeName(row.node_id) }}</template></el-table-column>
+              <el-table-column label="端口" width="110" align="center"><template #default="{ row }"><span class="mono">{{ portLabel(row) }}</span></template></el-table-column>
+              <el-table-column label="协议" width="88" align="center">
+                <template #default="{ row }">{{ row.protocol ? row.protocol.toUpperCase() : '全部' }}</template>
+              </el-table-column>
+              <el-table-column label="允许的来源" min-width="220" show-overflow-tooltip>
+                <template #default="{ row }">
+                  <span v-if="!(row.sources || []).length" class="subtle">所有来源</span>
+                  <span v-else class="mono">{{ row.sources.join('、') }}</span>
+                </template>
+              </el-table-column>
+              <el-table-column label="来自" min-width="150" show-overflow-tooltip>
+                <template #default="{ row }">
+                  <span v-if="row.service">服务 {{ row.service }}</span>
+                  <span v-else class="subtle">{{ row.manager || '防火墙规则' }}</span>
+                </template>
+              </el-table-column>
+              <el-table-column label="操作" width="84" class-name="action-column">
+                <template #default="{ row }">
+                  <el-button
+                    v-if="isAdmin && row.port && !row.port_end && row.protocol" link type="danger" :icon="Delete"
+                    :loading="saving" @click="closePort(row)"
+                  >关闭</el-button>
+                  <span v-else class="subtle">—</span>
+                </template>
+              </el-table-column>
+            </PagedTable>
+          </el-tab-pane>
+          <el-tab-pane :label="`全部规则（${firewallRules.length}）`" name="firewall">
             <div class="tab-actions"><el-button v-if="isAdmin" type="primary" :icon="Plus" :disabled="!appState.nodes.length" @click="addFirewall">添加</el-button></div>
             <PagedTable :rows="firewallRules" :loading="loading" empty-text="服务器上没有生效的防火墙规则">
               <el-table-column label="服务器" min-width="110" show-overflow-tooltip><template #default="{ row }">{{ nodeName(row.node_id) }}</template></el-table-column>
@@ -388,10 +461,14 @@ onMounted(load)
         </el-row>
         <el-form-item label="允许或拒绝的来源地址范围"><el-input v-model="firewall.cidr" placeholder="例如 192.168.1.0/24，留空表示所有来源" /></el-form-item>
         <el-alert
-          :title="firewall.action === 'accept'
-            ? `${firewall.protocol.toUpperCase()} ${firewall.port} 端口将只接受列出的来源，其余一律拒绝。`
-            : `仅拒绝列出的来源，${firewall.protocol.toUpperCase()} ${firewall.port} 端口对其他来源仍开放。`"
+          :title="`规则写入服务器自己的防火墙（ufw / firewalld，都没有时写入 nftables），保存后可在“开放端口”中看到结果。${
+            firewall.action === 'accept'
+              ? `${firewall.protocol.toUpperCase()} ${firewall.port} 端口将对列出的来源放行。`
+              : `${firewall.protocol.toUpperCase()} ${firewall.port} 端口将拒绝列出的来源。`}`"
           type="info" show-icon :closable="false" />
+        <el-alert
+          title="云服务器还有厂商侧的安全组，平台无法读取或修改；端口在这里放行后仍连不上，请到云控制台放行同一端口。"
+          type="warning" show-icon :closable="false" style="margin-top: 8px" />
       </el-form>
       <template #footer><el-button @click="firewallOpen = false">取消</el-button><el-button type="primary" :loading="saving" @click="saveFirewall">保存并生效</el-button></template>
     </el-dialog>
