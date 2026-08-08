@@ -11,8 +11,6 @@ import (
 	"encoding/pem"
 	"math/big"
 	"time"
-
-	"github.com/liyuwei007036/polaris/internal/wire"
 )
 
 // ExecForTest runs one statement against the store's database so a test can
@@ -70,11 +68,4 @@ func NewOriginCertificatePEMForTest(names ...string) (string, string, error) {
 // way a test can populate them. Compiled only for tests.
 func (s *Server) PushConnectionsForTest(nodeID, collectedAt string, connections json.RawMessage) {
 	s.connHub.update(nodeConnectionsSnapshot{NodeID: nodeID, CollectedAt: collectedAt, Connections: connections})
-}
-
-// ReportForeignStreamListensForTest records a node's foreign Nginx stream
-// report exactly as its agent's heartbeat would. In-memory state, so this is
-// the only way a test can populate it. Compiled only for tests.
-func (s *Server) ReportForeignStreamListensForTest(nodeID string, listens []wire.StreamListen) {
-	s.setForeignStreamListens(nodeID, listens)
 }

@@ -596,11 +596,11 @@ func applyNginxConfig(ctx context.Context, task Task, dataDir string, passthroug
 			return TaskResult{Status: "failed", Summary: "设置现有 Nginx 站点的默认转发失败：" + err.Error()}
 		}
 	}
-	// A stream block in the node's own Nginx configuration cannot be moved
-	// aside the way an http site was above; the same listen in the merged
-	// configuration would only fail `nginx -t` and roll everything back.
+	// A stream server the takeover above could not move is still on the socket
+	// the router needs; the duplicate listen would only fail `nginx -t` and
+	// roll everything back, so name the file instead.
 	if conflicts := foreignStreamConflicts(ctx, effectiveConfiguration); len(conflicts) > 0 {
-		return TaskResult{Status: "failed", Summary: "端口冲突：" + strings.Join(conflicts, "；") + "。请移除该 stream 配置或为接入服务改用其他端口；若需共用端口，请将其规则改写为 agent 配置中的 nginx_passthrough_routes（见 INSTALL.md）"}
+		return TaskResult{Status: "failed", Summary: "端口冲突：" + strings.Join(conflicts, "；") + "，且无法自动转移。请手动调整该配置，或为接入服务改用其他端口"}
 	}
 	// Anything still holding a router port is not Nginx and cannot be moved, so
 	// say who it is now rather than letting Nginx fail to bind later.

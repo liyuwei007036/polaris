@@ -47,16 +47,20 @@ type LiveFirewallRule struct {
 
 // LiveFirewall is everything a host enforces on traffic right now. Manager is
 // the tool the host manages its firewall with, DefaultIncoming its policy for
-// traffic nothing else matches, and OpenPorts the ports it does let in — the
-// question the console exists to answer. Rules stays the unabridged listing
-// behind that summary.
+// traffic nothing else matches, and PortRules the verdict it holds on each
+// port it names — the question the console exists to answer.
+//
+// Rules is the unabridged kernel listing PortRules is worked out from on a host
+// with no firewall manager. It stays on this side of the wire: it is mostly
+// Fail2Ban's address bans on any host that runs Fail2Ban, and a list of blocked
+// addresses answers no question about which ports a server offers.
 type LiveFirewall struct {
 	Available       bool               `json:"available"`
 	Tool            string             `json:"tool,omitempty"`
 	Manager         string             `json:"manager,omitempty"`
 	DefaultIncoming string             `json:"default_incoming,omitempty"`
-	OpenPorts       []OpenPort         `json:"open_ports"`
-	Rules           []LiveFirewallRule `json:"rules"`
+	PortRules       []PortRule         `json:"port_rules"`
+	Rules           []LiveFirewallRule `json:"-"`
 	Truncated       bool               `json:"truncated,omitempty"`
 	Error           string             `json:"error,omitempty"`
 }
@@ -70,10 +74,10 @@ type FirewallMutation struct {
 }
 
 // CollectLiveFirewall reads the host's rules back, then has the host's own
-// firewall tool say which ports it admits. The kernel listing alone cannot
-// answer that on a host running ufw or firewalld: their rules reach it through
-// chains and sets whose shape is theirs, and only they know the zones and
-// service names behind it.
+// firewall tool say which ports it opens and which it refuses. The kernel
+// listing alone cannot answer that on a host running ufw or firewalld: their
+// rules reach it through chains and sets whose shape is theirs, and only they
+// know the zones and service names behind it.
 func CollectLiveFirewall(ctx context.Context) LiveFirewall {
 	var live LiveFirewall
 	switch {
@@ -85,6 +89,12 @@ func CollectLiveFirewall(ctx context.Context) LiveFirewall {
 		live = LiveFirewall{Rules: []LiveFirewallRule{}, Error: "服务器上没有安装 nftables 或 iptables，无法读取防火墙规则"}
 	}
 	describeHostFirewall(ctx, &live)
+	// Always a list, even when reading the host failed. An answer that omits it
+	// is an answer from an agent too old to know about port rules, and the
+	// master tells that apart from a host that genuinely has none.
+	if live.PortRules == nil {
+		live.PortRules = []PortRule{}
+	}
 	return live
 }
 
@@ -459,8 +469,12 @@ func managedTableRules(ctx context.Context) []LiveFirewallRule {
 	return rules
 }
 
+// validateManagedRule checks a rule this platform is about to write or
+// withdraw. "reject" belongs here alongside "drop" because a rule being
+// withdrawn was read back off the host, and a host is free to have written one:
+// refusing to act on it would leave a rule on screen that no button can remove.
 func validateManagedRule(rule LiveFirewallRule) error {
-	if rule.Action != "accept" && rule.Action != "drop" {
+	if rule.Action != "accept" && rule.Action != "drop" && rule.Action != "reject" {
 		return errors.New("访问限制的处理方式必须是允许或拒绝")
 	}
 	if rule.Protocol != "tcp" && rule.Protocol != "udp" {
@@ -472,8 +486,11 @@ func validateManagedRule(rule LiveFirewallRule) error {
 	if rule.CIDR == "" {
 		return nil
 	}
-	if _, _, err := net.ParseCIDR(rule.CIDR); err != nil {
-		return fmt.Errorf("来源地址范围无效：%w", err)
+	// A host prints a single address without a prefix length — ufw's From column
+	// says "192.168.1.5" — and a rule read back off a host has to be removable
+	// in the words that host used.
+	if _, ok := normalizeCIDR(rule.CIDR); !ok {
+		return errors.New("来源地址范围无效")
 	}
 	return nil
 }
@@ -483,14 +500,20 @@ func nftablesExpression(rule LiveFirewallRule) (string, error) {
 	if rule.CIDR == "" {
 		return match, nil
 	}
-	address, _, err := net.ParseCIDR(rule.CIDR)
+	// nft needs a prefix length, which a host printing a single address leaves
+	// off; normalizeCIDR restores it.
+	cidr, ok := normalizeCIDR(rule.CIDR)
+	if !ok {
+		return "", errors.New("来源地址范围无效")
+	}
+	address, _, err := net.ParseCIDR(cidr)
 	if err != nil {
 		return "", fmt.Errorf("来源地址范围无效：%w", err)
 	}
 	if address.To4() != nil {
-		return "ip saddr " + rule.CIDR + " " + match, nil
+		return "ip saddr " + cidr + " " + match, nil
 	}
-	return "ip6 saddr " + rule.CIDR + " " + match, nil
+	return "ip6 saddr " + cidr + " " + match, nil
 }
 
 // persistManagedTable records the managed table so its rules come back after a

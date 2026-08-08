@@ -148,6 +148,18 @@ func TestAddedRulesAreValidatedBeforeReachingTheHost(t *testing.T) {
 	if err := validateManagedRule(valid); err != nil {
 		t.Fatal(err)
 	}
+	// A rule read back off a host has to be actionable in the shape the host
+	// wrote it: a REJECT verdict, and a single address printed without its
+	// prefix length. Turning either away leaves a rule on screen that no button
+	// can remove.
+	for name, rule := range map[string]LiveFirewallRule{
+		"host-written rejection": {Action: "reject", Protocol: "tcp", Port: 25},
+		"single address source":  {Action: "accept", Protocol: "tcp", Port: 22, CIDR: "192.168.1.5"},
+	} {
+		if err := validateManagedRule(rule); err != nil {
+			t.Fatalf("%s was refused: %v", name, err)
+		}
+	}
 	for name, rule := range map[string]LiveFirewallRule{
 		"unknown action":   {Action: "log", Protocol: "tcp", Port: 443},
 		"unknown protocol": {Action: "accept", Protocol: "icmp", Port: 443},
@@ -167,6 +179,10 @@ func TestAddedRulesAreValidatedBeforeReachingTheHost(t *testing.T) {
 	}
 	if expression, err := nftablesExpression(LiveFirewallRule{Action: "drop", Protocol: "udp", Port: 53, CIDR: "2001:db8::/32"}); err != nil || expression != "ip6 saddr 2001:db8::/32 udp dport 53" {
 		t.Fatalf("unexpected IPv6 expression %q (err=%v)", expression, err)
+	}
+	// nft needs the prefix length a host leaves off a single address.
+	if expression, err := nftablesExpression(LiveFirewallRule{Action: "drop", Protocol: "tcp", Port: 22, CIDR: "192.168.1.5"}); err != nil || expression != "ip saddr 192.168.1.5/32 tcp dport 22" {
+		t.Fatalf("unexpected single-address expression %q (err=%v)", expression, err)
 	}
 }
 

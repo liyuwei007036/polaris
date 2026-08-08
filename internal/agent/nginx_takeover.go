@@ -11,10 +11,8 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
-	"time"
 
 	"github.com/liyuwei007036/polaris/internal/nginxroute"
-	"github.com/liyuwei007036/polaris/internal/wire"
 )
 
 // nginxSiteEdit is a site file rewritten to free a port, kept together with its
@@ -122,9 +120,10 @@ func appendTakeoverRecords(records []nginxTakeoverRecord, edits []nginxSiteEdit)
 // forwards each site's own names back to it on loopback.
 //
 // This is what lets polaris coexist with an Nginx that was installed first and
-// already serves a site on 443. Only a site whose names can be matched against
-// a ClientHello is moved; a catch-all, a stream block or polaris's own file is
-// left alone, and the port conflict surfaces from `nginx -t` as before.
+// already serves a site — or an SNI router of the operator's own — on 443. A
+// site whose names can be matched against a ClientHello keeps them as routes;
+// anything else (a catch-all site, a stream server) becomes the group's
+// default backend. Only polaris's own file is left alone.
 func takeOverManagedPorts(ctx context.Context, configuration string, known []nginxTakeoverRecord) ([]nginxSiteEdit, error) {
 	ports := managedListenPorts(configuration)
 	if len(ports) == 0 {
@@ -144,7 +143,7 @@ func takeOverManagedPorts(ctx context.Context, configuration string, known []ngi
 		// holds the port, so the deploy proceeds as it did before.
 		return nil, nil
 	}
-	sockets, _ := listeningSockets(ctx)
+	listening, _ := listeningSockets(ctx)
 	reserved := map[uint16]bool{}
 	for _, port := range ports {
 		reserved[port] = true
@@ -171,7 +170,7 @@ func takeOverManagedPorts(ctx context.Context, configuration string, known []ngi
 			if err != nil {
 				return edits, errors.New("读取 Nginx 站点配置失败：" + err.Error() + permissionHint(err))
 			}
-			backendPort, ok := freeLoopbackPort(sockets, reserved)
+			backendPort, ok := freeLoopbackPort(listening, reserved)
 			if !ok {
 				return edits, errors.New("没有可用的本机端口用于转移现有 Nginx 站点")
 			}
@@ -199,8 +198,53 @@ func takeOverManagedPorts(ctx context.Context, configuration string, known []ngi
 			edits = append(edits, edit)
 		}
 	}
+	edits, err = takeOverStreamServers(configuration, string(dump), listening, reserved, claimedDefaults, edits)
+	if err != nil {
+		return edits, err
+	}
 	if len(edits) == 0 {
 		return nil, nil
+	}
+	return edits, nil
+}
+
+// takeOverStreamServers moves aside the stream servers holding a socket the
+// router needs. Such a server has no server_name, so it cannot keep named
+// routes the way an http site does: it becomes the group's default backend,
+// which is what it already meant. It used to receive every connection on this
+// socket, and now receives every one the router does not recognise — an
+// operator's own SNI router on 443 keeps working with nothing to migrate.
+func takeOverStreamServers(configuration, dump string, listening []listeningSocket, reserved, claimedDefaults map[uint16]bool, edits []nginxSiteEdit) ([]nginxSiteEdit, error) {
+	servers := nginxForeignStreamServers(dump)
+	for _, socket := range managedListenSockets(configuration) {
+		for _, server := range servers {
+			if !streamServerBindsSocket(server, socket) || editedFile(edits, server.file) {
+				continue
+			}
+			if claimedDefaults[socket.port] || defaultTaken(edits, socket.port) {
+				return edits, errors.New("端口 " + strconv.Itoa(int(socket.port)) + " 上已有一个被接管的默认站点，无法同时接管 " + server.file + " 中的 stream 服务，请手动调整该配置")
+			}
+			original, err := os.ReadFile(server.file)
+			if err != nil {
+				return edits, errors.New("读取 Nginx stream 配置失败：" + err.Error() + permissionHint(err))
+			}
+			backendPort, ok := freeLoopbackPort(listening, reserved)
+			if !ok {
+				return edits, errors.New("没有可用的本机端口用于转移现有 Nginx stream 服务")
+			}
+			rewritten, changed := rewriteNginxListenPort(string(original), socket.port, backendPort)
+			if !changed {
+				continue
+			}
+			if err := os.WriteFile(server.file, []byte(rewritten), 0o644); err != nil {
+				return edits, errors.New("改写 Nginx stream 配置失败：" + err.Error() + permissionHint(err))
+			}
+			edits = append(edits, nginxSiteEdit{
+				file: server.file, original: original,
+				defaultFor: socket.port, defaultBackend: backendPort,
+				summary: server.file + " 的 stream 服务已从 " + strconv.Itoa(int(socket.port)) + " 端口改为 127.0.0.1:" + strconv.Itoa(int(backendPort)) + "，未匹配的连接仍转发给它",
+			})
+		}
 	}
 	return edits, nil
 }
@@ -294,45 +338,16 @@ func takeOverSummary(edits []nginxSiteEdit) string {
 	return strings.Join(summaries, "；")
 }
 
-// managedListens reads the normalized address and port pairs the compiled
-// router configuration binds. File stays empty: these are polaris's own.
-func managedListens(configuration string) []wire.StreamListen {
-	var listens []wire.StreamListen
-	seen := map[wire.StreamListen]bool{}
-	for _, raw := range strings.Split(configuration, "\n") {
-		line := strings.TrimSpace(strings.SplitN(raw, "#", 2)[0])
-		if !strings.HasPrefix(line, "listen ") {
-			continue
-		}
-		argument := strings.Fields(strings.TrimSuffix(strings.TrimPrefix(line, "listen "), ";"))
-		if len(argument) == 0 {
-			continue
-		}
-		address, port, ok := nginxListenAddressPort(argument[0])
-		if !ok || seen[wire.StreamListen{Address: address, Port: port}] {
-			continue
-		}
-		seen[wire.StreamListen{Address: address, Port: port}] = true
-		listens = append(listens, wire.StreamListen{Address: address, Port: port})
-	}
-	return listens
-}
-
 // managedListenPorts reads the ports the compiled router configuration binds.
 func managedListenPorts(configuration string) []uint16 {
 	var ports []uint16
 	seen := map[uint16]bool{}
-	for _, raw := range strings.Split(configuration, "\n") {
-		line := strings.TrimSpace(strings.SplitN(raw, "#", 2)[0])
-		if !strings.HasPrefix(line, "listen ") {
+	for _, socket := range managedListenSockets(configuration) {
+		if seen[socket.port] {
 			continue
 		}
-		port, ok := nginxListenPort(strings.TrimSuffix(strings.TrimPrefix(line, "listen "), ";"))
-		if !ok || seen[port] {
-			continue
-		}
-		seen[port] = true
-		ports = append(ports, port)
+		seen[socket.port] = true
+		ports = append(ports, socket.port)
 	}
 	return ports
 }
@@ -366,27 +381,33 @@ func loopbackPortFree(port uint16) bool {
 	return listener.Close() == nil
 }
 
-// nginxForeignStreamListens finds the TCP listens declared by stream server
-// blocks polaris does not manage, given the output of `nginx -T`. A stream
-// block cannot be moved aside the way an http site can, so a listen equal to
-// one the compiled router binds makes `nginx -t` reject the whole merged
-// configuration ("duplicate address and port pair").
+// nginxStreamServer is one server block in a stream context, together with the
+// file that declares it. It has no server_name — nothing about it can be
+// matched against a ClientHello — which is what decides how it is taken over.
+type nginxStreamServer struct {
+	file string
+	// listens are the raw arguments of each listen directive in the block,
+	// semicolon stripped, in the order they appear.
+	listens []string
+}
+
+// nginxForeignStreamServers finds the stream server blocks polaris does not
+// manage, given the output of `nginx -T`.
 //
-// `nginx -T` prints included files verbatim at the top level, so a server
-// block is recognized as stream in two ways: it sits inside a literal stream
-// context, or its file lives in polaris's own stream include directory —
-// where an operator may have dropped a file of their own next to polaris's.
-func nginxForeignStreamListens(dump string) []wire.StreamListen {
+// `nginx -T` prints an included file verbatim, so a server block is recognized
+// as stream in two ways: it sits inside a literal stream context, or its file
+// lives in polaris's own stream include directory — where an operator may have
+// dropped a router of their own next to polaris's.
+func nginxForeignStreamServers(dump string) []nginxStreamServer {
 	// Nginx reports its files with forward slashes on every platform.
 	managedFile := filepath.ToSlash(managedNginxConfig)
 	streamDirectory := path.Dir(managedFile) + "/"
-	var listens []wire.StreamListen
-	seen := map[wire.StreamListen]bool{}
+	var servers []nginxStreamServer
 	file := ""
 	depth := 0
 	contexts := map[int]string{}
-	inStreamServer := false
-	serverDepth := 0
+	var current *nginxStreamServer
+	currentDepth := 0
 	for _, raw := range strings.Split(dump, "\n") {
 		if marker := strings.TrimPrefix(raw, "# configuration file "); marker != raw {
 			file = strings.TrimSuffix(strings.TrimSpace(marker), ":")
@@ -397,8 +418,9 @@ func nginxForeignStreamListens(dump string) []wire.StreamListen {
 			continue
 		}
 		if strings.HasPrefix(line, "}") {
-			if inStreamServer && depth == serverDepth {
-				inStreamServer = false
+			if current != nil && depth == currentDepth {
+				servers = append(servers, *current)
+				current = nil
 			}
 			delete(contexts, depth)
 			depth--
@@ -410,105 +432,110 @@ func nginxForeignStreamListens(dump string) []wire.StreamListen {
 			if len(name) > 0 {
 				contexts[depth] = name[0]
 			}
-			if len(name) > 0 && name[0] == "server" && !inStreamServer &&
-				(contexts[depth-1] == "stream" || (depth == 1 && strings.HasPrefix(file, streamDirectory) && file != managedFile)) {
-				inStreamServer = true
-				serverDepth = depth
+			if len(name) > 0 && name[0] == "server" && current == nil && file != managedFile &&
+				(contexts[depth-1] == "stream" || (depth == 1 && strings.HasPrefix(file, streamDirectory))) {
+				current = &nginxStreamServer{file: file}
+				currentDepth = depth
 			}
 			continue
 		}
-		if !inStreamServer || file == managedFile {
+		if current == nil {
 			continue
 		}
 		fields := strings.Fields(strings.TrimSuffix(line, ";"))
 		if len(fields) < 2 || fields[0] != "listen" {
 			continue
 		}
-		if streamListenIsUDP(fields[2:]) {
-			continue
-		}
-		address, port, ok := nginxListenAddressPort(fields[1])
-		if !ok {
-			continue
-		}
-		listen := wire.StreamListen{Address: address, Port: port, File: file}
-		if seen[listen] {
-			continue
-		}
-		seen[listen] = true
-		listens = append(listens, listen)
+		current.listens = append(current.listens, strings.Join(fields[1:], " "))
 	}
-	return listens
+	return servers
 }
 
-func streamListenIsUDP(options []string) bool {
-	for _, option := range options {
+// listenSocket is one address and port a listen directive binds, with the
+// address normalized so the spellings nginx treats as the same socket compare
+// equal. Two stream servers may share a port on different addresses, so only
+// the exact same socket is the duplicate nginx refuses.
+type listenSocket struct {
+	address string
+	port    uint16
+}
+
+// nginxListenSocket reads the socket out of a listen directive's arguments,
+// which take the forms "443 ssl", "0.0.0.0:443", "[::]:443 ssl" and "*:443".
+// A udp listen never competes with the TCP router and a unix: socket has no
+// port at all; both report false.
+func nginxListenSocket(arguments string) (listenSocket, bool) {
+	fields := strings.Fields(arguments)
+	if len(fields) == 0 {
+		return listenSocket{}, false
+	}
+	for _, option := range fields[1:] {
 		if option == "udp" {
+			return listenSocket{}, false
+		}
+	}
+	address, port := "", fields[0]
+	if index := strings.LastIndex(port, ":"); index >= 0 {
+		address, port = port[:index], port[index+1:]
+	}
+	number, err := strconv.ParseUint(port, 10, 16)
+	if err != nil {
+		return listenSocket{}, false
+	}
+	return listenSocket{address: nginxroute.NormalizeListenAddress(address), port: uint16(number)}, true
+}
+
+func streamServerBindsSocket(server nginxStreamServer, socket listenSocket) bool {
+	for _, listen := range server.listens {
+		if bound, ok := nginxListenSocket(listen); ok && bound == socket {
 			return true
 		}
 	}
 	return false
 }
 
-// nginxListenAddressPort splits a listen directive's first argument into a
-// normalized address and port. A bare port binds the IPv4 wildcard; a unix:
-// socket has no port and reports false.
-func nginxListenAddressPort(argument string) (string, uint16, bool) {
-	host := ""
-	if index := strings.LastIndex(argument, ":"); index >= 0 {
-		host = argument[:index]
-		argument = argument[index+1:]
+// managedListenSockets reads the sockets the compiled router configuration
+// binds.
+func managedListenSockets(configuration string) []listenSocket {
+	var sockets []listenSocket
+	seen := map[listenSocket]bool{}
+	for _, raw := range strings.Split(configuration, "\n") {
+		line := strings.TrimSpace(strings.SplitN(raw, "#", 2)[0])
+		if !strings.HasPrefix(line, "listen ") {
+			continue
+		}
+		socket, ok := nginxListenSocket(strings.TrimSuffix(strings.TrimPrefix(line, "listen "), ";"))
+		if !ok || seen[socket] {
+			continue
+		}
+		seen[socket] = true
+		sockets = append(sockets, socket)
 	}
-	port, err := strconv.ParseUint(argument, 10, 16)
-	if err != nil {
-		return "", 0, false
-	}
-	return nginxroute.NormalizeListenAddress(host), uint16(port), true
+	return sockets
 }
 
-// collectForeignStreamListens reads the stream listens currently declared by
-// Nginx configuration polaris does not manage, for the heartbeat. The master
-// uses them to refuse saving a service onto a socket that could never deploy.
-func collectForeignStreamListens() []wire.StreamListen {
-	if strings.TrimSpace(os.Getenv("POLARIS_E2E_ROOT")) != "" {
-		return nil
-	}
-	if _, err := exec.LookPath("nginx"); err != nil {
-		return nil
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	dump, err := exec.CommandContext(ctx, "nginx", "-T").CombinedOutput()
-	if err != nil {
-		return nil
-	}
-	return nginxForeignStreamListens(string(dump))
-}
-
-// foreignStreamConflicts names the stream listens in the node's own Nginx
-// configuration that collide with what the compiled router is about to bind.
-// Deploying anyway only makes `nginx -t` reject the merged configuration and
-// roll back; this check turns that into a message naming the file to fix.
+// foreignStreamConflicts names the stream servers still holding a socket the
+// router needs after takeOverManagedPorts has run. Reaching this means the
+// block could not be moved aside, so the deploy reports it rather than letting
+// `nginx -t` reject the merged configuration and roll everything back.
 func foreignStreamConflicts(ctx context.Context, configuration string) []string {
-	if strings.TrimSpace(os.Getenv("POLARIS_E2E_ROOT")) != "" {
+	sockets := managedListenSockets(configuration)
+	if len(sockets) == 0 {
 		return nil
 	}
 	dump, err := exec.CommandContext(ctx, "nginx", "-T").CombinedOutput()
 	if err != nil {
 		return nil
 	}
-	return streamConflictSummaries(configuration, nginxForeignStreamListens(string(dump)))
-}
-
-func streamConflictSummaries(configuration string, foreign []wire.StreamListen) []string {
+	servers := nginxForeignStreamServers(string(dump))
 	var conflicts []string
 	reported := map[string]bool{}
-	for _, managed := range managedListens(configuration) {
-		for _, listen := range foreign {
-			if listen.Port != managed.Port || listen.Address != managed.Address {
+	for _, socket := range sockets {
+		for _, server := range servers {
+			if !streamServerBindsSocket(server, socket) {
 				continue
 			}
-			message := "TCP/" + strconv.Itoa(int(listen.Port)) + " 已被 Nginx 配置文件 " + listen.File + " 中的 stream 服务占用"
+			message := "TCP/" + strconv.Itoa(int(socket.port)) + " 已被 Nginx 配置文件 " + server.file + " 中的 stream 服务占用"
 			if reported[message] {
 				continue
 			}
@@ -635,29 +662,11 @@ func nginxHTTPServersOnPort(dump string, port uint16) []nginxHTTPServer {
 
 func serverBindsPort(server nginxHTTPServer, port uint16) bool {
 	for _, listen := range server.listens {
-		if listenPort, ok := nginxListenPort(listen); ok && listenPort == port {
+		if socket, ok := nginxListenSocket(listen); ok && socket.port == port {
 			return true
 		}
 	}
 	return false
-}
-
-// nginxListenPort reads the port out of a listen directive's arguments, which
-// take the forms "443 ssl", "0.0.0.0:443", "[::]:443 ssl" and "*:443".
-func nginxListenPort(arguments string) (uint16, bool) {
-	fields := strings.Fields(arguments)
-	if len(fields) == 0 {
-		return 0, false
-	}
-	address := fields[0]
-	if index := strings.LastIndex(address, ":"); index >= 0 {
-		address = address[index+1:]
-	}
-	port, err := strconv.ParseUint(address, 10, 16)
-	if err != nil {
-		return 0, false
-	}
-	return uint16(port), true
 }
 
 // routableNginxServerNames keeps the names that can be matched against a TLS
@@ -693,8 +702,8 @@ func rewriteNginxListenPort(configuration string, from, to uint16) (string, bool
 			continue
 		}
 		arguments := strings.TrimSuffix(strings.TrimSpace(strings.TrimPrefix(line, "listen")), ";")
-		listenPort, ok := nginxListenPort(arguments)
-		if !ok || listenPort != from {
+		socket, ok := nginxListenSocket(arguments)
+		if !ok || socket.port != from {
 			continue
 		}
 		fields := strings.Fields(arguments)

@@ -68,15 +68,6 @@ type ConnectionInfo struct {
 	User string
 }
 
-// StreamListen is one TCP listen bound by an Nginx stream server block the
-// agent's polaris does not manage. Address is normalized (wildcard forms
-// become "0.0.0.0"); File is the configuration file declaring it.
-type StreamListen struct {
-	Address string
-	Port    uint16
-	File    string
-}
-
 // Status is the heartbeat-cadence identity/build/metrics report (everything
 // the old heartbeat bundled together, minus the connections list — that's
 // ConnectionsPush now, on its own faster, independent cadence).
@@ -102,11 +93,6 @@ type Status struct {
 	SingBoxService    string
 	ClashAPIAvailable bool
 	TrafficAvailable  bool
-	// ForeignStreamListens reports the TCP ports already bound by Nginx stream
-	// configuration polaris does not manage. The master refuses to save a
-	// service onto one of these, because the compiled router configuration
-	// would only fail `nginx -t` on the node. Absent from older agents.
-	ForeignStreamListens []StreamListen
 	// Network protection is deliberately not part of the heartbeat: the console
 	// asks a node for its firewall and jails at the moment it shows them, so it
 	// can never present a rule that has since been changed on the server.

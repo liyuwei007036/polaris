@@ -23,30 +23,32 @@ func newSecurityServer(t *testing.T) *Server {
 	return server
 }
 
-func TestFirewallAnswersCarryTheSourceLocation(t *testing.T) {
+func TestFirewallAnswersCarryOpenAndBlockedPortsWithTheirSourceLocation(t *testing.T) {
 	server := newSecurityServer(t)
 	answer, err := json.Marshal(map[string]any{
 		"available": true, "tool": "nftables",
-		"rules": []map[string]any{
-			{"family": "inet", "table": "polaris", "chain": "input", "handle": "7", "action": "accept", "protocol": "tcp", "port": 443, "cidr": "8.8.8.8/32", "raw": "ip saddr 8.8.8.8 tcp dport 443 accept"},
-			{"family": "inet", "table": "filter", "chain": "input", "handle": "21", "raw": "meta l4proto tcp ip saddr @blocked drop"},
+		"port_rules": []map[string]any{
+			{"action": "accept", "protocol": "tcp", "port": 443, "sources": []string{"8.8.8.8/32"}, "family": "inet", "table": "polaris", "chain": "input", "handle": "7"},
+			{"action": "drop", "protocol": "tcp", "port": 25, "family": "inet", "table": "polaris", "chain": "input", "handle": "9"},
 		},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	node := server.decodeNodeFirewall("node-1", liveAnswer{data: string(answer)})
-	if !node.Available || len(node.Rules) != 2 {
+	// A refused port belongs on this list as much as an open one: the operator
+	// is asking what the firewall does with each port, not only what it lets in.
+	if !node.Available || len(node.PortRules) != 2 {
 		t.Fatalf("unexpected answer: %#v", node)
 	}
-	if node.Rules[0].NodeID != "node-1" || !strings.Contains(node.Rules[0].Location, "United States") {
-		t.Fatalf("a rule lost its source location: %#v", node.Rules[0])
+	if node.PortRules[0].NodeID != "node-1" || len(node.PortRules[0].Locations) != 1 ||
+		!strings.Contains(node.PortRules[0].Locations[0], "United States") {
+		t.Fatalf("a port rule lost its source location: %#v", node.PortRules[0])
 	}
-	// A rule the node could not make sense of is still carried through with the
-	// handle that lets an operator delete it — nothing a server enforces is
-	// hidden just because it was not recognized.
-	if node.Rules[1].Raw == "" || node.Rules[1].Handle != "21" {
-		t.Fatalf("an unrecognized rule was misreported: %#v", node.Rules[1])
+	// The place in the ruleset has to survive the trip, because on a server with
+	// no firewall manager it is the only way to name the rule when deleting it.
+	if node.PortRules[1].Action != "drop" || node.PortRules[1].Handle != "9" {
+		t.Fatalf("a refused port was misreported: %#v", node.PortRules[1])
 	}
 }
 
@@ -56,8 +58,8 @@ func TestUnreadableFirewallAnswersAreReportedNotIgnored(t *testing.T) {
 	if node.Available || node.Error == "" {
 		t.Fatalf("an offline server was not reported as such: %#v", node)
 	}
-	if len(node.Rules) != 0 {
-		t.Fatalf("an offline server must not report rules: %#v", node.Rules)
+	if len(node.PortRules) != 0 {
+		t.Fatalf("an offline server must not report ports: %#v", node.PortRules)
 	}
 	// Nonsense from a node is a failure to read the firewall, not an empty
 	// firewall — the difference decides whether an operator thinks a port is
@@ -65,6 +67,13 @@ func TestUnreadableFirewallAnswersAreReportedNotIgnored(t *testing.T) {
 	garbled := server.decodeNodeFirewall("node-1", liveAnswer{data: "{not json"})
 	if garbled.Available || garbled.Error == "" {
 		t.Fatalf("an unreadable answer was treated as an empty firewall: %#v", garbled)
+	}
+	// An agent too old to report port rules says nothing about them at all. That
+	// is not a server with an empty firewall, and reporting it as one would tell
+	// an operator every port is closed on a machine where none of them are.
+	old := server.decodeNodeFirewall("node-1", liveAnswer{data: `{"available":true,"tool":"nftables","rules":[]}`})
+	if old.Available || old.Error == "" || len(old.PortRules) != 0 {
+		t.Fatalf("an outdated agent was treated as a firewall with no rules: %#v", old)
 	}
 }
 

@@ -273,7 +273,7 @@ func TestControlPlaneProcessJourneyWithRealAgent(t *testing.T) {
 		"operation": "add", "action": "accept", "protocol": "tcp", "cidr": "192.0.2.0/24", "port": 443,
 	}, true, http.StatusOK, &firewallAfterAdd)
 	if !hasFirewallRule(firewallAfterAdd, "accept", "tcp", 443, "192.0.2.0/24") {
-		t.Fatalf("the new access limit is not in force on the server: %#v", firewallAfterAdd.Rules)
+		t.Fatalf("the new access limit is not in force on the server: %#v", firewallAfterAdd.PortRules)
 	}
 
 	// Reading the rules again goes to the server, not to any record here.
@@ -287,27 +287,38 @@ func TestControlPlaneProcessJourneyWithRealAgent(t *testing.T) {
 	// An allowance turns its port into a whitelist, which only means anything
 	// if the closing denial reached the kernel too.
 	if !hasFirewallRule(firewallListing.Nodes[0], "drop", "tcp", 443, "") {
-		t.Fatalf("the whitelist's closing denial is not in force: %#v", firewallListing.Nodes[0].Rules)
+		t.Fatalf("the whitelist's closing denial is not in force: %#v", firewallListing.Nodes[0].PortRules)
+	}
+	// This list answers which ports the server opens and refuses. A rule that
+	// names no port answers nothing about that — an address ban is the usual
+	// one, and a server running Fail2Ban has hundreds — and must stay out.
+	for _, rule := range firewallListing.Nodes[0].PortRules {
+		if rule.Port == 0 {
+			t.Fatalf("a rule naming no port reached the access limit list: %#v", rule)
+		}
 	}
 
-	// Deleting names where a rule sits, not what it says, so any rule on the
-	// server can be removed — including ones this platform never wrote.
+	// Deleting states the port to withdraw and where the rule sits, exactly as
+	// the console does it, so any rule on the server can be removed — including
+	// ones this platform never wrote.
 	target := findFirewallRule(firewallListing.Nodes[0], "accept", "tcp", 443, "192.0.2.0/24")
 	if target == nil || target.Handle == "" {
-		t.Fatalf("the rule to delete has no handle: %#v", firewallListing.Nodes[0].Rules)
+		t.Fatalf("the rule to delete has no handle: %#v", firewallListing.Nodes[0].PortRules)
 	}
 	var firewallAfterDelete nodeFirewallResponse
 	api.mustJSON(t, http.MethodPost, "/api/v1/nodes/"+approval.NodeID+"/firewall/rules", map[string]any{
-		"operation": "delete", "family": target.Family, "table": target.Table, "chain": target.Chain,
+		"operation": "delete", "action": target.Action, "protocol": target.Protocol,
+		"port": target.Port, "cidr": target.Sources[0],
+		"family": target.Family, "table": target.Table, "chain": target.Chain,
 		"handle": target.Handle, "raw": target.Raw,
 	}, true, http.StatusOK, &firewallAfterDelete)
 	if hasFirewallRule(firewallAfterDelete, "accept", "tcp", 443, "192.0.2.0/24") {
-		t.Fatalf("the deleted access limit is still in force: %#v", firewallAfterDelete.Rules)
+		t.Fatalf("the deleted access limit is still in force: %#v", firewallAfterDelete.PortRules)
 	}
 	// The closing denial is a rule like any other and stays until it too is
 	// removed; nothing else may disappear along with the rule that was deleted.
 	if !hasFirewallRule(firewallAfterDelete, "drop", "tcp", 443, "") {
-		t.Fatalf("deleting one rule removed another: %#v", firewallAfterDelete.Rules)
+		t.Fatalf("deleting one rule removed another: %#v", firewallAfterDelete.PortRules)
 	}
 
 	api.mustJSON(t, http.MethodPost, "/api/v1/nodes/"+approval.NodeID+"/fail2ban/jails", map[string]any{
@@ -426,34 +437,43 @@ type taskResponse struct {
 	ResultSummary string `json:"result_summary"`
 }
 
-// nodeFirewallResponse is what one server reports about its own firewall.
+// nodeFirewallResponse is what one server reports about its own firewall: the
+// verdict it holds on each port it names. Address bans are deliberately not in
+// here — one blocked address says nothing about which ports a server offers.
 type nodeFirewallResponse struct {
-	NodeID    string             `json:"node_id"`
-	Available bool               `json:"available"`
-	Error     string             `json:"error"`
-	Rules     []firewallRuleView `json:"rules"`
+	NodeID    string         `json:"node_id"`
+	Available bool           `json:"available"`
+	Error     string         `json:"error"`
+	PortRules []portRuleView `json:"port_rules"`
 }
 
-type firewallRuleView struct {
-	Family   string `json:"family"`
-	Table    string `json:"table"`
-	Chain    string `json:"chain"`
-	Handle   string `json:"handle"`
-	Action   string `json:"action"`
-	Protocol string `json:"protocol"`
-	Port     uint16 `json:"port"`
-	CIDR     string `json:"cidr"`
-	Raw      string `json:"raw"`
+type portRuleView struct {
+	Family   string   `json:"family"`
+	Table    string   `json:"table"`
+	Chain    string   `json:"chain"`
+	Handle   string   `json:"handle"`
+	Action   string   `json:"action"`
+	Protocol string   `json:"protocol"`
+	Port     uint16   `json:"port"`
+	Sources  []string `json:"sources"`
+	Raw      string   `json:"raw"`
 }
 
-func hasFirewallRule(node nodeFirewallResponse, action, protocol string, port uint16, cidr string) bool {
-	return findFirewallRule(node, action, protocol, port, cidr) != nil
+func hasFirewallRule(node nodeFirewallResponse, action, protocol string, port uint16, source string) bool {
+	return findFirewallRule(node, action, protocol, port, source) != nil
 }
 
-func findFirewallRule(node nodeFirewallResponse, action, protocol string, port uint16, cidr string) *firewallRuleView {
-	for index, rule := range node.Rules {
-		if rule.Action == action && rule.Protocol == protocol && rule.Port == port && rule.CIDR == cidr {
-			return &node.Rules[index]
+func findFirewallRule(node nodeFirewallResponse, action, protocol string, port uint16, source string) *portRuleView {
+	for index, rule := range node.PortRules {
+		if rule.Action != action || rule.Protocol != protocol || rule.Port != port {
+			continue
+		}
+		found := ""
+		if len(rule.Sources) > 0 {
+			found = rule.Sources[0]
+		}
+		if found == source {
+			return &node.PortRules[index]
 		}
 	}
 	return nil

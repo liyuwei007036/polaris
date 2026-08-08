@@ -2,11 +2,13 @@ package agent
 
 import (
 	"net"
+	"os"
+	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
 	"github.com/liyuwei007036/polaris/internal/nginxroute"
-	"github.com/liyuwei007036/polaris/internal/wire"
 )
 
 const sampleNginxDump = `# configuration file /etc/nginx/nginx.conf:
@@ -168,51 +170,100 @@ server {
 
 // The http server on 443 and polaris's own file must never be reported; the
 // operator's stream blocks — inline in nginx.conf or dropped into polaris's
-// include directory — must be, minus UDP and unix-socket listens.
-func TestNginxForeignStreamListensReportsOnlyUnmanagedTCPStreamListens(t *testing.T) {
+// own include directory — must be.
+func TestNginxForeignStreamServersFindsOnlyUnmanagedStreamBlocks(t *testing.T) {
 	original := managedNginxConfig
 	managedNginxConfig = "/etc/nginx/stream-conf.d/polaris.conf"
 	defer func() { managedNginxConfig = original }()
-	listens := nginxForeignStreamListens(foreignStreamDump)
-	expected := []wire.StreamListen{
-		{Address: "0.0.0.0", Port: 443, File: "/etc/nginx/nginx.conf"},
-		{Address: "::", Port: 8853, File: "/etc/nginx/nginx.conf"},
-		{Address: "0.0.0.0", Port: 9443, File: "/etc/nginx/stream-conf.d/operator.conf"},
+	servers := nginxForeignStreamServers(foreignStreamDump)
+	files := make([]string, 0, len(servers))
+	for _, server := range servers {
+		files = append(files, server.file)
 	}
-	if len(listens) != len(expected) {
-		t.Fatalf("foreign stream listens = %#v", listens)
+	expected := []string{
+		"/etc/nginx/nginx.conf", "/etc/nginx/nginx.conf", "/etc/nginx/nginx.conf", "/etc/nginx/nginx.conf",
+		"/etc/nginx/stream-conf.d/operator.conf",
 	}
-	for index, listen := range expected {
-		if listens[index] != listen {
-			t.Fatalf("foreign stream listens[%d] = %#v, want %#v", index, listens[index], listen)
+	if strings.Join(files, ",") != strings.Join(expected, ",") {
+		t.Fatalf("foreign stream server files = %#v", files)
+	}
+}
+
+// A bare port, "*" and "0.0.0.0" all bind the same socket, which is the exact
+// duplicate nginx refuses; a different address on the same port is not, and a
+// udp or unix listen never competes with the TCP router at all.
+func TestStreamServerBindsSocketMatchesOnlyTheSameSocket(t *testing.T) {
+	server := nginxStreamServer{listens: []string{"443", "8854 udp", "unix:/run/nginx.sock"}}
+	for _, socket := range []listenSocket{{address: "0.0.0.0", port: 443}} {
+		if !streamServerBindsSocket(server, socket) {
+			t.Fatalf("bare listen 443 did not match %#v", socket)
+		}
+	}
+	for _, socket := range []listenSocket{
+		{address: "127.0.0.1", port: 443}, {address: "0.0.0.0", port: 8854}, {address: "0.0.0.0", port: 8443},
+	} {
+		if streamServerBindsSocket(server, socket) {
+			t.Fatalf("listen 443 wrongly matched %#v", socket)
 		}
 	}
 }
 
-func TestStreamConflictSummariesMatchesOnlyTheExactSocket(t *testing.T) {
+func TestManagedListenSocketsReadsTheCompiledRouterSockets(t *testing.T) {
 	configuration := "map $ssl_preread_server_name $polaris_0_0_0_0_443 {\n    default \"127.0.0.1:1\";\n}\nserver {\n    listen 0.0.0.0:443;\n    ssl_preread on;\n}\n"
-	foreign := []wire.StreamListen{
-		{Address: "0.0.0.0", Port: 443, File: "/etc/nginx/nginx.conf"},
-		{Address: "127.0.0.1", Port: 443, File: "/etc/nginx/loopback.conf"},
-		{Address: "0.0.0.0", Port: 8443, File: "/etc/nginx/other.conf"},
-	}
-	conflicts := streamConflictSummaries(configuration, foreign)
-	if len(conflicts) != 1 || conflicts[0] != "TCP/443 已被 Nginx 配置文件 /etc/nginx/nginx.conf 中的 stream 服务占用" {
-		t.Fatalf("stream conflicts = %#v", conflicts)
+	sockets := managedListenSockets(configuration)
+	if len(sockets) != 1 || sockets[0] != (listenSocket{address: "0.0.0.0", port: 443}) {
+		t.Fatalf("managed listen sockets = %#v", sockets)
 	}
 }
 
-// A bare-port listen in the operator's stream block binds the IPv4 wildcard,
-// exactly the socket the compiled "listen 0.0.0.0:443" would bind.
-func TestStreamConflictSummariesNormalizesWildcardSpellings(t *testing.T) {
+// The operator's own SNI router on 443 has no server_name to route by, so it
+// is moved to loopback and becomes the group's default backend: every name the
+// router does not recognise is exactly what it used to serve.
+func TestTakeOverMovesForeignStreamServerToTheGroupDefault(t *testing.T) {
+	directory := t.TempDir()
+	streamFile := filepath.Join(directory, "origin-sni.conf")
+	originalContents := "server {\n    listen 0.0.0.0:443;\n    ssl_preread on;\n    proxy_pass $origin_backend;\n}\n"
+	if err := os.WriteFile(streamFile, []byte(originalContents), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	original := managedNginxConfig
-	managedNginxConfig = "/etc/nginx/stream-conf.d/polaris.conf"
+	managedNginxConfig = filepath.Join(directory, "polaris.conf")
 	defer func() { managedNginxConfig = original }()
-	dump := "# configuration file /etc/nginx/nginx.conf:\nstream {\n    server {\n        listen 443;\n        proxy_pass 127.0.0.1:8443;\n    }\n}\n"
-	configuration := "server {\n    listen 0.0.0.0:443;\n}\n"
-	conflicts := streamConflictSummaries(configuration, nginxForeignStreamListens(dump))
-	if len(conflicts) != 1 {
-		t.Fatalf("stream conflicts = %#v", conflicts)
+
+	dump := "# configuration file " + filepath.ToSlash(streamFile) + ":\nstream {\n    server {\n        listen 0.0.0.0:443;\n        ssl_preread on;\n        proxy_pass $origin_backend;\n    }\n}\n"
+	configuration := "map $ssl_preread_server_name $polaris_0_0_0_0_443 {\n    default \"" + nginxroute.DefaultBackendPlaceholder + "\";\n" +
+		nginxroute.Marker("polaris_0_0_0_0_443") + "    a.example.com \"127.0.0.1:20000\";\n}\nserver {\n    listen 0.0.0.0:443;\n    ssl_preread on;\n    proxy_pass $polaris_0_0_0_0_443;\n}\n"
+
+	edits, err := takeOverStreamServers(configuration, dump, nil, map[uint16]bool{443: true}, map[uint16]bool{}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(edits) != 1 || edits[0].defaultFor != 443 || edits[0].defaultBackend == 0 {
+		t.Fatalf("stream takeover edits = %#v", edits)
+	}
+	moved, err := os.ReadFile(streamFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	backend := "127.0.0.1:" + strconv.Itoa(int(edits[0].defaultBackend))
+	if !strings.Contains(string(moved), "listen "+backend+";") {
+		t.Fatalf("stream server was not moved to loopback:\n%s", moved)
+	}
+	applied, err := applyTakeoverDefaults(configuration, takeOverDefaults(edits))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(applied, "default \""+backend+"\";") {
+		t.Fatalf("moved stream server did not become the group default:\n%s", applied)
+	}
+	// A failed deploy must put the operator's own router back exactly.
+	restoreNginxSites(edits)
+	restored, err := os.ReadFile(streamFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(restored) != originalContents {
+		t.Fatalf("restore did not put the stream server back:\n%s", restored)
 	}
 }
 

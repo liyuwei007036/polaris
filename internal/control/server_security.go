@@ -14,49 +14,45 @@ import (
 // exists in a record but not in a kernel protects nobody, which is exactly what
 // showing stored rules used to hide.
 
-// LiveFirewallRule is one rule a node reports as being in force. Raw is the
-// server's own wording; the rest is what could be made out of it, and stays
-// empty for a rule shaped in a way the node's parser does not recognize.
-type LiveFirewallRule struct {
-	NodeID   string `json:"node_id"`
-	Family   string `json:"family,omitempty"`
-	Table    string `json:"table,omitempty"`
-	Chain    string `json:"chain,omitempty"`
-	Handle   string `json:"handle,omitempty"`
-	Action   string `json:"action,omitempty"`
-	Protocol string `json:"protocol,omitempty"`
-	Port     uint16 `json:"port,omitempty"`
-	CIDR     string `json:"cidr,omitempty"`
-	Location string `json:"location,omitempty"`
-	Raw      string `json:"raw"`
-}
-
-// OpenPort is one port a node's own firewall admits traffic on. Sources are
-// the address ranges allowed to reach it; empty means any source.
-type OpenPort struct {
-	NodeID   string   `json:"node_id,omitempty"`
-	Protocol string   `json:"protocol,omitempty"`
-	Port     uint16   `json:"port,omitempty"`
-	PortEnd  uint16   `json:"port_end,omitempty"`
-	Sources  []string `json:"sources,omitempty"`
-	Service  string   `json:"service,omitempty"`
+// PortRule is one verdict a node's own firewall holds on a port: Action is
+// "accept" for a port it admits traffic on and "drop" or "reject" for one it
+// refuses. Sources are the address ranges the verdict applies to — empty means
+// any source — and Locations says where each of them is, in the same order.
+//
+// Family through Raw say where in the kernel ruleset the rule sits and how the
+// server words it. They come back only from a server with no firewall manager,
+// which is the only case where removing the rule needs them, and are passed
+// back untouched when it does.
+type PortRule struct {
+	NodeID    string   `json:"node_id,omitempty"`
+	Action    string   `json:"action,omitempty"`
+	Protocol  string   `json:"protocol,omitempty"`
+	Port      uint16   `json:"port,omitempty"`
+	PortEnd   uint16   `json:"port_end,omitempty"`
+	Sources   []string `json:"sources,omitempty"`
+	Locations []string `json:"locations,omitempty"`
+	Service   string   `json:"service,omitempty"`
+	Family    string   `json:"family,omitempty"`
+	Table     string   `json:"table,omitempty"`
+	Chain     string   `json:"chain,omitempty"`
+	Handle    string   `json:"handle,omitempty"`
+	Raw       string   `json:"raw,omitempty"`
 }
 
 // nodeFirewall is one node's answer, including the reason there is none.
 // Manager names the tool the server manages its firewall with, and
-// DefaultIncoming its policy for traffic no rule matches — without which an
-// open-port list cannot be read: under an accepting default every port is
-// open, listed or not.
+// DefaultIncoming its policy for traffic no rule matches — without which a
+// port list cannot be read: under an accepting default every port is open,
+// listed or not.
 type nodeFirewall struct {
-	NodeID          string             `json:"node_id"`
-	Available       bool               `json:"available"`
-	Tool            string             `json:"tool,omitempty"`
-	Manager         string             `json:"manager,omitempty"`
-	DefaultIncoming string             `json:"default_incoming,omitempty"`
-	OpenPorts       []OpenPort         `json:"open_ports"`
-	Rules           []LiveFirewallRule `json:"rules"`
-	Truncated       bool               `json:"truncated,omitempty"`
-	Error           string             `json:"error,omitempty"`
+	NodeID          string     `json:"node_id"`
+	Available       bool       `json:"available"`
+	Tool            string     `json:"tool,omitempty"`
+	Manager         string     `json:"manager,omitempty"`
+	DefaultIncoming string     `json:"default_incoming,omitempty"`
+	PortRules       []PortRule `json:"port_rules"`
+	Truncated       bool       `json:"truncated,omitempty"`
+	Error           string     `json:"error,omitempty"`
 }
 
 // LiveFail2BanJail is one automatic-banning rule a node reports as configured,
@@ -87,25 +83,18 @@ type nodeFail2Ban struct {
 
 // agentFirewall mirrors what the agent encodes. It is decoded here rather than
 // imported so the master never links the agent's host-command code.
+// PortRules is a pointer so an answer that leaves the field out can be told
+// apart from one that reports no rules. Only an agent too old to know about
+// port rules omits it, and an empty list from one of those would read as a
+// server with nothing restricted — the one thing this page must never say.
 type agentFirewall struct {
-	Available       bool       `json:"available"`
-	Tool            string     `json:"tool"`
-	Manager         string     `json:"manager"`
-	DefaultIncoming string     `json:"default_incoming"`
-	OpenPorts       []OpenPort `json:"open_ports"`
-	Rules           []struct {
-		Family   string `json:"family"`
-		Table    string `json:"table"`
-		Chain    string `json:"chain"`
-		Handle   string `json:"handle"`
-		Action   string `json:"action"`
-		Protocol string `json:"protocol"`
-		Port     uint16 `json:"port"`
-		CIDR     string `json:"cidr"`
-		Raw      string `json:"raw"`
-	} `json:"rules"`
-	Truncated bool   `json:"truncated"`
-	Error     string `json:"error"`
+	Available       bool        `json:"available"`
+	Tool            string      `json:"tool"`
+	Manager         string      `json:"manager"`
+	DefaultIncoming string      `json:"default_incoming"`
+	PortRules       *[]PortRule `json:"port_rules"`
+	Truncated       bool        `json:"truncated"`
+	Error           string      `json:"error"`
 }
 
 type agentFail2Ban struct {
@@ -394,7 +383,7 @@ func (s *Server) securityNodeIDs(r *http.Request) ([]string, error) {
 }
 
 func (s *Server) decodeNodeFirewall(nodeID string, answer liveAnswer) nodeFirewall {
-	node := nodeFirewall{NodeID: nodeID, Rules: []LiveFirewallRule{}, OpenPorts: []OpenPort{}}
+	node := nodeFirewall{NodeID: nodeID, PortRules: []PortRule{}}
 	if answer.err != nil {
 		node.Error = answer.err.Error()
 		return node
@@ -406,16 +395,18 @@ func (s *Server) decodeNodeFirewall(nodeID string, answer liveAnswer) nodeFirewa
 	}
 	node.Available, node.Tool, node.Truncated, node.Error = reported.Available, reported.Tool, reported.Truncated, reported.Error
 	node.Manager, node.DefaultIncoming = reported.Manager, reported.DefaultIncoming
-	for _, port := range reported.OpenPorts {
-		port.NodeID = nodeID
-		node.OpenPorts = append(node.OpenPorts, port)
+	if reported.PortRules == nil {
+		node.Available = false
+		node.Error = "服务器上的探针版本太旧，读不出端口规则，请先升级探针"
+		return node
 	}
-	for _, rule := range reported.Rules {
-		node.Rules = append(node.Rules, LiveFirewallRule{
-			NodeID: nodeID, Family: rule.Family, Table: rule.Table, Chain: rule.Chain, Handle: rule.Handle,
-			Action: rule.Action, Protocol: rule.Protocol, Port: rule.Port, CIDR: rule.CIDR,
-			Location: s.ipLocator.LocateCIDR(rule.CIDR), Raw: rule.Raw,
-		})
+	for _, rule := range *reported.PortRules {
+		rule.NodeID = nodeID
+		rule.Locations = nil
+		for _, source := range rule.Sources {
+			rule.Locations = append(rule.Locations, s.ipLocator.LocateCIDR(source))
+		}
+		node.PortRules = append(node.PortRules, rule)
 	}
 	return node
 }

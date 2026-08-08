@@ -9,13 +9,13 @@ import (
 )
 
 // The console answers one question about a server: which ports its firewall
-// lets in. That answer has to come from whatever the host itself runs. ufw and
-// firewalld keep their own rule stores and rebuild the kernel ruleset from
-// them, so a rule written straight into a private nftables table beside them
-// is missing from their listings and gone at their next reload — it reads as
-// saved and enforces nothing. Reading and writing therefore go through the
-// host's own tool wherever there is one, and fall back to raw nftables only on
-// hosts that manage their firewall that way.
+// opens and which it refuses. That answer has to come from whatever the host
+// itself runs. ufw and firewalld keep their own rule stores and rebuild the
+// kernel ruleset from them, so a rule written straight into a private nftables
+// table beside them is missing from their listings and gone at their next
+// reload — it reads as saved and enforces nothing. Reading and writing
+// therefore go through the host's own tool wherever there is one, and fall back
+// to raw nftables only on hosts that manage their firewall that way.
 
 const (
 	managerUFW       = "ufw"
@@ -24,16 +24,30 @@ const (
 	managerIptables  = "iptables"
 )
 
-// OpenPort is one port the host firewall admits traffic on. Sources lists the
-// address ranges allowed to reach it; empty means any source. A port opened by
-// a named service or application profile keeps that name, because that is how
-// the operator will find it again in the host's own tooling.
-type OpenPort struct {
+// PortRule is one verdict the host firewall holds on a port: Action is
+// "accept" for a port it admits traffic on and "drop" or "reject" for one it
+// refuses. Sources lists the address ranges the verdict applies to; empty means
+// any source. A port opened by a named service or application profile keeps
+// that name, because that is how the operator will find it again in the host's
+// own tooling.
+//
+// Family through Raw say where in the kernel ruleset the rule sits and how the
+// host itself words it. They are filled in only on a host with no firewall
+// manager, where they are the only way to name the rule again when removing it:
+// nft deletes by handle and iptables by the rule's own wording. ufw and
+// firewalld are told the port instead and have no use for either.
+type PortRule struct {
+	Action   string   `json:"action,omitempty"`
 	Protocol string   `json:"protocol,omitempty"`
 	Port     uint16   `json:"port,omitempty"`
 	PortEnd  uint16   `json:"port_end,omitempty"`
 	Sources  []string `json:"sources,omitempty"`
 	Service  string   `json:"service,omitempty"`
+	Family   string   `json:"family,omitempty"`
+	Table    string   `json:"table,omitempty"`
+	Chain    string   `json:"chain,omitempty"`
+	Handle   string   `json:"handle,omitempty"`
+	Raw      string   `json:"raw,omitempty"`
 }
 
 // detectFirewallManager reports the tool the host manages its firewall with.
@@ -63,9 +77,9 @@ func detectFirewallManager(ctx context.Context) string {
 }
 
 // describeHostFirewall fills in what the host's own firewall tool reports: the
-// manager in charge, its default policy for incoming traffic, and the ports it
-// admits. Hosts with no manager get the open ports worked out from the raw
-// rules already collected.
+// manager in charge, its default policy for incoming traffic, and the verdict
+// it holds on each port. Hosts with no manager get their port rules worked out
+// from the raw rules already collected.
 func describeHostFirewall(ctx context.Context, live *LiveFirewall) {
 	live.Manager = detectFirewallManager(ctx)
 	switch live.Manager {
@@ -75,7 +89,7 @@ func describeHostFirewall(ctx context.Context, live *LiveFirewall) {
 			live.Error = commandSummary("ufw status verbose", output, err)
 			return
 		}
-		live.DefaultIncoming, live.OpenPorts = parseUFWStatus(string(output))
+		live.DefaultIncoming, live.PortRules = parseUFWStatus(string(output))
 	case managerFirewalld:
 		output, err := exec.CommandContext(ctx, "firewall-cmd", "--list-all").CombinedOutput()
 		if err != nil {
@@ -83,23 +97,20 @@ func describeHostFirewall(ctx context.Context, live *LiveFirewall) {
 			return
 		}
 		live.DefaultIncoming = "drop"
-		live.OpenPorts = parseFirewalldZone(string(output), func(service string) []OpenPort {
+		live.PortRules = parseFirewalldZone(string(output), func(service string) []PortRule {
 			return firewalldServicePorts(ctx, service)
 		})
 	default:
-		live.DefaultIncoming, live.OpenPorts = openPortsFromRules(live.Rules, live.DefaultIncoming)
-	}
-	if live.OpenPorts == nil {
-		live.OpenPorts = []OpenPort{}
+		live.DefaultIncoming, live.PortRules = portRulesFromRules(live.Rules, live.DefaultIncoming)
 	}
 }
 
 // parseUFWStatus reads `ufw status verbose`: its default incoming policy and
-// one entry per allowance. The IPv6 duplicates ufw prints for the same rule
-// are dropped so a port is not listed twice.
-func parseUFWStatus(listing string) (string, []OpenPort) {
+// one entry per rule, whether it allows or denies. The IPv6 duplicates ufw
+// prints for the same rule are dropped so a port is not listed twice.
+func parseUFWStatus(listing string) (string, []PortRule) {
 	defaultIncoming := ""
-	ports := []OpenPort{}
+	ports := []PortRule{}
 	inRules := false
 	for _, raw := range strings.Split(listing, "\n") {
 		line := strings.TrimSpace(raw)
@@ -129,7 +140,7 @@ func parseUFWStatus(listing string) (string, []OpenPort) {
 			continue
 		}
 		verdict, index, end := ufwVerdict(line)
-		if index < 0 || verdict != "accept" {
+		if index < 0 {
 			continue
 		}
 		target := strings.TrimSpace(line[:index])
@@ -143,6 +154,7 @@ func parseUFWStatus(listing string) (string, []OpenPort) {
 			sources = append(sources, source)
 		}
 		for _, port := range parsePortSpec(target) {
+			port.Action = verdict
 			port.Sources = sources
 			ports = append(ports, port)
 		}
@@ -175,11 +187,12 @@ func ufwVerdict(line string) (string, int, int) {
 }
 
 // parseFirewalldZone reads `firewall-cmd --list-all`: the zone's own port
-// list, the ports behind each named service, and rich rules that open a port
-// to specific sources. resolveService reports the ports a named service
-// covers, which only firewalld itself knows.
-func parseFirewalldZone(listing string, resolveService func(string) []OpenPort) []OpenPort {
-	ports := []OpenPort{}
+// list, the ports behind each named service, and rich rules, which are the one
+// place firewalld states a port it refuses as well as ones it opens.
+// resolveService reports the ports a named service covers, which only
+// firewalld itself knows.
+func parseFirewalldZone(listing string, resolveService func(string) []PortRule) []PortRule {
+	ports := []PortRule{}
 	inRichRules := false
 	for _, raw := range strings.Split(listing, "\n") {
 		line := strings.TrimSpace(raw)
@@ -201,20 +214,25 @@ func parseFirewalldZone(listing string, resolveService func(string) []OpenPort) 
 		if value == "" {
 			continue
 		}
+		// A zone's ports and services are what it lets in; firewalld states a
+		// refusal only as a rich rule.
 		switch strings.TrimSpace(key) {
 		case "ports":
 			for _, field := range strings.Fields(value) {
-				ports = append(ports, parsePortSpec(field)...)
+				for _, port := range parsePortSpec(field) {
+					port.Action = "accept"
+					ports = append(ports, port)
+				}
 			}
 		case "services":
 			for _, service := range strings.Fields(value) {
 				resolved := resolveService(service)
 				if len(resolved) == 0 {
-					ports = append(ports, OpenPort{Service: service})
+					ports = append(ports, PortRule{Action: "accept", Service: service})
 					continue
 				}
 				for _, port := range resolved {
-					port.Service = service
+					port.Action, port.Service = "accept", service
 					ports = append(ports, port)
 				}
 			}
@@ -223,14 +241,16 @@ func parseFirewalldZone(listing string, resolveService func(string) []OpenPort) 
 	return ports
 }
 
-// parseFirewalldRichRule picks out the port a rich rule opens and the source
-// it opens it to. Only accepting rules matter here: the list is of what gets
-// in, not of every rule in the zone.
-func parseFirewalldRichRule(line string) (OpenPort, bool) {
-	if !strings.HasSuffix(strings.TrimSpace(line), "accept") {
-		return OpenPort{}, false
+// parseFirewalldRichRule picks out the port a rich rule decides on, what it
+// decides, and the source the decision applies to. A rule that neither opens
+// nor refuses a port — one that only logs, say — states no verdict and is not
+// one of these.
+func parseFirewalldRichRule(line string) (PortRule, bool) {
+	verdict := firewalldVerdict(line)
+	if verdict == "" {
+		return PortRule{}, false
 	}
-	port := OpenPort{}
+	port := PortRule{Action: verdict}
 	if value := richRuleValue(line, `port port=`); value != "" {
 		start, end := parsePortRange(value)
 		port.Port, port.PortEnd = start, end
@@ -244,9 +264,26 @@ func parseFirewalldRichRule(line string) (OpenPort, bool) {
 			port.Service = service
 			return port, true
 		}
-		return OpenPort{}, false
+		return PortRule{}, false
 	}
 	return port, true
+}
+
+// firewalldVerdict reads what a rich rule decides. The verdict closes the rule,
+// except for a rejection, which may go on to name the message it sends back.
+func firewalldVerdict(line string) string {
+	fields := strings.Fields(strings.TrimSpace(line))
+	for index := len(fields) - 1; index >= 0; index-- {
+		switch {
+		case fields[index] == "accept":
+			return "accept"
+		case fields[index] == "drop":
+			return "drop"
+		case strings.HasPrefix(fields[index], "reject"):
+			return "reject"
+		}
+	}
+	return ""
 }
 
 // richRuleValue reads one quoted attribute out of a rich rule.
@@ -268,12 +305,12 @@ func richRuleValue(line, key string) string {
 }
 
 // firewalldServicePorts asks firewalld what a named service covers.
-func firewalldServicePorts(ctx context.Context, service string) []OpenPort {
+func firewalldServicePorts(ctx context.Context, service string) []PortRule {
 	output, err := exec.CommandContext(ctx, "firewall-cmd", "--info-service="+service).CombinedOutput()
 	if err != nil {
 		return nil
 	}
-	ports := []OpenPort{}
+	ports := []PortRule{}
 	for _, raw := range strings.Split(string(output), "\n") {
 		key, value, found := strings.Cut(strings.TrimSpace(raw), ":")
 		if !found || strings.TrimSpace(key) != "ports" {
@@ -286,20 +323,34 @@ func firewalldServicePorts(ctx context.Context, service string) []OpenPort {
 	return ports
 }
 
-// openPortsFromRules works out which ports get in on a host with no firewall
-// manager, from the rules already read out of the kernel. A chain that accepts
-// by default admits everything, so there is no port list to give — saying so
-// is the honest answer, and the caller reports the policy alongside.
-func openPortsFromRules(rules []LiveFirewallRule, defaultIncoming string) (string, []OpenPort) {
+// portRulesFromRules works out which ports a host with no firewall manager
+// opens and which it refuses, from the rules already read out of the kernel. A
+// chain that accepts by default admits everything, so the list of openings is
+// not the list of reachable ports — saying so is the honest answer, and the
+// caller reports the policy alongside.
+//
+// Only a rule naming a port belongs here. A rule that names a source and no
+// port is an address ban — which is what Fail2Ban writes, hundreds at a time —
+// and blocking one address says nothing about which ports the server offers.
+// Each rule carries where it sits and how the host words it, because on this
+// kind of host that is the only way to name it again when removing it.
+func portRulesFromRules(rules []LiveFirewallRule, defaultIncoming string) (string, []PortRule) {
 	if defaultIncoming == "" {
 		defaultIncoming = "accept"
 	}
-	ports := []OpenPort{}
+	ports := []PortRule{}
 	for _, rule := range rules {
-		if rule.Action != "accept" || rule.Protocol == "" || rule.Port == 0 {
+		if rule.Protocol == "" || rule.Port == 0 {
 			continue
 		}
-		port := OpenPort{Protocol: rule.Protocol, Port: rule.Port}
+		if rule.Action != "accept" && rule.Action != "drop" && rule.Action != "reject" {
+			continue
+		}
+		port := PortRule{
+			Action: rule.Action, Protocol: rule.Protocol, Port: rule.Port,
+			Family: rule.Family, Table: rule.Table, Chain: rule.Chain,
+			Handle: rule.Handle, Raw: rule.Raw,
+		}
 		if rule.CIDR != "" {
 			port.Sources = []string{rule.CIDR}
 		}
@@ -312,7 +363,7 @@ func openPortsFromRules(rules []LiveFirewallRule, defaultIncoming string) (strin
 // "8443/tcp", "80,443/tcp", "6000:6007/tcp", "9000-9010/udp", or a bare port.
 // A specification naming no protocol covers both, which is how both tools
 // treat it.
-func parsePortSpec(spec string) []OpenPort {
+func parsePortSpec(spec string) []PortRule {
 	spec = strings.TrimSpace(spec)
 	if spec == "" {
 		return nil
@@ -333,13 +384,13 @@ func parsePortSpec(spec string) []OpenPort {
 			return nil
 		}
 	}
-	ports := []OpenPort{}
+	ports := []PortRule{}
 	for _, part := range strings.Split(spec, ",") {
 		start, end := parsePortRange(part)
 		if start == 0 {
 			continue
 		}
-		ports = append(ports, OpenPort{Protocol: protocol, Port: start, PortEnd: end})
+		ports = append(ports, PortRule{Protocol: protocol, Port: start, PortEnd: end})
 	}
 	return ports
 }
@@ -385,14 +436,19 @@ func applyUFWMutation(ctx context.Context, mutation FirewallMutation) error {
 	return nil
 }
 
-// ufwRuleArguments spells one rule the way ufw takes it.
+// ufwRuleArguments spells one rule the way ufw takes it. A refusal ufw itself
+// wrote as REJECT has to go back to it as reject: told "deny" instead, ufw
+// would look for a rule it does not have and remove nothing.
 func ufwRuleArguments(rule LiveFirewallRule) ([]string, error) {
 	if err := validateManagedRule(rule); err != nil {
 		return nil, err
 	}
 	verb := "allow"
-	if rule.Action == "drop" {
+	switch rule.Action {
+	case "drop":
 		verb = "deny"
+	case "reject":
+		verb = "reject"
 	}
 	source := "any"
 	if rule.CIDR != "" {
@@ -410,27 +466,23 @@ func applyFirewalldMutation(ctx context.Context, mutation FirewallMutation) erro
 		return err
 	}
 	specification := ""
-	if mutation.Rule.CIDR == "" {
+	if mutation.Rule.Action == "accept" && mutation.Rule.CIDR == "" {
+		// A zone's port list is how firewalld states a port open to everybody,
+		// and where the operator will look for it again.
 		verb := "--add-port="
 		if mutation.Operation == "delete" {
 			verb = "--remove-port="
 		}
 		specification = verb + strconv.Itoa(int(mutation.Rule.Port)) + "/" + mutation.Rule.Protocol
 	} else {
-		verdict := "accept"
-		if mutation.Rule.Action == "drop" {
-			verdict = "drop"
-		}
-		family := "ipv4"
-		if strings.Contains(mutation.Rule.CIDR, ":") {
-			family = "ipv6"
-		}
+		// Everything else — a refusal, or an opening limited to a source — only
+		// a rich rule can state. Putting a refusal in the zone's port list would
+		// open the very port the operator asked to close.
 		verb := "--add-rich-rule="
 		if mutation.Operation == "delete" {
 			verb = "--remove-rich-rule="
 		}
-		specification = verb + `rule family="` + family + `" source address="` + mutation.Rule.CIDR +
-			`" port port="` + strconv.Itoa(int(mutation.Rule.Port)) + `" protocol="` + mutation.Rule.Protocol + `" ` + verdict
+		specification = verb + firewalldRichRule(mutation.Rule)
 	}
 	if output, err := exec.CommandContext(ctx, "firewall-cmd", "--permanent", specification).CombinedOutput(); err != nil {
 		return errors.New(commandSummary("firewall-cmd --permanent", output, err))
@@ -439,4 +491,22 @@ func applyFirewalldMutation(ctx context.Context, mutation FirewallMutation) erro
 		return errors.New(commandSummary("firewall-cmd --reload", output, err))
 	}
 	return nil
+}
+
+// firewalldRichRule spells one rule the way firewalld prints it in
+// `firewall-cmd --list-all`, attribute for attribute: removing a rich rule
+// means naming it exactly, and the rule being removed is one read back off
+// this very listing. A rule naming no source states no family either, so it
+// covers IPv4 and IPv6 both — which is what a verdict aimed at everybody means.
+func firewalldRichRule(rule LiveFirewallRule) string {
+	specification := "rule"
+	if rule.CIDR != "" {
+		family := "ipv4"
+		if strings.Contains(rule.CIDR, ":") {
+			family = "ipv6"
+		}
+		specification += ` family="` + family + `" source address="` + rule.CIDR + `"`
+	}
+	return specification + ` port port="` + strconv.Itoa(int(rule.Port)) +
+		`" protocol="` + rule.Protocol + `" ` + rule.Action
 }
