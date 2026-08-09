@@ -129,20 +129,6 @@ func TestIptablesRulesAreReadTheSameWay(t *testing.T) {
 	}
 }
 
-func TestClosingDenialIsFoundSoAnAllowanceStaysReachable(t *testing.T) {
-	rules, _ := parseNftablesRuleset(sampleRuleset)
-	// The denial that refuses everything else on 443 names no source; the one
-	// on 22 does the same for its port.
-	if handle := closingDenial(rules, "tcp", 443); handle != "9" {
-		t.Fatalf("closing denial for 443 = %q, want 9", handle)
-	}
-	// A port with no blanket denial has none to find, so an allowance for it
-	// gets one written alongside.
-	if handle := closingDenial(rules, "udp", 443); handle != "" {
-		t.Fatalf("closing denial for udp/443 = %q, want none", handle)
-	}
-}
-
 func TestAddedRulesAreValidatedBeforeReachingTheHost(t *testing.T) {
 	valid := LiveFirewallRule{Action: "accept", Protocol: "tcp", Port: 443, CIDR: "10.0.0.0/8"}
 	if err := validateManagedRule(valid); err != nil {
@@ -170,20 +156,6 @@ func TestAddedRulesAreValidatedBeforeReachingTheHost(t *testing.T) {
 			t.Fatalf("%s was accepted", name)
 		}
 	}
-	expression, err := nftablesExpression(valid)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if expression != "ip saddr 10.0.0.0/8 tcp dport 443" {
-		t.Fatalf("unexpected expression: %q", expression)
-	}
-	if expression, err := nftablesExpression(LiveFirewallRule{Action: "drop", Protocol: "udp", Port: 53, CIDR: "2001:db8::/32"}); err != nil || expression != "ip6 saddr 2001:db8::/32 udp dport 53" {
-		t.Fatalf("unexpected IPv6 expression %q (err=%v)", expression, err)
-	}
-	// nft needs the prefix length a host leaves off a single address.
-	if expression, err := nftablesExpression(LiveFirewallRule{Action: "drop", Protocol: "tcp", Port: 22, CIDR: "192.168.1.5"}); err != nil || expression != "ip saddr 192.168.1.5/32 tcp dport 22" {
-		t.Fatalf("unexpected single-address expression %q (err=%v)", expression, err)
-	}
 }
 
 func TestManagedJailsSurviveBeingReadBack(t *testing.T) {
@@ -203,7 +175,7 @@ func TestManagedJailsSurviveBeingReadBack(t *testing.T) {
 	}
 	// A jail without a port list must ban the address outright, on every
 	// protocol, or a "blocked" address keeps reaching UDP services.
-	if !strings.Contains(configuration, "banaction = nftables-allports") || !strings.Contains(configuration, "protocol = tcp,udp") {
+	if !strings.Contains(configuration, "banaction = iptables-allports") || !strings.Contains(configuration, "protocol = tcp,udp") {
 		t.Fatalf("ban action does not cover every port and protocol: %s", configuration)
 	}
 	if err := ValidateManagedJail(LiveFail2BanJail{
@@ -247,6 +219,115 @@ func TestSavingAJailReplacesTheOneWithTheSameName(t *testing.T) {
 	}
 	if _, err := applyJailMutation(deleted, Fail2BanMutation{Operation: "delete", Jail: LiveFail2BanJail{Name: "proxy"}}); err == nil {
 		t.Fatal("deleting an absent jail was reported as done")
+	}
+}
+
+// This is the shape a host in the field actually had: a stock ruleset restored
+// by iptables through its nftables backend — policy accept, closing reject —
+// with this platform's own table beside it. Both are input chains, both are
+// evaluated, and the reject is what a port nobody opened meets.
+const sampleIptablesBackedRuleset = `table ip filter {
+	chain INPUT {
+		type filter hook input priority filter; policy accept;
+		ct state related,established counter packets 100 bytes 6000 accept # handle 1
+		iifname "lo" counter packets 0 bytes 0 accept # handle 2
+		meta l4proto tcp tcp dport 22 counter packets 3 bytes 180 accept # handle 3
+		counter packets 5 bytes 300 reject with icmp type admin-prohibited # handle 4
+	}
+}
+table inet polaris {
+	chain input {
+		type filter hook input priority filter; policy accept;
+		tcp dport 19994 accept # handle 7
+	}
+}
+`
+
+// A chain that ends by refusing whatever is left refuses it whatever the chain
+// declares as its policy. Reading the policy alone reported such a host as
+// letting everything in, which is the opposite of what it does — and it is the
+// answer the console puts in front of the operator.
+func TestAClosingRefusalIsTheHostsRealDefault(t *testing.T) {
+	if policy := defaultIncomingFromRuleset(sampleIptablesBackedRuleset); policy != "drop" {
+		t.Fatalf("default incoming = %q, want drop", policy)
+	}
+	// Without such a rule an accepting policy means what it says. The forward
+	// chain in this ruleset drops by default and decides nothing about incoming
+	// traffic, so it must not count.
+	if policy := defaultIncomingFromRuleset(sampleRuleset); policy != "accept" {
+		t.Fatalf("default incoming = %q, want accept", policy)
+	}
+	if policy := defaultIncomingFromRuleset("table inet f {\n\tchain in {\n\t\ttype filter hook input priority filter; policy drop;\n\t}\n}\n"); policy != "drop" {
+		t.Fatalf("a declared drop policy was not reported: %q", policy)
+	}
+	// A host with no input chain at all has no policy to report, and the caller
+	// is what decides that an unfirewalled host lets everything in.
+	if policy := defaultIncomingFromRuleset(""); policy != "" {
+		t.Fatalf("an empty ruleset reported %q", policy)
+	}
+}
+
+func TestOnlyARuleMatchingEverythingCountsAsADefault(t *testing.T) {
+	for line, want := range map[string]string{
+		"counter packets 5 bytes 300 reject with icmp type admin-prohibited # handle 4": "reject",
+		"drop":                             "drop",
+		"counter packets 1 bytes 2 accept": "accept",
+		// Every one of these narrows what it applies to, so none of them decides
+		// what happens to traffic in general.
+		"iif \"lo\" accept":                       "",
+		"ct state established,related accept":     "",
+		"tcp dport 443 drop # handle 9":           "",
+		"ip saddr 198.51.100.4/32 drop":           "",
+		"meta l4proto tcp ip saddr @blocked drop": "",
+	} {
+		if got := unconditionalNftVerdict(line); got != want {
+			t.Fatalf("unconditionalNftVerdict(%q) = %q, want %q", line, got, want)
+		}
+	}
+	// An operator's comment is their own text and must not be read as part of
+	// the rule, even when it contains words that look like one.
+	if verdict := unconditionalNftVerdict(`counter packets 2 bytes 3 drop comment "tcp dport 22"`); verdict != "drop" {
+		t.Fatalf("a commented closing rule was misread: %q", verdict)
+	}
+}
+
+// The same question on a host with no nft command, read out of iptables' own
+// wording.
+func TestIptablesDefaultIncomingReadsPolicyAndClosingRule(t *testing.T) {
+	closing := `-P INPUT ACCEPT
+-P FORWARD DROP
+-A INPUT -i lo -j ACCEPT
+-A INPUT -p tcp -m tcp --dport 22 -j ACCEPT
+-A INPUT -j REJECT --reject-with icmp-host-prohibited
+`
+	if policy := defaultIncomingFromIptables(closing); policy != "drop" {
+		t.Fatalf("default incoming = %q, want drop", policy)
+	}
+	// The FORWARD policy above decides nothing about incoming traffic; without
+	// the closing rule this host really does accept by default.
+	open := "-P INPUT ACCEPT\n-P FORWARD DROP\n-A INPUT -p tcp -m tcp --dport 22 -j ACCEPT\n"
+	if policy := defaultIncomingFromIptables(open); policy != "accept" {
+		t.Fatalf("default incoming = %q, want accept", policy)
+	}
+	if policy := defaultIncomingFromIptables("-P INPUT DROP\n"); policy != "drop" {
+		t.Fatalf("a dropping policy was not reported: %q", policy)
+	}
+}
+
+// A rule is saved by whatever owns it, and the tables iptables maintains
+// through its nftables backend are read back alongside this platform's own.
+func TestIptablesOwnedTablesAreToldApart(t *testing.T) {
+	for _, owned := range [][2]string{{"ip", "filter"}, {"ip6", "filter"}, {"ip", "nat"}, {"ip", "mangle"}} {
+		if !iptablesOwnsTable(owned[0], owned[1]) {
+			t.Fatalf("table %s %s was not recognized as iptables'", owned[0], owned[1])
+		}
+	}
+	// An inet table is one nft itself holds, whatever it is called — including a
+	// hand-written `inet filter`, which is not iptables' filter table.
+	for _, other := range [][2]string{{"inet", "polaris"}, {"inet", "filter"}, {"ip", "polaris"}} {
+		if iptablesOwnsTable(other[0], other[1]) {
+			t.Fatalf("table %s %s was mistaken for iptables'", other[0], other[1])
+		}
 	}
 }
 

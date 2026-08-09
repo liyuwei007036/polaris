@@ -297,23 +297,22 @@ func CompileManagedFail2Ban(jails []LiveFail2BanJail) (string, map[string]string
 		output.WriteString("enabled = true\n")
 		output.WriteString("filter = " + managedFilter + "\n")
 		output.WriteString("logpath = " + jail.LogPath + "\n")
-		// A ban has to actually reach the kernel. Fail2Ban still defaults to
-		// iptables, which on an nftables-only host silently bans nothing at
-		// all — the jail counts failures and reports them while every blocked
-		// address keeps connecting. This project manages the firewall with
-		// nftables, so the ban action has to match.
+		// The ban action has to match where this agent keeps the firewall, which
+		// is iptables. Fail2Ban's nftables actions build a table of their own on
+		// the input hook, and a node with two firewalls is a node where one can
+		// refuse what the other allowed.
 		//
 		// Without a port list the intent is "this address may not connect at
 		// all", which is the allports action: multiport with a full range
 		// would still only cover TCP and UDP.
 		//
-		// The protocol list matters just as much: Fail2Ban's nftables actions
-		// default to TCP only, so a "blocked" address could still reach every
-		// UDP service — including the QUIC-based proxies this tool manages.
+		// The protocol list matters just as much: Fail2Ban's actions default to
+		// TCP only, so a "blocked" address could still reach every UDP service —
+		// including the QUIC-based proxies this tool manages.
 		if ports := strings.TrimSpace(jail.Ports); ports == "" {
-			output.WriteString("banaction = nftables-allports\nbanaction_allports = nftables-allports\n")
+			output.WriteString("banaction = iptables-allports\nbanaction_allports = iptables-allports\n")
 		} else {
-			output.WriteString("banaction = nftables-multiport\nbanaction_allports = nftables-allports\n")
+			output.WriteString("banaction = iptables-multiport\nbanaction_allports = iptables-allports\n")
 			output.WriteString("port = " + ports + "\n")
 		}
 		output.WriteString("protocol = tcp,udp\n")

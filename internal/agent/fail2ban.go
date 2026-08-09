@@ -57,9 +57,9 @@ func ensureFail2BanReady(ctx context.Context, jailConfiguration string) error {
 	if err := installFail2BanIfMissing(ctx); err != nil {
 		return err
 	}
-	// The generated jails ban through nftables, so the tool has to be there
-	// or every ban would be recorded by Fail2Ban and enforced by nothing.
-	if err := ensureNftablesReady(ctx); err != nil {
+	// The generated jails ban through iptables, so the tool has to be there or
+	// every ban would be recorded by Fail2Ban and enforced by nothing.
+	if err := ensureIptablesReady(ctx); err != nil {
 		return err
 	}
 	for _, match := range logPathPattern.FindAllStringSubmatch(jailConfiguration, -1) {

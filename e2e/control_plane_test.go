@@ -44,7 +44,7 @@ func TestControlPlaneProcessJourneyWithRealAgent(t *testing.T) {
 		t.Fatal(err)
 	}
 	stubPath := buildProgram(t, root, "./e2e/cmdstub", filepath.Join(stubDir, executableName("sing-box")))
-	for _, command := range []string{"systemctl", "nginx", "nft", "fail2ban-client"} {
+	for _, command := range []string{"systemctl", "nginx", "iptables", "fail2ban-client"} {
 		copyExecutable(t, stubPath, filepath.Join(stubDir, executableName(command)))
 	}
 
@@ -302,8 +302,8 @@ func TestControlPlaneProcessJourneyWithRealAgent(t *testing.T) {
 	// the console does it, so any rule on the server can be removed — including
 	// ones this platform never wrote.
 	target := findFirewallRule(firewallListing.Nodes[0], "accept", "tcp", 443, "192.0.2.0/24")
-	if target == nil || target.Handle == "" {
-		t.Fatalf("the rule to delete has no handle: %#v", firewallListing.Nodes[0].PortRules)
+	if target == nil || target.Raw == "" {
+		t.Fatalf("the rule to delete cannot be named back to the server: %#v", firewallListing.Nodes[0].PortRules)
 	}
 	var firewallAfterDelete nodeFirewallResponse
 	api.mustJSON(t, http.MethodPost, "/api/v1/nodes/"+approval.NodeID+"/firewall/rules", map[string]any{
@@ -329,17 +329,23 @@ func TestControlPlaneProcessJourneyWithRealAgent(t *testing.T) {
 	commandInvocations = readFile(t, commandLog)
 	for _, expected := range []string{
 		"nginx -t", "systemctl reload nginx.service",
-		// The firewall is changed rule by rule on the running kernel and read
-		// back with handles, rather than by replacing a table wholesale from a
-		// copy of what the console believed was there.
-		"nft add rule inet polaris input ip saddr 192.0.2.0/24 tcp dport 443 accept",
-		"nft -a list ruleset", "nft delete rule inet polaris input handle",
-		// An allowance is only meaningful once everything else on that port is
-		// refused, so the closing denial has to reach the kernel too.
-		"nft add rule inet polaris input tcp dport 443 drop",
+		// Every change goes into iptables' own INPUT chain, rule by rule on the
+		// running kernel, and is read back out of it — one firewall per node, so
+		// nothing this writes can be overridden by something else on the same
+		// hook.
+		"iptables -I INPUT 1 -p tcp -s 192.0.2.0/24 --dport 443 -j ACCEPT",
+		"iptables -S INPUT",
+		// An allowance limited to a source is only a whitelist once everything
+		// else on that port is refused, so the closing denial goes in right
+		// behind it.
+		"iptables -I INPUT 2 -p tcp --dport 443 -j DROP",
+		// A rule is withdrawn in the host's own wording for it, which is what
+		// makes any rule on the machine removable and not just the ones this
+		// platform wrote.
+		"iptables -D INPUT -p tcp -s 192.0.2.0/24 --dport 443 -j ACCEPT",
 		// Fail2Ban is restarted, not reloaded: a reload re-reads the jails but
-		// never runs a ban action's actionstart, so the nftables table the
-		// bans go into is never created and nothing is actually blocked.
+		// never runs a ban action's actionstart, so the chain the bans go into
+		// is never created and nothing is actually blocked.
 		"fail2ban-client -t", "systemctl restart fail2ban.service",
 	} {
 		if !strings.Contains(commandInvocations, expected) {

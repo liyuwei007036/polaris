@@ -477,62 +477,15 @@ func mutateFirewall(ctx context.Context, task Task) TaskResult {
 	return TaskResult{Status: "succeeded", Summary: "访问限制已在服务器防火墙上生效", Data: string(encoded)}
 }
 
-// replaceableNftablesScript wraps a table definition so loading it replaces
-// whatever is there. The empty declaration makes the delete safe when the
-// table does not exist yet.
-func replaceableNftablesScript(configuration string) string {
-	return "table inet polaris\ndelete table inet polaris\n" + configuration
-}
-
-func ensureNftablesReady(ctx context.Context) error {
-	if strings.TrimSpace(os.Getenv("POLARIS_E2E_ROOT")) != "" || commandExists("nft") {
+// ensureIptablesReady makes sure the command this agent writes rules with is
+// there. There is no firewall to install: the filter table and its INPUT chain
+// belong to the kernel and exist on every host. Only the command that talks to
+// them can be missing, which a minimal image occasionally does.
+func ensureIptablesReady(ctx context.Context) error {
+	if strings.TrimSpace(os.Getenv("POLARIS_E2E_ROOT")) != "" || commandExists("iptables") {
 		return nil
 	}
-	return installPackages(ctx, "nftables")
-}
-
-// persistNftables records the managed table in its own file and unit so the
-// rules come back after a reboot. Rules loaded with `nft -f` alone live only
-// in the running kernel, which meant every restart silently dropped the whole
-// firewall. The host's own /etc/nftables.conf is left untouched.
-func persistNftables(ctx context.Context, script string) error {
-	if strings.TrimSpace(os.Getenv("POLARIS_E2E_ROOT")) != "" {
-		return nil
-	}
-	configurationPath := managedSystemPath(managedNftablesConfig)
-	if err := os.MkdirAll(filepath.Dir(configurationPath), 0o755); err != nil {
-		return errors.New("创建防火墙配置目录失败：" + err.Error() + permissionHint(err))
-	}
-	if err := writeFileAtomic(configurationPath, []byte(script), 0o640); err != nil {
-		return errors.New("写入防火墙配置失败：" + err.Error() + permissionHint(err))
-	}
-	if !commandExists("systemctl") {
-		return nil
-	}
-	unitPath := managedSystemPath(managedNftablesUnit)
-	unit := "[Unit]\nDescription=polaris managed nftables rules\nAfter=network-pre.target\nWants=network-pre.target\n\n" +
-		"[Service]\nType=oneshot\nRemainAfterExit=yes\n" +
-		"ExecStart=/usr/sbin/nft -f " + managedNftablesConfig + "\n" +
-		"ExecStop=/usr/sbin/nft delete table inet polaris\n\n" +
-		"[Install]\nWantedBy=multi-user.target\n"
-	existing, readErr := os.ReadFile(unitPath)
-	if readErr != nil || string(existing) != unit {
-		if err := os.MkdirAll(filepath.Dir(unitPath), 0o755); err != nil {
-			return errors.New("创建 systemd 目录失败：" + err.Error() + permissionHint(err))
-		}
-		if err := writeFileAtomic(unitPath, []byte(unit), 0o644); err != nil {
-			return errors.New("写入开机恢复配置失败：" + err.Error() + permissionHint(err))
-		}
-		if output, err := exec.CommandContext(ctx, "systemctl", "daemon-reload").CombinedOutput(); err != nil {
-			return errors.New(commandSummary("systemctl daemon-reload", output, err))
-		}
-	}
-	// enable without --now: the rules are already loaded, and starting the
-	// unit here would only load them a second time.
-	if output, err := exec.CommandContext(ctx, "systemctl", "enable", "polaris-nftables.service").CombinedOutput(); err != nil {
-		return errors.New(commandSummary("systemctl enable polaris-nftables.service", output, err))
-	}
-	return nil
+	return installPackages(ctx, "iptables")
 }
 
 // applyNginxConfiguration puts a compiled SNI router configuration in place.

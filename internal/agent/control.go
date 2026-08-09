@@ -130,7 +130,15 @@ type TaskResult struct {
 type TaskHandler func(context.Context, Task) TaskResult
 
 func DefaultStatus(singBoxVersion, dataDir string) Status {
-	singBoxConfigHash, _ := configurationFileHash(managedSingBoxConfig)
+	// The node adapts a configuration to the host before writing it, so the
+	// file on disk hashes to something the control plane never sent. What is
+	// reported is the hash it did send, and only while the adapted file is
+	// still the one this node wrote. Falling back to the file itself covers a
+	// node that has not applied anything yet.
+	singBoxConfigHash := reportedSingBoxConfigurationHash(dataDir)
+	if singBoxConfigHash == "" {
+		singBoxConfigHash, _ = configurationFileHash(managedSingBoxConfig)
+	}
 	return Status{
 		AgentVersion:      version.Version,
 		OS:                runtime.GOOS,

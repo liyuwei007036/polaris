@@ -8,7 +8,6 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 	"time"
 )
@@ -165,21 +164,6 @@ func TestStreamSupportDetectedFromLoadedDynamicModule(t *testing.T) {
 	}
 	if nginxHasStreamSupport(context.Background(), "http {\n}\n") {
 		t.Skip("host itself provides stream; the negative case cannot be exercised here")
-	}
-}
-
-// Reapplying the same firewall configuration must replace the table rather
-// than merge into it, or every publish stacks another copy of every rule.
-func TestNftablesScriptReplacesTheTableRatherThanMerging(t *testing.T) {
-	script := replaceableNftablesScript("table inet polaris {\n  chain input {\n  }\n}\n")
-	deleteAt := strings.Index(script, "delete table inet polaris")
-	defineAt := strings.Index(script, "table inet polaris {")
-	declareAt := strings.Index(script, "table inet polaris\n")
-	if declareAt != 0 {
-		t.Fatalf("the script must open with an empty declaration so the delete is safe:\n%s", script)
-	}
-	if deleteAt < 0 || defineAt < deleteAt {
-		t.Fatalf("the delete must precede the definition:\n%s", script)
 	}
 }
 

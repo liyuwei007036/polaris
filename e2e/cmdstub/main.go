@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 )
 
@@ -32,11 +33,11 @@ func main() {
 		if len(os.Args) > 1 && os.Args[1] == "is-active" && !contains(os.Args[2:], "--quiet") {
 			fmt.Println("active")
 		}
-	case "nft":
-		// The firewall is now read back from the host rather than from any
-		// stored copy, so the stub has to behave like a ruleset: what a load
-		// writes is what a later listing returns.
-		nftables(os.Args[1:])
+	case "iptables":
+		// The firewall is read back from the host rather than from any stored
+		// copy, so the stub has to behave like a chain: what an insert writes is
+		// what a later listing returns.
+		iptables(os.Args[1:])
 	case "nginx", "fail2ban-client":
 		// Successful deterministic replacements used only inside the E2E agent
 		// process. Every invocation is recorded for later assertions.
@@ -45,81 +46,63 @@ func main() {
 	}
 }
 
-// nftables emulates just enough of nft for the round trip the console depends
-// on: rules are added, listed back with handles, and deleted by handle. The
-// state is one rule per line so the stub stays as simple as what it stands in
-// for.
-func nftables(args []string) {
-	if contains(args, "-c") {
-		return
-	}
-	// -a only changes how a listing is printed, and this stub always prints
-	// handles because that is what the console needs.
-	if len(args) > 0 && args[0] == "-a" {
-		args = args[1:]
-	}
+// iptables emulates just enough of iptables for the round trip the console
+// depends on: rules are inserted into INPUT, listed back in the wording they
+// were written in, and deleted by that same wording. The state is one rule per
+// line so the stub stays as simple as what it stands in for.
+func iptables(args []string) {
 	if len(args) == 0 {
 		return
 	}
 	rules := readStubRules()
 	switch args[0] {
-	case "add", "insert":
-		if len(args) < 2 {
-			return
+	case "-S":
+		// -S, and -S INPUT, both answer with the chain policy and one line per
+		// rule — which is the wording a rule has to be deleted in later.
+		fmt.Println("-P INPUT ACCEPT")
+		for _, rule := range rules {
+			fmt.Println("-A INPUT " + rule)
 		}
-		switch args[1] {
-		case "table", "chain":
-			// Creating these is idempotent and needs no state of its own: a
-			// rule's presence is the only thing the console reads back.
-			return
-		case "rule":
-			// add rule <family> <table> <chain> <expression...>
-			// insert rule <family> <table> <chain> position <handle> <expression...>
-			if len(args) < 6 {
+	case "-I":
+		// -I INPUT <position> <rule...>, where the position is one-based.
+		if len(args) < 4 || args[1] != "INPUT" {
+			fail("unsupported iptables insert")
+		}
+		position, err := strconv.Atoi(args[2])
+		if err != nil || position < 1 {
+			fail("invalid rule position " + args[2])
+		}
+		index := position - 1
+		if index > len(rules) {
+			index = len(rules)
+		}
+		updated := make([]string, 0, len(rules)+1)
+		updated = append(updated, rules[:index]...)
+		updated = append(updated, strings.Join(args[3:], " "))
+		updated = append(updated, rules[index:]...)
+		writeStubRules(updated)
+	case "-A":
+		if len(args) < 3 || args[1] != "INPUT" {
+			fail("unsupported iptables append")
+		}
+		writeStubRules(append(rules, strings.Join(args[2:], " ")))
+	case "-D":
+		if len(args) < 3 || args[1] != "INPUT" {
+			fail("unsupported iptables delete")
+		}
+		entry := strings.Join(args[2:], " ")
+		for index, rule := range rules {
+			if rule == entry {
+				writeStubRules(append(rules[:index], rules[index+1:]...))
 				return
 			}
-			rest := args[5:]
-			position := -1
-			if args[0] == "insert" && len(rest) >= 2 && rest[0] == "position" {
-				position = indexOfHandle(rules, rest[1])
-				rest = rest[2:]
-			}
-			entry := strings.Join(args[2:5], " ") + "\t" + strings.Join(rest, " ")
-			if position < 0 || position > len(rules) {
-				rules = append(rules, entry)
-			} else {
-				rules = append(rules[:position], append([]string{entry}, rules[position:]...)...)
-			}
-			writeStubRules(rules)
 		}
-	case "delete":
-		// delete rule <family> <table> <chain> handle <n>
-		if len(args) != 7 || args[1] != "rule" || args[5] != "handle" {
-			return
-		}
-		index := indexOfHandle(rules, args[6])
-		if index < 0 {
-			fail("Could not process rule: No such file or directory")
-		}
-		writeStubRules(append(rules[:index], rules[index+1:]...))
-	case "list":
-		if len(args) >= 2 && args[1] == "ruleset" {
-			printStubRuleset(rules, "")
-			return
-		}
-		// list table <family> <name>
-		if len(args) == 4 && args[1] == "table" {
-			scope := args[2] + " " + args[3]
-			if !hasScope(rules, scope) {
-				fail("No such file or directory")
-			}
-			printStubRuleset(rules, scope)
-		}
+		fail("iptables: Bad rule (does a matching rule exist in that chain?)")
 	}
 }
 
 func stubRulePath() string {
-	return filepath.Join(os.Getenv("POLARIS_E2E_ROOT"), "nftables-rules.txt")
+	return filepath.Join(os.Getenv("POLARIS_E2E_ROOT"), "iptables-rules.txt")
 }
 
 func readStubRules() []string {
@@ -139,59 +122,6 @@ func readStubRules() []string {
 func writeStubRules(rules []string) {
 	if err := os.WriteFile(stubRulePath(), []byte(strings.Join(rules, "\n")), 0o600); err != nil {
 		fail(err.Error())
-	}
-}
-
-// Handles are the rule's one-based position here. Real nft never reuses one,
-// but the console only ever deletes a handle it has just been told about.
-func indexOfHandle(rules []string, handle string) int {
-	for index := range rules {
-		if fmt.Sprint(index+1) == handle {
-			return index
-		}
-	}
-	return -1
-}
-
-func hasScope(rules []string, scope string) bool {
-	for _, rule := range rules {
-		if strings.HasPrefix(rule, scope+" ") {
-			return true
-		}
-	}
-	return false
-}
-
-func printStubRuleset(rules []string, scope string) {
-	type chainKey struct{ table, chain string }
-	var order []chainKey
-	grouped := map[chainKey][]string{}
-	for index, rule := range rules {
-		location, expression, found := strings.Cut(rule, "\t")
-		if !found {
-			continue
-		}
-		fields := strings.Fields(location)
-		if len(fields) != 3 {
-			continue
-		}
-		table := fields[0] + " " + fields[1]
-		if scope != "" && table != scope {
-			continue
-		}
-		key := chainKey{table: table, chain: fields[2]}
-		if _, seen := grouped[key]; !seen {
-			order = append(order, key)
-		}
-		grouped[key] = append(grouped[key], fmt.Sprintf("\t\t%s # handle %d", expression, index+1))
-	}
-	for _, key := range order {
-		fmt.Printf("table %s {\n\tchain %s {\n", key.table, key.chain)
-		fmt.Println("\t\ttype filter hook input priority filter; policy accept;")
-		for _, line := range grouped[key] {
-			fmt.Println(line)
-		}
-		fmt.Println("\t}\n}")
 	}
 }
 
