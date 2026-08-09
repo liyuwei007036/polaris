@@ -7,7 +7,8 @@
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
-    "test:e2e": "npm run build && playwright test"
+    "test:e2e": "npm run build && playwright test",
+    "test:e2e:mobile": "npm run build && playwright test --config playwright.mobile.config.js"
   },
   "dependencies": {
     "@element-plus/icons-vue": "2.3.2",

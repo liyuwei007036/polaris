@@ -1,11 +1,11 @@
-import { createApp } from 'vue'
+import { createApp, defineAsyncComponent } from 'vue'
 import ElementPlus from 'element-plus'
 import { ElDialog, ElMessage, ElMessageBox } from 'element-plus'
 import zhCn from 'element-plus/es/locale/lang/zh-cn'
 import 'element-plus/dist/index.css'
 import 'element-plus/theme-chalk/dark/css-vars.css'
 import './styles.css'
-import App from './App.vue'
+import { isMobileUI } from './device'
 
 ElDialog.props.closeOnClickModal.default = false
 ElDialog.props.closeOnPressEscape.default = false
@@ -36,4 +36,7 @@ window.addEventListener('unhandledrejection', (event) => {
   }
 })
 
-createApp(App).use(ElementPlus, { locale: zhCn }).mount('#app')
+// 两套界面各自成块：手机不会下载桌面版的表格与图表代码，反之亦然。
+const root = defineAsyncComponent(() => (isMobileUI() ? import('./mobile/MobileApp.vue') : import('./App.vue')))
+
+createApp(root).use(ElementPlus, { locale: zhCn }).mount('#app')

@@ -30,7 +30,12 @@ const sessionCookieName = "polaris_session"
 // with the port this process actually listens on.
 const defaultAgentPort = 19994
 
-//go:embed web/dist
+// The all: prefix matters. Without it embed silently skips files whose names
+// begin with "_", and the bundler emits shared chunks named that way. A missing
+// chunk is not a build error: the console falls back to index.html for it and
+// the browser refuses the HTML as a module, leaving a blank page.
+//
+//go:embed all:web/dist
 var dashboardFS embed.FS
 
 type Server struct {
