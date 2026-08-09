@@ -177,6 +177,7 @@ test('浏览器页面回归：真实登录，核心工作区 API 使用路由替
       transport: { type: 'ws', path: '', host: '', service_name: '' },
     },
   }
+  const shareLink = 'vless://11111111-2222-3333-4444-555555555555@ws.example.com:18444?encryption=none&security=tls&type=ws#%E6%B5%8B%E8%AF%95%E8%8A%82%E7%82%B9+01'
   // This section verifies browser interaction contracts, not a live Agent.
   await page.route('**/api/v1/**', async (route) => {
     const request = route.request()
@@ -217,6 +218,9 @@ test('浏览器页面回归：真实登录，核心工作区 API 使用路由替
     if (request.method() === 'GET' && path === '/api/v1/mihomo/client-configs') return route.fulfill({ json: { client_configs: savedClientConfig ? [savedClientConfig] : [] } })
     if (request.method() === 'GET' && (path === '/api/v1/listeners/listener-1/endpoints' || path === '/api/v1/endpoints')) {
       return route.fulfill({ json: { endpoints: [{ id: 'endpoint-1', listener_id: 'listener-1', name: '默认账号', alias: '测试节点 01', enabled: true, outbound_id: 'direct' }] } })
+    }
+    if (request.method() === 'GET' && path === '/api/v1/listeners/listener-1/share-links') {
+      return route.fulfill({ json: { share_links: [{ endpoint_id: 'endpoint-1', name: '默认账号', alias: '测试节点 01', link: shareLink }] } })
     }
     if (request.method() === 'PUT' && path === '/api/v1/listeners/listener-1') {
       savedListener = request.postDataJSON()
@@ -291,6 +295,18 @@ test('浏览器页面回归：真实登录，核心工作区 API 使用路由替
   await createDialog.getByRole('button', { name: '创建', exact: true }).click()
   await expect(page.getByText(deployFailureSummary, { exact: true })).toBeVisible()
   await expect(createDialog).toBeHidden()
+
+  // The node link is what a phone scans, so it has to reach the screen as both
+  // a code and the text behind it.
+  await page.getByRole('button', { name: '二维码', exact: true }).click()
+  const shareDialog = page.getByRole('dialog', { name: 'WebSocket 接入 · 节点链接', exact: true })
+  await expect(shareDialog.getByTestId('qr-image')).toBeVisible()
+  await expect(shareDialog.getByTestId('qr-value')).toHaveText(shareLink)
+  await shareDialog.getByRole('button', { name: '复制地址', exact: true }).click()
+  await expect(page.getByText('地址已复制', { exact: true })).toBeVisible()
+  await expect.poll(() => page.evaluate(() => window.__copiedText)).toBe(shareLink)
+  await shareDialog.getByRole('button', { name: '关闭此对话框', exact: true }).click()
+  await expect(shareDialog).toBeHidden()
 
   await page.getByRole('button', { name: '编辑', exact: true }).click()
   const editDialog = page.getByRole('dialog', { name: '修改接入服务', exact: true })
@@ -464,6 +480,12 @@ test('浏览器页面回归：真实登录，核心工作区 API 使用路由替
   await clientConfigRow.getByRole('button', { name: '复制', exact: true }).click()
   await expect(page.getByText('更新地址已复制', { exact: true })).toBeVisible()
   await expect.poll(() => page.evaluate(() => window.__copiedText)).toBe(`${process.env.POLARIS_E2E_BASE_URL}/api/v1/mihomo/subscriptions/test-token`)
+  await clientConfigRow.getByRole('button', { name: '二维码', exact: true }).click()
+  const subscriptionQrDialog = page.getByRole('dialog', { name: '组合分组配置 · 更新地址', exact: true })
+  await expect(subscriptionQrDialog.getByTestId('qr-image')).toBeVisible()
+  await expect(subscriptionQrDialog.getByTestId('qr-value')).toHaveText(`${process.env.POLARIS_E2E_BASE_URL}/api/v1/mihomo/subscriptions/test-token`)
+  await subscriptionQrDialog.getByRole('button', { name: '关闭此对话框', exact: true }).click()
+  await expect(subscriptionQrDialog).toBeHidden()
   await clientConfigRow.getByRole('button', { name: '编辑', exact: true }).click()
   await expect(page.getByRole('heading', { name: '编辑客户端配置', exact: true })).toBeVisible()
   const editClientForm = page.locator('.form-page')

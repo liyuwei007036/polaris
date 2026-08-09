@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"mime"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -265,6 +266,7 @@ func (s *Server) registerBrowserRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("DELETE /api/v1/outbounds/{id}", s.deleteOutbound)
 	mux.HandleFunc("GET /api/v1/endpoints", s.listEndpoints)
 	mux.HandleFunc("GET /api/v1/listeners/{id}/endpoints", s.listEndpoints)
+	mux.HandleFunc("GET /api/v1/listeners/{id}/share-links", s.listListenerShareLinks)
 	mux.HandleFunc("POST /api/v1/listeners/{id}/endpoints", s.createEndpoint)
 	mux.HandleFunc("POST /api/v1/listeners/{id}/endpoints/quick", s.createGeneratedEndpoint)
 	mux.HandleFunc("PUT /api/v1/endpoints/{id}", s.updateEndpoint)
@@ -440,13 +442,27 @@ func (s *Server) beginOwnTOTPSetup(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
-	issuer := "Polaris"
+	issuer := totpIssuer(r.Host)
 	label := url.PathEscape(issuer + ":" + operator.Username)
 	query := url.Values{"secret": {secret}, "issuer": {issuer}, "algorithm": {"SHA1"}, "digits": {"6"}, "period": {"30"}}
 	writeJSON(w, http.StatusOK, map[string]string{
 		"secret":      secret,
 		"otpauth_uri": "otpauth://totp/" + label + "?" + query.Encode(),
 	})
+}
+
+// totpIssuer prefers the host the operator actually browses to, because password
+// managers match a verification code against saved logins by domain. The Key URI
+// format forbids a colon inside the issuer, so IPv6 literals fall back to the
+// brand name.
+func totpIssuer(host string) string {
+	if hostname, _, err := net.SplitHostPort(host); err == nil {
+		host = hostname
+	}
+	if host == "" || strings.ContainsAny(host, ":/?#") {
+		return "Polaris"
+	}
+	return host
 }
 
 func (s *Server) enableOwnTOTP(w http.ResponseWriter, r *http.Request) {
@@ -1864,6 +1880,19 @@ func (s *Server) listEndpoints(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"endpoints": endpoints})
+}
+
+func (s *Server) listListenerShareLinks(w http.ResponseWriter, r *http.Request) {
+	if _, err := s.operator(r, false); err != nil {
+		writeError(w, err)
+		return
+	}
+	links, err := s.store.ListEndpointShareLinks(r.Context(), r.PathValue("id"))
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"share_links": links})
 }
 
 func (s *Server) createEndpoint(w http.ResponseWriter, r *http.Request) {

@@ -439,6 +439,20 @@ func (s *Store) ChangeOwnPassword(ctx context.Context, operatorID, currentPasswo
 }
 
 func (s *Store) BeginOperatorTOTPSetup(ctx context.Context, operatorID string) (string, error) {
+	var pending []byte
+	if err := s.db.QueryRowContext(ctx, `SELECT pending_totp_secret FROM operators WHERE id = ? AND enabled = 1`, operatorID).Scan(&pending); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return "", ErrNotFound
+		}
+		return "", fmt.Errorf("load pending TOTP setup: %w", err)
+	}
+	// Reusing an unconfirmed secret keeps a QR code the operator already scanned
+	// valid when they reopen the dialog.
+	if len(pending) > 0 {
+		if existing, err := security.Decrypt(s.masterKey, pending); err == nil && len(existing) > 0 {
+			return string(existing), nil
+		}
+	}
 	secret, err := security.NewTOTPSecret()
 	if err != nil {
 		return "", err

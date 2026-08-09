@@ -269,6 +269,36 @@ func (s *Store) GenerateClientSubscription(ctx context.Context, token string) (s
 	return base64.StdEncoding.EncodeToString([]byte(strings.Join(lines, "\n") + "\n")), nil
 }
 
+// EndpointShareLink is the same node link a client subscription carries, given
+// per user so the console can show one for scanning.
+type EndpointShareLink struct {
+	EndpointID string `json:"endpoint_id"`
+	Name       string `json:"name"`
+	Alias      string `json:"alias"`
+	Link       string `json:"link"`
+}
+
+// A disabled user, or one whose service is disabled, has nothing to connect to
+// yet and is left out rather than reported as an error.
+func (s *Store) ListEndpointShareLinks(ctx context.Context, listenerID string) ([]EndpointShareLink, error) {
+	endpoints, err := s.ListEndpoints(ctx, listenerID)
+	if err != nil {
+		return nil, err
+	}
+	links := make([]EndpointShareLink, 0, len(endpoints))
+	for _, endpoint := range endpoints {
+		line, err := s.clientSubscriptionLine(ctx, endpoint.ID)
+		if errors.Is(err, ErrNotFound) {
+			continue
+		}
+		if err != nil {
+			return nil, err
+		}
+		links = append(links, EndpointShareLink{EndpointID: endpoint.ID, Name: endpoint.Name, Alias: endpoint.Alias, Link: line})
+	}
+	return links, nil
+}
+
 func (s *Store) clientSubscriptionLine(ctx context.Context, endpointID string) (string, error) {
 	var endpoint endpointWithCredentials
 	var encrypted []byte

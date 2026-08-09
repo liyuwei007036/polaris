@@ -1,12 +1,14 @@
 <script setup>
 import { computed, inject, onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { ArrowDown, ArrowLeft, ArrowUp, CopyDocument, Delete, DocumentCopy, Edit, Plus, Refresh, RefreshRight, Search } from '@element-plus/icons-vue'
+import { ArrowDown, ArrowLeft, ArrowUp, CopyDocument, Delete, DocumentCopy, Edit, Grid, Plus, Refresh, RefreshRight, Search } from '@element-plus/icons-vue'
 import { api, del, post, put } from '../api'
+import { writeClipboard } from '../clipboard'
 import { formatDateTime, includesText } from '../format'
 import { regionFlag } from '../flags'
 import PageHeader from '../components/PageHeader.vue'
 import PagedTable from '../components/PagedTable.vue'
+import QrCodeDialog from '../components/QrCodeDialog.vue'
 
 const canWrite = inject('canWrite')
 const isAdmin = inject('isAdmin')
@@ -30,6 +32,9 @@ const accessLoading = ref(false)
 const keyword = ref('')
 const selectedStatus = ref('')
 const accessQuery = reactive({ page: 1, pageSize: 10, total: 0, config_id: '', ip: '', location: '', user_agent: '' })
+const qrOpen = ref(false)
+const qrTitle = ref('')
+const qrItems = ref([])
 // A new subscription starts from the settings that used to be generated
 // automatically, so it works out of the box and stays fully editable.
 function defaultDNS() {
@@ -318,21 +323,10 @@ function absoluteSubscription(config) {
   return new URL(config.subscription_path, window.location.origin).toString()
 }
 
-async function writeClipboard(text) {
-  if (navigator.clipboard?.writeText) {
-    await navigator.clipboard.writeText(text)
-    return
-  }
-  const textarea = document.createElement('textarea')
-  textarea.value = text
-  textarea.readOnly = true
-  textarea.style.position = 'fixed'
-  textarea.style.opacity = '0'
-  document.body.appendChild(textarea)
-  textarea.select()
-  const copied = document.execCommand('copy')
-  textarea.remove()
-  if (!copied) throw new Error('浏览器不支持自动复制')
+function showQrCode(config) {
+  qrTitle.value = `${config.name} · 更新地址`
+  qrItems.value = [{ key: config.id, label: config.name, value: absoluteSubscription(config) }]
+  qrOpen.value = true
 }
 
 async function setEnabled(config, enabled) {
@@ -410,9 +404,10 @@ onMounted(() => { load(); loadAccess() })
               <el-switch :model-value="row.enabled" inline-prompt active-text="启用" inactive-text="停用" :loading="changingState === row.id" :disabled="changingState === row.id || !canWrite" @change="setEnabled(row, $event)" />
             </template>
           </el-table-column>
-          <el-table-column label="操作" width="360" fixed="right" class-name="action-column">
+          <el-table-column label="操作" width="424" fixed="right" class-name="action-column">
             <template #default="{ row }">
               <el-button link :icon="CopyDocument" @click="copySubscription(row)">复制</el-button>
+              <el-button link :icon="Grid" @click="showQrCode(row)">二维码</el-button>
               <el-button v-if="canWrite" link :icon="DocumentCopy" @click="copyConfig(row)">复制配置</el-button>
               <el-button v-if="canWrite" link :icon="RefreshRight" @click="rotateSubscription(row)">更换</el-button>
               <el-button v-if="canWrite" link :icon="Edit" @click="openForm(row)">编辑</el-button>
@@ -591,6 +586,8 @@ onMounted(() => { load(); loadAccess() })
         </el-form>
       </div>
     </main>
+
+    <QrCodeDialog v-model="qrOpen" :title="qrTitle" :items="qrItems" />
   </div>
 </template>
 

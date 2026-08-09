@@ -1,7 +1,7 @@
 <script setup>
 import { computed, inject, onMounted, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Delete, DocumentCopy, Edit, Plus, Refresh, Search } from '@element-plus/icons-vue'
+import { Delete, DocumentCopy, Edit, Grid, Plus, Refresh, Search } from '@element-plus/icons-vue'
 import { api, del, post, put } from '../api'
 import { waitForTask } from '../live'
 import { includesText } from '../format'
@@ -9,6 +9,7 @@ import { protocolMap } from '../protocols'
 import PageHeader from '../components/PageHeader.vue'
 import PagedTable from '../components/PagedTable.vue'
 import ListenerFormDialog from '../components/ListenerFormDialog.vue'
+import QrCodeDialog from '../components/QrCodeDialog.vue'
 
 const appState = inject('appState')
 const canWrite = inject('canWrite')
@@ -31,6 +32,10 @@ const copySourceID = ref('')
 const keyword = ref('')
 const selectedNode = ref('')
 const selectedStatus = ref('')
+const qrOpen = ref(false)
+const qrLoading = ref(false)
+const qrTitle = ref('')
+const qrItems = ref([])
 
 const nodeNames = computed(() => Object.fromEntries(appState.nodes.map((item) => [item.id, item.name])))
 const formEndpoints = computed(() => {
@@ -83,6 +88,28 @@ function securityLabel(listener) {
   if (listener.spec?.reality?.enabled) return 'Reality'
   if (listener.spec?.tls?.enabled) return 'TLS'
   return '无加密'
+}
+
+// Each user of a service has a node link of their own, so the dialog is opened
+// with all of them and the operator picks whose code to scan.
+async function showShareLinks(listener) {
+  qrTitle.value = `${listener.name} · 节点链接`
+  qrItems.value = []
+  qrLoading.value = true
+  qrOpen.value = true
+  try {
+    const result = await api(`/listeners/${listener.id}/share-links`)
+    qrItems.value = (result.share_links || []).map((link) => ({
+      key: link.endpoint_id,
+      label: link.alias || link.name,
+      value: link.link,
+    }))
+  } catch (error) {
+    qrOpen.value = false
+    ElMessage.error(error instanceof Error ? error.message : '节点链接获取失败，请稍后重试')
+  } finally {
+    qrLoading.value = false
+  }
 }
 
 function openCreate() {
@@ -268,8 +295,9 @@ onMounted(load)
               <el-tag :type="row.enabled ? 'success' : 'info'">{{ row.enabled ? '启用' : '停用' }}</el-tag>
             </template>
           </el-table-column>
-          <el-table-column label="操作" width="264" fixed="right" class-name="action-column">
+          <el-table-column label="操作" width="344" fixed="right" class-name="action-column">
             <template #default="{ row }">
+              <el-button link :icon="Grid" @click="showShareLinks(row)">二维码</el-button>
               <el-button v-if="canWrite" link :icon="Edit" @click="openEdit(row)">编辑</el-button>
               <el-button v-if="canWrite" link :icon="DocumentCopy" @click="openCopy(row)">复制</el-button>
               <el-button v-if="canWrite" link @click="toggle(row)">{{ row.enabled ? '停用' : '启用' }}</el-button>
@@ -290,6 +318,14 @@ onMounted(load)
       :endpoints="formEndpoints"
       :saving="saving"
       @save="saveListener"
+    />
+
+    <QrCodeDialog
+      v-model="qrOpen"
+      :title="qrTitle"
+      :items="qrItems"
+      :loading="qrLoading"
+      empty-text="该服务下还没有可扫描的节点链接：服务或用户已停用，或服务器还没有填写客户端连接地址。"
     />
   </div>
 </template>

@@ -102,9 +102,22 @@ func TestDefaultAdministratorForcesPasswordChangeAndAllowsOptionalTOTP(t *testin
 		OTPAuthURI string `json:"otpauth_uri"`
 	}
 	decodeBody(t, response, &setup)
-	if setup.Secret == "" || !strings.HasPrefix(setup.OTPAuthURI, "otpauth://totp/") || !strings.Contains(setup.OTPAuthURI, "issuer=Polaris") {
+	if setup.Secret == "" || !strings.HasPrefix(setup.OTPAuthURI, "otpauth://totp/") || !strings.Contains(setup.OTPAuthURI, "issuer=127.0.0.1") {
 		t.Fatalf("unexpected TOTP setup: %#v", setup)
 	}
+
+	response = request(t, http.MethodPost, httpServer.URL+"/api/v1/auth/2fa/setup", map[string]any{}, session, account.CSRF)
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("reopen TOTP setup: got %d", response.StatusCode)
+	}
+	var reopened struct {
+		Secret string `json:"secret"`
+	}
+	decodeBody(t, response, &reopened)
+	if reopened.Secret != setup.Secret {
+		t.Fatalf("reopening TOTP setup rotated the secret: %q then %q", setup.Secret, reopened.Secret)
+	}
+
 	response = request(t, http.MethodPost, httpServer.URL+"/api/v1/auth/2fa/enable", map[string]string{
 		"code": totp(setup.Secret, time.Now().UTC()),
 	}, session, account.CSRF)
