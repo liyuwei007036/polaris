@@ -37,6 +37,10 @@ const (
 	defaultTokenTTL      = 15 * time.Minute
 	maximumTokenTTL      = time.Hour
 	registrationPollTTL  = 24 * time.Hour
+	// ±16 steps = ±8 minutes of authenticator/server clock skew tolerated when
+	// enrolling. 33 candidate codes out of a million keeps a guess unlikely,
+	// and enrollment already requires an authenticated session.
+	totpEnrollSearchRadius = 16
 )
 
 type Store struct {
@@ -487,10 +491,19 @@ func (s *Store) ConfirmOperatorTOTP(ctx context.Context, operatorID, code string
 		return ErrConflict
 	}
 	secret, err := security.Decrypt(s.masterKey, encrypted)
-	if err != nil || !security.VerifyTOTP(string(secret), code, time.Now().UTC()) {
+	if err != nil {
 		return ErrInvalidCredentials
 	}
-	result, err := s.db.ExecContext(ctx, `UPDATE operators SET totp_secret = pending_totp_secret, pending_totp_secret = NULL, totp_enabled = 1 WHERE id = ?`, operatorID)
+	// The operator types the code right after scanning the QR, so a match far
+	// from "now" measures how far this server's clock is from the
+	// authenticator's. Remember that skew and verify logins around it, instead
+	// of failing every login once the host (a VPS without NTP, WSL after
+	// sleep) drifts past the ±1-step tolerance.
+	clockOffset, ok := security.VerifyTOTPAround(string(secret), code, time.Now().UTC(), 0, totpEnrollSearchRadius)
+	if !ok {
+		return ErrInvalidCredentials
+	}
+	result, err := s.db.ExecContext(ctx, `UPDATE operators SET totp_secret = pending_totp_secret, pending_totp_secret = NULL, totp_enabled = 1, totp_clock_offset = ? WHERE id = ?`, clockOffset, operatorID)
 	if err != nil {
 		return fmt.Errorf("enable operator TOTP: %w", err)
 	}
@@ -526,7 +539,7 @@ func (s *Store) ClearOperatorTOTP(ctx context.Context, operatorID string) error 
 		return err
 	}
 	defer tx.Rollback()
-	result, err := tx.ExecContext(ctx, `UPDATE operators SET totp_secret = ?, pending_totp_secret = NULL, totp_enabled = 0 WHERE id = ?`, emptySecret, operatorID)
+	result, err := tx.ExecContext(ctx, `UPDATE operators SET totp_secret = ?, pending_totp_secret = NULL, totp_enabled = 0, totp_clock_offset = 0 WHERE id = ?`, emptySecret, operatorID)
 	if err != nil {
 		return fmt.Errorf("disable operator TOTP: %w", err)
 	}
@@ -642,11 +655,11 @@ func (s *Store) FinishLogin(ctx context.Context, challengeID, code string) (Sess
 	var operatorID, role string
 	var mustChangePassword bool
 	var encryptedSecret []byte
-	var expiresAt int64
-	err = tx.QueryRowContext(ctx, `SELECT c.operator_id, o.role, o.totp_secret, c.expires_at, o.must_change_password
+	var expiresAt, clockOffset int64
+	err = tx.QueryRowContext(ctx, `SELECT c.operator_id, o.role, o.totp_secret, c.expires_at, o.must_change_password, o.totp_clock_offset
 		FROM login_challenges c JOIN operators o ON o.id = c.operator_id
 		WHERE c.id_hash = ? AND c.used_at IS NULL AND o.enabled = 1 AND o.totp_enabled = 1`, security.TokenHash(challengeID)).
-		Scan(&operatorID, &role, &encryptedSecret, &expiresAt, &mustChangePassword)
+		Scan(&operatorID, &role, &encryptedSecret, &expiresAt, &mustChangePassword, &clockOffset)
 	if errors.Is(err, sql.ErrNoRows) || time.Now().UTC().Unix() > expiresAt {
 		return Session{}, ErrInvalidCredentials
 	}
@@ -654,8 +667,19 @@ func (s *Store) FinishLogin(ctx context.Context, challengeID, code string) (Sess
 		return Session{}, fmt.Errorf("load MFA challenge: %w", err)
 	}
 	secret, err := security.Decrypt(s.masterKey, encryptedSecret)
-	if err != nil || !security.VerifyTOTP(string(secret), code, time.Now().UTC()) {
+	if err != nil {
 		return Session{}, ErrInvalidCredentials
+	}
+	// Verify around the skew learned at enrollment, and re-anchor on the step
+	// that matched so slow clock drift never accumulates past the tolerance.
+	matchedOffset, ok := security.VerifyTOTPAround(string(secret), code, time.Now().UTC(), clockOffset, 1)
+	if !ok {
+		return Session{}, ErrInvalidCredentials
+	}
+	if matchedOffset != clockOffset {
+		if _, err := tx.ExecContext(ctx, `UPDATE operators SET totp_clock_offset = ? WHERE id = ?`, matchedOffset, operatorID); err != nil {
+			return Session{}, fmt.Errorf("record TOTP clock offset: %w", err)
+		}
 	}
 	updated, err := tx.ExecContext(ctx, `UPDATE login_challenges SET used_at = ? WHERE id_hash = ? AND used_at IS NULL`, nowUnix(), security.TokenHash(challengeID))
 	if err != nil {
@@ -2113,7 +2137,8 @@ CREATE TABLE IF NOT EXISTS operators (
   created_at INTEGER NOT NULL, last_login_at INTEGER,
   totp_enabled INTEGER NOT NULL DEFAULT 1,
   must_change_password INTEGER NOT NULL DEFAULT 0,
-  pending_totp_secret BLOB
+  pending_totp_secret BLOB,
+  totp_clock_offset INTEGER NOT NULL DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS login_challenges (
   id_hash BLOB PRIMARY KEY, operator_id TEXT NOT NULL REFERENCES operators(id),
@@ -2302,6 +2327,7 @@ CREATE INDEX IF NOT EXISTS idx_node_metrics_updated ON node_metrics(updated_at);
 		"totp_enabled INTEGER NOT NULL DEFAULT 1",
 		"must_change_password INTEGER NOT NULL DEFAULT 0",
 		"pending_totp_secret BLOB",
+		"totp_clock_offset INTEGER NOT NULL DEFAULT 0",
 	} {
 		if err := s.addOperatorColumn(ctx, column); err != nil {
 			return err

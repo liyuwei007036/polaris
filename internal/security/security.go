@@ -100,17 +100,23 @@ func NewTOTPSecret() (string, error) {
 	return base32.StdEncoding.WithPadding(base32.NoPadding).EncodeToString(b), nil
 }
 
-func VerifyTOTP(secret, code string, at time.Time) bool {
+// VerifyTOTPAround accepts codes within radius time-steps of center (itself in
+// time-steps relative to at) and returns the step the code matched. The
+// authenticator's clock and the server's routinely disagree by more than one
+// step — VPS and WSL hosts drift by minutes — so enrollment searches a wide
+// radius to learn the skew, and login re-centers on the stored value instead
+// of trusting the server clock alone.
+func VerifyTOTPAround(secret, code string, at time.Time, center, radius int64) (int64, bool) {
 	code = strings.Join(strings.Fields(code), "")
 	if len(code) != 6 {
-		return false
+		return 0, false
 	}
-	for offset := int64(-1); offset <= 1; offset++ {
+	for offset := center - radius; offset <= center+radius; offset++ {
 		if subtle.ConstantTimeCompare([]byte(totpCode(secret, at.Add(time.Duration(offset)*totpPeriod))), []byte(code)) == 1 {
-			return true
+			return offset, true
 		}
 	}
-	return false
+	return 0, false
 }
 
 func totpCode(secret string, at time.Time) string {
