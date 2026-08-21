@@ -15,6 +15,7 @@ use([BarChart, LineChart, PieChart, GridComponent, LegendComponent, TitleCompone
 
 const appState = inject('appState')
 const loadNodes = inject('loadNodes')
+const navigate = inject('navigate')
 const loading = ref(false)
 const endpointCount = ref(0)
 const cumulative = ref({ download: 0, upload: 0 })
@@ -54,6 +55,13 @@ const liveRates = computed(() => [...connectionSnapshots.value.values()].reduce(
     : total,
   { download: 0, upload: 0 },
 ))
+
+const metrics = computed(() => [
+  { label: '服务器总数', value: appState.nodes.length, view: 'nodes', query: '' },
+  { label: '在线服务器', value: online.value, view: 'nodes', query: 'status=online' },
+  { label: '活动连接', value: activeConnections.value, view: 'connections', query: '' },
+  { label: '节点数量', value: endpointCount.value, view: 'inbounds', query: '' },
+])
 
 function readDismissed(key) {
   const stored = Number(window.localStorage.getItem(key))
@@ -271,15 +279,25 @@ onBeforeUnmount(() => {
     </template>
 
     <div v-if="offline > 0 && dismissedOffline !== offline" class="m-notice m-notice--warning offline">
-      <span>{{ offline }} 台服务器离线</span>
-      <button type="button" @click="dismissOffline">忽略</button>
+      <button type="button" class="offline__go" @click="navigate('nodes', 'status=offline')">
+        {{ offline }} 台服务器离线，去看看 ›
+      </button>
+      <button type="button" class="offline__skip" @click="dismissOffline">忽略</button>
     </div>
 
+    <!-- 四个数字同时是四个入口：看到「3 台离线」「54 条连接」时想做的下一件事
+         就是去看那一批，不该让人自己回到底部再找页面。 -->
     <section class="metrics">
-      <div class="metric"><span>服务器总数</span><strong>{{ appState.nodes.length }}</strong></div>
-      <div class="metric"><span>在线服务器</span><strong>{{ online }}</strong></div>
-      <div class="metric"><span>活动连接</span><strong>{{ activeConnections }}</strong></div>
-      <div class="metric"><span>节点数量</span><strong>{{ endpointCount }}</strong></div>
+      <button
+        v-for="metric in metrics"
+        :key="metric.label"
+        type="button"
+        class="metric"
+        @click="navigate(metric.view, metric.query)"
+      >
+        <span>{{ metric.label }}</span>
+        <strong>{{ metric.value }}</strong>
+      </button>
     </section>
 
     <div ref="trafficChart" class="chart chart--tall" />
@@ -293,22 +311,17 @@ onBeforeUnmount(() => {
 </template>
 
 <style scoped>
-.offline { display: flex; align-items: center; gap: 10px; }
-.offline > span { flex: 1; }
+.offline { display: flex; align-items: center; gap: 10px; padding: 4px 12px; }
 .offline button {
-  flex: none;
-  min-width: 44px;
   min-height: 40px;
-  margin: -10px -4px;
-  padding: 0 6px;
   color: inherit;
   background: none;
   border: 0;
   font: inherit;
-  font-size: 12px;
-  text-decoration: underline;
   cursor: pointer;
 }
+.offline__go { flex: 1; min-width: 0; padding: 0; font-size: 12.5px; text-align: left; }
+.offline__skip { flex: none; min-width: 44px; padding: 0 6px; font-size: 12px; text-decoration: underline; }
 
 /* 四个数字占掉大半屏就没地方放图了：一格压到 62px，四格连同间距不到 140px。 */
 .metrics { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; margin-bottom: 12px; }
@@ -316,10 +329,14 @@ onBeforeUnmount(() => {
   position: relative;
   padding: 9px 12px;
   overflow: hidden;
+  text-align: left;
   background: var(--sb-panel);
   border: 1px solid var(--sb-line);
   border-radius: var(--m-radius);
+  font: inherit;
+  cursor: pointer;
 }
+.metric:active { background: var(--sb-surface-3); }
 .metric::before {
   content: "";
   position: absolute;
@@ -330,6 +347,8 @@ onBeforeUnmount(() => {
   background: linear-gradient(90deg, var(--sb-accent), rgba(99, 102, 241, .55) 45%, transparent);
 }
 .metric span { display: block; color: var(--sb-muted); font-size: 11.5px; }
+/* 箭头用伪元素画：它是「这里能点」的提示，不该混进指标名的文本里。 */
+.metric span::after { content: " ›"; font-size: 13px; }
 .metric strong { display: block; margin-top: 2px; color: #fff; font-size: 21px; font-weight: 650; font-variant-numeric: tabular-nums; }
 
 .chart {

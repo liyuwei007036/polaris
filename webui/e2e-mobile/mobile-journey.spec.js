@@ -9,13 +9,13 @@ test.use({
 
 // 「更多」页里的九个二级页面，以及点进去之后页面标题应当是什么。
 const morePages = [
-  '代理分组',
-  '规则供应商',
+  '服务器',
+  '网络防护',
   '服务器访问规则',
   '上网出口',
-  '当前连接',
+  '代理分组',
+  '规则供应商',
   '操作记录',
-  '网络防护',
   '域名解析',
   '系统设置',
 ]
@@ -75,7 +75,8 @@ test('手机端页面回归：自动进入手机版，走完登录与全部页�
   })
   expect(tabGeometry.bottom).toBeLessThanOrEqual(tabGeometry.viewport)
 
-  for (const [tab, heading] of [['服务器', '服务器'], ['接入', '接入服务'], ['配置', '客户端配置'], ['更多', '更多']]) {
+  // 底部四个入口按打开频率排：看板、当前连接、客户端配置、接入服务。
+  for (const [tab, heading] of [['连接', '当前连接'], ['配置', '客户端配置'], ['接入', '接入服务'], ['更多', '更多']]) {
     await tabBar.getByRole('button', { name: tab, exact: true }).click()
     await expect(page.getByRole('heading', { name: heading, exact: true })).toBeVisible()
     // 一次只挂一个页面：过渡没走完会把两页叠在一起，看着像点了没反应。

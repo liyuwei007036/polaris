@@ -1,6 +1,8 @@
 <script setup>
 import { computed, inject, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { ElMessage } from 'element-plus'
 import { Refresh, Search } from '@element-plus/icons-vue'
+import { writeClipboard } from '../../clipboard'
 import { formatBytes, formatDateTime, includesText } from '../../format'
 import { connectionSnapshots, subscribeConnections } from '../../connections'
 import MPage from '../components/MPage.vue'
@@ -82,6 +84,33 @@ const details = computed(() => {
   ]
 })
 
+// 看一条连接之后想做的下一件事，多半是「这个人还开了什么」或者
+// 「这台机器上还有谁」，所以把这两个筛选和复制目标做成操作放进抽屉。
+const detailActions = computed(() => {
+  const row = detailTarget.value
+  if (!row) return []
+  const list = []
+  if (row.user) list.push({ key: 'user', label: `只看「${row.user}」的连接` })
+  list.push({ key: 'node', label: `只看「${row.node_name}」上的连接` })
+  list.push({ key: 'copy', label: '复制目标地址', hint: row.target })
+  return list
+})
+
+function runDetailAction(key) {
+  const row = detailTarget.value
+  if (key === 'user') {
+    keyword.value = row.user
+    return
+  }
+  if (key === 'node') {
+    selectedNode.value = row.node_id
+    return
+  }
+  writeClipboard(row.target)
+    .then(() => ElMessage.success('目标地址已复制'))
+    .catch(() => ElMessage.error('自动复制失败，请使用 HTTPS 访问后重试'))
+}
+
 function openDetail(row) {
   detailTarget.value = row
   detailOpen.value = true
@@ -109,10 +138,12 @@ onBeforeUnmount(() => stopConnections?.())
       <el-button :icon="Refresh" circle aria-label="刷新" @click="load" />
     </template>
 
-    <el-input v-model="keyword" clearable :prefix-icon="Search" placeholder="搜索 IP、目标、入站节点或出口" />
-    <div class="m-filters">
-      <MPicker v-model="selectedNode" chip :options="nodeOptions" title="按服务器筛选" placeholder="全部服务器" />
-      <MPicker v-model="selectedOutbound" chip :options="outboundOptions" title="按出口筛选" placeholder="全部出口" />
+    <div class="m-listbar">
+      <el-input v-model="keyword" clearable :prefix-icon="Search" placeholder="搜索 IP、目标、入站节点或出口" />
+      <div class="m-filters">
+        <MPicker v-model="selectedNode" chip :options="nodeOptions" title="按服务器筛选" placeholder="全部服务器" />
+        <MPicker v-model="selectedOutbound" chip :options="outboundOptions" title="按出口筛选" placeholder="全部出口" />
+      </div>
     </div>
     <div class="m-count">{{ filteredRows.length }} 条 · 采集于 {{ formatDateTime(collectedAt, '暂无数据') }}</div>
 
@@ -137,6 +168,12 @@ onBeforeUnmount(() => stopConnections?.())
       加载更多（还有 {{ filteredRows.length - visible }} 条）
     </button>
 
-    <MActionSheet v-model="detailOpen" :title="detailTarget?.target" :details="details" />
+    <MActionSheet
+      v-model="detailOpen"
+      :title="detailTarget?.target"
+      :details="details"
+      :actions="detailActions"
+      @select="runDetailAction"
+    />
   </MPage>
 </template>

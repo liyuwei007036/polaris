@@ -219,6 +219,22 @@
 .m-load-more:active { background: rgba(148, 163, 184, .14); }
 .m-count { padding: 2px 2px 10px; color: var(--sb-muted); font-size: 12.5px; }
 
+/* 列表页顶部的搜索与筛选：吸顶，滚到第五十条时想换个筛选条件不用先滑回去。
+   负外边距把它铺满整宽，正内边距补回内容的留白。 */
+.m-listbar {
+  position: sticky;
+  /* 吸附点按滚动容器的内边距算，要用负值把它顶回内容区最上沿，
+     不然上面会留一条 12px 的缝，卡片从缝里滑过去。 */
+  top: -12px;
+  z-index: 4;
+  margin: -12px -12px 0;
+  padding: 12px 12px 10px;
+  background: var(--sb-bg);
+  border-bottom: 1px solid var(--sb-line);
+}
+.m-listbar .m-filters { margin-top: 8px; }
+.m-listbar + * { margin-top: 12px; }
+
 /* 筛选条：搜索框一行，其余筛选器并排挤进第二行，放不下就横向滑。
    逐个占满整行时，接入服务页要滑过 340px 才看得到第一张卡。 */
 .m-filters {

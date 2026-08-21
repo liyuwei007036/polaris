@@ -2,12 +2,12 @@
 import { computed, inject } from 'vue'
 import { ElMessageBox } from 'element-plus'
 import {
-  Collection, Connection, Document, List, Lock, Operation, Setting, Share, Tickets, User,
+  Collection, Connection, Document, Lock, Monitor, Operation, Setting, Share, Tickets, User,
 } from '@element-plus/icons-vue'
 import MPage from '../components/MPage.vue'
 
-// 底部四个入口之外的页面都在这里。分组沿用桌面版侧边栏的分法，
-// 已经熟悉桌面版的人不用重新找。
+// 底部四个入口之外的页面都在这里，按「改哪一端」分组：
+// 上面一组改服务器那一侧，中间一组改下发给客户端的东西，最后一组是平台自身。
 const appState = inject('appState')
 const isAdmin = inject('isAdmin')
 const navigate = inject('navigate')
@@ -15,25 +15,25 @@ const logout = inject('logout')
 
 const groups = [
   {
-    label: '连接配置',
+    label: '服务器',
     items: [
-      { id: 'proxy-groups', label: '代理分组', icon: Share },
-      { id: 'rule-providers', label: '规则供应商', icon: Collection },
+      { id: 'nodes', label: '服务器', icon: Monitor },
+      { id: 'security', label: '网络防护', icon: Lock },
       { id: 'routes', label: '服务器访问规则', icon: Operation },
       { id: 'outbounds', label: '上网出口', icon: Connection },
     ],
   },
   {
-    label: '状态与记录',
+    label: '连接配置',
     items: [
-      { id: 'connections', label: '当前连接', icon: List },
-      { id: 'audit', label: '操作记录', icon: Tickets },
+      { id: 'proxy-groups', label: '代理分组', icon: Share },
+      { id: 'rule-providers', label: '规则供应商', icon: Collection },
     ],
   },
   {
     label: '系统管理',
     items: [
-      { id: 'security', label: '网络防护', icon: Lock },
+      { id: 'audit', label: '操作记录', icon: Tickets },
       { id: 'cloudflare', label: '域名解析', icon: Document },
       { id: 'settings', label: '系统设置', icon: Setting },
     ],

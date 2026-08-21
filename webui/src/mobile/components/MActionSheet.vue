@@ -1,7 +1,8 @@
 <script setup>
-// 点整张卡片弹出的详情+操作面板。
-// 卡片上只放扫读需要的那几项，其余字段在这里一次列全；操作跟在字段下面，
-// 手指停在屏幕下缘就够得到。桌面版把这些操作平铺成一列按钮，手机上一行放不下。
+// 点整张卡片弹出的操作面板。
+// 操作必须排在最前面：抽屉是从下往上升的，越靠上的内容离手指越远，
+// 把字段表垫在操作前面等于每次操作都先滑一屏。字段表跟在后面，
+// 用来补上卡片为了扫读而省掉的那些信息。
 import MSheet from './MSheet.vue'
 
 defineProps({
@@ -23,14 +24,6 @@ function choose(action) {
 
 <template>
   <MSheet :model-value="modelValue" :title="title" @update:model-value="emit('update:modelValue', $event)">
-    <dl v-if="details.length" class="m-detail">
-      <div v-for="detail in details" :key="detail.label" class="m-detail__row">
-        <dt>{{ detail.label }}</dt>
-        <dd :class="{ 'm-mono': detail.mono }">{{ detail.value }}</dd>
-      </div>
-    </dl>
-    <div v-if="details.length && actions.length" class="m-section">操作</div>
-
     <button
       v-for="action in actions"
       :key="action.key"
@@ -43,6 +36,17 @@ function choose(action) {
       <span>{{ action.label }}</span>
       <small v-if="action.hint">{{ action.hint }}</small>
     </button>
+
+    <template v-if="details.length">
+      <div v-if="actions.length" class="m-section">详细信息</div>
+      <dl class="m-detail">
+        <div v-for="detail in details" :key="detail.label" class="m-detail__row">
+          <dt>{{ detail.label }}</dt>
+          <dd :class="{ 'm-mono': detail.mono }">{{ detail.value }}</dd>
+        </div>
+      </dl>
+    </template>
+
     <div v-if="!actions.length && !details.length" class="m-empty">没有可用的操作</div>
   </MSheet>
 </template>

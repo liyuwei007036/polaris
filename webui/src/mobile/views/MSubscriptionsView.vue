@@ -448,12 +448,14 @@ onMounted(() => { load(); loadAccess() })
     <MSegmented v-model="tab" :options="[{ value: 'configs', label: '客户端配置' }, { value: 'access', label: '访问记录' }]" />
 
     <template v-if="tab === 'configs'">
-      <el-input v-model="keyword" clearable :prefix-icon="Search" placeholder="搜索配置或分组" />
-      <div class="m-filters">
-        <MSegmented
-          v-model="selectedStatus"
-          :options="[{ value: '', label: '全部' }, { value: 'true', label: '启用' }, { value: 'false', label: '停用' }]"
-        />
+      <div class="m-listbar">
+        <el-input v-model="keyword" clearable :prefix-icon="Search" placeholder="搜索配置或分组" />
+        <div class="m-filters">
+          <MSegmented
+            v-model="selectedStatus"
+            :options="[{ value: '', label: '全部' }, { value: 'true', label: '启用' }, { value: 'false', label: '停用' }]"
+          />
+        </div>
       </div>
 
       <!-- 手机上最常做的是把更新地址给出去，所以二维码留在卡面上。 -->

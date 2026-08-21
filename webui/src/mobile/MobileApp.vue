@@ -1,6 +1,6 @@
 <script setup>
 import { computed, defineAsyncComponent, onBeforeUnmount, onMounted, provide, reactive, ref } from 'vue'
-import { Aim, DataAnalysis, Link, Menu, Monitor, Operation } from '@element-plus/icons-vue'
+import { Aim, Connection, DataAnalysis, Link, Menu, Operation } from '@element-plus/icons-vue'
 import { api, post, setCsrfToken } from '../api'
 import { closeLiveEvents, subscribeLive } from '../live'
 import { closeConnectionEvents } from '../connections'
@@ -13,7 +13,9 @@ import MPasswordChangeView from './views/MPasswordChangeView.vue'
 const authenticated = ref(false)
 const checking = ref(true)
 const viewAliases = { 'ingress-routes': 'inbounds' }
-const requestedView = location.hash.replace(/^#\/?/, '') || 'dashboard'
+// 页面标识后面可以带查询串，用来从看板直接跳进筛选好的列表（#/nodes?status=offline）。
+const viewOf = (hash) => hash.replace(/^#\/?/, '').split('?')[0] || 'dashboard'
+const requestedView = viewOf(location.hash)
 const currentView = ref(viewAliases[requestedView] || requestedView)
 const appState = reactive({
   username: '',
@@ -42,12 +44,14 @@ const views = {
   settings: defineAsyncComponent(() => import('./views/MSettingsView.vue')),
 }
 
-// 底部只放四个最常走的入口，其余九项收进「更多」。
+// 底部四个入口按实际打开频率排：看板、当前连接、客户端配置每天都看，
+// 接入服务次之。服务器基本是装好就不动的，收进「更多」，概览页的
+// 「服务器总数 / 在线服务器」两张指标卡也直接点进去。
 const tabs = [
   { id: 'dashboard', label: '概览', icon: DataAnalysis },
-  { id: 'nodes', label: '服务器', icon: Monitor },
-  { id: 'inbounds', label: '接入', icon: Aim },
+  { id: 'connections', label: '连接', icon: Connection },
   { id: 'subscriptions', label: '配置', icon: Link },
+  { id: 'inbounds', label: '接入', icon: Aim },
   { id: 'more', label: '更多', icon: Menu },
 ]
 
@@ -120,13 +124,13 @@ async function logout() {
   }
 }
 
-function navigate(view) {
+function navigate(view, query = '') {
   currentView.value = views[view] ? view : 'dashboard'
-  location.hash = `#/${currentView.value}`
+  location.hash = `#/${currentView.value}${query ? `?${query}` : ''}`
 }
 
 function onHashChange() {
-  const view = location.hash.replace(/^#\/?/, '') || 'dashboard'
+  const view = viewOf(location.hash)
   const resolved = viewAliases[view] || view
   currentView.value = views[resolved] ? resolved : 'dashboard'
 }

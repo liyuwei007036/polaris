@@ -24,7 +24,9 @@ const refreshing = ref(false)
 const pending = ref([])
 const metrics = ref({})
 const keyword = ref('')
-const statusFilter = ref('')
+// 从看板的「在线服务器」「N 台离线」点进来时直接落在筛好的那一档上，
+// 否则用户得再点一次分段控件才看到自己刚才点的那批。
+const statusFilter = ref(new URLSearchParams(location.hash.split('?')[1] || '').get('status') || '')
 const visible = ref(20)
 
 const tokenSheet = ref(false)
@@ -238,12 +240,14 @@ onBeforeUnmount(() => {
       <el-button :icon="Refresh" circle aria-label="刷新" @click="load" />
     </template>
 
-    <el-input v-model="keyword" clearable :prefix-icon="Search" placeholder="搜索名称、地址或版本" />
-    <div class="m-filters">
-      <MSegmented
-        v-model="statusFilter"
-        :options="[{ value: '', label: '全部' }, { value: 'online', label: '在线' }, { value: 'offline', label: '离线' }]"
-      />
+    <div class="m-listbar">
+      <el-input v-model="keyword" clearable :prefix-icon="Search" placeholder="搜索名称、地址或版本" />
+      <div class="m-filters">
+        <MSegmented
+          v-model="statusFilter"
+          :options="[{ value: '', label: '全部' }, { value: 'online', label: '在线' }, { value: 'offline', label: '离线' }]"
+        />
+      </div>
     </div>
 
     <template v-if="filteredPending.length">

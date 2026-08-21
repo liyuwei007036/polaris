@@ -297,13 +297,15 @@ onMounted(load)
       <el-button :icon="Refresh" circle aria-label="刷新" @click="load" />
     </template>
 
-    <el-input v-model="keyword" clearable :prefix-icon="Search" placeholder="搜索服务、协议或端口" />
-    <div class="m-filters">
-      <MPicker v-model="selectedNode" chip :options="nodeOptions" title="按服务器筛选" placeholder="全部服务器" />
-      <MSegmented
-        v-model="selectedStatus"
-        :options="[{ value: '', label: '全部' }, { value: 'true', label: '启用' }, { value: 'false', label: '停用' }]"
-      />
+    <div class="m-listbar">
+      <el-input v-model="keyword" clearable :prefix-icon="Search" placeholder="搜索服务、协议或端口" />
+      <div class="m-filters">
+        <MPicker v-model="selectedNode" chip :options="nodeOptions" title="按服务器筛选" placeholder="全部服务器" />
+        <MSegmented
+          v-model="selectedStatus"
+          :options="[{ value: '', label: '全部' }, { value: 'true', label: '启用' }, { value: 'false', label: '停用' }]"
+        />
+      </div>
     </div>
 
     <div class="m-count">共 {{ filteredListeners.length }} 个接入服务</div>
