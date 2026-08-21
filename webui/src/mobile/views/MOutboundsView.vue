@@ -3,7 +3,7 @@ import { computed, inject, onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Loading, Plus, Refresh, Search } from '@element-plus/icons-vue'
 import { api, del, friendlyError, post, put } from '../../api'
-import { formatDateTime, includesText, parseServerTime } from '../../format'
+import { formatDate, formatDateTime, includesText, parseServerTime } from '../../format'
 import { waitForTask } from '../../live'
 import MPage from '../components/MPage.vue'
 import MSegmented from '../components/MSegmented.vue'
@@ -93,6 +93,18 @@ function openActions(row) {
   actionsOpen.value = true
 }
 
+const details = computed(() => {
+  const row = actionTarget.value
+  if (!row) return []
+  return [
+    { label: '类型', value: row.type.toUpperCase() },
+    { label: '地址', value: row.type === 'direct' ? '服务器直连' : `${row.server}:${row.server_port}`, mono: row.type !== 'direct' },
+    { label: '登录用户', value: row.username || '—' },
+    { label: '有效期至', value: formatDateTime(row.expires_at, '未设置过期') },
+    { label: '状态', value: row.enabled ? '启用' : '停用' },
+  ]
+})
+
 const actions = computed(() => {
   const row = actionTarget.value
   if (!row || row.type === 'direct') return []
@@ -180,36 +192,38 @@ onMounted(load)
   <MPage title="上网出口" :loading="loading">
     <template #actions>
       <el-button :icon="Refresh" circle aria-label="刷新" @click="load" />
-      <el-button v-if="canWrite" type="primary" :icon="Plus" circle aria-label="新建上网出口" @click="openCreate" />
     </template>
 
     <el-input v-model="keyword" clearable :prefix-icon="Search" placeholder="搜索名称、地址或用户" />
-    <MSegmented
-      v-model="selectedType"
-      class="filter"
-      :options="[{ value: '', label: '全部' }, { value: 'socks', label: 'SOCKS5' }, { value: 'http', label: 'HTTP' }, { value: 'direct', label: '直连' }]"
-    />
+    <div class="m-filters">
+      <MSegmented
+        v-model="selectedType"
+        :options="[{ value: '', label: '全部' }, { value: 'socks', label: 'SOCKS5' }, { value: 'http', label: 'HTTP' }, { value: 'direct', label: '直连' }]"
+      />
+    </div>
 
-    <article v-for="row in filteredRows" :key="row.id" class="m-card">
-      <div class="m-card__top">
-        <span class="m-card__title">{{ row.name }}</span>
-        <span class="m-pill m-pill--accent">{{ row.type.toUpperCase() }}</span>
-        <span class="m-pill" :class="row.enabled ? 'm-pill--success' : 'm-pill--info'">{{ row.enabled ? '启用' : '停用' }}</span>
-        <button v-if="row.type !== 'direct'" type="button" class="m-more-btn" :aria-label="`${row.name} 的操作`" @click="openActions(row)">⋯</button>
-      </div>
-      <div class="m-card__row m-mono">
-        <span>{{ row.type === 'direct' ? '服务器直连' : `${row.server}:${row.server_port}` }}</span>
-      </div>
-      <div class="m-card__row">
-        <span>登录用户 {{ row.username || '—' }}</span>
-        <span class="m-card__spacer" />
-        <span :class="{ 'm-danger': isExpired(row) }">{{ formatDateTime(row.expires_at, '未设置过期') }}</span>
-      </div>
+    <article v-for="row in filteredRows" :key="row.id" class="m-item" :class="{ 'is-off': !row.enabled }">
+      <button type="button" class="m-item__hit" @click="openActions(row)">
+        <div class="m-item__head">
+          <span class="m-item__title">{{ row.name }}</span>
+          <span v-if="!row.enabled" class="m-pill m-pill--info">停用</span>
+          <i class="m-item__chevron" aria-hidden="true">›</i>
+        </div>
+        <div class="m-item__stats">
+          <span class="m-stat"><b>{{ row.type.toUpperCase() }}</b><small>类型</small></span>
+          <span class="m-stat"><b>{{ row.username || '—' }}</b><small>登录用户</small></span>
+          <span class="m-stat">
+            <b :class="{ 'm-danger': isExpired(row) }">{{ formatDate(row.expires_at, '不过期') }}</b>
+            <small>有效期至</small>
+          </span>
+        </div>
+        <div class="m-item__meta m-item__meta--mono">{{ row.type === 'direct' ? '服务器直连' : `${row.server}:${row.server_port}` }}</div>
+      </button>
     </article>
 
     <div v-if="!filteredRows.length && !loading" class="m-empty">还没有上网出口</div>
 
-    <MActionSheet v-model="actionsOpen" :title="actionTarget?.name" :actions="actions" @select="runAction" />
+    <MActionSheet v-model="actionsOpen" :title="actionTarget?.name" :details="details" :actions="actions" @select="runAction" />
 
     <MSheet v-model="sheetOpen" :title="editing ? '编辑上网出口' : '新建上网出口'" full>
       <div class="m-field">
@@ -270,11 +284,16 @@ onMounted(load)
         <el-button type="primary" :loading="testing" :disabled="!testResults.length" @click="runTest">重新检测</el-button>
       </template>
     </MSheet>
+
+    <template v-if="canWrite" #fab>
+      <button type="button" class="m-fab" aria-label="新建上网出口" @click="openCreate">
+        <el-icon :size="24"><Plus /></el-icon>
+      </button>
+    </template>
   </MPage>
 </template>
 
 <style scoped>
-.filter { margin-top: 10px; }
 .datetime {
   width: 100%;
   min-height: var(--m-tap);

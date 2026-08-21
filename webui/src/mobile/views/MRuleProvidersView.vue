@@ -65,6 +65,19 @@ function setBehavior(behavior) {
   if (behavior === 'classical' && form.format === 'mrs') form.format = 'yaml'
 }
 
+const details = computed(() => {
+  const row = actionTarget.value
+  if (!row) return []
+  return [
+    { label: '规则类型', value: behaviorNames[row.behavior] || row.behavior },
+    { label: '格式', value: (row.format || '').toUpperCase() },
+    { label: '规则地址', value: row.url, mono: true },
+    { label: '保存路径', value: row.path, mono: true },
+    { label: '更新间隔', value: `${row.interval} 秒` },
+    { label: '下载出口', value: row.proxy || '直连' },
+  ]
+})
+
 function openActions(row) {
   actionTarget.value = row
   actionsOpen.value = true
@@ -126,30 +139,29 @@ onMounted(load)
   <MPage title="规则供应商" :loading="loading">
     <template #actions>
       <el-button :icon="Refresh" circle aria-label="刷新" @click="load" />
-      <el-button v-if="canWrite" type="primary" :icon="Plus" circle aria-label="新建规则供应商" @click="openForm()" />
     </template>
 
     <el-input v-model="keyword" clearable :prefix-icon="Search" placeholder="搜索名称、地址或类型" />
     <div class="m-count">共 {{ filtered.length }} 个供应商</div>
 
-    <article v-for="row in filtered" :key="row.id" class="m-card">
-      <div class="m-card__top">
-        <span class="m-card__title">{{ row.name }}</span>
-        <span class="m-pill m-pill--info">{{ behaviorNames[row.behavior] || row.behavior }}</span>
-        <span class="m-pill m-pill--accent">{{ (row.format || '').toUpperCase() }}</span>
-        <button v-if="canWrite || isAdmin" type="button" class="m-more-btn" :aria-label="`${row.name} 的操作`" @click="openActions(row)">⋯</button>
-      </div>
-      <div class="m-card__note m-mono">{{ row.url }}</div>
-      <div class="m-card__row">
-        <span class="m-mono">{{ row.path }}</span>
-        <span class="m-card__spacer" />
-        <span>{{ row.interval }} 秒 · {{ row.proxy }}</span>
-      </div>
+    <article v-for="row in filtered" :key="row.id" class="m-item">
+      <button type="button" class="m-item__hit" @click="openActions(row)">
+        <div class="m-item__head">
+          <span class="m-item__title">{{ row.name }}</span>
+          <i class="m-item__chevron" aria-hidden="true">›</i>
+        </div>
+        <div class="m-item__stats">
+          <span class="m-stat"><b>{{ behaviorNames[row.behavior] || row.behavior }}</b><small>规则类型</small></span>
+          <span class="m-stat"><b>{{ (row.format || '').toUpperCase() }}</b><small>格式</small></span>
+          <span class="m-stat"><b>{{ row.interval }} 秒</b><small>更新间隔</small></span>
+        </div>
+        <div class="m-item__meta m-item__meta--mono">{{ row.url }}</div>
+      </button>
     </article>
 
     <div v-if="!filtered.length && !loading" class="m-empty">还没有规则供应商</div>
 
-    <MActionSheet v-model="actionsOpen" :title="actionTarget?.name" :actions="actions" @select="runAction" />
+    <MActionSheet v-model="actionsOpen" :title="actionTarget?.name" :details="details" :actions="actions" @select="runAction" />
 
     <MSheet v-model="sheetOpen" :title="editing ? '编辑规则供应商' : '新建规则供应商'" full>
       <div class="m-field">
@@ -186,5 +198,11 @@ onMounted(load)
         <el-button type="primary" :loading="saving" :disabled="!formValid" @click="save">保存</el-button>
       </template>
     </MSheet>
+
+    <template v-if="canWrite" #fab>
+      <button type="button" class="m-fab" aria-label="新建规则供应商" @click="openForm()">
+        <el-icon :size="24"><Plus /></el-icon>
+      </button>
+    </template>
   </MPage>
 </template>

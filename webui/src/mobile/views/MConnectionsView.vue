@@ -5,6 +5,7 @@ import { formatBytes, formatDateTime, includesText } from '../../format'
 import { connectionSnapshots, subscribeConnections } from '../../connections'
 import MPage from '../components/MPage.vue'
 import MPicker from '../components/MPicker.vue'
+import MActionSheet from '../components/MActionSheet.vue'
 
 const appState = inject('appState')
 const loadNodes = inject('loadNodes')
@@ -62,6 +63,30 @@ const shown = computed(() => filteredRows.value.slice(0, visible.value))
 
 watch([keyword, selectedNode, selectedOutbound], () => { visible.value = 30 })
 
+// 卡上只放目标、上下行和来源；入站服务、开始时间这些点开这条再看。
+const detailOpen = ref(false)
+const detailTarget = ref(null)
+const details = computed(() => {
+  const row = detailTarget.value
+  if (!row) return []
+  return [
+    { label: '目标', value: row.target, mono: true },
+    { label: '服务器', value: row.node_name },
+    { label: '入站服务', value: row.entry },
+    { label: '出口', value: row.exit },
+    { label: '用户', value: row.user || '未知' },
+    { label: '来源', value: [row.source_ip || row.source, row.source_location].filter(Boolean).join(' · ') || '未知', mono: true },
+    { label: '网络', value: (row.network || '').toUpperCase() || '—' },
+    { label: '流量', value: `↓ ${formatBytes(row.download)} · ↑ ${formatBytes(row.upload)}` },
+    { label: '开始于', value: formatDateTime(row.started_at) },
+  ]
+})
+
+function openDetail(row) {
+  detailTarget.value = row
+  detailOpen.value = true
+}
+
 async function load() {
   loading.value = true
   try {
@@ -85,43 +110,33 @@ onBeforeUnmount(() => stopConnections?.())
     </template>
 
     <el-input v-model="keyword" clearable :prefix-icon="Search" placeholder="搜索 IP、目标、入站节点或出口" />
-    <div class="filters">
-      <MPicker v-model="selectedNode" :options="nodeOptions" title="按服务器筛选" placeholder="全部服务器" />
-      <MPicker v-model="selectedOutbound" :options="outboundOptions" title="按出口筛选" placeholder="全部出口" />
+    <div class="m-filters">
+      <MPicker v-model="selectedNode" chip :options="nodeOptions" title="按服务器筛选" placeholder="全部服务器" />
+      <MPicker v-model="selectedOutbound" chip :options="outboundOptions" title="按出口筛选" placeholder="全部出口" />
     </div>
     <div class="m-count">{{ filteredRows.length }} 条 · 采集于 {{ formatDateTime(collectedAt, '暂无数据') }}</div>
 
-    <article v-for="row in shown" :key="`${row.node_id}/${row.id}`" class="m-card">
-      <div class="m-card__top">
-        <span class="m-card__title">{{ row.target }}</span>
-        <span class="m-pill m-pill--accent">{{ row.exit }}</span>
-      </div>
-      <div class="m-card__row">
-        <span>{{ row.node_name }}</span>
-        <span class="m-card__spacer" />
-        <span>{{ [row.user, row.source_location].filter(Boolean).join(' · ') || '未知来源' }}</span>
-      </div>
-      <div class="m-card__row m-mono">
-        <span>{{ row.source_ip || row.source || '—' }}</span>
-        <span class="m-card__spacer" />
-        <span>{{ (row.network || '').toUpperCase() || '—' }}</span>
-      </div>
-      <div class="m-card__row m-mono">
-        <span>↓ {{ formatBytes(row.download) }} · ↑ {{ formatBytes(row.upload) }}</span>
-        <span class="m-card__spacer" />
-        <span>{{ formatDateTime(row.started_at) }}</span>
-      </div>
-      <div class="m-card__row"><span>入站 {{ row.entry }}</span></div>
+    <article v-for="row in shown" :key="`${row.node_id}/${row.id}`" class="m-item">
+      <button type="button" class="m-item__hit" @click="openDetail(row)">
+        <div class="m-item__head">
+          <span class="m-item__title m-item__title--mono">{{ row.target }}</span>
+          <span class="m-pill m-pill--accent">{{ row.exit }}</span>
+          <i class="m-item__chevron" aria-hidden="true">›</i>
+        </div>
+        <div class="m-item__stats">
+          <span class="m-stat"><b>↓ {{ formatBytes(row.download) }}</b><small>下载</small></span>
+          <span class="m-stat"><b>↑ {{ formatBytes(row.upload) }}</b><small>上传</small></span>
+          <span class="m-stat"><b>{{ (row.network || '').toUpperCase() || '—' }}</b><small>网络</small></span>
+        </div>
+        <div class="m-item__meta">{{ [row.user, row.source_ip || row.source, row.node_name].filter(Boolean).join(' · ') || '未知来源' }}</div>
+      </button>
     </article>
 
     <div v-if="!filteredRows.length" class="m-empty">当前没有活动连接</div>
     <button v-if="filteredRows.length > visible" type="button" class="m-load-more" @click="visible += 30">
       加载更多（还有 {{ filteredRows.length - visible }} 条）
     </button>
+
+    <MActionSheet v-model="detailOpen" :title="detailTarget?.target" :details="details" />
   </MPage>
 </template>
-
-<style scoped>
-.filters { display: flex; gap: 10px; margin-top: 10px; }
-.filters > * { flex: 1; min-width: 0; }
-</style>

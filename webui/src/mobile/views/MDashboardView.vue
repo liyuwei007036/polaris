@@ -71,9 +71,23 @@ function chartBase(title) {
     animation: false,
     title: { text: title, left: 12, top: 10, textStyle: { color: chartInk.title, fontSize: 12.5, fontWeight: 600 } },
     tooltip: { ...chartTooltip, trigger: 'axis', confine: true },
-    grid: { left: 52, right: 14, top: 44, bottom: 44 },
+    grid: { left: 44, right: 14, top: 44, bottom: 44 },
     textStyle: { fontFamily: 'Inter, Segoe UI, Microsoft YaHei, sans-serif' },
   }
+}
+
+// 纵轴上「878.91 KB/s」要占掉 130px 宽，画布只剩三分之二。轴上一位小数够看趋势，
+// 准确数字看 tooltip。
+function compactRate(value) {
+  const number = Number(value || 0)
+  const units = ['B', 'K', 'M', 'G', 'T']
+  let index = 0
+  let scaled = number
+  while (scaled >= 1024 && index < units.length - 1) {
+    scaled /= 1024
+    index += 1
+  }
+  return `${index && scaled < 10 ? scaled.toFixed(1) : Math.round(scaled)}${units[index]}/s`
 }
 
 function timeLabel(value) {
@@ -118,7 +132,7 @@ function renderCharts() {
     },
     legend: { ...chartLegend, data: ['下载', '上传'] },
     xAxis: { ...axis, type: 'category', data: trafficHistory.value.map((item) => timeLabel(item.time)), boundaryGap: false, axisLabel: { ...axis.axisLabel, interval: 'auto', formatter: (value) => value.slice(3) } },
-    yAxis: { ...axis, type: 'value', minInterval: 1, axisLabel: { ...axis.axisLabel, formatter: (value) => formatBytes(value, '/s') } },
+    yAxis: { ...axis, type: 'value', minInterval: 1, axisLabel: { ...axis.axisLabel, formatter: compactRate } },
     series: [
       { name: '下载', type: 'line', data: trafficHistory.value.map((item) => item.download), showSymbol: false, smooth: 0.25, lineStyle: { width: 2, color: '#38bdf8' }, areaStyle: { color: 'rgba(56,189,248,.14)' } },
       { name: '上传', type: 'line', data: trafficHistory.value.map((item) => item.upload), showSymbol: false, smooth: 0.25, lineStyle: { width: 2, color: '#34d399' }, areaStyle: { color: 'rgba(52,211,153,.12)' } },
@@ -281,12 +295,26 @@ onBeforeUnmount(() => {
 <style scoped>
 .offline { display: flex; align-items: center; gap: 10px; }
 .offline > span { flex: 1; }
-.offline button { color: inherit; background: none; border: 0; font: inherit; font-size: 12px; text-decoration: underline; cursor: pointer; }
+.offline button {
+  flex: none;
+  min-width: 44px;
+  min-height: 40px;
+  margin: -10px -4px;
+  padding: 0 6px;
+  color: inherit;
+  background: none;
+  border: 0;
+  font: inherit;
+  font-size: 12px;
+  text-decoration: underline;
+  cursor: pointer;
+}
 
-.metrics { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; margin-bottom: 12px; }
+/* 四个数字占掉大半屏就没地方放图了：一格压到 62px，四格连同间距不到 140px。 */
+.metrics { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; margin-bottom: 12px; }
 .metric {
   position: relative;
-  padding: 12px 14px;
+  padding: 9px 12px;
   overflow: hidden;
   background: var(--sb-panel);
   border: 1px solid var(--sb-line);
@@ -302,7 +330,7 @@ onBeforeUnmount(() => {
   background: linear-gradient(90deg, var(--sb-accent), rgba(99, 102, 241, .55) 45%, transparent);
 }
 .metric span { display: block; color: var(--sb-muted); font-size: 11.5px; }
-.metric strong { display: block; margin-top: 5px; color: #fff; font-size: 24px; font-weight: 650; font-variant-numeric: tabular-nums; }
+.metric strong { display: block; margin-top: 2px; color: #fff; font-size: 21px; font-weight: 650; font-variant-numeric: tabular-nums; }
 
 .chart {
   height: 190px;

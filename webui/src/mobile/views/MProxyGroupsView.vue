@@ -104,10 +104,26 @@ function openForm(group = null) {
   sheetOpen.value = true
 }
 
+// 成员在卡上压成一行：一个分组挂十几个节点时，一节点一枚药丸会把卡撑成三四行。
+function memberSummary(group) {
+  const members = (group.members || []).map((member) => `${memberFlag(member)}${memberLabel(member)}`)
+  if (!members.length) return '还没有成员，客户端会拿到一个空分组'
+  return members.join(' · ')
+}
+
 function openActions(group) {
   actionTarget.value = group
   actionsOpen.value = true
 }
+
+const details = computed(() => {
+  const group = actionTarget.value
+  if (!group) return []
+  return [
+    { label: '选点方式', value: strategyNames[group.strategy] || group.strategy },
+    { label: '成员', value: memberSummary(group) },
+  ]
+})
 
 const actions = computed(() => {
   if (!actionTarget.value) return []
@@ -156,29 +172,28 @@ onMounted(load)
   <MPage title="代理分组" :loading="loading">
     <template #actions>
       <el-button :icon="Refresh" circle aria-label="刷新" @click="load" />
-      <el-button v-if="canWrite" type="primary" :icon="Plus" circle aria-label="新建代理分组" @click="openForm()" />
     </template>
 
     <el-input v-model="keyword" clearable :prefix-icon="Search" placeholder="搜索分组或成员" />
     <div class="m-count">共 {{ filteredGroups.length }} 个分组</div>
 
-    <article v-for="group in filteredGroups" :key="group.id" class="m-card">
-      <div class="m-card__top">
-        <span class="m-card__title">{{ group.name }}</span>
-        <span class="m-pill m-pill--accent">{{ strategyNames[group.strategy] }}</span>
-        <button v-if="actions.length || canWrite || isAdmin" type="button" class="m-more-btn" :aria-label="`${group.name} 的操作`" @click="openActions(group)">⋯</button>
-      </div>
-      <div class="m-card__row"><span>{{ (group.members || []).length }} 个成员</span></div>
-      <div class="m-tags">
-        <span v-for="member in group.members || []" :key="`${member.kind}:${member.id}`" class="m-pill" :class="member.kind === 'group' ? 'm-pill--accent' : 'm-pill--info'">
-          <span v-if="memberFlag(member)" class="region-flag">{{ memberFlag(member) }}</span>{{ memberLabel(member) }}
-        </span>
-      </div>
+    <article v-for="group in filteredGroups" :key="group.id" class="m-item">
+      <button type="button" class="m-item__hit" @click="openActions(group)">
+        <div class="m-item__head">
+          <span class="m-item__title">{{ group.name }}</span>
+          <i class="m-item__chevron" aria-hidden="true">›</i>
+        </div>
+        <div class="m-item__stats">
+          <span class="m-stat"><b>{{ strategyNames[group.strategy] }}</b><small>选点方式</small></span>
+          <span class="m-stat"><b>{{ (group.members || []).length }}</b><small>成员</small></span>
+        </div>
+        <div class="m-item__meta">{{ memberSummary(group) }}</div>
+      </button>
     </article>
 
     <div v-if="!filteredGroups.length && !loading" class="m-empty">还没有代理分组</div>
 
-    <MActionSheet v-model="actionsOpen" :title="actionTarget?.name" :actions="actions" @select="runAction" />
+    <MActionSheet v-model="actionsOpen" :title="actionTarget?.name" :details="details" :actions="actions" @select="runAction" />
 
     <MSheet v-model="sheetOpen" :title="editing ? '编辑代理分组' : '新建代理分组'" full>
       <div class="m-field">
@@ -199,5 +214,11 @@ onMounted(load)
         <el-button type="primary" :loading="saving" :disabled="!formValid" @click="save">保存</el-button>
       </template>
     </MSheet>
+
+    <template v-if="canWrite" #fab>
+      <button type="button" class="m-fab" aria-label="新建代理分组" @click="openForm()">
+        <el-icon :size="24"><Plus /></el-icon>
+      </button>
+    </template>
   </MPage>
 </template>

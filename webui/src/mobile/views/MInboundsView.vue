@@ -1,7 +1,7 @@
 <script setup>
 import { computed, inject, onMounted, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Plus, Refresh, Search } from '@element-plus/icons-vue'
+import { Grid, Plus, Refresh, Search } from '@element-plus/icons-vue'
 import { api, del, post, put } from '../../api'
 import { waitForTask } from '../../live'
 import { includesText } from '../../format'
@@ -96,6 +96,24 @@ function openActions(listener) {
   actionTarget.value = listener
   actionsOpen.value = true
 }
+
+function addressText(listener) {
+  return `${listener.connection_domain || '服务器地址'}:${listener.port}`
+}
+
+const details = computed(() => {
+  const row = actionTarget.value
+  if (!row) return []
+  return [
+    { label: '所在服务器', value: nodeNames.value[row.node_id] || row.node_id },
+    { label: '连接地址', value: addressText(row), mono: true },
+    { label: '协议', value: protocolMap[row.spec?.protocol]?.label || row.spec?.protocol || '—' },
+    { label: '加密', value: securityLabel(row) },
+    { label: '传输', value: `${(row.spec?.network || 'tcp').toUpperCase()}${row.spec?.transport?.type ? ` · ${row.spec.transport.type}` : ''}` },
+    { label: '用户数', value: `${row.endpoint_count ?? 0} 位` },
+    { label: '状态', value: row.enabled ? '启用' : '停用' },
+  ]
+})
 
 const actions = computed(() => {
   const row = actionTarget.value
@@ -277,12 +295,11 @@ onMounted(load)
   <MPage title="接入服务" :loading="loading">
     <template #actions>
       <el-button :icon="Refresh" circle aria-label="刷新" @click="load" />
-      <el-button v-if="canWrite" type="primary" :icon="Plus" circle aria-label="新建接入服务" @click="openCreate" />
     </template>
 
     <el-input v-model="keyword" clearable :prefix-icon="Search" placeholder="搜索服务、协议或端口" />
-    <div class="filters">
-      <MPicker v-model="selectedNode" :options="nodeOptions" title="按服务器筛选" placeholder="全部服务器" />
+    <div class="m-filters">
+      <MPicker v-model="selectedNode" chip :options="nodeOptions" title="按服务器筛选" placeholder="全部服务器" />
       <MSegmented
         v-model="selectedStatus"
         :options="[{ value: '', label: '全部' }, { value: 'true', label: '启用' }, { value: 'false', label: '停用' }]"
@@ -291,26 +308,25 @@ onMounted(load)
 
     <div class="m-count">共 {{ filteredListeners.length }} 个接入服务</div>
 
-    <article v-for="row in shown" :key="row.id" class="m-card">
-      <div class="m-card__top">
-        <span class="m-card__title">{{ row.name }}</span>
-        <span class="m-pill" :class="row.enabled ? 'm-pill--success' : 'm-pill--info'">{{ row.enabled ? '启用' : '停用' }}</span>
-        <button type="button" class="m-more-btn" :aria-label="`${row.name} 的操作`" @click="openActions(row)">⋯</button>
-      </div>
-      <div class="m-tags">
-        <span class="m-pill m-pill--accent">{{ protocolMap[row.spec?.protocol]?.label || row.spec?.protocol }}</span>
-        <span class="m-pill m-pill--info">{{ (row.spec?.network || 'tcp').toUpperCase() }}</span>
-        <span class="m-pill m-pill--info">{{ securityLabel(row) }}</span>
-        <span v-if="row.spec?.transport?.type" class="m-pill m-pill--warning">{{ row.spec.transport.type }}</span>
-      </div>
-      <div class="m-card__row">
-        <span>{{ nodeNames[row.node_id] || row.node_id }}</span>
-        <span class="m-card__spacer" />
-        <span>用户 {{ row.endpoint_count ?? 0 }}</span>
-      </div>
-      <div class="m-card__row m-mono">
-        <span>{{ row.connection_domain || '使用服务器地址' }}:{{ row.port }}</span>
-      </div>
+    <!-- 手机上最常做的是把节点链接发给某个用户，所以二维码留在卡面上，
+         编辑、复制、启停这些点开整条再选。 -->
+    <article v-for="row in shown" :key="row.id" class="m-item" :class="{ 'is-off': !row.enabled }">
+      <button type="button" class="m-item__hit" @click="openActions(row)">
+        <div class="m-item__head">
+          <span class="m-item__title">{{ row.name }}</span>
+          <span v-if="!row.enabled" class="m-pill m-pill--info">停用</span>
+          <i class="m-item__chevron" aria-hidden="true">›</i>
+        </div>
+        <div class="m-item__stats">
+          <span class="m-stat"><b>{{ protocolMap[row.spec?.protocol]?.label || row.spec?.protocol }}</b><small>协议</small></span>
+          <span class="m-stat"><b>{{ securityLabel(row) }}</b><small>加密</small></span>
+          <span class="m-stat"><b>{{ row.endpoint_count ?? 0 }}</b><small>用户</small></span>
+        </div>
+        <div class="m-item__meta">{{ nodeNames[row.node_id] || row.node_id }} · {{ addressText(row) }}</div>
+      </button>
+      <button type="button" class="m-item__act" :aria-label="`${row.name} 的节点二维码`" @click="showShareLinks(row)">
+        <el-icon :size="18"><Grid /></el-icon><small>二维码</small>
+      </button>
     </article>
 
     <div v-if="!filteredListeners.length && !loading" class="m-empty">还没有接入服务</div>
@@ -318,7 +334,13 @@ onMounted(load)
       加载更多（还有 {{ filteredListeners.length - visible }} 个）
     </button>
 
-    <MActionSheet v-model="actionsOpen" :title="actionTarget?.name" :actions="actions" @select="runAction" />
+    <MActionSheet
+      v-model="actionsOpen"
+      :title="actionTarget?.name"
+      :details="details"
+      :actions="actions"
+      @select="runAction"
+    />
 
     <MListenerForm
       v-model="formOpen"
@@ -339,10 +361,11 @@ onMounted(load)
       :loading="qrLoading"
       empty-text="该服务下还没有可扫描的节点链接：服务或用户已停用，或服务器还没有填写客户端连接地址。"
     />
+
+    <template v-if="canWrite" #fab>
+      <button type="button" class="m-fab" aria-label="新建接入服务" @click="openCreate">
+        <el-icon :size="24"><Plus /></el-icon>
+      </button>
+    </template>
   </MPage>
 </template>
-
-<style scoped>
-.filters { display: flex; flex-direction: column; gap: 10px; margin-top: 10px; }
-.filters :deep(.m-seg) { margin-bottom: 0; }
-</style>

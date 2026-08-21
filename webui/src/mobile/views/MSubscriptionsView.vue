@@ -1,7 +1,7 @@
 <script setup>
 import { computed, inject, onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Plus, Refresh, Search } from '@element-plus/icons-vue'
+import { Grid, Plus, Refresh, Search } from '@element-plus/icons-vue'
 import { api, del, post, put } from '../../api'
 import { writeClipboard } from '../../clipboard'
 import { formatDateTime, includesText } from '../../format'
@@ -333,6 +333,23 @@ function openActions(config) {
   actionsOpen.value = true
 }
 
+function groupNames(config) {
+  const names = (config.proxy_group_ids || []).map((id) => groupByID.value[id]?.name || '分组已失效')
+  return names.length ? names.join(' · ') : '未引用分组，客户端会拿到空配置'
+}
+
+const details = computed(() => {
+  const row = actionTarget.value
+  if (!row) return []
+  return [
+    { label: '状态', value: row.enabled ? '启用' : '停用' },
+    { label: '代理分组', value: groupNames(row) },
+    { label: '规则供应商', value: (row.rule_providers || []).map((provider) => provider.name).join(' · ') || '未引用' },
+    { label: '规则', value: `${row.rule_mode === 'text' ? '高级文本' : '表格配置'} · ${row.rules?.length || 0} 条` },
+    { label: '更新地址', value: absoluteSubscription(row), mono: true },
+  ]
+})
+
 const actions = computed(() => {
   const row = actionTarget.value
   if (!row) return []
@@ -426,32 +443,37 @@ onMounted(() => { load(); loadAccess() })
   <MPage v-if="mode === 'list'" title="客户端配置" :loading="loading">
     <template #actions>
       <el-button :icon="Refresh" circle aria-label="刷新" @click="load(); loadAccess()" />
-      <el-button v-if="canWrite" type="primary" :icon="Plus" circle aria-label="新建客户端配置" @click="openForm()" />
     </template>
 
     <MSegmented v-model="tab" :options="[{ value: 'configs', label: '客户端配置' }, { value: 'access', label: '访问记录' }]" />
 
     <template v-if="tab === 'configs'">
       <el-input v-model="keyword" clearable :prefix-icon="Search" placeholder="搜索配置或分组" />
-      <MSegmented
-        v-model="selectedStatus"
-        class="filter"
-        :options="[{ value: '', label: '全部' }, { value: 'true', label: '启用' }, { value: 'false', label: '停用' }]"
-      />
+      <div class="m-filters">
+        <MSegmented
+          v-model="selectedStatus"
+          :options="[{ value: '', label: '全部' }, { value: 'true', label: '启用' }, { value: 'false', label: '停用' }]"
+        />
+      </div>
 
-      <article v-for="row in filteredConfigs" :key="row.id" class="m-card">
-        <div class="m-card__top">
-          <span class="m-card__title">{{ row.name }}</span>
-          <span class="m-pill" :class="row.enabled ? 'm-pill--success' : 'm-pill--info'">{{ row.enabled ? '启用' : '停用' }}</span>
-          <button type="button" class="m-more-btn" :aria-label="`${row.name} 的操作`" @click="openActions(row)">⋯</button>
-        </div>
-        <div class="m-tags">
-          <span v-for="id in row.proxy_group_ids || []" :key="id" class="m-pill m-pill--info">{{ groupByID[id]?.name || '分组已失效' }}</span>
-          <span v-if="!(row.proxy_group_ids || []).length" class="m-pill m-pill--warning">未引用分组</span>
-        </div>
-        <div class="m-card__row">
-          <span>{{ row.rule_mode === 'text' ? '高级文本' : '表格配置' }} · {{ row.rules?.length || 0 }} 条规则 · {{ row.rule_providers?.length || 0 }} 个供应商</span>
-        </div>
+      <!-- 手机上最常做的是把更新地址给出去，所以二维码留在卡面上。 -->
+      <article v-for="row in filteredConfigs" :key="row.id" class="m-item" :class="{ 'is-off': !row.enabled }">
+        <button type="button" class="m-item__hit" @click="openActions(row)">
+          <div class="m-item__head">
+            <span class="m-item__title">{{ row.name }}</span>
+            <span v-if="!row.enabled" class="m-pill m-pill--info">停用</span>
+            <i class="m-item__chevron" aria-hidden="true">›</i>
+          </div>
+          <div class="m-item__stats">
+            <span class="m-stat"><b>{{ (row.proxy_group_ids || []).length }}</b><small>代理分组</small></span>
+            <span class="m-stat"><b>{{ row.rules?.length || 0 }}</b><small>访问规则</small></span>
+            <span class="m-stat"><b>{{ row.rule_providers?.length || 0 }}</b><small>规则供应商</small></span>
+          </div>
+          <div class="m-item__meta">{{ groupNames(row) }}</div>
+        </button>
+        <button type="button" class="m-item__act" :aria-label="`${row.name} 的更新地址二维码`" @click="showQrCode(row)">
+          <el-icon :size="18"><Grid /></el-icon><small>二维码</small>
+        </button>
       </article>
       <div v-if="!filteredConfigs.length && !loading" class="m-empty">还没有客户端配置</div>
     </template>
@@ -462,13 +484,15 @@ onMounted(() => { load(); loadAccess() })
         <el-button size="small" @click="accessFilterOpen = true">筛选</el-button>
       </div>
       <div v-loading="accessLoading">
-        <article v-for="(row, index) in accessLogs" :key="`${row.ip}-${row.accessed_at}-${index}`" class="m-card">
-          <div class="m-card__top">
-            <span class="m-card__title m-mono">{{ row.ip || '—' }}</span>
-            <span class="m-pill m-pill--info">{{ row.config_name }}</span>
+        <article v-for="(row, index) in accessLogs" :key="`${row.ip}-${row.accessed_at}-${index}`" class="m-item">
+          <div class="m-item__hit is-static">
+            <div class="m-item__head">
+              <span class="m-item__title m-item__title--mono">{{ row.ip || '—' }}</span>
+              <span class="m-pill m-pill--info">{{ row.config_name }}</span>
+            </div>
+            <div class="m-item__meta">{{ row.location || '归属地未知' }} · {{ formatDateTime(row.accessed_at) }}</div>
+            <div class="m-item__note">{{ row.user_agent || '未上报 User-Agent' }}</div>
           </div>
-          <div class="m-card__row"><span>{{ row.location || '归属地未知' }}</span><span class="m-card__spacer" /><span>{{ formatDateTime(row.accessed_at) }}</span></div>
-          <div class="m-card__note">{{ row.user_agent || '未上报 User-Agent' }}</div>
         </article>
         <div v-if="!accessLogs.length && !accessLoading" class="m-empty">没有访问记录</div>
       </div>
@@ -478,7 +502,13 @@ onMounted(() => { load(); loadAccess() })
       </div>
     </template>
 
-    <MActionSheet v-model="actionsOpen" :title="actionTarget?.name" :actions="actions" @select="runAction" />
+    <MActionSheet
+      v-model="actionsOpen"
+      :title="actionTarget?.name"
+      :details="details"
+      :actions="actions"
+      @select="runAction"
+    />
     <MQrSheet v-model="qrOpen" :title="qrTitle" :items="qrItems" />
 
     <MSheet v-model="accessFilterOpen" title="筛选访问记录">
@@ -499,6 +529,12 @@ onMounted(() => { load(); loadAccess() })
         <el-button type="primary" @click="searchAccess">查询</el-button>
       </template>
     </MSheet>
+
+    <template v-if="canWrite && tab === 'configs'" #fab>
+      <button type="button" class="m-fab" aria-label="新建客户端配置" @click="openForm()">
+        <el-icon :size="24"><Plus /></el-icon>
+      </button>
+    </template>
   </MPage>
 
   <MPage v-else :title="editing ? '编辑客户端配置' : '新建客户端配置'" back @back="mode = 'list'">

@@ -3,7 +3,7 @@ import { computed, inject, onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Plus, Refresh, Search, Setting } from '@element-plus/icons-vue'
 import { api, del, post, put } from '../../api'
-import { formatDateTime, includesText } from '../../format'
+import { formatDate, formatDateTime, includesText } from '../../format'
 import MPage from '../components/MPage.vue'
 import MSegmented from '../components/MSegmented.vue'
 import MSheet from '../components/MSheet.vue'
@@ -187,6 +187,31 @@ function boundTo(row) {
   return bindings.map((binding) => (binding.listener_name ? `${binding.node_name} · ${binding.listener_name}` : binding.node_name)).join('、')
 }
 
+const details = computed(() => {
+  const row = actionTarget.value
+  if (!row) return []
+  if (actionKind.value === 'record') {
+    return [
+      { label: '类型', value: row.type },
+      { label: '记录值', value: row.content, mono: true },
+      { label: 'CDN 代理', value: row.proxied ? '已启用' : '未启用' },
+      { label: '缓存时间', value: row.ttl === 1 ? '自动' : `${row.ttl} 秒` },
+      { label: '关联', value: boundTo(row) },
+    ]
+  }
+  return [
+    { label: '覆盖域名', value: (row.dns_names || []).join('、') || '—' },
+    { label: '签发者', value: row.issuer || '—' },
+    { label: '有效期至', value: formatDateTime(row.not_after) },
+    {
+      label: '使用中',
+      value: certificateUsedBy.value[row.id]?.length
+        ? certificateUsedBy.value[row.id].map((listener) => listener.name).join('、')
+        : '暂无匹配的接入服务',
+    },
+  ]
+})
+
 function openActions(row, kind) {
   actionTarget.value = row
   actionKind.value = kind
@@ -214,12 +239,6 @@ onMounted(load)
     <template #actions>
       <el-button :icon="Refresh" circle aria-label="刷新" @click="load" />
       <el-button v-if="isAdmin && tab === 'records'" :icon="Setting" circle aria-label="连接设置" @click="openSettings" />
-      <el-button
-        v-if="isAdmin"
-        type="primary" :icon="Plus" circle aria-label="新建"
-        :disabled="tab === 'records' && !settings.connected"
-        @click="tab === 'records' ? addRecord() : addCertificate()"
-      />
     </template>
 
     <div class="m-notice" :class="settings.connected ? 'm-notice--info' : settings.configured ? 'm-notice--danger' : 'm-notice--warning'">
@@ -232,26 +251,30 @@ onMounted(load)
     <MSegmented v-model="tab" :options="[{ value: 'records', label: '域名记录' }, { value: 'certificates', label: '源证书', badge: certificates.length }]" />
 
     <el-input v-model="keyword" clearable :prefix-icon="Search" :placeholder="tab === 'records' ? '搜索域名、内容或服务器' : '搜索域名或证书'" />
-    <div v-if="tab === 'records'" class="filter">
+    <div v-if="tab === 'records'" class="m-filters">
       <MSegmented v-model="selectedType" :options="[{ value: '', label: '全部类型' }, ...recordTypes.map((type) => ({ value: type, label: type }))]" />
     </div>
 
     <template v-if="tab === 'records'">
-      <article v-for="row in filteredRecords" :key="row.id" class="m-card">
-        <div class="m-card__top">
-          <span class="m-pill m-pill--accent">{{ row.type }}</span>
-          <span class="m-card__title">{{ row.name }}</span>
-          <button v-if="isAdmin" type="button" class="m-more-btn" :aria-label="`${row.name} 的操作`" @click="openActions(row, 'record')">⋯</button>
-        </div>
-        <div class="m-card__row m-mono"><span>{{ row.content }}</span></div>
-        <div class="m-card__row">
-          <span :class="{ 'm-muted': !(row.bindings || []).length }">{{ boundTo(row) }}</span>
-        </div>
-        <div class="m-card__row">
-          <span>CDN {{ row.proxied ? '已启用' : '未启用' }}</span>
-          <span class="m-card__spacer" />
-          <span>缓存 {{ row.ttl === 1 ? '自动' : `${row.ttl} 秒` }}</span>
-        </div>
+      <article v-for="row in filteredRecords" :key="row.id" class="m-item">
+        <button
+          type="button"
+          class="m-item__hit"
+          :class="{ 'is-static': !isAdmin }"
+          @click="isAdmin && openActions(row, 'record')"
+        >
+          <div class="m-item__head">
+            <span class="m-pill m-pill--accent">{{ row.type }}</span>
+            <span class="m-item__title">{{ row.name }}</span>
+            <i v-if="isAdmin" class="m-item__chevron" aria-hidden="true">›</i>
+          </div>
+          <div class="m-item__stats">
+            <span class="m-stat"><b>{{ row.proxied ? '已启用' : '未启用' }}</b><small>CDN 代理</small></span>
+            <span class="m-stat"><b>{{ row.ttl === 1 ? '自动' : `${row.ttl} 秒` }}</b><small>缓存时间</small></span>
+          </div>
+          <div class="m-item__meta m-item__meta--mono">{{ row.content }}</div>
+          <div class="m-item__meta" :class="{ 'm-muted': !(row.bindings || []).length }">{{ boundTo(row) }}</div>
+        </button>
       </article>
       <div v-if="!filteredRecords.length && !loading" class="m-empty">还没有域名记录</div>
     </template>
@@ -260,24 +283,32 @@ onMounted(load)
       <div class="m-notice m-notice--info">
         源证书用于 VLESS + WebSocket / gRPC 经 Cloudflare 加速时的回源：接入服务的连接域名命中下面的域名后，会改用对应源证书对外提供 TLS，Cloudflare 的 SSL 模式即可使用「完全（严格）」。未配置时仍使用平台自签证书。
       </div>
-      <article v-for="row in filteredCertificates" :key="row.id" class="m-card">
-        <div class="m-card__top">
-          <span class="m-card__title">{{ row.domain }}</span>
-          <span class="m-pill" :class="row.expired ? 'm-pill--danger' : 'm-pill--success'">{{ row.expired ? '已过期' : '有效' }}</span>
-          <button v-if="isAdmin" type="button" class="m-more-btn" :aria-label="`${row.domain} 的操作`" @click="openActions(row, 'certificate')">⋯</button>
-        </div>
-        <div class="m-card__note">覆盖 {{ (row.dns_names || []).join('、') || '—' }}{{ row.issuer ? ` · 签发者 ${row.issuer}` : '' }}</div>
-        <div class="m-card__row"><span>有效期至 {{ formatDateTime(row.not_after) }}</span></div>
-        <div class="m-card__row">
-          <span :class="{ 'm-muted': !certificateUsedBy[row.id]?.length }">
+      <article v-for="row in filteredCertificates" :key="row.id" class="m-item">
+        <button
+          type="button"
+          class="m-item__hit"
+          :class="{ 'is-static': !isAdmin }"
+          @click="isAdmin && openActions(row, 'certificate')"
+        >
+          <div class="m-item__head">
+            <span class="m-item__title">{{ row.domain }}</span>
+            <span v-if="row.expired" class="m-pill m-pill--danger">已过期</span>
+            <i v-if="isAdmin" class="m-item__chevron" aria-hidden="true">›</i>
+          </div>
+          <div class="m-item__stats">
+            <span class="m-stat"><b>{{ formatDate(row.not_after) }}</b><small>有效期至</small></span>
+            <span class="m-stat"><b>{{ certificateUsedBy[row.id]?.length || 0 }}</b><small>使用中的服务</small></span>
+          </div>
+          <div class="m-item__meta">覆盖 {{ (row.dns_names || []).join('、') || '—' }}</div>
+          <div class="m-item__meta" :class="{ 'm-muted': !certificateUsedBy[row.id]?.length }">
             {{ certificateUsedBy[row.id]?.length ? `使用中：${certificateUsedBy[row.id].map((listener) => listener.name).join('、')}` : '暂无匹配的接入服务' }}
-          </span>
-        </div>
+          </div>
+        </button>
       </article>
       <div v-if="!filteredCertificates.length && !loading" class="m-empty">还没有源证书</div>
     </template>
 
-    <MActionSheet v-model="actionsOpen" :title="actionTarget?.name || actionTarget?.domain" :actions="actions" @select="runAction" />
+    <MActionSheet v-model="actionsOpen" :title="actionTarget?.name || actionTarget?.domain" :details="details" :actions="actions" @select="runAction" />
 
     <MSheet v-model="settingsOpen" title="连接 Cloudflare">
       <div class="m-field">
@@ -356,10 +387,21 @@ onMounted(load)
         >保存</el-button>
       </template>
     </MSheet>
+
+    <template v-if="isAdmin" #fab>
+      <button
+        type="button"
+        class="m-fab"
+        :aria-label="tab === 'records' ? '新建域名记录' : '新建源证书'"
+        :disabled="tab === 'records' && !settings.connected"
+        @click="tab === 'records' ? addRecord() : addCertificate()"
+      >
+        <el-icon :size="24"><Plus /></el-icon>
+      </button>
+    </template>
   </MPage>
 </template>
 
 <style scoped>
-.filter { margin: 10px 0 0; }
 .pick { border-style: dashed; cursor: pointer; }
 </style>

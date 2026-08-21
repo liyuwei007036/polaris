@@ -1,7 +1,7 @@
 <script setup>
 import { computed, inject, onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Plus, Refresh, Search } from '@element-plus/icons-vue'
+import { Delete, Loading, Plus, Refresh, Search, Unlock } from '@element-plus/icons-vue'
 import { api, post } from '../../api'
 import { formatDateTime, includesText } from '../../format'
 import MPage from '../components/MPage.vue'
@@ -291,16 +291,42 @@ const statusLabels = {
 }
 function statusLabel(row) { return statusLabels[row.action] || { text: '未知', pill: 'm-pill--info' } }
 
+// 卡片上的药丸只说结论，出错原因和封禁计数放进详情：把整句报错塞进药丸
+// 会把规则名挤没，而规则名才是分辨这是哪条规则的东西。
 function jailRuntime(row) {
-  if (row.error) return { text: '未生效：' + row.error, pill: 'm-pill--danger' }
-  if (!row.running) return { text: '已配置但未运行', pill: 'm-pill--danger' }
-  return { text: `运行中 · 当前封禁 ${row.currently_banned || 0} · 累计 ${row.total_banned || 0}`, pill: 'm-pill--success' }
+  if (row.error) return { text: '未生效', pill: 'm-pill--danger' }
+  if (!row.running) return { text: '未运行', pill: 'm-pill--danger' }
+  return { text: '运行中', pill: 'm-pill--success' }
+}
+
+function jailStateDetail(row) {
+  if (row.error) return `未生效：${row.error}`
+  if (!row.running) return '已配置但未运行'
+  return `运行中 · 当前封禁 ${row.currently_banned || 0} · 累计 ${row.total_banned || 0}`
+}
+
+function canEditJail(row) {
+  return Boolean(isAdmin.value && row.managed)
 }
 
 function openJailActions(row) {
   actionTarget.value = row
   actionsOpen.value = true
 }
+
+const jailDetails = computed(() => {
+  const row = actionTarget.value
+  if (!row) return []
+  return [
+    { label: '服务器', value: nodeName(row.node_id) },
+    { label: '运行状态', value: jailStateDetail(row) },
+    { label: '监控日志', value: row.log_path || '—', mono: true },
+    { label: '触发条件', value: `失败 ${row.max_retry || '—'} 次` },
+    { label: '封禁时长', value: row.ban_time_seconds ? `${row.ban_time_seconds} 秒` : '—' },
+    { label: '生效范围', value: row.managed ? (row.ports || '全部端口') : '—' },
+    { label: '规则来源', value: row.managed ? '本平台' : '系统已有' },
+  ]
+})
 
 const jailActions = computed(() => {
   const row = actionTarget.value
@@ -326,12 +352,6 @@ onMounted(load)
   <MPage title="网络防护" :loading="loading">
     <template #actions>
       <el-button :icon="Refresh" circle aria-label="刷新" :loading="loading" @click="load" />
-      <el-button
-        v-if="isAdmin && tab !== 'banned'"
-        type="primary" :icon="Plus" circle aria-label="添加规则"
-        :disabled="!appState.nodes.length"
-        @click="tab === 'ports' ? addFirewall() : addJail()"
-      />
     </template>
 
     <div class="m-notice m-notice--info">
@@ -342,8 +362,8 @@ onMounted(load)
     <MSegmented v-model="tab" :options="tabs" />
 
     <el-input v-model="keyword" clearable :prefix-icon="Search" placeholder="搜索服务器、地址或规则" />
-    <div class="filter">
-      <MPicker v-model="selectedNode" :options="nodeFilterOptions" title="按服务器筛选" placeholder="全部服务器" />
+    <div class="m-filters">
+      <MPicker v-model="selectedNode" chip :options="nodeFilterOptions" title="按服务器筛选" placeholder="全部服务器" />
     </div>
 
     <template v-if="tab === 'ports'">
@@ -354,63 +374,82 @@ onMounted(load)
         {{ truncatedNodes.join('、') }} 的防火墙规则过多，只读取了前面一部分，下面的端口可能不全。
       </div>
 
-      <article v-for="row in portRules" :key="row.key" class="m-card">
-        <div class="m-card__top">
-          <span class="m-pill" :class="statusLabel(row).pill">{{ statusLabel(row).text }}</span>
-          <span class="m-card__title m-mono">{{ row.protocol ? row.protocol.toUpperCase() : '全部' }} {{ portLabel(row) }}</span>
-          <el-button v-if="isAdmin && removable(row)" link type="danger" :loading="saving" @click="removePortRule(row)">删除</el-button>
+      <article v-for="row in portRules" :key="row.key" class="m-item">
+        <div class="m-item__hit is-static">
+          <div class="m-item__head">
+            <span class="m-pill" :class="statusLabel(row).pill">{{ statusLabel(row).text }}</span>
+            <span class="m-item__title m-item__title--mono">{{ row.protocol ? row.protocol.toUpperCase() : '全部' }} {{ portLabel(row) }}</span>
+          </div>
+          <div class="m-item__meta">{{ nodeName(row.node_id) }} · {{ row.service ? `服务 ${row.service}` : (row.manager || '防火墙规则') }}</div>
+          <div class="m-item__meta">{{ (row.sources || []).length ? `来源 ${sourceLabel(row)}` : '来源：所有来源' }}</div>
         </div>
-        <div class="m-card__row"><span>{{ nodeName(row.node_id) }}</span><span class="m-card__spacer" /><span>{{ row.service ? `服务 ${row.service}` : (row.manager || '防火墙规则') }}</span></div>
-        <div class="m-card__note">
-          <template v-if="(row.sources || []).length">来源 <span class="m-mono">{{ sourceLabel(row) }}</span></template>
-          <template v-else>来源：所有来源</template>
-        </div>
+        <button
+          v-if="isAdmin && removable(row)"
+          type="button"
+          class="m-item__act is-danger"
+          :disabled="saving"
+          :aria-label="`删除 ${portLabel(row)} 的规则`"
+          @click="removePortRule(row)"
+        >
+          <el-icon :size="18"><Delete /></el-icon><small>删除</small>
+        </button>
       </article>
       <div v-if="!portRules.length && !loading" class="m-empty">服务器防火墙没有针对任何端口的规则</div>
     </template>
 
     <template v-else-if="tab === 'fail2ban'">
-      <article v-for="row in jails" :key="row.key" class="m-card">
-        <div class="m-card__top">
-          <span class="m-card__title">{{ row.name }}</span>
-          <span class="m-pill" :class="row.managed ? 'm-pill--success' : 'm-pill--info'">{{ row.managed ? '本平台' : '系统已有' }}</span>
-          <button v-if="isAdmin && row.managed" type="button" class="m-more-btn" :aria-label="`${row.name} 的操作`" @click="openJailActions(row)">⋯</button>
-        </div>
-        <div class="m-card__row"><span>{{ nodeName(row.node_id) }}</span><span class="m-card__spacer" /><span>失败 {{ row.max_retry || '—' }} 次</span></div>
-        <div class="m-card__row"><span class="m-mono">{{ row.log_path || '—' }}</span></div>
-        <div class="m-card__row">
-          <span>范围 {{ row.managed ? (row.ports || '全部端口') : '—' }}</span>
-          <span class="m-card__spacer" />
-          <span>封禁 {{ row.ban_time_seconds ? `${row.ban_time_seconds} 秒` : '—' }}</span>
-        </div>
-        <div class="m-card__row"><span class="m-pill" :class="jailRuntime(row).pill">{{ jailRuntime(row).text }}</span></div>
+      <article v-for="row in jails" :key="row.key" class="m-item">
+        <button
+          type="button"
+          class="m-item__hit"
+          :class="{ 'is-static': !canEditJail(row) }"
+          @click="canEditJail(row) && openJailActions(row)"
+        >
+          <div class="m-item__head">
+            <span class="m-item__title">{{ row.name }}</span>
+            <span class="m-pill" :class="jailRuntime(row).pill">{{ jailRuntime(row).text }}</span>
+            <i v-if="canEditJail(row)" class="m-item__chevron" aria-hidden="true">›</i>
+          </div>
+          <div class="m-item__stats">
+            <span class="m-stat"><b>{{ row.max_retry || '—' }}</b><small>失败次数</small></span>
+            <span class="m-stat"><b>{{ row.ban_time_seconds ? `${row.ban_time_seconds} 秒` : '—' }}</b><small>封禁时长</small></span>
+            <span class="m-stat"><b>{{ row.currently_banned || 0 }}</b><small>当前封禁</small></span>
+          </div>
+          <div class="m-item__meta">{{ nodeName(row.node_id) }} · 范围 {{ row.managed ? (row.ports || '全部端口') : '—' }}</div>
+        </button>
       </article>
       <div v-if="!jails.length && !loading" class="m-empty">服务器上没有自动封禁规则</div>
     </template>
 
     <template v-else>
-      <article v-for="row in filteredBanned" :key="`${row.node_id}-${row.jail}-${row.ip}`" class="m-card">
-        <div class="m-card__top">
-          <span class="m-card__title m-mono">{{ row.ip }}</span>
-          <el-button
-            v-if="isAdmin" link type="primary"
-            :loading="unbanning === `${row.node_id}-${row.jail}-${row.ip}`"
-            :disabled="Boolean(unbanning)"
-            @click="unban(row)"
-          >解封</el-button>
+      <article v-for="row in filteredBanned" :key="`${row.node_id}-${row.jail}-${row.ip}`" class="m-item">
+        <div class="m-item__hit is-static">
+          <div class="m-item__head">
+            <span class="m-item__title m-item__title--mono">{{ row.ip }}</span>
+            <span class="m-pill m-pill--info">{{ row.location || '归属地未知' }}</span>
+          </div>
+          <div class="m-item__meta">{{ nodeName(row.node_id) }} · {{ row.rule_name || row.jail }}</div>
+          <div class="m-item__meta">封禁 {{ formatDateTime(row.banned_at, '未知') }} · 解封 {{ formatDateTime(row.unban_at, '不自动解封') }}</div>
         </div>
-        <div class="m-card__row"><span>{{ nodeName(row.node_id) }}</span><span class="m-card__spacer" /><span>{{ row.location || '归属地未知' }}</span></div>
-        <div class="m-card__row"><span>{{ row.rule_name || row.jail }} · {{ row.managed ? '本平台规则' : '服务器已有规则' }}</span></div>
-        <div class="m-card__row">
-          <span>封禁 {{ formatDateTime(row.banned_at, '未知') }}</span>
-          <span class="m-card__spacer" />
-          <span>解封 {{ formatDateTime(row.unban_at, '不自动解封') }}</span>
-        </div>
+        <button
+          v-if="isAdmin"
+          type="button"
+          class="m-item__act"
+          :disabled="Boolean(unbanning)"
+          :aria-label="`解封 ${row.ip}`"
+          @click="unban(row)"
+        >
+          <el-icon :size="18" :class="{ 'is-loading': unbanning === `${row.node_id}-${row.jail}-${row.ip}` }">
+            <Loading v-if="unbanning === `${row.node_id}-${row.jail}-${row.ip}`" />
+            <Unlock v-else />
+          </el-icon>
+          <small>解封</small>
+        </button>
       </article>
       <div v-if="!filteredBanned.length && !loading" class="m-empty">当前没有被封禁的 IP</div>
     </template>
 
-    <MActionSheet v-model="actionsOpen" :title="actionTarget?.name" :actions="jailActions" @select="runJailAction" />
+    <MActionSheet v-model="actionsOpen" :title="actionTarget?.name" :details="jailDetails" :actions="jailActions" @select="runJailAction" />
 
     <MSheet v-model="firewallOpen" title="添加访问限制" full>
       <div class="m-field">
@@ -500,9 +539,16 @@ onMounted(load)
         >保存并生效</el-button>
       </template>
     </MSheet>
+    <template v-if="isAdmin && tab !== 'banned'" #fab>
+      <button
+        type="button"
+        class="m-fab"
+        aria-label="添加规则"
+        :disabled="!appState.nodes.length"
+        @click="tab === 'ports' ? addFirewall() : addJail()"
+      >
+        <el-icon :size="24"><Plus /></el-icon>
+      </button>
+    </template>
   </MPage>
 </template>
-
-<style scoped>
-.filter { margin: 10px 0 4px; }
-</style>

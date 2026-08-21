@@ -31,7 +31,7 @@ const emit = defineEmits(['update:modelValue'])
   display: flex;
   gap: 4px;
   margin-bottom: 12px;
-  padding: 4px;
+  padding: 3px;
   overflow-x: auto;
   background: rgba(148, 163, 184, .07);
   border: 1px solid var(--sb-line);
@@ -39,9 +39,11 @@ const emit = defineEmits(['update:modelValue'])
   scrollbar-width: none;
 }
 .m-seg::-webkit-scrollbar { display: none; }
+/* 40×44 是手指按得准的下限；原来的 34px 高在手机上要瞄。 */
 .m-seg__item {
   flex: 1 0 auto;
-  min-height: 34px;
+  min-width: 44px;
+  min-height: 40px;
   padding: 0 13px;
   color: var(--sb-muted);
   background: transparent;

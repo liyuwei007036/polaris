@@ -1,11 +1,14 @@
 <script setup>
-// 卡片右上角「⋯」弹出的操作面板。桌面版把这些操作平铺成一列按钮，
-// 手机上一行放不下，也点不准。
+// 点整张卡片弹出的详情+操作面板。
+// 卡片上只放扫读需要的那几项，其余字段在这里一次列全；操作跟在字段下面，
+// 手指停在屏幕下缘就够得到。桌面版把这些操作平铺成一列按钮，手机上一行放不下。
 import MSheet from './MSheet.vue'
 
 defineProps({
   modelValue: { type: Boolean, default: false },
   title: { type: String, default: '选择操作' },
+  // [{ label, value, mono }]
+  details: { type: Array, default: () => [] },
   // [{ key, label, hint, danger, disabled }]
   actions: { type: Array, default: () => [] },
 })
@@ -20,6 +23,14 @@ function choose(action) {
 
 <template>
   <MSheet :model-value="modelValue" :title="title" @update:model-value="emit('update:modelValue', $event)">
+    <dl v-if="details.length" class="m-detail">
+      <div v-for="detail in details" :key="detail.label" class="m-detail__row">
+        <dt>{{ detail.label }}</dt>
+        <dd :class="{ 'm-mono': detail.mono }">{{ detail.value }}</dd>
+      </div>
+    </dl>
+    <div v-if="details.length && actions.length" class="m-section">操作</div>
+
     <button
       v-for="action in actions"
       :key="action.key"
@@ -32,7 +43,7 @@ function choose(action) {
       <span>{{ action.label }}</span>
       <small v-if="action.hint">{{ action.hint }}</small>
     </button>
-    <div v-if="!actions.length" class="m-empty">没有可用的操作</div>
+    <div v-if="!actions.length && !details.length" class="m-empty">没有可用的操作</div>
   </MSheet>
 </template>
 

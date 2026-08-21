@@ -61,6 +61,18 @@ async function saveOperator() {
   await load()
 }
 
+const details = computed(() => {
+  const row = actionTarget.value
+  if (!row) return []
+  return [
+    { label: '权限', value: roleNames[row.role] || row.role },
+    { label: '状态', value: row.enabled ? '启用' : '停用' },
+    { label: '登录方式', value: row.totp_enabled ? '密码 + 两步验证' : '仅密码' },
+    { label: '密码', value: row.must_change_password ? '等待本人修改' : '已设置' },
+    { label: '最后登录', value: formatDateTime(row.last_login_at, '从未登录') },
+  ]
+})
+
 function openActions(row) {
   actionTarget.value = row
   actionsOpen.value = true
@@ -191,7 +203,6 @@ onMounted(load)
   <MPage title="系统设置" :loading="loading">
     <template #actions>
       <el-button :icon="Refresh" circle aria-label="刷新" @click="load" />
-      <el-button v-if="isAdmin && tab === 'operators'" type="primary" :icon="Plus" circle aria-label="新建管理账户" @click="openOperator" />
     </template>
 
     <MSegmented v-model="tab" :options="tabs" />
@@ -233,25 +244,25 @@ onMounted(load)
     <template v-else>
       <el-input v-model="operatorKeyword" clearable :prefix-icon="Search" placeholder="搜索用户名或权限" />
       <div class="m-count">共 {{ filteredOperators.length }} 个账户</div>
-      <article v-for="row in filteredOperators" :key="row.id" class="m-card">
-        <div class="m-card__top">
-          <span class="m-card__title">{{ row.username }}</span>
-          <span class="m-pill m-pill--accent">{{ roleNames[row.role] || row.role }}</span>
-          <span class="m-pill" :class="row.enabled ? 'm-pill--success' : 'm-pill--info'">{{ row.enabled ? '启用' : '停用' }}</span>
-          <button type="button" class="m-more-btn" :aria-label="`${row.username} 的操作`" @click="openActions(row)">⋯</button>
-        </div>
-        <div class="m-card__row">
-          <span v-if="row.must_change_password" class="m-pill m-pill--warning">等待修改密码</span>
-          <span v-else-if="row.totp_enabled" class="m-pill m-pill--success">两步验证已启用</span>
-          <span v-else class="m-pill m-pill--info">密码登录</span>
-          <span class="m-card__spacer" />
-          <span>{{ formatDateTime(row.last_login_at, '从未登录') }}</span>
-        </div>
+      <article v-for="row in filteredOperators" :key="row.id" class="m-item" :class="{ 'is-off': !row.enabled }">
+        <button type="button" class="m-item__hit" @click="openActions(row)">
+          <div class="m-item__head">
+            <span class="m-item__title">{{ row.username }}</span>
+            <span v-if="row.must_change_password" class="m-pill m-pill--warning">待改密码</span>
+            <span v-if="!row.enabled" class="m-pill m-pill--info">停用</span>
+            <i class="m-item__chevron" aria-hidden="true">›</i>
+          </div>
+          <div class="m-item__stats">
+            <span class="m-stat"><b>{{ roleNames[row.role] || row.role }}</b><small>权限</small></span>
+            <span class="m-stat"><b>{{ row.totp_enabled ? '两步验证' : '仅密码' }}</b><small>登录方式</small></span>
+          </div>
+          <div class="m-item__meta">最后登录 {{ formatDateTime(row.last_login_at, '从未登录') }}</div>
+        </button>
       </article>
       <div v-if="!filteredOperators.length && !loading" class="m-empty">还没有管理账户</div>
     </template>
 
-    <MActionSheet v-model="actionsOpen" :title="actionTarget?.username" :actions="actions" @select="runAction" />
+    <MActionSheet v-model="actionsOpen" :title="actionTarget?.username" :details="details" :actions="actions" @select="runAction" />
 
     <MSheet v-model="roleSheet" :title="`修改 ${roleTarget?.username || ''} 的权限`">
       <div class="m-field">
@@ -302,6 +313,11 @@ onMounted(load)
         <el-button type="primary" :disabled="!operator.username || operator.password.length < 12" @click="saveOperator">创建</el-button>
       </template>
     </MSheet>
+    <template v-if="isAdmin && tab === 'operators'" #fab>
+      <button type="button" class="m-fab" aria-label="新建管理账户" @click="openOperator">
+        <el-icon :size="24"><Plus /></el-icon>
+      </button>
+    </template>
   </MPage>
 </template>
 

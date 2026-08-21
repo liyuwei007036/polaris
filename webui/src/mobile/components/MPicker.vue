@@ -15,6 +15,8 @@ const props = defineProps({
   multiple: { type: Boolean, default: false },
   clearable: { type: Boolean, default: false },
   disabled: { type: Boolean, default: false },
+  // 筛选条里用的窄版触发器：按内容宽度排在一行，不再独占整行。
+  chip: { type: Boolean, default: false },
 })
 const emit = defineEmits(['update:modelValue'])
 
@@ -83,7 +85,7 @@ function chosen(option) {
   <button
     type="button"
     class="m-picker"
-    :class="{ 'is-empty': !labels.length, 'is-disabled': disabled }"
+    :class="{ 'is-empty': !labels.length, 'is-disabled': disabled, 'is-chip': chip }"
     :disabled="disabled"
     @click="open = true"
   >
@@ -142,6 +144,17 @@ function chosen(option) {
 }
 .m-picker.is-empty .m-picker__text { color: #64748b; }
 .m-picker.is-disabled { opacity: .6; }
+.m-picker.is-chip {
+  width: auto;
+  max-width: 62vw;
+  min-height: 44px;
+  padding: 0 11px;
+  border-radius: 11px;
+  font-size: 13.5px;
+}
+.m-picker.is-chip:not(.is-empty) { color: #04121f; background: var(--sb-accent); border-color: var(--sb-accent); font-weight: 600; }
+.m-picker.is-chip:not(.is-empty) .m-picker__arrow { color: rgba(4, 18, 31, .6); }
+.m-picker.is-chip .m-picker__arrow { font-size: 16px; }
 .m-picker__text { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .m-picker__count { flex: none; padding: 1px 7px; color: #04121f; background: var(--sb-accent); border-radius: 999px; font-size: 11.5px; font-weight: 600; }
 .m-picker__arrow { flex: none; color: var(--sb-muted); font-size: 19px; line-height: 1; }

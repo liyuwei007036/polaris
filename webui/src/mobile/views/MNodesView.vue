@@ -1,7 +1,7 @@
 <script setup>
 import { computed, inject, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Plus, Refresh, Search } from '@element-plus/icons-vue'
+import { Check, Plus, Refresh, Search } from '@element-plus/icons-vue'
 import { api, post, put } from '../../api'
 import { writeClipboard } from '../../clipboard'
 import { formatBytes, formatDateTime, includesText } from '../../format'
@@ -129,6 +129,35 @@ function openActions(node) {
   actionsOpen.value = true
 }
 
+// 卡片上只留在线状态、实时速率和活动连接；系统、版本、累计流量这些
+// 看一眼就够的字段留到详情里，否则一台服务器要占掉大半屏。
+function statOf(node, pick) {
+  const snapshot = live.value.get(node.id)
+  if (!node.online) return '—'
+  if (pick === 'connections') return String(snapshot?.connection_count ?? '—')
+  if (!snapshot?.has_rates) return '—'
+  return formatBytes(pick === 'down' ? snapshot.received_rate : snapshot.sent_rate, '/s')
+}
+
+function metaLine(node) {
+  if (!node.online) return `离线 · 最后在线 ${formatDateTime(node.last_seen_at, '从未在线')}`
+  return [node.os, node.architecture, node.agent_version && `agent ${node.agent_version}`].filter(Boolean).join(' · ') || '等待上报系统信息'
+}
+
+const details = computed(() => {
+  const node = actionTarget.value
+  if (!node) return []
+  const proxy = metrics.value[node.id]?.proxy
+  return [
+    { label: '运行状态', value: node.online ? '在线' : '离线' },
+    { label: '连接地址', value: node.client_address || '未配置，客户端拿不到节点链接', mono: Boolean(node.client_address) },
+    { label: '系统', value: [node.os, node.architecture].filter(Boolean).join(' · ') || '—' },
+    { label: '版本', value: `agent ${node.agent_version || '—'} · sing-box ${node.sing_box_version || '—'}` },
+    { label: '累计流量', value: proxy ? `↓ ${formatBytes(proxy.received_bytes)} · ↑ ${formatBytes(proxy.sent_bytes)}` : '等待上报' },
+    { label: '最后在线', value: formatDateTime(node.last_seen_at, '从未在线') },
+  ]
+})
+
 const actions = computed(() => {
   const node = actionTarget.value
   if (!node) return []
@@ -207,60 +236,50 @@ onBeforeUnmount(() => {
   <MPage title="服务器" :loading="loading">
     <template #actions>
       <el-button :icon="Refresh" circle aria-label="刷新" @click="load" />
-      <el-button v-if="isAdmin" type="primary" :icon="Plus" circle aria-label="添加服务器" @click="generateToken" />
     </template>
 
     <el-input v-model="keyword" clearable :prefix-icon="Search" placeholder="搜索名称、地址或版本" />
-    <MSegmented
-      v-model="statusFilter"
-      class="filter"
-      :options="[{ value: '', label: '全部' }, { value: 'online', label: '在线' }, { value: 'offline', label: '离线' }]"
-    />
+    <div class="m-filters">
+      <MSegmented
+        v-model="statusFilter"
+        :options="[{ value: '', label: '全部' }, { value: 'online', label: '在线' }, { value: 'offline', label: '离线' }]"
+      />
+    </div>
 
     <template v-if="filteredPending.length">
       <div class="m-section">等待确认的服务器</div>
-      <article v-for="row in filteredPending" :key="row.id" class="m-card">
-        <div class="m-card__top">
-          <span class="m-card__title">{{ row.node_name }}</span>
-          <el-button type="primary" size="small" @click="approve(row)">接入</el-button>
+      <article v-for="row in filteredPending" :key="row.id" class="m-item">
+        <div class="m-item__hit is-static">
+          <div class="m-item__head"><span class="m-item__title">{{ row.node_name }}</span></div>
+          <div class="m-item__meta">{{ row.capabilities || '未上报支持的功能' }}</div>
+          <div class="m-item__meta">申请于 {{ formatDateTime(row.created_at) }}</div>
         </div>
-        <div class="m-card__note">{{ row.capabilities || '未上报支持的功能' }}</div>
-        <div class="m-card__row"><span>申请时间 {{ formatDateTime(row.created_at) }}</span></div>
+        <button type="button" class="m-item__act" :aria-label="`接入 ${row.node_name}`" @click="approve(row)">
+          <el-icon :size="18"><Check /></el-icon><small>接入</small>
+        </button>
       </article>
     </template>
 
     <div class="m-section">已接入服务器（{{ filteredNodes.length }}）</div>
-    <article v-for="node in shownNodes" :key="node.id" class="m-card">
-      <div class="m-card__top">
-        <span class="status-dot" :class="node.online ? 'online' : 'offline'" />
-        <span class="m-card__title">
-          <span v-if="regionFlag(node.name)" class="region-flag">{{ regionFlag(node.name) }}</span>{{ node.name }}
-        </span>
-        <span v-if="agentUpdateAvailable(node)" class="m-pill m-pill--warning">可升级</span>
-        <button v-if="actions.length || canWrite || isAdmin" type="button" class="m-more-btn" :aria-label="`${node.name} 的操作`" @click="openActions(node)">⋯</button>
-      </div>
-      <div class="m-card__row">
-        <span>{{ node.os || '—' }} · {{ node.architecture || '—' }}</span>
-        <span class="m-card__spacer" />
-        <span>连接 {{ live.get(node.id)?.connection_count ?? '—' }}</span>
-      </div>
-      <div class="m-card__row m-mono">
-        <span v-if="live.get(node.id)?.has_rates">↓ {{ formatBytes(live.get(node.id).received_rate, '/s') }} · ↑ {{ formatBytes(live.get(node.id).sent_rate, '/s') }}</span>
-        <span v-else>{{ node.online ? '等待上报速率' : '离线' }}</span>
-      </div>
-      <div class="m-card__row m-mono">
-        <span v-if="metrics[node.id]?.proxy">累计 ↓ {{ formatBytes(metrics[node.id].proxy.received_bytes) }} · ↑ {{ formatBytes(metrics[node.id].proxy.sent_bytes) }}</span>
-        <span v-else>累计流量等待上报</span>
-      </div>
-      <div class="m-card__row">
-        <span v-if="node.client_address" class="m-mono">{{ node.client_address }}</span>
-        <span v-else class="m-pill m-pill--warning">未配置连接地址</span>
-      </div>
-      <div class="m-card__row">
-        <span>{{ node.agent_version || '—' }} · sing-box {{ node.sing_box_version || '—' }}</span>
-        <span class="m-card__spacer" />
-        <span>{{ formatDateTime(node.last_seen_at, '从未在线') }}</span>
-      </div>
+    <!-- 整条就是详情入口：完整字段和编辑、升级、移除都在弹出的抽屉里。 -->
+    <article v-for="node in shownNodes" :key="node.id" class="m-item">
+      <button type="button" class="m-item__hit" @click="openActions(node)">
+        <div class="m-item__head">
+          <span class="m-item__dot" :class="{ 'is-on': node.online }" />
+          <span class="m-item__title">
+            <span v-if="regionFlag(node.name)" class="region-flag">{{ regionFlag(node.name) }}</span>{{ node.name }}
+          </span>
+          <span v-if="!node.client_address" class="m-pill m-pill--warning">缺地址</span>
+          <span v-if="agentUpdateAvailable(node)" class="m-pill m-pill--warning">可升级</span>
+          <i class="m-item__chevron" aria-hidden="true">›</i>
+        </div>
+        <div class="m-item__stats">
+          <span class="m-stat"><b :class="{ 'is-muted': !node.online }">↓ {{ statOf(node, 'down') }}</b><small>实时下行</small></span>
+          <span class="m-stat"><b :class="{ 'is-muted': !node.online }">↑ {{ statOf(node, 'up') }}</b><small>实时上行</small></span>
+          <span class="m-stat"><b :class="{ 'is-muted': !node.online }">{{ statOf(node, 'connections') }}</b><small>活动连接</small></span>
+        </div>
+        <div class="m-item__meta">{{ metaLine(node) }}</div>
+      </button>
     </article>
 
     <div v-if="!filteredNodes.length" class="m-empty">尚未接入任何服务器</div>
@@ -268,7 +287,13 @@ onBeforeUnmount(() => {
       加载更多（还有 {{ filteredNodes.length - visible }} 台）
     </button>
 
-    <MActionSheet v-model="actionsOpen" :title="actionTarget?.name" :actions="actions" @select="runAction" />
+    <MActionSheet
+      v-model="actionsOpen"
+      :title="actionTarget?.name"
+      :details="details"
+      :actions="actions"
+      @select="runAction"
+    />
 
     <MSheet v-model="editSheet" title="编辑服务器">
       <div class="m-field">
@@ -305,14 +330,16 @@ onBeforeUnmount(() => {
         <el-button type="primary" @click="copyInstallCommand">复制命令</el-button>
       </template>
     </MSheet>
+
+    <template v-if="isAdmin" #fab>
+      <button type="button" class="m-fab" aria-label="添加服务器" @click="generateToken">
+        <el-icon :size="24"><Plus /></el-icon>
+      </button>
+    </template>
   </MPage>
 </template>
 
 <style scoped>
-.filter { margin-top: 10px; }
-.status-dot { flex: none; width: 8px; height: 8px; border-radius: 50%; }
-.status-dot.online { background: var(--sb-success); box-shadow: 0 0 0 3px rgba(52, 211, 153, .16); }
-.status-dot.offline { background: #64748b; }
 /* 命令很长，横向滚动比换行成六七行好读，也方便长按整段选中。 */
 .command {
   margin: 0;

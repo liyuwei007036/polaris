@@ -135,6 +135,18 @@ async function save() {
   } finally { saving.value = false }
 }
 
+const details = computed(() => {
+  const row = actionTarget.value
+  if (!row) return []
+  return [
+    { label: '服务器', value: nodeNames.value[row.node_id] || row.node_id },
+    { label: '匹配条件', value: matchText(row) },
+    { label: '处理方式', value: actionText(row) },
+    { label: '优先级', value: String(row.priority) },
+    { label: '状态', value: row.enabled ? '启用' : '停用' },
+  ]
+})
+
 function openActions(row) {
   actionTarget.value = row
   actionsOpen.value = true
@@ -191,12 +203,11 @@ onMounted(load)
   <MPage title="服务器访问规则" :loading="loading">
     <template #actions>
       <el-button :icon="Refresh" circle aria-label="刷新" @click="load" />
-      <el-button v-if="canWrite" type="primary" :icon="Plus" circle aria-label="新建访问规则" @click="openCreate" />
     </template>
 
     <el-input v-model="keyword" clearable :prefix-icon="Search" placeholder="搜索匹配条件或处理方式" />
-    <div class="filters">
-      <MPicker v-model="selectedNode" :options="nodeFilterOptions" title="按服务器筛选" placeholder="全部服务器" />
+    <div class="m-filters">
+      <MPicker v-model="selectedNode" chip :options="nodeFilterOptions" title="按服务器筛选" placeholder="全部服务器" />
       <MSegmented
         v-model="selectedAction"
         :options="[{ value: '', label: '全部' }, { value: 'direct', label: '直连' }, { value: 'outbound', label: '出口' }, { value: 'reject', label: '阻断' }]"
@@ -204,23 +215,27 @@ onMounted(load)
     </div>
     <div class="m-count">共 {{ filteredRows.length }} 条规则</div>
 
-    <article v-for="row in filteredRows" :key="row.id" class="m-card">
-      <div class="m-card__top">
-        <span class="m-card__title">{{ matchText(row) }}</span>
-        <button v-if="canWrite || isAdmin" type="button" class="m-more-btn" aria-label="规则操作" @click="openActions(row)">⋯</button>
-      </div>
-      <div class="m-card__row">
-        <span class="m-pill" :class="row.action === 'reject' ? 'm-pill--danger' : 'm-pill--accent'">{{ actionText(row) }}</span>
-        <span class="m-pill" :class="row.enabled ? 'm-pill--success' : 'm-pill--info'">{{ row.enabled ? '启用' : '停用' }}</span>
-        <span class="m-card__spacer" />
-        <span>优先级 {{ row.priority }}</span>
-      </div>
-      <div class="m-card__row"><span>{{ nodeNames[row.node_id] || row.node_id }}</span></div>
+    <article v-for="row in filteredRows" :key="row.id" class="m-item" :class="{ 'is-off': !row.enabled }">
+      <button type="button" class="m-item__hit" @click="openActions(row)">
+        <div class="m-item__head">
+          <span class="m-item__title">{{ matchText(row) }}</span>
+          <span v-if="!row.enabled" class="m-pill m-pill--info">停用</span>
+          <i class="m-item__chevron" aria-hidden="true">›</i>
+        </div>
+        <div class="m-item__stats">
+          <span class="m-stat">
+            <b :class="{ 'm-danger': row.action === 'reject' }">{{ actionText(row) }}</b>
+            <small>处理方式</small>
+          </span>
+          <span class="m-stat"><b>{{ row.priority }}</b><small>优先级</small></span>
+        </div>
+        <div class="m-item__meta">{{ nodeNames[row.node_id] || row.node_id }}</div>
+      </button>
     </article>
 
     <div v-if="!filteredRows.length && !loading" class="m-empty">还没有访问规则</div>
 
-    <MActionSheet v-model="actionsOpen" title="规则操作" :actions="actions" @select="runAction" />
+    <MActionSheet v-model="actionsOpen" title="访问规则" :details="details" :actions="actions" @select="runAction" />
 
     <MSheet v-model="sheetOpen" :title="editing ? '编辑服务器访问规则' : '新建服务器访问规则'" full>
       <div class="m-field">
@@ -270,10 +285,11 @@ onMounted(load)
         <el-button type="primary" :loading="saving" @click="save">保存</el-button>
       </template>
     </MSheet>
+
+    <template v-if="canWrite" #fab>
+      <button type="button" class="m-fab" aria-label="新建访问规则" @click="openCreate">
+        <el-icon :size="24"><Plus /></el-icon>
+      </button>
+    </template>
   </MPage>
 </template>
-
-<style scoped>
-.filters { display: flex; flex-direction: column; gap: 10px; margin-top: 10px; }
-.filters :deep(.m-seg) { margin-bottom: 0; }
-</style>

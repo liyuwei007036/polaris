@@ -132,21 +132,19 @@ onMounted(() => { loadTasks(); loadAudit() })
 
     <template v-if="tab === 'tasks'">
       <el-input v-model="taskKeyword" clearable :prefix-icon="Search" placeholder="搜索操作、服务器或结果" />
-      <div class="filter">
-        <MPicker :model-value="taskQuery.status" :options="statusOptions" title="按状态筛选" placeholder="全部状态" @update:model-value="taskQuery.status = $event; changeStatus()" />
+      <div class="m-filters">
+        <MPicker :model-value="taskQuery.status" chip :options="statusOptions" title="按状态筛选" placeholder="全部状态" @update:model-value="taskQuery.status = $event; changeStatus()" />
       </div>
 
-      <article v-for="row in filteredTasks" :key="row.id" class="m-card">
-        <div class="m-card__top">
-          <span class="m-card__title">{{ taskKinds[row.kind] || '其他系统操作' }}</span>
-          <span class="m-pill" :class="taskStatuses[row.status]?.[1] || 'm-pill--info'">{{ taskStatuses[row.status]?.[0] || row.status }}</span>
+      <article v-for="row in filteredTasks" :key="row.id" class="m-item">
+        <div class="m-item__hit is-static">
+          <div class="m-item__head">
+            <span class="m-item__title">{{ taskKinds[row.kind] || '其他系统操作' }}</span>
+            <span class="m-pill" :class="taskStatuses[row.status]?.[1] || 'm-pill--info'">{{ taskStatuses[row.status]?.[0] || row.status }}</span>
+          </div>
+          <div class="m-item__meta">{{ nodeNames[row.node_id] || row.node_id || '控制端' }} · {{ formatDateTime(row.created_at) }}</div>
+          <div class="m-item__note">{{ taskResult(row) }}</div>
         </div>
-        <div class="m-card__row">
-          <span>{{ nodeNames[row.node_id] || row.node_id || '控制端' }}</span>
-          <span class="m-card__spacer" />
-          <span>{{ formatDateTime(row.created_at) }}</span>
-        </div>
-        <div class="m-card__note">{{ taskResult(row) }}</div>
       </article>
       <div v-if="!filteredTasks.length && !loading" class="m-empty">没有系统操作记录</div>
 
@@ -159,16 +157,14 @@ onMounted(() => { loadTasks(); loadAudit() })
 
     <template v-else>
       <el-input v-model="auditKeyword" clearable :prefix-icon="Search" placeholder="搜索操作人、内容或对象" />
-      <article v-for="row in filteredEvents" :key="row.id" class="m-card">
-        <div class="m-card__top">
-          <span class="m-card__title">{{ auditAction(row) }}</span>
+      <article v-for="row in filteredEvents" :key="row.id" class="m-item">
+        <div class="m-item__hit is-static">
+          <div class="m-item__head">
+            <span class="m-item__title">{{ auditAction(row) }}</span>
+          </div>
+          <div class="m-item__meta">{{ row.operator_username }} · {{ formatDateTime(row.created_at) }}</div>
+          <div class="m-item__note">{{ auditTarget(row) }}</div>
         </div>
-        <div class="m-card__row">
-          <span>{{ row.operator_username }}</span>
-          <span class="m-card__spacer" />
-          <span>{{ formatDateTime(row.created_at) }}</span>
-        </div>
-        <div class="m-card__note">{{ auditTarget(row) }}</div>
       </article>
       <div v-if="!filteredEvents.length && !loading" class="m-empty">没有修改记录</div>
 
@@ -182,7 +178,6 @@ onMounted(() => { loadTasks(); loadAudit() })
 </template>
 
 <style scoped>
-.filter { margin: 10px 0 4px; }
 .pager { display: flex; align-items: center; gap: 10px; margin-top: 14px; }
 .pager :deep(.el-button) { flex: none; height: var(--m-tap); margin: 0; }
 .pager__label { flex: 1; color: var(--sb-muted); font-size: 12px; text-align: center; }
