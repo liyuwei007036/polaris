@@ -41,6 +41,12 @@ const (
 	// enrolling. 33 candidate codes out of a million keeps a guess unlikely,
 	// and enrollment already requires an authenticated session.
 	totpEnrollSearchRadius = 16
+	// ±120 steps = ±1 hour probed when a login code misses the anchored
+	// window, wide enough for NTP corrections, reboots, and timezone/DST
+	// mishaps. A probe hit alone never logs in: the operator must follow up
+	// with the authenticator's next code at the same skew, which an attacker
+	// without the secret cannot produce, so the width costs no security.
+	totpResyncSearchRadius = 120
 )
 
 type Store struct {
@@ -656,10 +662,11 @@ func (s *Store) FinishLogin(ctx context.Context, challengeID, code string) (Sess
 	var mustChangePassword bool
 	var encryptedSecret []byte
 	var expiresAt, clockOffset int64
-	err = tx.QueryRowContext(ctx, `SELECT c.operator_id, o.role, o.totp_secret, c.expires_at, o.must_change_password, o.totp_clock_offset
+	var resyncOffset, resyncCounter sql.NullInt64
+	err = tx.QueryRowContext(ctx, `SELECT c.operator_id, o.role, o.totp_secret, c.expires_at, o.must_change_password, o.totp_clock_offset, c.resync_offset, c.resync_counter
 		FROM login_challenges c JOIN operators o ON o.id = c.operator_id
 		WHERE c.id_hash = ? AND c.used_at IS NULL AND o.enabled = 1 AND o.totp_enabled = 1`, security.TokenHash(challengeID)).
-		Scan(&operatorID, &role, &encryptedSecret, &expiresAt, &mustChangePassword, &clockOffset)
+		Scan(&operatorID, &role, &encryptedSecret, &expiresAt, &mustChangePassword, &clockOffset, &resyncOffset, &resyncCounter)
 	if errors.Is(err, sql.ErrNoRows) || time.Now().UTC().Unix() > expiresAt {
 		return Session{}, ErrInvalidCredentials
 	}
@@ -670,11 +677,47 @@ func (s *Store) FinishLogin(ctx context.Context, challengeID, code string) (Sess
 	if err != nil {
 		return Session{}, ErrInvalidCredentials
 	}
-	// Verify around the skew learned at enrollment, and re-anchor on the step
-	// that matched so slow clock drift never accumulates past the tolerance.
-	matchedOffset, ok := security.VerifyTOTPAround(string(secret), code, time.Now().UTC(), clockOffset, 1)
+	// Verify around the anchored skew, re-anchoring on the step that matched
+	// so slow clock drift never accumulates past the tolerance.
+	now := time.Now().UTC()
+	matchedOffset, ok := security.VerifyTOTPAround(string(secret), code, now, clockOffset, 1)
 	if !ok {
-		return Session{}, ErrInvalidCredentials
+		// The anchor no longer fits — an NTP correction, reboot, or timezone
+		// mishap can move the server clock arbitrarily far, and tracking alone
+		// would leave every future login failing with no way back in. Probe a
+		// wide window; a hit is only remembered on the challenge, and login
+		// succeeds when the authenticator's *next* code lands on the same
+		// skew. Guessing two consecutive codes at one skew requires the
+		// secret, so this recovers from any clock jump without widening what
+		// a single stolen code can do.
+		probed, found := security.VerifyTOTPAround(string(secret), code, now, clockOffset, totpResyncSearchRadius)
+		if found {
+			counter := security.TOTPCounterAt(now, probed)
+			// Confirmed when this is the authenticator's next code at the same
+			// skew as the remembered probe: the counter moved forward and the
+			// skew stayed put (±1 step absorbs a submission that straddled a
+			// period boundary).
+			skewDelta := int64(0)
+			if resyncOffset.Valid {
+				if skewDelta = probed - resyncOffset.Int64; skewDelta < 0 {
+					skewDelta = -skewDelta
+				}
+			}
+			if resyncOffset.Valid && resyncCounter.Valid && skewDelta <= 1 && counter > resyncCounter.Int64 {
+				matchedOffset = probed
+			} else {
+				if _, err := tx.ExecContext(ctx, `UPDATE login_challenges SET resync_offset = ?, resync_counter = ? WHERE id_hash = ?`,
+					probed, counter, security.TokenHash(challengeID)); err != nil {
+					return Session{}, fmt.Errorf("record TOTP resync candidate: %w", err)
+				}
+				if err := tx.Commit(); err != nil {
+					return Session{}, fmt.Errorf("commit TOTP resync candidate: %w", err)
+				}
+				return Session{}, ErrInvalidCredentials
+			}
+		} else {
+			return Session{}, ErrInvalidCredentials
+		}
 	}
 	if matchedOffset != clockOffset {
 		if _, err := tx.ExecContext(ctx, `UPDATE operators SET totp_clock_offset = ? WHERE id = ?`, matchedOffset, operatorID); err != nil {
@@ -2142,7 +2185,8 @@ CREATE TABLE IF NOT EXISTS operators (
 );
 CREATE TABLE IF NOT EXISTS login_challenges (
   id_hash BLOB PRIMARY KEY, operator_id TEXT NOT NULL REFERENCES operators(id),
-  expires_at INTEGER NOT NULL, used_at INTEGER
+  expires_at INTEGER NOT NULL, used_at INTEGER,
+  resync_offset INTEGER, resync_counter INTEGER
 );
 CREATE TABLE IF NOT EXISTS sessions (
   id_hash BLOB PRIMARY KEY, operator_id TEXT NOT NULL REFERENCES operators(id), csrf_hash BLOB NOT NULL,
@@ -2333,6 +2377,11 @@ CREATE INDEX IF NOT EXISTS idx_node_metrics_updated ON node_metrics(updated_at);
 			return err
 		}
 	}
+	for _, column := range []string{"resync_offset INTEGER", "resync_counter INTEGER"} {
+		if err := s.addLoginChallengeColumn(ctx, column); err != nil {
+			return err
+		}
+	}
 	if err := s.addTaskColumn(ctx, "created_by TEXT REFERENCES operators(id)"); err != nil {
 		return err
 	}
@@ -2464,6 +2513,14 @@ func (s *Store) addOperatorColumn(ctx context.Context, definition string) error 
 		return nil
 	}
 	return fmt.Errorf("migrate operators table: %w", err)
+}
+
+func (s *Store) addLoginChallengeColumn(ctx context.Context, definition string) error {
+	_, err := s.db.ExecContext(ctx, "ALTER TABLE login_challenges ADD COLUMN "+definition)
+	if err == nil || strings.Contains(err.Error(), "duplicate column name") {
+		return nil
+	}
+	return fmt.Errorf("migrate login challenges table: %w", err)
 }
 
 func (s *Store) addTaskColumn(ctx context.Context, definition string) error {

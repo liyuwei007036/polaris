@@ -100,6 +100,13 @@ func NewTOTPSecret() (string, error) {
 	return base32.StdEncoding.WithPadding(base32.NoPadding).EncodeToString(b), nil
 }
 
+// TOTPCounterAt returns the RFC 6238 counter for at shifted by offset
+// time-steps. Two submissions of the same code share a counter, so callers
+// use it to demand a fresh code during clock resynchronization.
+func TOTPCounterAt(at time.Time, offset int64) int64 {
+	return at.Unix()/int64(totpPeriod.Seconds()) + offset
+}
+
 // VerifyTOTPAround accepts codes within radius time-steps of center (itself in
 // time-steps relative to at) and returns the step the code matched. The
 // authenticator's clock and the server's routinely disagree by more than one
