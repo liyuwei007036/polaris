@@ -1,7 +1,7 @@
 <script setup>
 import { computed, inject, onMounted, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Grid, Plus, Refresh, Search } from '@element-plus/icons-vue'
+import { Plus, Refresh, Search } from '@element-plus/icons-vue'
 import { api, del, post, put } from '../../api'
 import { waitForTask } from '../../live'
 import { includesText } from '../../format'
@@ -310,8 +310,6 @@ onMounted(load)
 
     <div class="m-count">共 {{ filteredListeners.length }} 个接入服务</div>
 
-    <!-- 手机上最常做的是把节点链接发给某个用户，所以二维码留在卡面上，
-         编辑、复制、启停这些点开整条再选。 -->
     <article v-for="row in shown" :key="row.id" class="m-item" :class="{ 'is-off': !row.enabled }">
       <button type="button" class="m-item__hit" @click="openActions(row)">
         <div class="m-item__head">
@@ -325,9 +323,6 @@ onMounted(load)
           <span class="m-stat"><b>{{ row.endpoint_count ?? 0 }}</b><small>用户</small></span>
         </div>
         <div class="m-item__meta">{{ nodeNames[row.node_id] || row.node_id }} · {{ addressText(row) }}</div>
-      </button>
-      <button type="button" class="m-item__act" :aria-label="`${row.name} 的节点二维码`" @click="showShareLinks(row)">
-        <el-icon :size="18"><Grid /></el-icon><small>二维码</small>
       </button>
     </article>
 

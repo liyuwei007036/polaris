@@ -1,13 +1,40 @@
 <script setup>
 // 手机上代替弹窗的抽屉：默认从底部升起，full 时占满整屏用于长表单。
-// 遮罩点击关闭；正在保存的表单可以把 dismissible 关掉。
-defineProps({
+// 关掉它有三条路，够不到哪条都还有别的：往下拖顶部那道横条、点遮罩、
+// 点右上角的 ✕。正在保存的表单可以把 dismissible 关掉。
+import { ref } from 'vue'
+
+const props = defineProps({
   modelValue: { type: Boolean, default: false },
   title: { type: String, default: '' },
   full: { type: Boolean, default: false },
   dismissible: { type: Boolean, default: true },
 })
 const emit = defineEmits(['update:modelValue'])
+
+// 拖动只跟着手指走，松手时拖过 70px 才算关，否则弹回去。
+const dragOffset = ref(0)
+const dragging = ref(false)
+let startY = 0
+
+function onDragStart(event) {
+  // 整屏的那种是一个页面不是抽屉，往下拖关掉它会把填了一半的表单丢掉。
+  if (!props.dismissible || props.full) return
+  dragging.value = true
+  startY = event.touches[0].clientY
+}
+
+function onDragMove(event) {
+  if (!dragging.value) return
+  dragOffset.value = Math.max(0, event.touches[0].clientY - startY)
+}
+
+function onDragEnd() {
+  if (!dragging.value) return
+  dragging.value = false
+  if (dragOffset.value > 70) emit('update:modelValue', false)
+  dragOffset.value = 0
+}
 </script>
 
 <template>
@@ -17,8 +44,21 @@ const emit = defineEmits(['update:modelValue'])
     <transition name="m-sheet">
       <div v-if="modelValue" class="m-sheet" :class="{ 'is-full': full }">
         <div class="m-sheet__mask" @click="dismissible && emit('update:modelValue', false)" />
-        <section class="m-sheet__panel" :class="{ 'has-foot': Boolean($slots.footer) }" role="dialog" :aria-label="title">
-          <header class="m-sheet__head">
+        <section
+          class="m-sheet__panel"
+          :class="{ 'has-foot': Boolean($slots.footer), 'is-dragging': dragging }"
+          :style="dragOffset ? { transform: `translateY(${dragOffset}px)` } : undefined"
+          role="dialog"
+          :aria-label="title"
+        >
+          <header
+            class="m-sheet__head"
+            @touchstart.passive="onDragStart"
+            @touchmove.passive="onDragMove"
+            @touchend="onDragEnd"
+            @touchcancel="onDragEnd"
+          >
+            <span v-if="!full" class="m-sheet__grab" aria-hidden="true" />
             <strong>{{ title }}</strong>
             <button type="button" class="m-sheet__close" aria-label="关闭" @click="emit('update:modelValue', false)">✕</button>
           </header>
@@ -50,23 +90,37 @@ const emit = defineEmits(['update:modelValue'])
   border-radius: 0;
 }
 .m-sheet__head {
+  position: relative;
   flex: none;
   display: flex;
   align-items: center;
   gap: 12px;
-  padding: 15px 14px 13px 18px;
+  padding: 20px 12px 13px 18px;
   border-bottom: 1px solid var(--sb-line);
+  touch-action: none;
+}
+.m-sheet.is-full .m-sheet__head { padding-top: 15px; touch-action: auto; }
+/* 顶部这道横条既是「能往下拖关掉」的提示，也是拖动的把手。 */
+.m-sheet__grab {
+  position: absolute;
+  top: 8px;
+  left: 50%;
+  width: 38px;
+  height: 4px;
+  transform: translateX(-50%);
+  background: rgba(148, 163, 184, .38);
+  border-radius: 2px;
 }
 .m-sheet__head strong { flex: 1; min-width: 0; color: #fff; font-size: 15.5px; font-weight: 620; }
 .m-sheet__close {
   flex: none;
-  width: 34px;
-  height: 34px;
-  color: var(--sb-muted);
-  background: rgba(148, 163, 184, .10);
+  width: 40px;
+  height: 40px;
+  color: var(--sb-text-2);
+  background: rgba(148, 163, 184, .12);
   border: 0;
   border-radius: 50%;
-  font-size: 14px;
+  font-size: 15px;
   cursor: pointer;
 }
 .m-sheet__body {
@@ -88,6 +142,10 @@ const emit = defineEmits(['update:modelValue'])
 .m-sheet__foot :deep(.el-button) { flex: 1; height: var(--m-tap); margin: 0; }
 /* 安全区只垫在最下面那一层：有操作栏时内容区再垫一次就会多出一段空白。 */
 .m-sheet__panel.has-foot .m-sheet__body { padding-bottom: 16px; }
+
+/* 跟手拖动时不能有过渡，否则手指走一段、面板慢一拍。松手后靠这条弹回去。 */
+.m-sheet__panel { transition: transform .18s ease; }
+.m-sheet__panel.is-dragging { transition: none; }
 
 .m-sheet-enter-active, .m-sheet-leave-active { transition: opacity .18s ease; }
 .m-sheet-enter-active .m-sheet__panel, .m-sheet-leave-active .m-sheet__panel { transition: transform .2s ease; }

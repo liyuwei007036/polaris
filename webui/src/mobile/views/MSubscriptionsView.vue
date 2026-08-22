@@ -1,7 +1,7 @@
 <script setup>
 import { computed, inject, onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Grid, Plus, Refresh, Search } from '@element-plus/icons-vue'
+import { Plus, Refresh, Search } from '@element-plus/icons-vue'
 import { api, del, post, put } from '../../api'
 import { writeClipboard } from '../../clipboard'
 import { formatDateTime, includesText } from '../../format'
@@ -458,7 +458,6 @@ onMounted(() => { load(); loadAccess() })
         </div>
       </div>
 
-      <!-- 手机上最常做的是把更新地址给出去，所以二维码留在卡面上。 -->
       <article v-for="row in filteredConfigs" :key="row.id" class="m-item" :class="{ 'is-off': !row.enabled }">
         <button type="button" class="m-item__hit" @click="openActions(row)">
           <div class="m-item__head">
@@ -472,9 +471,6 @@ onMounted(() => { load(); loadAccess() })
             <span class="m-stat"><b>{{ row.rule_providers?.length || 0 }}</b><small>规则供应商</small></span>
           </div>
           <div class="m-item__meta">{{ groupNames(row) }}</div>
-        </button>
-        <button type="button" class="m-item__act" :aria-label="`${row.name} 的更新地址二维码`" @click="showQrCode(row)">
-          <el-icon :size="18"><Grid /></el-icon><small>二维码</small>
         </button>
       </article>
       <div v-if="!filteredConfigs.length && !loading" class="m-empty">还没有客户端配置</div>

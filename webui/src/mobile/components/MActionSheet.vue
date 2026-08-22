@@ -48,6 +48,12 @@ function choose(action) {
     </template>
 
     <div v-if="!actions.length && !details.length" class="m-empty">没有可用的操作</div>
+
+    <!-- 字段表可能很长，标题栏的 ✕ 会被滚到看不见的地方；这里再给一个
+         固定在屏幕下缘、拇指够得到的关闭。 -->
+    <template #footer>
+      <el-button @click="emit('update:modelValue', false)">关闭</el-button>
+    </template>
   </MSheet>
 </template>
 
