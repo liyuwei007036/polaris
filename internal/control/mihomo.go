@@ -265,6 +265,24 @@ func (s *Store) mihomoProxy(ctx context.Context, endpointID, fallbackServer stri
 	return proxy, nil
 }
 
+// mihomoEndpointName resolves the name a client sees for a user, whether or not
+// that user can be connected to right now. Switching a user, its service or its
+// server off is reversible, so the name has to stay resolvable: the client
+// configurations naming it must remain editable while it is off.
+func (s *Store) mihomoEndpointName(ctx context.Context, endpointID string) (string, error) {
+	var name, alias, listenerName, nodeName string
+	err := s.db.QueryRowContext(ctx, `SELECT e.name, e.alias, l.name, n.name FROM endpoints e
+		JOIN listeners l ON l.id = e.listener_id JOIN nodes n ON n.id = l.node_id WHERE e.id = ?`, endpointID).
+		Scan(&name, &alias, &listenerName, &nodeName)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", ErrNotFound
+	}
+	if err != nil {
+		return "", fmt.Errorf("load client node name: %w", err)
+	}
+	return mihomoEndpointDisplayName(alias, nodeName, listenerName, name), nil
+}
+
 func mihomoEndpointDisplayName(alias, nodeName, listenerName, endpointName string) string {
 	if displayName := strings.TrimSpace(alias); displayName != "" {
 		return displayName

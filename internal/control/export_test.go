@@ -69,3 +69,14 @@ func NewOriginCertificatePEMForTest(names ...string) (string, string, error) {
 func (s *Server) PushConnectionsForTest(nodeID, collectedAt string, connections json.RawMessage) {
 	s.connHub.update(nodeConnectionsSnapshot{NodeID: nodeID, CollectedAt: collectedAt, Connections: connections})
 }
+
+// SetLatestSingBoxReleaseForTest primes the official sing-box release cache so
+// a test never reaches GitHub. Compiled only for tests.
+func (s *Server) SetLatestSingBoxReleaseForTest(release SingBoxRelease) {
+	s.selfUpdateMu.Lock()
+	defer s.selfUpdateMu.Unlock()
+	if s.singBoxLatest == nil {
+		s.singBoxLatest = make(map[string]polarisReleaseCacheEntry)
+	}
+	s.singBoxLatest[release.Architecture] = polarisReleaseCacheEntry{release: release, fetchedAt: time.Now()}
+}

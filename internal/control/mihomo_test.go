@@ -286,6 +286,11 @@ func TestStoredMihomoConfigReferencesNestedGroupsRulesAndAliases(t *testing.T) {
 	if response.StatusCode != http.StatusNotFound {
 		t.Fatalf("old Mihomo subscription path remained valid: got %d", response.StatusCode)
 	}
+	response = request(t, http.MethodGet, httpServer.URL+rotated.Path, nil, "", "")
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("rotated Mihomo subscription path is not usable: got %d", response.StatusCode)
+	}
+	response.Body.Close()
 	if binary := os.Getenv("MIHOMO_BIN"); binary != "" {
 		configPath := filepath.Join(t.TempDir(), "stored-mihomo.yaml")
 		if err := os.WriteFile(configPath, []byte(yaml), 0o600); err != nil {

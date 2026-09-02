@@ -309,7 +309,7 @@ async function save() {
         <div v-if="['ws', 'grpc'].includes(model.transport_type)" class="form-section">
           <div class="form-section__head">传输配置</div>
           <el-row :gutter="16">
-            <el-col v-if="model.transport_type === 'ws'" :span="12">
+            <el-col v-if="model.transport_type === 'ws'" :span="14">
               <el-form-item label="请求路径">
                 <el-input v-model="model.transport_path" readonly>
                   <template #append>
@@ -317,12 +317,6 @@ async function save() {
                   </template>
                 </el-input>
                 <div class="form-hint">由系统随机生成，避免被探测。重新生成后客户端需要同步更新。</div>
-              </el-form-item>
-            </el-col>
-            <el-col v-if="model.transport_type === 'ws'" :span="12">
-              <el-form-item label="请求域名（Host）">
-                <el-input v-model="model.transport_host" placeholder="可选" />
-                <div class="form-hint">通常与连接域名相同。</div>
               </el-form-item>
             </el-col>
             <el-col v-if="model.transport_type === 'grpc'" :span="14">

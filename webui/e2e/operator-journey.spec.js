@@ -138,6 +138,9 @@ test('浏览器页面回归：真实登录，核心工作区 API 使用路由替
   await dialog.locator('.protocol-select .el-select').click()
   await page.locator('.el-select-dropdown__item').filter({ hasText: 'VLESS + WebSocket' }).click()
   await expect(dialog.getByRole('textbox', { name: '请求路径' })).toHaveValue(/^\/[0-9a-f]{24}$/)
+  // The WebSocket Host header is never an operator choice: it only ever equals
+  // the connection domain, so the form does not offer a field for it.
+  await expect(dialog.getByText('请求域名')).toHaveCount(0)
   await expect(dialog.getByText('TLS 加密（自动证书）', { exact: true })).toBeVisible()
   await dialog.getByRole('button', { name: '取消', exact: true }).click()
   await expect(dialog).toBeHidden()

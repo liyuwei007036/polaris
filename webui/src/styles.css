@@ -426,3 +426,10 @@ html.no-flag-emoji .region-flag {
   .pagination-bar { justify-content: flex-start; overflow-x: auto; }
   .tab-actions { justify-content: flex-start; flex-wrap: wrap; }
 }
+
+/* 侧栏品牌区点开的版本与更新浮层。内容会挂到 body 上，样式必须写在全局。 */
+.update-popover .update-pop h4 { margin: 0 0 8px; color: var(--sb-text); font-size: 14px; }
+.update-popover .update-pop p { margin: 0 0 8px; color: var(--sb-muted); font-size: 12.5px; line-height: 1.65; }
+.update-popover .update-pop strong { color: var(--sb-text); }
+.update-popover .update-pop__warn { color: var(--el-color-danger); }
+.update-popover .update-pop__actions { display: flex; gap: 8px; margin-top: 12px; }

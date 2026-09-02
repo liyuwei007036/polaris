@@ -410,7 +410,7 @@ onMounted(load)
               </el-table-column>
             </PagedTable>
           </el-tab-pane>
-          <el-tab-pane :label="`已封禁 IP（${banned.length}）`" name="banned">
+          <el-tab-pane :label="`已封禁 IP（${filteredBanned.length}）`" name="banned">
             <PagedTable :rows="filteredBanned" :loading="loading" empty-text="当前没有被封禁的 IP">
               <el-table-column label="服务器" min-width="150"><template #default="{ row }">{{ nodeName(row.node_id) }}</template></el-table-column>
               <el-table-column label="IP 地址 / IP 归属地" min-width="200"><template #default="{ row }"><div class="mono">{{ row.ip }}</div><div class="subtle">{{ row.location || '未知' }}</div></template></el-table-column>
@@ -421,7 +421,6 @@ onMounted(load)
                 </template>
               </el-table-column>
               <el-table-column label="封禁时间" width="180"><template #default="{ row }">{{ formatDateTime(row.banned_at, '未知') }}</template></el-table-column>
-              <el-table-column label="解封时间" width="180"><template #default="{ row }">{{ formatDateTime(row.unban_at, '') }}</template></el-table-column>
               <el-table-column label="操作" width="110" class-name="action-column">
                 <template #default="{ row }">
                   <el-button

@@ -305,15 +305,17 @@ func (s *Store) normalizeMihomoClientConfigV3(ctx context.Context, config *Mihom
 			if _, exists := endpointNamesByID[member.ID]; exists {
 				continue
 			}
-			proxy, err := s.mihomoProxy(ctx, member.ID, "")
+			// A user that is switched off keeps its name here so the rules
+			// naming it still resolve; only a deleted one is dropped, and
+			// deleting one already prunes it from the groups.
+			name, err := s.mihomoEndpointName(ctx, member.ID)
 			if errors.Is(err, ErrNotFound) {
-				return fmt.Errorf("access account %s is unavailable: %w", member.ID, ErrNotFound)
+				continue
 			}
 			if err != nil {
 				return err
 			}
-			name, ok := proxy["name"].(string)
-			if !ok || strings.TrimSpace(name) == "" {
+			if strings.TrimSpace(name) == "" {
 				return errors.New("generated Mihomo node name is invalid")
 			}
 			if isReservedMihomoClientName(name) {
@@ -1157,7 +1159,13 @@ func (s *Store) generateMihomoClientYAML(ctx context.Context, config MihomoClien
 			if _, exists := endpointNames[member.ID]; exists {
 				continue
 			}
+			// A user that is switched off, or whose service or server is, has
+			// nothing to connect to and is left out rather than failing the
+			// whole profile — the same way the node links are built.
 			proxy, err := s.mihomoProxy(ctx, member.ID, "")
+			if errors.Is(err, ErrNotFound) {
+				continue
+			}
 			if err != nil {
 				return "", err
 			}
@@ -1186,11 +1194,19 @@ func (s *Store) generateMihomoClientYAML(ctx context.Context, config MihomoClien
 	for _, group := range groups {
 		members := make([]string, 0, len(group.Members))
 		for _, member := range group.Members {
-			if member.Kind == "endpoint" {
-				members = append(members, endpointNames[member.ID])
-			} else {
+			if member.Kind != "endpoint" {
 				members = append(members, groupNames[member.ID])
+				continue
 			}
+			if name, exists := endpointNames[member.ID]; exists {
+				members = append(members, name)
+			}
+		}
+		if len(members) == 0 {
+			// Every user in this group is switched off. Mihomo rejects a group
+			// with no entries, and REJECT says so without letting the traffic
+			// out unproxied.
+			members = append(members, "REJECT")
 		}
 		object := mihomoYAMLGroup{Name: group.Name, Type: group.Strategy, Proxies: members}
 		if group.Strategy != "select" {

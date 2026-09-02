@@ -32,6 +32,8 @@ const editSaving = ref(false)
 const refreshing = ref(false)
 const keyword = ref('')
 const statusFilter = ref('')
+// 架构 -> 官方最新 sing-box 版本号
+const singBoxLatest = ref({})
 let stopLive
 let stopConnections
 
@@ -57,6 +59,7 @@ async function load(silent = false) {
     ])
     pending.value = registrations.registrations || []
     metrics.value = Object.fromEntries((metricResult.nodes || []).map((entry) => [entry.node_id, entry.report]))
+    await loadSingBoxLatest()
   } finally {
     loading.value = false
     refreshing.value = false
@@ -128,6 +131,31 @@ async function upgradeAgent(node) {
   )
   await post(`/nodes/${node.id}/agent/upgrade`, {})
   ElMessage.success('升级任务已下发，agent 更新完成后会自动重新上线')
+}
+
+// 同一架构的服务器共用一个官方版本号，按架构查一次即可；已经拿到的不再重复请求。
+async function loadSingBoxLatest() {
+  const architectures = [...new Set(appState.nodes.map((node) => node.architecture).filter(Boolean))]
+  await Promise.all(architectures.map(async (architecture) => {
+    if (singBoxLatest.value[architecture]) return
+    const release = await api(`/sing-box/latest?architecture=${architecture}`).catch(() => null)
+    if (release?.version) singBoxLatest.value[architecture] = release.version
+  }))
+}
+
+function singBoxUpdateAvailable(node) {
+  const latest = singBoxLatest.value[node.architecture]
+  return Boolean(latest && node.sing_box_version && node.sing_box_version !== latest)
+}
+
+async function upgradeSingBox(node) {
+  await ElMessageBox.confirm(
+    `将“${node.name}”的 sing-box 从 ${node.sing_box_version} 升级到 ${singBoxLatest.value[node.architecture]}？升级时 sing-box 会重启，正在通过该服务器的连接会短暂中断；新版本启动失败会自动回滚到当前版本。`,
+    '升级 sing-box',
+    { type: 'warning', confirmButtonText: '开始升级' },
+  )
+  await post(`/nodes/${node.id}/sing-box/install`, {})
+  ElMessage.success('升级任务已下发，完成后服务器会上报新的 sing-box 版本')
 }
 
 function openEdit(node) {
@@ -207,13 +235,19 @@ onBeforeUnmount(() => {
               <div class="cell-sub">{{ row.os || '—' }} · {{ row.architecture || '—' }}</div>
             </template>
           </el-table-column>
-          <el-table-column label="版本" width="150">
+          <el-table-column label="版本" width="190">
             <template #default="{ row }">
               <div class="cell-main">
                 {{ row.agent_version || '—' }}
                 <el-tag v-if="agentUpdateAvailable(row)" type="warning" size="small" style="margin-left: 6px">可升级</el-tag>
               </div>
-              <div class="cell-sub">sing-box {{ row.sing_box_version || '—' }}</div>
+              <!-- sing-box 只在服务器首次接入时自动装一次，之后要靠这里升级；
+                   入口贴着版本号放，操作列就不必再挤进第四个按钮。 -->
+              <div class="cell-sub">
+                sing-box {{ row.sing_box_version || '—' }}
+                <el-button v-if="isAdmin && singBoxUpdateAvailable(row)" link type="primary" style="margin-left: 6px" @click="upgradeSingBox(row)">升级</el-button>
+                <el-tag v-else-if="singBoxUpdateAvailable(row)" type="warning" size="small" style="margin-left: 6px">可升级</el-tag>
+              </div>
             </template>
           </el-table-column>
           <el-table-column label="客户端连接地址" min-width="170" show-overflow-tooltip>

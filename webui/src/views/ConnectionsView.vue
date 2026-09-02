@@ -31,6 +31,13 @@ function targetLabel(connection) {
   return address.port ? `${host}:${address.port}` : host
 }
 
+// Which service a connection came in on and which user opened it are two
+// halves of the same answer, so they are written together.
+function entryLabel(connection) {
+  const listener = connection.listener_name || '—'
+  return connection.user ? `${listener}（${connection.user}）` : listener
+}
+
 const rows = computed(() => [...connectionSnapshots.value.values()].flatMap((result) => {
   const node = appState.nodes.find((item) => item.id === result.node_id)
   return (result.connections || []).map((connection) => ({
@@ -40,7 +47,7 @@ const rows = computed(() => [...connectionSnapshots.value.values()].flatMap((res
     // The master resolves the sing-box outbound tag to the egress an operator
     // configured; the raw tag is only shown when that lookup found nothing.
     exit: connection.outbound_name || connection.outbound || connection.chains?.[0] || 'DIRECT',
-    entry: connection.listener_name || '—',
+    entry: entryLabel(connection),
     target: targetLabel(connection),
   }))
 }))
@@ -64,11 +71,29 @@ async function load() {
   }
 }
 
+// The server answers a new stream with a snapshot straight away, but the hub
+// is usually still empty at that point: each node's connections land a few
+// hundred milliseconds later. Holding the loading state until something
+// arrives — or until the wait is clearly over — keeps "no active connections"
+// from flashing past just before the list appears.
+let settleTimer
+function settle() {
+  clearTimeout(settleTimer)
+  loading.value = false
+}
+
 onMounted(async () => {
-  await load()
-  stopConnections = subscribeConnections(() => {})
+  try {
+    await loadNodes()
+  } finally {
+    stopConnections = subscribeConnections(() => { if (rows.value.length) settle() })
+    settleTimer = setTimeout(settle, 1500)
+  }
 })
-onBeforeUnmount(() => stopConnections?.())
+onBeforeUnmount(() => {
+  clearTimeout(settleTimer)
+  stopConnections?.()
+})
 </script>
 
 <template>
@@ -90,27 +115,32 @@ onBeforeUnmount(() => stopConnections?.())
       </div>
       <div class="table-panel">
         <PagedTable :rows="filteredRows" :loading="loading" empty-text="当前没有活动连接">
-          <el-table-column label="服务器" prop="node_name" min-width="130" show-overflow-tooltip />
-          <el-table-column label="客户端" min-width="180" show-overflow-tooltip>
+          <el-table-column label="服务器" prop="node_name" min-width="92" show-overflow-tooltip />
+          <el-table-column label="来源" min-width="152" show-overflow-tooltip>
             <template #default="{ row }">
               <div class="mono">{{ row.source_ip || row.source || '—' }}</div>
-              <div class="subtle">{{ [row.user, row.source_location].filter(Boolean).join(' · ') || '未知' }}</div>
+              <div class="subtle">{{ row.source_location || '未知' }}</div>
             </template>
           </el-table-column>
-          <el-table-column label="目标" min-width="220" show-overflow-tooltip>
+          <el-table-column label="目标" min-width="172" show-overflow-tooltip>
             <template #default="{ row }"><strong>{{ row.target }}</strong></template>
           </el-table-column>
-          <el-table-column label="入站节点" min-width="140" show-overflow-tooltip>
+          <el-table-column label="入站节点" min-width="152" show-overflow-tooltip>
             <template #default="{ row }">
               <div>{{ row.entry }}</div>
               <div class="subtle">{{ (row.network || '').toUpperCase() || '—' }}</div>
             </template>
           </el-table-column>
-          <el-table-column label="出口" min-width="150" show-overflow-tooltip>
+          <el-table-column label="出口" min-width="100" show-overflow-tooltip>
             <template #default="{ row }"><el-tag size="small" effect="plain">{{ row.exit }}</el-tag></template>
           </el-table-column>
-          <el-table-column label="流量" min-width="156"><template #default="{ row }"><span class="mono">↓ {{ formatBytes(row.download) }} · ↑ {{ formatBytes(row.upload) }}</span></template></el-table-column>
-          <el-table-column label="时间" width="152"><template #default="{ row }">{{ formatDateTime(row.started_at) }}</template></el-table-column>
+          <el-table-column label="流量" width="118" show-overflow-tooltip>
+            <template #default="{ row }">
+              <div class="mono">↓ {{ formatBytes(row.download) }}</div>
+              <div class="mono subtle">↑ {{ formatBytes(row.upload) }}</div>
+            </template>
+          </el-table-column>
+          <el-table-column label="时间" width="180" show-overflow-tooltip><template #default="{ row }">{{ formatDateTime(row.started_at) }}</template></el-table-column>
         </PagedTable>
       </div>
     </main>

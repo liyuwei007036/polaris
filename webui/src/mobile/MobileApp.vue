@@ -25,7 +25,6 @@ const appState = reactive({
   nodes: [],
   systemUpdate: null,
 })
-const updateBannerDismissed = ref(false)
 
 const views = {
   dashboard: defineAsyncComponent(() => import('./views/MDashboardView.vue')),
@@ -170,12 +169,6 @@ onBeforeUnmount(() => {
   />
 
   <div v-else class="m-app">
-    <div v-if="appState.systemUpdate?.update_available && !updateBannerDismissed" class="m-app__banner">
-      <span>新版本 v{{ appState.systemUpdate.latest_version }} 可用</span>
-      <button type="button" @click="navigate('settings')">前往更新</button>
-      <button type="button" class="is-plain" @click="updateBannerDismissed = true">忽略</button>
-    </div>
-
     <main class="m-app__view">
       <!-- 两半过渡都要写：只写进入动画时 out-in 会等一个永远不来的结束事件。 -->
       <transition name="m-view" mode="out-in">
@@ -218,30 +211,6 @@ onBeforeUnmount(() => {
   flex-direction: column;
   padding-top: var(--m-safe-top);
 }
-.m-app__banner {
-  flex: none;
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 8px 12px;
-  color: #fcd34d;
-  background: rgba(251, 191, 36, .12);
-  border-bottom: 1px solid rgba(251, 191, 36, .28);
-  font-size: 12.5px;
-}
-.m-app__banner > span { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.m-app__banner button {
-  flex: none;
-  padding: 5px 10px;
-  color: #04121f;
-  background: #fcd34d;
-  border: 0;
-  border-radius: 7px;
-  font: inherit;
-  font-size: 12px;
-  cursor: pointer;
-}
-.m-app__banner button.is-plain { color: #fcd34d; background: transparent; }
 .m-app__view { flex: 1; min-height: 0; position: relative; }
 .m-app__tabs {
   flex: none;

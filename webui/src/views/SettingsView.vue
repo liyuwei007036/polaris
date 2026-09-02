@@ -10,12 +10,8 @@ import PagedTable from '../components/PagedTable.vue'
 
 const appState = inject('appState')
 const isAdmin = inject('isAdmin')
-const loadSystemUpdate = inject('loadSystemUpdate')
 const loading = ref(false)
 const tab = ref('account')
-const updateChecking = ref(false)
-const updateApplying = ref(false)
-const systemUpdate = computed(() => appState.systemUpdate)
 const operators = ref([])
 const dialog = ref('')
 const totpSetup = reactive({ open: false, loading: false, secret: '', qr: '', code: '' })
@@ -97,30 +93,6 @@ async function enableTOTP() {
   } finally { totpSetup.loading = false }
 }
 
-async function checkSystemUpdate() {
-  updateChecking.value = true
-  try {
-    await loadSystemUpdate(true)
-    if (appState.systemUpdate?.check_error) ElMessage.warning('检查更新失败：' + appState.systemUpdate.check_error)
-    else if (appState.systemUpdate?.update_available) ElMessage.success(`发现新版本 v${appState.systemUpdate.latest_version}`)
-    else ElMessage.success('当前已是最新版本')
-  } finally { updateChecking.value = false }
-}
-
-async function applySystemUpdate() {
-  await ElMessageBox.confirm(
-    `将 master 更新到 v${systemUpdate.value.latest_version}？更新过程中管理平台会重启，约需十几秒，期间控制台短暂不可用。已接入的服务器不受影响。`,
-    '更新管理平台',
-    { type: 'warning', confirmButtonText: '立即更新' },
-  )
-  updateApplying.value = true
-  try {
-    await post('/system/update/apply', {})
-    ElMessage.success('更新已开始，管理平台正在重启，页面将在 20 秒后自动刷新')
-    setTimeout(() => location.reload(), 20000)
-  } finally { updateApplying.value = false }
-}
-
 async function disableOwnTOTP() {
   const result = await ElMessageBox.prompt('请输入当前登录密码以确认关闭', '关闭两步验证', {
     inputType: 'password',
@@ -153,33 +125,6 @@ onMounted(load)
               <el-tag :type="appState.totp_enabled ? 'success' : 'info'">{{ appState.totp_enabled ? '已启用' : '未启用' }}</el-tag>
               <el-button v-if="appState.totp_enabled" type="danger" plain @click="disableOwnTOTP">关闭</el-button>
               <el-button v-else type="primary" :loading="totpSetup.loading" @click="beginTOTPSetup">启用</el-button>
-            </section>
-          </el-tab-pane>
-
-          <el-tab-pane label="系统更新" name="update">
-            <section class="security-card">
-              <div>
-                <h3>软件版本</h3>
-                <p>
-                  当前版本：<strong>{{ systemUpdate?.current_version || '未知' }}</strong>
-                  <template v-if="systemUpdate?.latest_version">
-                    ，最新版本：<strong>{{ systemUpdate.latest_version }}</strong>
-                  </template>
-                </p>
-                <p v-if="systemUpdate?.check_error" style="color: var(--el-color-danger)">检查更新失败：{{ systemUpdate.check_error }}</p>
-                <p v-else-if="systemUpdate?.update_available">更新控制端后，可在「服务器」页面逐台升级 agent。</p>
-                <p v-else>打开控制台时会自动检查新版本。</p>
-              </div>
-              <el-tag :type="systemUpdate?.update_available ? 'warning' : 'success'">
-                {{ systemUpdate?.update_available ? '有新版本' : '已是最新' }}
-              </el-tag>
-              <el-button :loading="updateChecking" @click="checkSystemUpdate">重新检查</el-button>
-              <el-button
-                v-if="isAdmin && systemUpdate?.update_available"
-                type="primary"
-                :loading="updateApplying"
-                @click="applySystemUpdate"
-              >更新管理平台</el-button>
             </section>
           </el-tab-pane>
 

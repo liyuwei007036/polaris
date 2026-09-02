@@ -48,6 +48,7 @@ type Server struct {
 	autoInstallMu          sync.Mutex
 	autoInstallChecked     map[string]bool
 	latestSingBoxReleaseFn func(context.Context, string) (SingBoxRelease, error)
+	singBoxLatest          map[string]polarisReleaseCacheEntry
 	selfUpdateMu             sync.Mutex
 	polarisLatest          map[string]polarisReleaseCacheEntry
 	latestPolarisReleaseFn func(context.Context, string) (SingBoxRelease, error)
@@ -1281,12 +1282,41 @@ func (s *Server) createSingBoxRelease(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, created)
 }
 
+// singBoxReleaseCacheTTL keeps the GitHub lookup off the request path: the
+// server list asks for the newest sing-box version on every visit and refresh,
+// and GitHub rate-limits anonymous callers per IP.
+const singBoxReleaseCacheTTL = time.Hour
+
+func (s *Server) latestSingBoxReleaseCached(ctx context.Context, architecture string) (SingBoxRelease, error) {
+	s.selfUpdateMu.Lock()
+	entry, cached := s.singBoxLatest[architecture]
+	s.selfUpdateMu.Unlock()
+	if cached && time.Since(entry.fetchedAt) < singBoxReleaseCacheTTL {
+		return entry.release, nil
+	}
+	resolver := s.latestSingBoxReleaseFn
+	if resolver == nil {
+		resolver = LatestOfficialSingBoxRelease
+	}
+	release, err := resolver(ctx, architecture)
+	if err != nil {
+		return SingBoxRelease{}, err
+	}
+	s.selfUpdateMu.Lock()
+	if s.singBoxLatest == nil {
+		s.singBoxLatest = make(map[string]polarisReleaseCacheEntry)
+	}
+	s.singBoxLatest[architecture] = polarisReleaseCacheEntry{release: release, fetchedAt: time.Now()}
+	s.selfUpdateMu.Unlock()
+	return release, nil
+}
+
 func (s *Server) latestSingBoxRelease(w http.ResponseWriter, r *http.Request) {
 	if _, err := s.operator(r, false); err != nil {
 		writeError(w, err)
 		return
 	}
-	release, err := LatestOfficialSingBoxRelease(r.Context(), r.URL.Query().Get("architecture"))
+	release, err := s.latestSingBoxReleaseCached(r.Context(), r.URL.Query().Get("architecture"))
 	if err != nil {
 		writeError(w, err)
 		return
@@ -1318,7 +1348,7 @@ func (s *Server) installSingBox(w http.ResponseWriter, r *http.Request) {
 	}
 	var release SingBoxRelease
 	if strings.TrimSpace(input.Version) == "" {
-		release, err = LatestOfficialSingBoxRelease(r.Context(), node.Architecture)
+		release, err = s.latestSingBoxReleaseCached(r.Context(), node.Architecture)
 	} else {
 		release, err = s.store.FindSingBoxRelease(r.Context(), input.Version, node.Architecture)
 	}

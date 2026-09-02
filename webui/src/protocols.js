@@ -86,7 +86,6 @@ export function createListenerModel(existing, nodeID = '') {
     reality_key_id: spec.reality?.key_id || '',
     transport_type: spec.transport?.type || '',
     transport_path: spec.transport?.path || '',
-    transport_host: spec.transport?.host || '',
     transport_service_name: spec.transport?.service_name || '',
   }
 }
@@ -126,7 +125,7 @@ export function listenerPayload(model) {
       transport: {
         type: profile.transport,
         path: profile.transport === 'ws' ? model.transport_path || '' : '',
-        host: profile.transport === 'ws' ? model.transport_host || '' : '',
+        host: '',
         service_name: profile.transport === 'grpc' ? model.transport_service_name || '' : '',
       },
     },

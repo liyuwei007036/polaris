@@ -259,10 +259,6 @@ function save() {
         </el-input>
         <div class="m-field__hint">由系统随机生成，避免被探测。重新生成后客户端需要同步更新。</div>
       </div>
-      <div class="m-field">
-        <label class="m-field__label">请求域名（Host）</label>
-        <el-input v-model="model.transport_host" aria-label="WebSocket 请求域名" placeholder="可选，通常与连接域名相同" />
-      </div>
     </template>
 
     <template v-if="model.transport_type === 'grpc'">

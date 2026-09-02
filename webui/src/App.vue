@@ -17,6 +17,7 @@ import {
   Tickets,
   User,
 } from '@element-plus/icons-vue'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import { api, post, setCsrfToken } from './api'
 import { closeLiveEvents, subscribeLive } from './live'
 import { closeConnectionEvents } from './connections'
@@ -38,7 +39,10 @@ const appState = reactive({
   nodes: [],
   systemUpdate: null,
 })
-const updateBannerDismissed = ref(false)
+// 版本号和更新都挂在侧栏品牌区：谁在跑哪个版本是每次打开控制台都想扫一眼的
+// 事，藏进系统设置反而要多点两下。
+const updateChecking = ref(false)
+const updateApplying = ref(false)
 
 const groups = [
   {
@@ -112,6 +116,30 @@ async function loadSystemUpdate(refresh = false) {
   if (!authenticated.value) return null
   appState.systemUpdate = await api(refresh ? '/system/update?refresh=1' : '/system/update')
   return appState.systemUpdate
+}
+
+async function checkSystemUpdate() {
+  updateChecking.value = true
+  try {
+    await loadSystemUpdate(true)
+    if (appState.systemUpdate?.check_error) ElMessage.warning('检查更新失败：' + appState.systemUpdate.check_error)
+    else if (appState.systemUpdate?.update_available) ElMessage.success(`发现新版本 v${appState.systemUpdate.latest_version}`)
+    else ElMessage.success('当前已是最新版本')
+  } finally { updateChecking.value = false }
+}
+
+async function applySystemUpdate() {
+  await ElMessageBox.confirm(
+    `将 master 更新到 v${appState.systemUpdate.latest_version}？更新过程中管理平台会重启，约需十几秒，期间控制台短暂不可用。已接入的服务器不受影响。`,
+    '更新管理平台',
+    { type: 'warning', confirmButtonText: '立即更新' },
+  )
+  updateApplying.value = true
+  try {
+    await post('/system/update/apply', {})
+    ElMessage.success('更新已开始，管理平台正在重启，页面将在 20 秒后自动刷新')
+    setTimeout(() => location.reload(), 20000)
+  } finally { updateApplying.value = false }
 }
 
 async function checkSession() {
@@ -214,13 +242,40 @@ onBeforeUnmount(() => {
 
   <el-container v-else class="app-layout">
     <el-aside width="232px" class="app-sidebar">
-      <div class="app-brand">
-        <span class="app-brand__mark"><BrandMark :size="21" /></span>
-        <span class="app-brand__text">
-          <strong>{{ brandName }}</strong>
-          <small>{{ brandTagline }}</small>
-        </span>
-      </div>
+      <el-popover placement="right-start" :width="308" trigger="click" popper-class="update-popover">
+        <template #reference>
+          <button type="button" class="app-brand" :aria-label="`${brandName} ${brandTagline}，查看版本与更新`">
+            <span class="app-brand__mark"><BrandMark :size="21" /></span>
+            <span class="app-brand__text">
+              <strong>{{ brandName }}</strong>
+              <small>
+                {{ brandTagline }}
+                <em class="app-brand__version">
+                  v{{ appState.systemUpdate?.current_version || '—' }}
+                  <i v-if="appState.systemUpdate?.update_available" class="app-brand__dot" aria-hidden="true" />
+                </em>
+              </small>
+            </span>
+          </button>
+        </template>
+        <div class="update-pop">
+          <h4>软件版本</h4>
+          <p>当前版本 <strong>v{{ appState.systemUpdate?.current_version || '未知' }}</strong></p>
+          <p v-if="appState.systemUpdate?.check_error" class="update-pop__warn">检查更新失败：{{ appState.systemUpdate.check_error }}</p>
+          <p v-else-if="appState.systemUpdate?.update_available">
+            最新版本 <strong>v{{ appState.systemUpdate.latest_version }}</strong>。更新控制端后，可在「服务器」页面逐台升级 agent。
+          </p>
+          <p v-else>已是最新版本。打开控制台时会自动检查。</p>
+          <div class="update-pop__actions">
+            <el-button size="small" :loading="updateChecking" @click="checkSystemUpdate">重新检查</el-button>
+            <el-button
+              v-if="isAdmin && appState.systemUpdate?.update_available"
+              size="small" type="primary" :loading="updateApplying"
+              @click="applySystemUpdate"
+            >更新管理平台</el-button>
+          </div>
+        </div>
+      </el-popover>
 
       <el-scrollbar class="app-menu-scroll">
         <div v-for="group in groups" :key="group.label" class="menu-group">
@@ -252,11 +307,6 @@ onBeforeUnmount(() => {
     </el-aside>
 
     <el-main class="app-main">
-      <div v-if="appState.systemUpdate?.update_available && !updateBannerDismissed" class="update-banner">
-        <span>新版本 v{{ appState.systemUpdate.latest_version }} 可用 · 当前 v{{ appState.systemUpdate.current_version }}</span>
-        <el-button size="small" type="primary" @click="navigate('settings')">前往更新</el-button>
-        <el-button size="small" text @click="updateBannerDismissed = true">忽略</el-button>
-      </div>
       <!-- out-in keeps exactly one page mounted at a time. It only works
            because the leave half of the transition is defined; without it
            Vue waits for an end event that never arrives and navigation
@@ -304,14 +354,22 @@ onBeforeUnmount(() => {
   pointer-events: none;
 }
 .app-brand {
+  width: 100%;
   height: 64px;
   flex: none;
   display: flex;
   align-items: center;
   gap: 11px;
   padding: 0 20px;
+  color: inherit;
+  background: transparent;
+  border: 0;
   border-bottom: 1px solid var(--sb-line);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
 }
+.app-brand:hover { background: rgba(148, 163, 184, .08); }
 .app-brand__mark {
   width: 36px;
   height: 36px;
@@ -325,7 +383,10 @@ onBeforeUnmount(() => {
 }
 .app-brand__text { min-width: 0; }
 .app-brand strong { display: block; color: #fff; font-size: 16px; line-height: 1.2; letter-spacing: .6px; }
-.app-brand small { display: block; margin-top: 2px; color: var(--sb-muted); font-size: 10px; letter-spacing: 3px; }
+.app-brand small { display: flex; align-items: center; margin-top: 2px; color: var(--sb-muted); font-size: 10px; letter-spacing: 3px; }
+/* 版本号自己取消字距，否则会跟着“控 制 台”一起被拉散。 */
+.app-brand__version { display: inline-flex; align-items: center; gap: 4px; margin-left: 7px; font-style: normal; letter-spacing: .2px; }
+.app-brand__dot { width: 6px; height: 6px; border-radius: 50%; background: #fbbf24; box-shadow: 0 0 6px rgba(251, 191, 36, .9); }
 .app-menu-scroll { flex: 1; min-height: 0; padding: 10px 0; }
 /* 菜单只纵向滚动：窄屏折叠时文字被裁掉会撑出一条横向滚动条。 */
 .app-menu-scroll :deep(.el-scrollbar__wrap) { overflow-x: hidden; }
@@ -410,19 +471,6 @@ onBeforeUnmount(() => {
 }
 .app-main > * { position: relative; }
 .app-main > :last-child { flex: 1; min-height: 0; }
-.update-banner {
-  flex: none;
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  padding: 9px 32px;
-  color: #fcd34d;
-  background: linear-gradient(90deg, rgba(251, 191, 36, .14), rgba(251, 191, 36, .03));
-  border-bottom: 1px solid rgba(251, 191, 36, .28);
-  font-size: 13px;
-}
-.update-banner > span { flex: 1; min-width: 0; }
-
 @media (max-width: 900px) {
   .app-sidebar { width: 72px !important; }
   .app-brand { justify-content: center; padding: 0; }

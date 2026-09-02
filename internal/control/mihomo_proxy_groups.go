@@ -82,7 +82,14 @@ func (s *Store) validateMihomoProxyGroupGraph(ctx context.Context, candidate Mih
 				return userErrorf("代理分组“%s”引用的其他分组已不存在，请重新选择", candidate.Name)
 			}
 		case "endpoint":
-			if _, err := s.mihomoProxy(ctx, member.ID, ""); err != nil {
+			// A user that is switched off, or whose service or server is,
+			// stays selectable: turning it back on must not mean rebuilding
+			// the group. Only one that no longer exists is rejected.
+			_, err := s.mihomoProxy(ctx, member.ID, "")
+			if errors.Is(err, ErrNotFound) {
+				_, err = s.mihomoEndpointName(ctx, member.ID)
+			}
+			if err != nil {
 				if errors.Is(err, ErrNotFound) {
 					return fmt.Errorf("%w: %w", ErrNotFound, userErrorf("所选客户端节点已不可用，请刷新后重新选择"))
 				}
@@ -143,12 +150,14 @@ func (s *Store) validateMihomoProxyGroupGraph(ctx context.Context, candidate Mih
 			if member.Kind != "endpoint" || endpointIDs[member.ID] {
 				continue
 			}
-			proxy, err := s.mihomoProxy(ctx, member.ID, "")
+			name, err := s.mihomoEndpointName(ctx, member.ID)
+			if errors.Is(err, ErrNotFound) {
+				continue
+			}
 			if err != nil {
 				return err
 			}
-			name, ok := proxy["name"].(string)
-			if !ok || strings.TrimSpace(name) == "" {
+			if strings.TrimSpace(name) == "" {
 				return errors.New("generated Mihomo node name is invalid")
 			}
 			if isReservedMihomoClientName(name) {
@@ -235,12 +244,14 @@ func (s *Store) validateMihomoProxyGroupClients(ctx context.Context, candidate M
 				if member.Kind != "endpoint" {
 					continue
 				}
-				proxy, err := s.mihomoProxy(ctx, member.ID, "")
+				name, err := s.mihomoEndpointName(ctx, member.ID)
+				if errors.Is(err, ErrNotFound) {
+					continue
+				}
 				if err != nil {
 					return err
 				}
-				name, ok := proxy["name"].(string)
-				if !ok || strings.TrimSpace(name) == "" {
+				if strings.TrimSpace(name) == "" {
 					return errors.New("generated Mihomo node name is invalid")
 				}
 				actions[strings.ToUpper(name)] = true

@@ -13,12 +13,8 @@ import MActionSheet from '../components/MActionSheet.vue'
 
 const appState = inject('appState')
 const isAdmin = inject('isAdmin')
-const loadSystemUpdate = inject('loadSystemUpdate')
 const loading = ref(false)
 const tab = ref('account')
-const updateChecking = ref(false)
-const updateApplying = ref(false)
-const systemUpdate = computed(() => appState.systemUpdate)
 const operators = ref([])
 const operatorSheet = ref(false)
 const totpSetup = reactive({ open: false, loading: false, secret: '', qr: '', code: '' })
@@ -38,8 +34,8 @@ const roles = [
 const roleNames = Object.fromEntries(roles.map((role) => [role.value, role.label]))
 const filteredOperators = computed(() => operators.value.filter((row) => includesText([row.username, roleNames[row.role]], operatorKeyword.value)))
 const tabs = computed(() => (isAdmin.value
-  ? [{ value: 'account', label: '登录安全' }, { value: 'update', label: '系统更新' }, { value: 'operators', label: '管理账户' }]
-  : [{ value: 'account', label: '登录安全' }, { value: 'update', label: '系统更新' }]))
+  ? [{ value: 'account', label: '登录安全' }, { value: 'operators', label: '管理账户' }]
+  : [{ value: 'account', label: '登录安全' }]))
 
 async function load() {
   loading.value = true
@@ -172,30 +168,6 @@ async function disableOwnTOTP() {
   await load()
 }
 
-async function checkSystemUpdate() {
-  updateChecking.value = true
-  try {
-    await loadSystemUpdate(true)
-    if (appState.systemUpdate?.check_error) ElMessage.warning('检查更新失败：' + appState.systemUpdate.check_error)
-    else if (appState.systemUpdate?.update_available) ElMessage.success(`发现新版本 v${appState.systemUpdate.latest_version}`)
-    else ElMessage.success('当前已是最新版本')
-  } finally { updateChecking.value = false }
-}
-
-async function applySystemUpdate() {
-  await ElMessageBox.confirm(
-    `将 master 更新到 v${systemUpdate.value.latest_version}？更新过程中管理平台会重启，约需十几秒，期间控制台短暂不可用。已接入的服务器不受影响。`,
-    '更新管理平台',
-    { type: 'warning', confirmButtonText: '立即更新' },
-  )
-  updateApplying.value = true
-  try {
-    await post('/system/update/apply', {})
-    ElMessage.success('更新已开始，管理平台正在重启，页面将在 20 秒后自动刷新')
-    setTimeout(() => location.reload(), 20000)
-  } finally { updateApplying.value = false }
-}
-
 onMounted(load)
 </script>
 
@@ -216,28 +188,6 @@ onMounted(load)
         <div class="m-card__note">{{ appState.totp_enabled ? '登录时需要输入验证器生成的动态验证码。' : '为账户增加一层动态验证码保护。' }}</div>
         <el-button v-if="appState.totp_enabled" type="danger" plain class="wide" @click="disableOwnTOTP">关闭两步验证</el-button>
         <el-button v-else type="primary" class="wide" :loading="totpSetup.loading" @click="beginTOTPSetup">启用两步验证</el-button>
-      </section>
-    </template>
-
-    <template v-else-if="tab === 'update'">
-      <section class="m-card">
-        <div class="m-card__top">
-          <span class="m-card__title">软件版本</span>
-          <span class="m-pill" :class="systemUpdate?.update_available ? 'm-pill--warning' : 'm-pill--success'">{{ systemUpdate?.update_available ? '有新版本' : '已是最新' }}</span>
-        </div>
-        <div class="m-card__row"><span>当前版本 {{ systemUpdate?.current_version || '未知' }}</span></div>
-        <div v-if="systemUpdate?.latest_version" class="m-card__row"><span>最新版本 {{ systemUpdate.latest_version }}</span></div>
-        <div class="m-card__note" :class="{ 'm-danger': systemUpdate?.check_error }">
-          <template v-if="systemUpdate?.check_error">检查更新失败：{{ systemUpdate.check_error }}</template>
-          <template v-else-if="systemUpdate?.update_available">更新控制端后，可在「服务器」页面逐台升级 agent。</template>
-          <template v-else>打开控制台时会自动检查新版本。</template>
-        </div>
-        <el-button class="wide" :loading="updateChecking" @click="checkSystemUpdate">重新检查</el-button>
-        <el-button
-          v-if="isAdmin && systemUpdate?.update_available"
-          type="primary" class="wide" :loading="updateApplying"
-          @click="applySystemUpdate"
-        >更新管理平台</el-button>
       </section>
     </template>
 

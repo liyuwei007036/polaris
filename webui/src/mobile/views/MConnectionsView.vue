@@ -33,6 +33,12 @@ function targetLabel(connection) {
   return address.port ? `${host}:${address.port}` : host
 }
 
+// 连接进的是哪个入站服务、由哪个用户发起，是同一件事的两半，写在一起。
+function entryLabel(connection) {
+  const listener = connection.listener_name || '—'
+  return connection.user ? `${listener}（${connection.user}）` : listener
+}
+
 const rows = computed(() => [...connectionSnapshots.value.values()].flatMap((result) => {
   const node = appState.nodes.find((item) => item.id === result.node_id)
   return (result.connections || []).map((connection) => ({
@@ -41,7 +47,7 @@ const rows = computed(() => [...connectionSnapshots.value.values()].flatMap((res
     node_name: node?.name || result.node_id,
     // master 会把 sing-box 的出站标签解析成操作者配置的出口，解析不到才显示原始标签。
     exit: connection.outbound_name || connection.outbound || connection.chains?.[0] || 'DIRECT',
-    entry: connection.listener_name || '—',
+    entry: entryLabel(connection),
     target: targetLabel(connection),
   }))
 }))
@@ -72,9 +78,8 @@ const details = computed(() => {
   return [
     { label: '目标', value: row.target, mono: true },
     { label: '服务器', value: row.node_name },
-    { label: '入站服务', value: row.entry },
+    { label: '入站节点', value: row.entry },
     { label: '出口', value: row.exit },
-    { label: '用户', value: row.user || '未知' },
     { label: '来源', value: [row.source_ip || row.source, row.source_location].filter(Boolean).join(' · ') || '未知', mono: true },
     { label: '网络', value: (row.network || '').toUpperCase() || '—' },
     { label: '流量', value: `↓ ${formatBytes(row.download)} · ↑ ${formatBytes(row.upload)}` },
@@ -96,11 +101,27 @@ async function load() {
   }
 }
 
+// 建流时服务端立刻回一帧快照，但那时 hub 通常还是空的：各节点的连接要再过
+// 几百毫秒才到。等到真有数据、或等满兜底时间再收起加载态，否则会先闪一下
+// 「当前没有活动连接」再出列表。
+let settleTimer
+function settle() {
+  clearTimeout(settleTimer)
+  loading.value = false
+}
+
 onMounted(async () => {
-  await load()
-  stopConnections = subscribeConnections(() => {})
+  try {
+    await loadNodes()
+  } finally {
+    stopConnections = subscribeConnections(() => { if (rows.value.length) settle() })
+    settleTimer = setTimeout(settle, 1500)
+  }
 })
-onBeforeUnmount(() => stopConnections?.())
+onBeforeUnmount(() => {
+  clearTimeout(settleTimer)
+  stopConnections?.()
+})
 </script>
 
 <template>
@@ -130,11 +151,11 @@ onBeforeUnmount(() => stopConnections?.())
           <span class="m-stat"><b>↑ {{ formatBytes(row.upload) }}</b><small>上传</small></span>
           <span class="m-stat"><b>{{ (row.network || '').toUpperCase() || '—' }}</b><small>网络</small></span>
         </div>
-        <div class="m-item__meta">{{ [row.user, row.source_ip || row.source, row.node_name].filter(Boolean).join(' · ') || '未知来源' }}</div>
+        <div class="m-item__meta">{{ [row.source_ip || row.source, row.source_location, row.node_name].filter(Boolean).join(' · ') || '未知来源' }}</div>
       </button>
     </article>
 
-    <div v-if="!filteredRows.length" class="m-empty">当前没有活动连接</div>
+    <div v-if="!filteredRows.length && !loading" class="m-empty">当前没有活动连接</div>
     <button v-if="filteredRows.length > visible" type="button" class="m-load-more" @click="visible += 30">
       加载更多（还有 {{ filteredRows.length - visible }} 条）
     </button>

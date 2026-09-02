@@ -44,6 +44,8 @@ const editSaving = ref(false)
 
 const actionsOpen = ref(false)
 const actionTarget = ref(null)
+// 架构 -> 官方最新 sing-box 版本号
+const singBoxLatest = ref({})
 
 let stopLive
 let stopConnections
@@ -71,6 +73,7 @@ async function load(silent = false) {
     ])
     pending.value = registrations.registrations || []
     metrics.value = Object.fromEntries((metricResult.nodes || []).map((entry) => [entry.node_id, entry.report]))
+    await loadSingBoxLatest()
   } finally {
     loading.value = false
     refreshing.value = false
@@ -126,6 +129,21 @@ function agentUpdateAvailable(node) {
   return Boolean(latest && node.agent_version && node.agent_version !== latest)
 }
 
+// 同一架构的服务器共用一个官方版本号，按架构查一次即可；已经拿到的不再重复请求。
+async function loadSingBoxLatest() {
+  const architectures = [...new Set(appState.nodes.map((node) => node.architecture).filter(Boolean))]
+  await Promise.all(architectures.map(async (architecture) => {
+    if (singBoxLatest.value[architecture]) return
+    const release = await api(`/sing-box/latest?architecture=${architecture}`).catch(() => null)
+    if (release?.version) singBoxLatest.value[architecture] = release.version
+  }))
+}
+
+function singBoxUpdateAvailable(node) {
+  const latest = singBoxLatest.value[node.architecture]
+  return Boolean(latest && node.sing_box_version && node.sing_box_version !== latest)
+}
+
 function openActions(node) {
   actionTarget.value = node
   actionsOpen.value = true
@@ -166,6 +184,7 @@ const actions = computed(() => {
   const list = []
   if (canWrite.value) list.push({ key: 'edit', label: '编辑', hint: '名称与客户端连接地址' })
   if (isAdmin.value && agentUpdateAvailable(node)) list.push({ key: 'upgrade', label: '升级 Agent', hint: `升级到 v${appState.systemUpdate?.latest_version}` })
+  if (isAdmin.value && singBoxUpdateAvailable(node)) list.push({ key: 'upgrade-sing-box', label: '升级 sing-box', hint: `升级到 ${singBoxLatest.value[node.architecture]}` })
   if (isAdmin.value) list.push({ key: 'revoke', label: '移除服务器', danger: true })
   return list
 })
@@ -174,6 +193,7 @@ function runAction(key) {
   const node = actionTarget.value
   if (key === 'edit') return openEdit(node)
   if (key === 'upgrade') return upgradeAgent(node)
+  if (key === 'upgrade-sing-box') return upgradeSingBox(node)
   if (key === 'revoke') return revoke(node)
 }
 
@@ -185,6 +205,16 @@ async function upgradeAgent(node) {
   )
   await post(`/nodes/${node.id}/agent/upgrade`, {})
   ElMessage.success('升级任务已下发，agent 更新完成后会自动重新上线')
+}
+
+async function upgradeSingBox(node) {
+  await ElMessageBox.confirm(
+    `将“${node.name}”的 sing-box 从 ${node.sing_box_version} 升级到 ${singBoxLatest.value[node.architecture]}？升级时 sing-box 会重启，正在通过该服务器的连接会短暂中断；新版本启动失败会自动回滚到当前版本。`,
+    '升级 sing-box',
+    { type: 'warning', confirmButtonText: '开始升级' },
+  )
+  await post(`/nodes/${node.id}/sing-box/install`, {})
+  ElMessage.success('升级任务已下发，完成后服务器会上报新的 sing-box 版本')
 }
 
 async function revoke(node) {

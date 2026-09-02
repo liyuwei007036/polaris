@@ -429,7 +429,7 @@ onMounted(load)
             <span class="m-pill m-pill--info">{{ row.location || '归属地未知' }}</span>
           </div>
           <div class="m-item__meta">{{ nodeName(row.node_id) }} · {{ row.rule_name || row.jail }}</div>
-          <div class="m-item__meta">封禁 {{ formatDateTime(row.banned_at, '未知') }} · 解封 {{ formatDateTime(row.unban_at, '不自动解封') }}</div>
+          <div class="m-item__meta">封禁 {{ formatDateTime(row.banned_at, '未知') }}</div>
         </div>
         <button
           v-if="isAdmin"
