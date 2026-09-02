@@ -86,7 +86,7 @@ Polaris 是自建代理服务的集中管理平台。一台控制机管理任意
 | 系统管理 | 域名解析 | Cloudflare DNS 记录与源证书 |
 | 系统管理 | 系统设置 | 管理账户、两步验证、控制面自更新 |
 
-网络防护页读写的是**主机自身的防火墙工具**（ufw / firewalld / iptables），平台不维护影子规则表；每次打开或刷新都实时读取，列出的是当前真实生效的规则。
+网络防护页列出的是主机当前真实生效的规则，每次打开或刷新都实时读取，平台不维护影子规则表。节点上只保留一套防火墙：agent 发现 ufw 或 firewalld 正在运行，会先把它们放行的端口翻译成 iptables 规则再停用该工具，之后所有增删都写 iptables 的 `INPUT` 链并持久化。
 
 管理账户分三种权限：管理员、运维人员、只读用户。
 
@@ -209,3 +209,19 @@ polaris combined serve --master-config /etc/polaris/master.yaml \
 ```
 
 故障排查见 [INSTALL.md 第 8 节](INSTALL.md)。
+
+---
+
+## 8. 许可证
+
+本项目以 Apache License 2.0 发布，全文见 [LICENSE](LICENSE)。
+
+```
+Copyright 2026 Polaris
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+```

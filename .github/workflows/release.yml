@@ -73,6 +73,7 @@ jobs:
           chmod 0755 "package/${package}/polaris"
 
           cp README.md "package/${package}/"
+          cp LICENSE "package/${package}/"
           cp install.sh "package/${package}/"
           cp -R deploy "package/${package}/"
           chmod 0755 "package/${package}/install.sh"

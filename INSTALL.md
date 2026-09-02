@@ -73,9 +73,11 @@ agent 必须以 `root` 长期运行：它代表 master 写入 `/etc/sing-box`、
 | sing-box 配置发布 | `sing-box`、`systemctl` |
 | sing-box 安装或升级 | `systemctl` + 可访问 GitHub |
 | 自动 TCP 端口分配 | 带 stream 模块的 Nginx（首次需要时由 agent 通过 `apt-get` / `dnf` / `yum` / `apk` 自动安装） |
-| nftables 防火墙 | `nft` |
+| 主机防火墙 | `iptables`、`ip6tables`；持久化用 `netfilter-persistent` 或 `iptables-save` |
 | Fail2Ban | `fail2ban-client`、`fail2ban.service` |
 | 实时连接 | 受管 sing-box 配置的 Clash API，监听 `127.0.0.1:9090` |
+
+节点上只保留一套防火墙。agent 发现 ufw 或 firewalld 正在运行时，会先把它们当前放行的端口翻译成 iptables 规则，再停用该工具并把规则写回 `INPUT` 链；翻译失败则整体中止，不会丢规则。此后所有增删都写 iptables。
 
 目标服务器**不需要** Go、Node.js、npm 或源码。编译只在 GitHub Actions 中进行。
 
@@ -511,7 +513,7 @@ sudo ls -la /var/lib/polaris-agent
 
 - 确认 systemd 单元使用 `User=root`。
 - 确认 `/var/lib/polaris-agent` 属 root 且权限 `0700`。
-- 按任务类型确认 `systemctl`、`nft`、`fail2ban-client` 可用；Nginx 由 agent 首次需要时自动安装，失败原因记录在任务结果中。
+- 按任务类型确认 `systemctl`、`iptables`、`fail2ban-client` 可用；Nginx 由 agent 首次需要时自动安装，失败原因记录在任务结果中。
 
 ### sing-box 没有自动安装
 
@@ -561,7 +563,7 @@ sudo rm -rf /var/lib/polaris-agent    # 删除后节点身份永久更换
 sudo userdel polaris
 ```
 
-删除 agent 数据目录会永久更换节点身份，需要重新注册并在控制台重新批准。sing-box、Nginx、nftables、Fail2Ban 及其配置不在本卸载步骤范围内。
+删除 agent 数据目录会永久更换节点身份，需要重新注册并在控制台重新批准。sing-box、Nginx、iptables 规则、Fail2Ban 及其配置不在本卸载步骤范围内。
 
 ---
 

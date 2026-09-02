@@ -31,11 +31,10 @@ function targetLabel(connection) {
   return address.port ? `${host}:${address.port}` : host
 }
 
-// Which service a connection came in on and which user opened it are two
-// halves of the same answer, so they are written together.
+// The user alias is what identifies a connection; the service it came in on
+// falls back into place only for a connection that has no alias to show.
 function entryLabel(connection) {
-  const listener = connection.listener_name || '—'
-  return connection.user ? `${listener}（${connection.user}）` : listener
+  return connection.user || connection.listener_name || '—'
 }
 
 const rows = computed(() => [...connectionSnapshots.value.values()].flatMap((result) => {
@@ -58,7 +57,7 @@ const filteredRows = computed(() => rows.value.filter((row) => {
   if (selectedOutbound.value && row.exit !== selectedOutbound.value) return false
   return includesText([
     row.node_name, row.source, row.source_ip, row.source_location, row.target,
-    row.entry, row.user, row.exit, row.network,
+    row.entry, row.user, row.listener_name, row.exit, row.network,
   ], keyword.value)
 }))
 
@@ -131,7 +130,7 @@ onBeforeUnmount(() => {
               <div class="subtle">{{ (row.network || '').toUpperCase() || '—' }}</div>
             </template>
           </el-table-column>
-          <el-table-column label="出口" min-width="100" show-overflow-tooltip>
+          <el-table-column label="出口" min-width="100" class-name="tag-cell" show-overflow-tooltip>
             <template #default="{ row }"><el-tag size="small" effect="plain">{{ row.exit }}</el-tag></template>
           </el-table-column>
           <el-table-column label="流量" width="118" show-overflow-tooltip>

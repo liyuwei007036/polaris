@@ -191,6 +191,10 @@ button, input, textarea, select { font: inherit; }
 .table-panel .el-table__inner-wrapper::before { display: none; }
 .table-panel .action-column .cell { display: flex; flex-wrap: nowrap; align-items: center; overflow: visible; white-space: nowrap; }
 .table-panel .action-column .el-button + .el-button { margin-left: 8px; }
+/* el-tag 是 inline-flex：单元格宽度还没算准时它会被压成一条竖线。让单元格
+   自己当 flex 容器，并且不许压缩标签，布局时序再怎么抖都撑得开。 */
+.table-panel .tag-cell .cell { display: flex; align-items: center; }
+.table-panel .tag-cell .el-tag { flex: none; }
 .search-toolbar {
   flex: none;
   display: flex;

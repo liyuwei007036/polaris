@@ -33,10 +33,9 @@ function targetLabel(connection) {
   return address.port ? `${host}:${address.port}` : host
 }
 
-// 连接进的是哪个入站服务、由哪个用户发起，是同一件事的两半，写在一起。
+// 认一条连接靠的是用户别名；没有别名可显示时，才退回它进来的那个入站服务。
 function entryLabel(connection) {
-  const listener = connection.listener_name || '—'
-  return connection.user ? `${listener}（${connection.user}）` : listener
+  return connection.user || connection.listener_name || '—'
 }
 
 const rows = computed(() => [...connectionSnapshots.value.values()].flatMap((result) => {
@@ -62,7 +61,7 @@ const filteredRows = computed(() => rows.value.filter((row) => {
   if (selectedOutbound.value && row.exit !== selectedOutbound.value) return false
   return includesText([
     row.node_name, row.source, row.source_ip, row.source_location, row.target,
-    row.entry, row.user, row.exit, row.network,
+    row.entry, row.user, row.listener_name, row.exit, row.network,
   ], keyword.value)
 }))
 const shown = computed(() => filteredRows.value.slice(0, visible.value))
