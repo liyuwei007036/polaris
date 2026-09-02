@@ -136,14 +136,16 @@ function renderCharts() {
       ...chartTooltip,
       trigger: 'axis',
       confine: true,
-      formatter: (items) => [items[0].axisValue, ...items.map((item) => `${item.marker}${item.seriesName} ${formatBytes(item.value, '/s')}`)].join('<br>'),
+      formatter: (items) => [timeLabel(items[0].axisValue), ...items.map((item) => `${item.marker}${item.seriesName} ${formatBytes(item.value[1], '/s')}`)].join('<br>'),
     },
     legend: { ...chartLegend, data: ['下载', '上传'] },
-    xAxis: { ...axis, type: 'category', data: trafficHistory.value.map((item) => timeLabel(item.time)), boundaryGap: false, axisLabel: { ...axis.axisLabel, interval: 'auto', formatter: (value) => value.slice(3) } },
+    // 用时间轴而不是类目轴：上报间隔本来就不均匀，等距排列会把二十秒的空档
+    // 画得和一秒一样宽，而且每个采样点都出一个刻度，同一秒会连着出现两次。
+    xAxis: { ...axis, type: 'time', axisLabel: { ...axis.axisLabel, formatter: (value) => timeLabel(value).slice(3) } },
     yAxis: { ...axis, type: 'value', minInterval: 1, axisLabel: { ...axis.axisLabel, formatter: compactRate } },
     series: [
-      { name: '下载', type: 'line', data: trafficHistory.value.map((item) => item.download), showSymbol: false, smooth: 0.25, lineStyle: { width: 2, color: '#38bdf8' }, areaStyle: { color: 'rgba(56,189,248,.14)' } },
-      { name: '上传', type: 'line', data: trafficHistory.value.map((item) => item.upload), showSymbol: false, smooth: 0.25, lineStyle: { width: 2, color: '#34d399' }, areaStyle: { color: 'rgba(52,211,153,.12)' } },
+      { name: '下载', type: 'line', data: trafficHistory.value.map((item) => [item.time, item.download]), showSymbol: false, smooth: 0.25, lineStyle: { width: 2, color: '#38bdf8' }, areaStyle: { color: 'rgba(56,189,248,.14)' } },
+      { name: '上传', type: 'line', data: trafficHistory.value.map((item) => [item.time, item.upload]), showSymbol: false, smooth: 0.25, lineStyle: { width: 2, color: '#34d399' }, areaStyle: { color: 'rgba(52,211,153,.12)' } },
     ],
   }, true)
   const totals = cumulative.value.download + cumulative.value.upload
@@ -160,10 +162,11 @@ function renderCharts() {
   }, true)
   charts[2].setOption({
     ...chartBase('活动连接'),
+    tooltip: { ...chartTooltip, trigger: 'axis', confine: true, formatter: (items) => `${timeLabel(items[0].axisValue)}<br>${items[0].marker}${items[0].seriesName} ${items[0].value[1]}` },
     legend: { ...chartLegend, data: ['连接数'] },
-    xAxis: { ...axis, type: 'category', data: connectionHistory.value.map((item) => timeLabel(item.time)), boundaryGap: false, axisLabel: { ...axis.axisLabel, formatter: (value) => value.slice(3) } },
+    xAxis: { ...axis, type: 'time', axisLabel: { ...axis.axisLabel, formatter: (value) => timeLabel(value).slice(3) } },
     yAxis: { ...axis, type: 'value', minInterval: 1 },
-    series: [{ name: '连接数', type: 'line', data: connectionHistory.value.map((item) => item.count), showSymbol: false, smooth: 0.25, lineStyle: { width: 2, color: '#a78bfa' }, areaStyle: { color: 'rgba(167,139,250,.14)' } }],
+    series: [{ name: '连接数', type: 'line', data: connectionHistory.value.map((item) => [item.time, item.count]), showSymbol: false, smooth: 0.25, lineStyle: { width: 2, color: '#a78bfa' }, areaStyle: { color: 'rgba(167,139,250,.14)' } }],
   }, true)
   const protocolCounts = Object.entries(connections.value.reduce((result, row) => {
     const network = String(row.network || '').toLowerCase()
@@ -198,10 +201,25 @@ function renderCharts() {
 
 // 采样跟着各节点的上报走，不另起定时器：比上报还快地取样只会把
 // 上一个读数重复画一遍，看着像测过其实没有。
+// 每台服务器按各自的节拍上报，一轮下来这里会被调用多次——每次带的都是同一份
+// 汇总值，只差一瞬。逐次追加会让好几个点挤在同一个时刻上，横轴因此出现重复
+// 刻度，折线也被画成台阶。落在同一个窗口内的上报合并成一个点，并保留最新值。
+const sampleWindow = 1000
 function appendSamples() {
   const now = Date.now()
-  trafficHistory.value = [...trafficHistory.value, { time: now, ...liveRates.value }].slice(-historyLength)
-  connectionHistory.value = [...connectionHistory.value, { time: now, count: activeConnections.value }].slice(-historyLength)
+  const traffic = [...trafficHistory.value]
+  const counts = [...connectionHistory.value]
+  const sample = { time: now, ...liveRates.value }
+  const count = { time: now, count: activeConnections.value }
+  if (traffic.length && now - traffic[traffic.length - 1].time < sampleWindow) {
+    traffic[traffic.length - 1] = sample
+    counts[counts.length - 1] = count
+  } else {
+    traffic.push(sample)
+    counts.push(count)
+  }
+  trafficHistory.value = traffic.slice(-historyLength)
+  connectionHistory.value = counts.slice(-historyLength)
   recordNodeActivity(now)
   scheduleRender()
 }

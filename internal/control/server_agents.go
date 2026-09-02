@@ -319,6 +319,9 @@ func (s *Server) handleAgentMessage(ctx context.Context, node Node, msgType byte
 			return false
 		}
 		connections := s.convertConnections(ctx, node.ID, push.Connections)
+		// Rates are measured here, against the node's previous push, because
+		// sing-box reports each connection's totals and nothing else.
+		s.connRates.measure(node.ID, connections, time.Now())
 		connJSON, err := json.Marshal(connections)
 		if err != nil {
 			return false
@@ -504,6 +507,14 @@ type storedConnection struct {
 	// OutboundName is the egress the operator configured, resolved from the
 	// sing-box outbound tag; "直连" for the built-in direct outbound.
 	OutboundName string `json:"outbound_name,omitempty"`
+	// HasRates says whether the rates below were measured. It is false for a
+	// connection the master has only seen once, whose totals say nothing about
+	// how fast it is moving right now.
+	HasRates bool `json:"has_rates,omitempty"`
+	// UploadRate and DownloadRate are bytes per second across the interval
+	// between the two most recent pushes from this connection's node.
+	UploadRate   float64 `json:"upload_rate,omitempty"`
+	DownloadRate float64 `json:"download_rate,omitempty"`
 }
 
 

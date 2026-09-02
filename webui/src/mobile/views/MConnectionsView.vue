@@ -65,6 +65,14 @@ const filteredRows = computed(() => rows.value.filter((row) => {
   ], keyword.value)
 }))
 const shown = computed(() => filteredRows.value.slice(0, visible.value))
+// 和「运行概览」的实时流量同量纲，可以直接对读；合计始终按筛选后的全部连接算，
+// 不受"加载更多"只显示前几十条的影响。
+const liveTotals = computed(() => filteredRows.value.reduce(
+  (total, row) => row.has_rates
+    ? { download: total.download + Number(row.download_rate || 0), upload: total.upload + Number(row.upload_rate || 0) }
+    : total,
+  { download: 0, upload: 0 },
+))
 
 watch([keyword, selectedNode, selectedOutbound], () => { visible.value = 30 })
 
@@ -81,7 +89,8 @@ const details = computed(() => {
     { label: '出口', value: row.exit },
     { label: '来源', value: [row.source_ip || row.source, row.source_location].filter(Boolean).join(' · ') || '未知', mono: true },
     { label: '网络', value: (row.network || '').toUpperCase() || '—' },
-    { label: '流量', value: `↓ ${formatBytes(row.download)} · ↑ ${formatBytes(row.upload)}` },
+    { label: '实时速率', value: row.has_rates ? `↓ ${formatBytes(row.download_rate, '/s')} · ↑ ${formatBytes(row.upload_rate, '/s')}` : '等待上报' },
+    { label: '累计流量', value: `↓ ${formatBytes(row.download)} · ↑ ${formatBytes(row.upload)}` },
     { label: '开始于', value: formatDateTime(row.started_at) },
   ]
 })
@@ -136,7 +145,7 @@ onBeforeUnmount(() => {
         <MPicker v-model="selectedOutbound" chip :options="outboundOptions" title="按出口筛选" placeholder="全部出口" />
       </div>
     </div>
-    <div class="m-count">{{ filteredRows.length }} 条 · 采集于 {{ formatDateTime(collectedAt, '暂无数据') }}</div>
+    <div class="m-count">{{ filteredRows.length }} 条 · 合计 ↓ {{ formatBytes(liveTotals.download, '/s') }} ↑ {{ formatBytes(liveTotals.upload, '/s') }} · 采集于 {{ formatDateTime(collectedAt, '暂无数据') }}</div>
 
     <article v-for="row in shown" :key="`${row.node_id}/${row.id}`" class="m-item">
       <button type="button" class="m-item__hit" @click="openDetail(row)">
@@ -146,8 +155,8 @@ onBeforeUnmount(() => {
           <i class="m-item__chevron" aria-hidden="true">›</i>
         </div>
         <div class="m-item__stats">
-          <span class="m-stat"><b>↓ {{ formatBytes(row.download) }}</b><small>下载</small></span>
-          <span class="m-stat"><b>↑ {{ formatBytes(row.upload) }}</b><small>上传</small></span>
+          <span class="m-stat"><b>↓ {{ row.has_rates ? formatBytes(row.download_rate, '/s') : '—' }}</b><small>实时下行</small></span>
+          <span class="m-stat"><b>↑ {{ row.has_rates ? formatBytes(row.upload_rate, '/s') : '—' }}</b><small>实时上行</small></span>
           <span class="m-stat"><b>{{ (row.network || '').toUpperCase() || '—' }}</b><small>网络</small></span>
         </div>
         <div class="m-item__meta">{{ [row.source_ip || row.source, row.source_location, row.node_name].filter(Boolean).join(' · ') || '未知来源' }}</div>

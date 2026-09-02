@@ -118,14 +118,18 @@ function renderCharts() {
     tooltip: {
       ...chartTooltip,
       trigger: 'axis',
-      formatter: (items) => [items[0].axisValue, ...items.map((item) => `${item.marker}${item.seriesName} ${formatBytes(item.value, '/s')}`)].join('<br>'),
+      formatter: (items) => [timeLabel(items[0].axisValue), ...items.map((item) => `${item.marker}${item.seriesName} ${formatBytes(item.value[1], '/s')}`)].join('<br>'),
     },
     legend: { ...chartLegend, data: ['下载', '上传'] },
-    xAxis: { ...axis, type: 'category', data: trafficHistory.value.map((item) => timeLabel(item.time)), boundaryGap: false },
+    // A time axis rather than a category one. Samples do not arrive on a fixed
+    // beat, and spacing them evenly drew a twenty-second gap exactly as wide as
+    // a one-second one — and printed a label per sample, so the same second
+    // appeared twice in a row. Points now sit where their clock reading says.
+    xAxis: { ...axis, type: 'time', axisLabel: { ...axis.axisLabel, formatter: timeLabel } },
     yAxis: { ...axis, type: 'value', minInterval: 1, axisLabel: { ...axis.axisLabel, formatter: (value) => formatBytes(value, '/s') } },
     series: [
-      { name: '下载', type: 'line', data: trafficHistory.value.map((item) => item.download), showSymbol: false, smooth: 0.25, lineStyle: { width: 2, color: '#38bdf8' }, areaStyle: { color: 'rgba(56,189,248,.14)' } },
-      { name: '上传', type: 'line', data: trafficHistory.value.map((item) => item.upload), showSymbol: false, smooth: 0.25, lineStyle: { width: 2, color: '#34d399' }, areaStyle: { color: 'rgba(52,211,153,.12)' } },
+      { name: '下载', type: 'line', data: trafficHistory.value.map((item) => [item.time, item.download]), showSymbol: false, smooth: 0.25, lineStyle: { width: 2, color: '#38bdf8' }, areaStyle: { color: 'rgba(56,189,248,.14)' } },
+      { name: '上传', type: 'line', data: trafficHistory.value.map((item) => [item.time, item.upload]), showSymbol: false, smooth: 0.25, lineStyle: { width: 2, color: '#34d399' }, areaStyle: { color: 'rgba(52,211,153,.12)' } },
     ],
   }, true)
   const totals = cumulative.value.download + cumulative.value.upload
@@ -142,10 +146,11 @@ function renderCharts() {
   }, true)
   charts[2].setOption({
     ...chartBase('活动连接'),
+    tooltip: { ...chartTooltip, trigger: 'axis', formatter: (items) => `${timeLabel(items[0].axisValue)}<br>${items[0].marker}${items[0].seriesName} ${items[0].value[1]}` },
     legend: { ...chartLegend, data: ['连接数'] },
-    xAxis: { ...axis, type: 'category', data: connectionHistory.value.map((item) => timeLabel(item.time)), boundaryGap: false },
+    xAxis: { ...axis, type: 'time', axisLabel: { ...axis.axisLabel, formatter: timeLabel } },
     yAxis: { ...axis, type: 'value', minInterval: 1 },
-    series: [{ name: '连接数', type: 'line', data: connectionHistory.value.map((item) => item.count), showSymbol: false, smooth: 0.25, lineStyle: { width: 2, color: '#a78bfa' }, areaStyle: { color: 'rgba(167,139,250,.14)' } }],
+    series: [{ name: '连接数', type: 'line', data: connectionHistory.value.map((item) => [item.time, item.count]), showSymbol: false, smooth: 0.25, lineStyle: { width: 2, color: '#a78bfa' }, areaStyle: { color: 'rgba(167,139,250,.14)' } }],
   }, true)
   // sing-box reports the transport protocol a connection uses, so this counts
   // TCP against UDP rather than inventing categories of its own.
@@ -182,10 +187,28 @@ function renderCharts() {
 // The charts advance when the agents actually report, not on a timer of their
 // own: sampling faster than the push interval just repeated the last value
 // and made the line look like data that was never measured.
+// Every node reports on its own clock, so one round of reports calls this once
+// per node — each time with the same aggregate, a moment apart. Appending all
+// of them left several points sharing one timestamp, which is what put
+// repeated labels on the axis and drew the line as a staircase. Reports that
+// land inside the same window collapse onto one point, kept at the freshest
+// aggregate.
+const sampleWindow = 1000
 function appendSamples() {
   const now = Date.now()
-  trafficHistory.value = [...trafficHistory.value, { time: now, ...liveRates.value }].slice(-30)
-  connectionHistory.value = [...connectionHistory.value, { time: now, count: activeConnections.value }].slice(-30)
+  const traffic = [...trafficHistory.value]
+  const counts = [...connectionHistory.value]
+  const sample = { time: now, ...liveRates.value }
+  const count = { time: now, count: activeConnections.value }
+  if (traffic.length && now - traffic[traffic.length - 1].time < sampleWindow) {
+    traffic[traffic.length - 1] = sample
+    counts[counts.length - 1] = count
+  } else {
+    traffic.push(sample)
+    counts.push(count)
+  }
+  trafficHistory.value = traffic.slice(-30)
+  connectionHistory.value = counts.slice(-30)
   recordNodeActivity(now)
   scheduleRender()
 }

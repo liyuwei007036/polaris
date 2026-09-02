@@ -60,6 +60,15 @@ const filteredRows = computed(() => rows.value.filter((row) => {
     row.entry, row.user, row.listener_name, row.exit, row.network,
   ], keyword.value)
 }))
+// 这些速率和「运行概览」的实时流量是同一个量纲，可以直接对读。剩下的差额只
+// 来自采样区间内已经关闭的连接：它们的字节数计进了节点计数器，人却已经不在
+// 这张表里了。累计流量那一列则是每条连接从建立至今的总量，不该拿来和速率比。
+const liveTotals = computed(() => filteredRows.value.reduce(
+  (total, row) => row.has_rates
+    ? { download: total.download + Number(row.download_rate || 0), upload: total.upload + Number(row.upload_rate || 0) }
+    : total,
+  { download: 0, upload: 0 },
+))
 
 async function load() {
   loading.value = true
@@ -110,6 +119,7 @@ onBeforeUnmount(() => {
           <el-option v-for="exit in outboundOptions" :key="exit" :label="exit" :value="exit" />
         </el-select>
         <span class="toolbar__spacer" />
+        <span class="subtle mono">合计 ↓ {{ formatBytes(liveTotals.download, '/s') }} · ↑ {{ formatBytes(liveTotals.upload, '/s') }}</span>
         <span class="subtle">{{ filteredRows.length }} 条 · {{ formatDateTime(collectedAt, '暂无数据') }}</span>
       </div>
       <div class="table-panel">
@@ -133,13 +143,22 @@ onBeforeUnmount(() => {
           <el-table-column label="出口" min-width="100" class-name="tag-cell" show-overflow-tooltip>
             <template #default="{ row }"><el-tag size="small" effect="plain">{{ row.exit }}</el-tag></template>
           </el-table-column>
-          <el-table-column label="流量" width="118" show-overflow-tooltip>
+          <el-table-column label="实时速率" width="118" show-overflow-tooltip>
+            <template #default="{ row }">
+              <template v-if="row.has_rates">
+                <div class="mono">↓ {{ formatBytes(row.download_rate, '/s') }}</div>
+                <div class="mono subtle">↑ {{ formatBytes(row.upload_rate, '/s') }}</div>
+              </template>
+              <span v-else class="subtle">等待上报</span>
+            </template>
+          </el-table-column>
+          <el-table-column label="累计流量" width="112" show-overflow-tooltip>
             <template #default="{ row }">
               <div class="mono">↓ {{ formatBytes(row.download) }}</div>
               <div class="mono subtle">↑ {{ formatBytes(row.upload) }}</div>
             </template>
           </el-table-column>
-          <el-table-column label="时间" width="180" show-overflow-tooltip><template #default="{ row }">{{ formatDateTime(row.started_at) }}</template></el-table-column>
+          <el-table-column label="时间" width="168" show-overflow-tooltip><template #default="{ row }">{{ formatDateTime(row.started_at) }}</template></el-table-column>
         </PagedTable>
       </div>
     </main>

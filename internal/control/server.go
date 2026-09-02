@@ -55,6 +55,7 @@ type Server struct {
 	selfUpdateApplyFn        func(context.Context, selfupdate.Manifest, string, func(context.Context, string) error) error
 	selfUpdateRestartFn      func() error
 	connHub                *connectionsHub
+	connRates              *connectionRates
 	liveHub                *liveHub
 	ipLocator              *ipLocator
 	listenerNameMu         sync.Mutex
@@ -105,7 +106,7 @@ func NewServer(store *Store, secureCookies bool) (*Server, error) {
 		controls: make(map[string]*controlSession), autoInstallChecked: make(map[string]bool),
 		taskWaiters:            make(map[string]chan wire.TaskResult),
 		latestSingBoxReleaseFn: LatestOfficialSingBoxRelease,
-		connHub:                newConnectionsHub(), liveHub: newLiveHub(), ipLocator: ipLocator,
+		connHub:                newConnectionsHub(), connRates: newConnectionRates(), liveHub: newLiveHub(), ipLocator: ipLocator,
 		connectionsInterval:    DefaultConnectionsInterval,
 		subscriptionLimiter:    newRateLimiter(subscriptionRateWindow, subscriptionRateLimit, subscriptionRateMaxKeys),
 		now:                    time.Now,

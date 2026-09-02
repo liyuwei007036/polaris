@@ -435,7 +435,7 @@ onMounted(() => { load(); loadAccess() })
               <el-select v-model="selectedStatus" clearable placeholder="全部状态" style="width: 140px"><el-option label="启用" value="true" /><el-option label="停用" value="false" /></el-select>
             </div>
         <PagedTable :rows="filteredConfigs" empty-text="还没有客户端配置">
-          <el-table-column label="配置名称" min-width="210">
+          <el-table-column label="配置名称" min-width="165">
             <template #default="{ row }">
               {{ row.name }}
               <el-tag v-if="row.access_user_agent" size="small" type="success" effect="plain">密钥</el-tag>
@@ -445,7 +445,7 @@ onMounted(() => { load(); loadAccess() })
               </el-tag>
             </template>
           </el-table-column>
-          <el-table-column label="引用代理分组" min-width="280">
+          <el-table-column label="引用代理分组" min-width="195">
             <template #default="{ row }">
               <el-tag v-for="id in (row.proxy_group_ids || []).slice(0, groupPreviewCount)" :key="id" type="info" class="group-tag">
                 <span v-for="flag in (groupSummaries[id]?.flags || []).slice(0, 3)" :key="flag" class="region-flag">{{ flag }}</span>
@@ -459,15 +459,15 @@ onMounted(() => { load(); loadAccess() })
               </el-tooltip>
             </template>
           </el-table-column>
-          <el-table-column label="分流规则" min-width="205" show-overflow-tooltip>
+          <el-table-column label="分流规则" min-width="150" show-overflow-tooltip>
             <template #default="{ row }">{{ row.rule_mode === 'text' ? '高级文本' : '表格配置' }} · {{ row.rules?.length || 0 }} 条 · {{ row.rule_providers?.length || 0 }} 个供应商</template>
           </el-table-column>
-          <el-table-column label="状态" width="110">
+          <el-table-column label="状态" width="82">
             <template #default="{ row }">
               <el-switch :model-value="row.enabled" inline-prompt active-text="启用" inactive-text="停用" :loading="changingState === row.id" :disabled="changingState === row.id || !canWrite" @change="setEnabled(row, $event)" />
             </template>
           </el-table-column>
-          <el-table-column label="操作" width="490" fixed="right" class-name="action-column">
+          <el-table-column label="操作" width="538" fixed="right" class-name="action-column">
             <template #default="{ row }">
               <el-button link :icon="CopyDocument" @click="copySubscription(row)">复制</el-button>
               <el-button link :icon="Grid" @click="showQrCode(row)">二维码</el-button>

@@ -13,6 +13,98 @@ import (
 // for several missed pushes at the default five-second cadence.
 const connectionsStaleAfter = 30 * time.Second
 
+// connectionRates turns the cumulative byte counts sing-box reports per
+// connection into a rate. sing-box only ever reports totals for a connection,
+// so the master — the first place that sees the same connection in two
+// consecutive pushes — is where a per-connection rate can be measured at all.
+// It exists so the connection list is denominated the same way the overview's
+// live traffic is: one is a rate per connection, the other the node counters,
+// and an operator can now read one against the other.
+type connectionRates struct {
+	mu       sync.Mutex
+	previous map[string]connectionRateSample
+}
+
+// connectionRateSample holds one node's byte counts as of the push that
+// carried them. Each push replaces the node's previous sample wholesale, so
+// closed connections drop out on their own and the map never grows past the
+// node's open connection list.
+type connectionRateSample struct {
+	at    time.Time
+	bytes map[string]connectionBytes
+}
+
+type connectionBytes struct {
+	upload   int64
+	download int64
+}
+
+func newConnectionRates() *connectionRates {
+	return &connectionRates{previous: make(map[string]connectionRateSample)}
+}
+
+// measure fills in each connection's rate from the previous push for the same
+// node, then records the current counts for the next one. Rates are always
+// divided by the interval between the two pushes rather than by how long a
+// connection has been open, which is what lets the column be added up and
+// compared against the node counters the overview charts.
+func (r *connectionRates) measure(nodeID string, connections []storedConnection, now time.Time) {
+	current := connectionRateSample{at: now, bytes: make(map[string]connectionBytes, len(connections))}
+	for _, connection := range connections {
+		if connection.ID == "" {
+			continue
+		}
+		current.bytes[connection.ID] = connectionBytes{upload: connection.Upload, download: connection.Download}
+	}
+	r.mu.Lock()
+	previous, seen := r.previous[nodeID]
+	r.previous[nodeID] = current
+	r.mu.Unlock()
+	// A sample older than the staleness bound spans a gap the node was offline
+	// for; the counters either restarted or kept running unobserved, and
+	// spreading the difference over that gap would describe neither.
+	if !seen || !now.After(previous.at) || now.Sub(previous.at) > connectionsStaleAfter {
+		return
+	}
+	seconds := now.Sub(previous.at).Seconds()
+	for index := range connections {
+		connection := &connections[index]
+		if connection.ID == "" {
+			continue
+		}
+		was, ok := previous.bytes[connection.ID]
+		switch {
+		case ok && connection.Upload >= was.upload && connection.Download >= was.download:
+			connection.HasRates = true
+			connection.UploadRate = float64(connection.Upload-was.upload) / seconds
+			connection.DownloadRate = float64(connection.Download-was.download) / seconds
+		case !ok && openedAfter(connection.StartedAt, previous.at):
+			// The master is seeing this connection for the first time, but
+			// sing-box says it opened inside this interval, so every byte on
+			// it moved inside it. Leaving these at nothing is what would make
+			// the column add up to far less than the node counters whenever
+			// traffic is made of short-lived connections.
+			connection.HasRates = true
+			connection.UploadRate = float64(connection.Upload) / seconds
+			connection.DownloadRate = float64(connection.Download) / seconds
+		}
+	}
+}
+
+// openedAfter reports whether sing-box says the connection started after the
+// given moment. An unparseable or absent timestamp reports false, so a
+// connection is never credited with traffic that may predate the interval.
+func openedAfter(startedAt string, reference time.Time) bool {
+	if startedAt == "" {
+		return false
+	}
+	parsed, err := time.Parse(time.RFC3339, startedAt)
+	if err != nil {
+		return false
+	}
+	return parsed.After(reference)
+}
+
 // nodeConnectionsSnapshot is the latest real-time report an agent has pushed
 // for one node: its open connections plus the host traffic counters and the
 // rate the agent measured between its own two most recent samples. It lives
