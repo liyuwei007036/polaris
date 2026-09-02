@@ -423,9 +423,11 @@ func encodeMihomoClientConfigV3(config MihomoClientConfig) (string, string, erro
 func scanMihomoClientConfig(scanner interface{ Scan(...any) error }, masterKey []byte) (MihomoClientConfig, error) {
 	var config MihomoClientConfig
 	var groupsJSON, rulesJSON, dnsJSON string
-	var encryptedToken []byte
+	var encryptedToken, encryptedSecret []byte
+	var windowStart, windowEnd, expiresAt sql.NullInt64
 	var created, updated int64
-	if err := scanner.Scan(&config.ID, &config.Name, &groupsJSON, &config.RuleMode, &rulesJSON, &dnsJSON, &encryptedToken, &config.Enabled, &created, &updated); err != nil {
+	if err := scanner.Scan(&config.ID, &config.Name, &groupsJSON, &config.RuleMode, &rulesJSON, &dnsJSON, &encryptedToken, &encryptedSecret,
+		&windowStart, &windowEnd, &expiresAt, &config.Enabled, &created, &updated); err != nil {
 		return MihomoClientConfig{}, err
 	}
 	if err := json.Unmarshal([]byte(groupsJSON), &config.ProxyGroupIDs); err != nil {
@@ -450,7 +452,86 @@ func scanMihomoClientConfig(scanner interface{ Scan(...any) error }, masterKey [
 		return MihomoClientConfig{}, fmt.Errorf("decrypt Mihomo subscription token: %w", err)
 	}
 	config.SubscriptionPath = "/api/v1/mihomo/subscriptions/" + string(token)
+	if len(encryptedSecret) != 0 {
+		secret, err := security.Decrypt(masterKey, encryptedSecret)
+		if err != nil {
+			return MihomoClientConfig{}, fmt.Errorf("decrypt Mihomo access secret: %w", err)
+		}
+		config.AccessSecret = string(secret)
+		config.AccessUserAgent = subscriptionUserAgent(config.AccessSecret)
+	}
+	// Only a complete window means anything, so a half-written row reads back
+	// as no window at all rather than as a bound that silently applies.
+	if windowStart.Valid && windowEnd.Valid {
+		config.AccessWindowStart = formatAccessWindowBound(int(windowStart.Int64))
+		config.AccessWindowEnd = formatAccessWindowBound(int(windowEnd.Int64))
+	}
+	if expiresAt.Valid {
+		config.AccessExpiresAt = formatAccessExpiry(expiresAt.Int64)
+	}
 	return config, nil
+}
+
+// mihomoAccessColumns is the stored form of the three access fences.
+type mihomoAccessColumns struct {
+	secretHash      []byte
+	secretEncrypted []byte
+	windowStart     any
+	windowEnd       any
+	expiresAt       any
+}
+
+// encodeMihomoAccess validates the operator-facing access fields and returns
+// the values the row stores, rewriting config with the normalized text so the
+// response shows exactly what was kept.
+func (s *Store) encodeMihomoAccess(config *MihomoClientConfig) (mihomoAccessColumns, error) {
+	secret, err := normalizeAccessSecret(config.AccessSecret)
+	if err != nil {
+		return mihomoAccessColumns{}, err
+	}
+	config.AccessSecret, config.AccessUserAgent = secret, subscriptionUserAgent(secret)
+
+	start, err := parseAccessWindowBound(config.AccessWindowStart)
+	if err != nil {
+		return mihomoAccessColumns{}, err
+	}
+	end, err := parseAccessWindowBound(config.AccessWindowEnd)
+	if err != nil {
+		return mihomoAccessColumns{}, err
+	}
+	if (start == unsetAccessWindowBound) != (end == unsetAccessWindowBound) {
+		return mihomoAccessColumns{}, userErrorf("访问时间段要么两端都填，要么都留空")
+	}
+	config.AccessWindowStart, config.AccessWindowEnd = formatAccessWindowBound(start), formatAccessWindowBound(end)
+
+	expires, err := parseAccessExpiry(config.AccessExpiresAt)
+	if err != nil {
+		return mihomoAccessColumns{}, err
+	}
+	config.AccessExpiresAt = formatAccessExpiry(expires)
+
+	columns := mihomoAccessColumns{
+		windowStart: nullableAccessValue(int64(start), int64(unsetAccessWindowBound)),
+		windowEnd:   nullableAccessValue(int64(end), int64(unsetAccessWindowBound)),
+		expiresAt:   nullableAccessValue(expires, 0),
+	}
+	if secret != "" {
+		encrypted, err := security.Encrypt(s.masterKey, []byte(secret))
+		if err != nil {
+			return mihomoAccessColumns{}, err
+		}
+		columns.secretHash, columns.secretEncrypted = security.TokenHash(secret), encrypted
+	}
+	return columns, nil
+}
+
+// nullableAccessValue stores NULL for the sentinel that means "not set", so an
+// unset fence is absent from the row rather than encoded as a magic number.
+func nullableAccessValue(value, unset int64) any {
+	if value == unset {
+		return nil
+	}
+	return value
 }
 
 func (s *Store) CreateMihomoClientConfig(ctx context.Context, config MihomoClientConfig) (MihomoClientConfig, error) {
@@ -477,11 +558,17 @@ func (s *Store) CreateMihomoClientConfig(ctx context.Context, config MihomoClien
 	if err != nil {
 		return MihomoClientConfig{}, err
 	}
+	access, err := s.encodeMihomoAccess(&config)
+	if err != nil {
+		return MihomoClientConfig{}, err
+	}
 	now := nowUnix()
 	config.Enabled = true
 	_, err = s.db.ExecContext(ctx, `INSERT INTO mihomo_client_configs_v3
-		(id, name, groups_json, rule_mode, rules_json, dns_json, subscription_token_hash, subscription_token_encrypted, enabled, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, config.ID, config.Name, groupsJSON, config.RuleMode, rulesJSON, dnsJSON, security.TokenHash(token), encrypted, config.Enabled, now, now)
+		(id, name, groups_json, rule_mode, rules_json, dns_json, subscription_token_hash, subscription_token_encrypted,
+		access_secret_hash, access_secret_encrypted, access_window_start, access_window_end, access_expires_at, enabled, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, config.ID, config.Name, groupsJSON, config.RuleMode, rulesJSON, dnsJSON, security.TokenHash(token), encrypted,
+		access.secretHash, access.secretEncrypted, access.windowStart, access.windowEnd, access.expiresAt, config.Enabled, now, now)
 	if err != nil {
 		if strings.Contains(strings.ToLower(err.Error()), "unique") {
 			return MihomoClientConfig{}, ErrConflict
@@ -533,8 +620,14 @@ func (s *Store) UpdateMihomoClientConfig(ctx context.Context, config MihomoClien
 	if err != nil {
 		return MihomoClientConfig{}, err
 	}
-	result, err := s.db.ExecContext(ctx, `UPDATE mihomo_client_configs_v3 SET name = ?, groups_json = ?, rule_mode = ?, rules_json = ?, dns_json = ?, updated_at = ? WHERE id = ?`,
-		config.Name, groupsJSON, config.RuleMode, rulesJSON, dnsJSON, nowUnix(), config.ID)
+	access, err := s.encodeMihomoAccess(&config)
+	if err != nil {
+		return MihomoClientConfig{}, err
+	}
+	result, err := s.db.ExecContext(ctx, `UPDATE mihomo_client_configs_v3 SET name = ?, groups_json = ?, rule_mode = ?, rules_json = ?, dns_json = ?,
+		access_secret_hash = ?, access_secret_encrypted = ?, access_window_start = ?, access_window_end = ?, access_expires_at = ?, updated_at = ? WHERE id = ?`,
+		config.Name, groupsJSON, config.RuleMode, rulesJSON, dnsJSON,
+		access.secretHash, access.secretEncrypted, access.windowStart, access.windowEnd, access.expiresAt, nowUnix(), config.ID)
 	if err != nil {
 		if strings.Contains(strings.ToLower(err.Error()), "unique") {
 			return MihomoClientConfig{}, ErrConflict
@@ -548,7 +641,8 @@ func (s *Store) UpdateMihomoClientConfig(ctx context.Context, config MihomoClien
 }
 
 func (s *Store) mihomoClientConfigByID(ctx context.Context, id string) (MihomoClientConfig, error) {
-	row := s.db.QueryRowContext(ctx, `SELECT id, name, groups_json, rule_mode, rules_json, dns_json, subscription_token_encrypted, enabled, created_at, updated_at FROM mihomo_client_configs_v3 WHERE id = ?`, id)
+	row := s.db.QueryRowContext(ctx, `SELECT id, name, groups_json, rule_mode, rules_json, dns_json, subscription_token_encrypted, access_secret_encrypted,
+		access_window_start, access_window_end, access_expires_at, enabled, created_at, updated_at FROM mihomo_client_configs_v3 WHERE id = ?`, id)
 	config, err := scanMihomoClientConfig(row, s.masterKey)
 	if errors.Is(err, sql.ErrNoRows) {
 		return MihomoClientConfig{}, ErrNotFound
@@ -576,7 +670,8 @@ func (s *Store) describeMihomoRuleProviders(ctx context.Context, ids []string) [
 }
 
 func (s *Store) ListMihomoClientConfigs(ctx context.Context) ([]MihomoClientConfig, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT id, name, groups_json, rule_mode, rules_json, dns_json, subscription_token_encrypted, enabled, created_at, updated_at FROM mihomo_client_configs_v3 ORDER BY name, id`)
+	rows, err := s.db.QueryContext(ctx, `SELECT id, name, groups_json, rule_mode, rules_json, dns_json, subscription_token_encrypted, access_secret_encrypted,
+		access_window_start, access_window_end, access_expires_at, enabled, created_at, updated_at FROM mihomo_client_configs_v3 ORDER BY name, id`)
 	if err != nil {
 		return nil, err
 	}
@@ -635,13 +730,27 @@ func (s *Store) RotateMihomoClientSubscription(ctx context.Context, configID str
 	return "/api/v1/mihomo/subscriptions/" + token, nil
 }
 
-func (s *Store) MihomoClientConfigIDByToken(ctx context.Context, token string) (string, error) {
-	var id string
-	err := s.db.QueryRowContext(ctx, `SELECT id FROM mihomo_client_configs_v3 WHERE subscription_token_hash = ? AND enabled = 1`, security.TokenHash(token)).Scan(&id)
+// mihomoSubscriptionAccessByToken resolves a subscription address to the
+// configuration it renders together with every fence a pull has to clear.
+func (s *Store) mihomoSubscriptionAccessByToken(ctx context.Context, token string) (mihomoSubscriptionAccess, error) {
+	access := mihomoSubscriptionAccess{WindowStart: unsetAccessWindowBound, WindowEnd: unsetAccessWindowBound}
+	var windowStart, windowEnd, expiresAt sql.NullInt64
+	err := s.db.QueryRowContext(ctx, `SELECT id, access_secret_hash, access_window_start, access_window_end, access_expires_at
+		FROM mihomo_client_configs_v3 WHERE subscription_token_hash = ? AND enabled = 1`, security.TokenHash(token)).
+		Scan(&access.ConfigID, &access.SecretHash, &windowStart, &windowEnd, &expiresAt)
 	if errors.Is(err, sql.ErrNoRows) {
-		return "", ErrNotFound
+		return mihomoSubscriptionAccess{}, ErrNotFound
 	}
-	return id, err
+	if err != nil {
+		return mihomoSubscriptionAccess{}, err
+	}
+	if windowStart.Valid && windowEnd.Valid {
+		access.WindowStart, access.WindowEnd = int(windowStart.Int64), int(windowEnd.Int64)
+	}
+	if expiresAt.Valid {
+		access.ExpiresAt = expiresAt.Int64
+	}
+	return access, nil
 }
 
 func (s *Store) DeleteMihomoClientConfig(ctx context.Context, id string) error {

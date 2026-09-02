@@ -2,6 +2,7 @@ package control
 
 import (
 	"fmt"
+	"log"
 	"net/http"
 	"net/url"
 	"strings"
@@ -386,11 +387,19 @@ func (s *Server) mihomoClientSubscription(w http.ResponseWriter, r *http.Request
 		writeError(w, ErrNotFound)
 		return
 	}
-	configID, err := s.store.MihomoClientConfigIDByToken(r.Context(), token)
+	access, err := s.store.mihomoSubscriptionAccessByToken(r.Context(), token)
 	if err != nil {
 		writeError(w, err)
 		return
 	}
+	// A pull that fails any of the fences is answered as though the address
+	// did not exist, so a probe cannot tell a wrong secret from a closed
+	// window or a subscription that has run out.
+	if !access.permits(r.UserAgent(), s.now()) {
+		writeError(w, ErrNotFound)
+		return
+	}
+	configID := access.ConfigID
 	name, yaml, err := s.store.GenerateStoredMihomoYAML(r.Context(), configID)
 	if err != nil {
 		writeError(w, err)
@@ -401,9 +410,11 @@ func (s *Server) mihomoClientSubscription(w http.ResponseWriter, r *http.Request
 		"X-Real-IP":        r.Header.Get("X-Real-IP"),
 		"X-Forwarded-For":  r.Header.Get("X-Forwarded-For"),
 	})
-	if err := s.store.RecordSubscriptionAccess(r.Context(), configID, name, ip, s.ipLocator.Locate(ip), r.UserAgent()); err != nil {
-		writeError(w, err)
-		return
+	// The access trail is an audit aid, not a precondition: failing the pull
+	// because the log write failed would break clients that are entitled to
+	// the configuration.
+	if err := s.store.RecordSubscriptionAccess(r.Context(), configID, name, ip, s.ipLocator.Locate(ip), redactSubscriptionSecret(r.UserAgent())); err != nil {
+		log.Printf("record subscription access for client config %s: %v", configID, err)
 	}
 	filename := strings.Map(func(r rune) rune {
 		if r == '-' || r == '_' || r == '.' || r >= '0' && r <= '9' || r >= 'A' && r <= 'Z' || r >= 'a' && r <= 'z' {

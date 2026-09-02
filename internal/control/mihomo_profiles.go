@@ -83,6 +83,22 @@ type MihomoClientConfig struct {
 	CreatedAt        string               `json:"created_at,omitempty"`
 	UpdatedAt        string               `json:"updated_at,omitempty"`
 	SubscriptionPath string               `json:"subscription_path,omitempty"`
+	// AccessSecret is the secret a client has to carry in its User-Agent,
+	// empty when the subscription asks for none. It is both accepted as input
+	// and returned in the clear, because an operator has to read it back to
+	// hand it out.
+	AccessSecret     string               `json:"access_secret"`
+	// AccessUserAgent is AccessSecret rendered as the header value to hand
+	// out. Derived for display, never accepted as input.
+	AccessUserAgent  string               `json:"access_user_agent,omitempty"`
+	// AccessWindowStart and AccessWindowEnd bound the time of day, "HH:MM" in
+	// the master's local zone, during which the subscription answers. Both
+	// empty means any hour; a start later than the end spans midnight.
+	AccessWindowStart string              `json:"access_window_start"`
+	AccessWindowEnd   string              `json:"access_window_end"`
+	// AccessExpiresAt retires the subscription at a moment in time, RFC3339.
+	// Empty means it never expires.
+	AccessExpiresAt  string               `json:"access_expires_at"`
 	// Legacy fields are retained only while existing rows are migrated.
 	RoutingProfileID string `json:"routing_profile_id,omitempty"`
 }

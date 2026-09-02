@@ -3,6 +3,7 @@ package control
 import (
 	"context"
 	"fmt"
+	"log"
 	"strings"
 	"time"
 )
@@ -35,7 +36,30 @@ func (s *Store) RecordSubscriptionAccess(ctx context.Context, configID, configNa
 	if err != nil {
 		return fmt.Errorf("record subscription access: %w", err)
 	}
+	s.pruneSubscriptionAccess(ctx)
 	return nil
+}
+
+// subscriptionAccessRetention bounds how far back the access trail reaches.
+// Every pull appends a row, so without a ceiling the table grows for as long
+// as the deployment runs.
+const subscriptionAccessRetention = 90 * 24 * time.Hour
+
+// pruneSubscriptionAccess drops rows past the retention window, at most once
+// an hour so the delete stays off the hot path of a pull.
+func (s *Store) pruneSubscriptionAccess(ctx context.Context) {
+	now := time.Now()
+	s.accessPruneMu.Lock()
+	if now.Sub(s.accessPrunedAt) < time.Hour {
+		s.accessPruneMu.Unlock()
+		return
+	}
+	s.accessPrunedAt = now
+	s.accessPruneMu.Unlock()
+	cutoff := now.UTC().Add(-subscriptionAccessRetention).Unix()
+	if _, err := s.db.ExecContext(ctx, `DELETE FROM subscription_access_logs WHERE accessed_at < ?`, cutoff); err != nil {
+		log.Printf("prune subscription access logs: %v", err)
+	}
 }
 
 func (s *Store) ListSubscriptionAccess(ctx context.Context, filter SubscriptionAccessFilter, page, pageSize int) ([]SubscriptionAccess, int, error) {

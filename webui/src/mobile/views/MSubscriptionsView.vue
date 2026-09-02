@@ -80,11 +80,15 @@ function cloneDNS(dns) {
   }
 }
 
-const form = reactive({ name: '', proxy_group_ids: [], rule_provider_ids: [], rule_mode: 'table', rules: [], raw_rules: '', dns_mode: 'form', dns: defaultDNS(), raw_dns: '' })
+const form = reactive({ name: '', proxy_group_ids: [], rule_provider_ids: [], rule_mode: 'table', rules: [], raw_rules: '', dns_mode: 'form', dns: defaultDNS(), raw_dns: '', access_secret: '', access_window_start: '', access_window_end: '', access_expires_at: '' })
+function emptyForm() {
+  return { name: '', proxy_group_ids: [], rule_provider_ids: [], rule_mode: 'table', rules: [], raw_rules: '', dns_mode: 'form', dns: defaultDNS(), raw_dns: '', access_secret: '', access_window_start: '', access_window_end: '', access_expires_at: '' }
+}
 const sections = [
   { value: 'basic', label: '基础信息' },
   { value: 'rules', label: '访问规则' },
   { value: 'dns', label: 'DNS' },
+  { value: 'access', label: '订阅限制' },
 ]
 const strategyNames = { select: '手动选择', 'url-test': '自动测速', fallback: '故障切换' }
 const enhancedModes = [
@@ -160,7 +164,8 @@ const rulesValid = computed(() => {
 })
 // dns 打开后 Mihomo 缺了这两个列表就起不来。
 const dnsValid = computed(() => !(form.dns_mode === 'form' && form.dns.enable) || Boolean(form.dns.nameserver.length && form.dns.default_nameserver.length))
-const sectionValid = computed(() => ({ basic: basicValid.value, rules: rulesValid.value, dns: dnsValid.value }))
+// 订阅限制整节都是可选项，留空即不限制，所以没有「待填」这一说。
+const sectionValid = computed(() => ({ basic: basicValid.value, rules: rulesValid.value, dns: dnsValid.value, access: true }))
 const formValid = computed(() => basicValid.value && rulesValid.value && dnsValid.value)
 const sectionOptions = computed(() => sections.map((section) => ({ ...section, badge: sectionValid.value[section.value] ? '' : '待填' })))
 const editingRule = computed(() => form.rules[ruleIndex.value] || null)
@@ -243,7 +248,11 @@ function openForm(config = null) {
     dns_mode: config.dns_mode || 'form',
     dns: cloneDNS(config.dns),
     raw_dns: config.raw_dns || '',
-  } : { name: '', proxy_group_ids: [], rule_provider_ids: [], rule_mode: 'table', rules: [], raw_rules: '', dns_mode: 'form', dns: defaultDNS(), raw_dns: '' })
+    access_secret: config.access_secret || '',
+    access_window_start: config.access_window_start || '',
+    access_window_end: config.access_window_end || '',
+    access_expires_at: config.access_expires_at || '',
+  } : emptyForm())
   mode.value = 'form'
 }
 
@@ -315,6 +324,10 @@ async function save() {
       dns_mode: form.dns_mode,
       dns: form.dns,
       raw_dns: form.raw_dns,
+      access_secret: form.access_secret.trim(),
+      access_window_start: form.access_window_start || '',
+      access_window_end: form.access_window_end || '',
+      access_expires_at: form.access_expires_at || '',
     }
     if (editing.value) await put(`/mihomo/client-configs/${editing.value.id}`, payload)
     else await post('/mihomo/client-configs', payload)
@@ -347,6 +360,9 @@ const details = computed(() => {
     { label: '规则供应商', value: (row.rule_providers || []).map((provider) => provider.name).join(' · ') || '未引用' },
     { label: '规则', value: `${row.rule_mode === 'text' ? '高级文本' : '表格配置'} · ${row.rules?.length || 0} 条` },
     { label: '更新地址', value: absoluteSubscription(row), mono: true },
+    { label: '访问密钥', value: row.access_user_agent || '未设置', mono: Boolean(row.access_user_agent) },
+    { label: '访问时间段', value: row.access_window_start ? `${row.access_window_start} - ${row.access_window_end}` : '不限' },
+    { label: '有效期', value: row.access_expires_at ? formatDateTime(row.access_expires_at) : '长期有效' },
   ]
 })
 
@@ -356,7 +372,9 @@ const actions = computed(() => {
   const list = [
     { key: 'copy-url', label: '复制更新地址' },
     { key: 'qr', label: '更新地址二维码' },
+    { key: 'clash', label: '导入到 Clash', hint: '交给本机 Clash 客户端安装' },
   ]
+  if (row.access_user_agent) list.push({ key: 'copy-ua', label: '复制访问密钥 User-Agent' })
   if (canWrite.value) {
     list.push({ key: 'edit', label: '编辑' })
     list.push({ key: 'duplicate', label: '复制配置', hint: '生成一份独立的新配置' })
@@ -374,6 +392,8 @@ function runAction(key) {
   if (key === 'edit') return openForm(row)
   if (key === 'duplicate') return copyConfig(row)
   if (key === 'rotate') return rotateSubscription(row)
+  if (key === 'copy-ua') return copyAccessUserAgent(row)
+  if (key === 'clash') return importToClash(row)
   if (key === 'toggle') return setEnabled(row, !row.enabled)
   if (key === 'delete') return remove(row)
 }
@@ -427,6 +447,42 @@ async function rotateSubscription(config) {
   await post(`/mihomo/client-configs/${config.id}/subscription/rotate`, {})
   ElMessage.success('更新地址已更换')
   await load()
+}
+
+// 传 config 时复制它已存的 UA，不传时复制表单里正在编辑的那个。
+async function copyAccessUserAgent(config = null) {
+  const value = config ? (config.access_user_agent || '') : `polaris/${form.access_secret.trim()}`
+  try {
+    await writeClipboard(value)
+    ElMessage.success('User-Agent 已复制')
+  } catch {
+    ElMessage.error('自动复制失败，请使用 HTTPS 访问后重试')
+  }
+}
+
+// 密钥要能从 User-Agent 里原样取回，所以只用服务端认得的字母表。
+function generateAccessSecret() {
+  const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789'
+  const bytes = new Uint8Array(24)
+  crypto.getRandomValues(bytes)
+  form.access_secret = Array.from(bytes, (byte) => alphabet[byte % alphabet.length]).join('')
+}
+
+// Clash 系客户端都认这个 scheme，点一下就把订阅装进本机客户端。
+function clashImportURL(config) {
+  return `clash://install-config?url=${encodeURIComponent(absoluteSubscription(config))}&name=${encodeURIComponent(config.name)}`
+}
+
+async function importToClash(config) {
+  // 一键导入带不上 User-Agent，设了密钥就必须让人知道还得手工补一步。
+  if (config.access_user_agent) {
+    await ElMessageBox.confirm(
+      `这份配置设了访问密钥，一键导入带不上它。导入后请在客户端把 User-Agent 改成 ${config.access_user_agent}，否则更新会失败。`,
+      '导入到 Clash',
+      { confirmButtonText: '仍然导入', type: 'warning' },
+    )
+  }
+  window.location.href = clashImportURL(config)
 }
 
 async function remove(config) {
@@ -579,6 +635,44 @@ onMounted(() => { load(); loadAccess() })
       </template>
     </template>
 
+    <template v-else-if="activeSection === 'access'">
+      <div class="m-field">
+        <div class="m-field__hint" style="margin-bottom: 4px">
+          三项都可以留空，留空即不限制。它们管的是「拿到更新地址之后还能不能拉到配置」；
+          已经下载过的配置照样能连节点，要断掉某个人请去停用他名下的端点。
+        </div>
+      </div>
+      <div class="m-field">
+        <label class="m-field__label">访问密钥</label>
+        <el-input v-model="form.access_secret" maxlength="64" aria-label="访问密钥" placeholder="留空表示不校验" />
+        <div class="access-actions">
+          <el-button size="small" @click="generateAccessSecret">随机生成</el-button>
+          <el-button size="small" :disabled="!form.access_secret.trim()" @click="copyAccessUserAgent">复制 UA</el-button>
+        </div>
+        <div class="m-field__hint">
+          填写后，客户端订阅设置里的 User-Agent 必须包含 polaris/{{ form.access_secret.trim() || '密钥' }} 才能拉到配置。
+          只能用字母、数字、下划线和短横线，长度 8-64 位。转达时请和更新地址分开发送。
+        </div>
+      </div>
+      <div class="m-field">
+        <label class="m-field__label">允许访问的时间段</label>
+        <div class="access-actions">
+          <el-time-select v-model="form.access_window_start" start="00:00" step="00:30" end="23:30" placeholder="开始" aria-label="时间段开始" style="flex: 1" />
+          <el-time-select v-model="form.access_window_end" start="00:00" step="00:30" end="23:30" placeholder="结束" aria-label="时间段结束" style="flex: 1" />
+          <el-button size="small" @click="form.access_window_start = ''; form.access_window_end = ''">清除</el-button>
+        </div>
+        <div class="m-field__hint">
+          按控制台所在服务器的本地时间判断。两端都留空表示任意时间都能拉；
+          开始晚于结束表示跨过午夜，例如 22:00 至 06:00 指的是整个夜间。
+        </div>
+      </div>
+      <div class="m-field">
+        <label class="m-field__label">有效期</label>
+        <el-date-picker v-model="form.access_expires_at" type="datetime" value-format="YYYY-MM-DDTHH:mm:ssZ" aria-label="有效期" placeholder="留空表示长期有效" style="width: 100%" />
+        <div class="m-field__hint">到期后这个更新地址不再返回配置。需要续期就回来往后调，或者清空。</div>
+      </div>
+    </template>
+
     <template v-else>
       <MSegmented :model-value="form.dns_mode" :options="[{ value: 'form', label: '表单配置' }, { value: 'text', label: '高级纯文本' }]" @update:model-value="setDNSMode" />
       <template v-if="form.dns_mode === 'form'">
@@ -662,6 +756,7 @@ onMounted(() => { load(); loadAccess() })
 
 <style scoped>
 .filter { margin-top: 10px; }
+.access-actions { display: flex; align-items: center; gap: 8px; margin-top: 8px; }
 .access-bar { display: flex; align-items: center; gap: 10px; }
 .access-bar .m-count { flex: 1; padding-bottom: 0; }
 .pager { display: flex; gap: 10px; margin-top: 14px; }

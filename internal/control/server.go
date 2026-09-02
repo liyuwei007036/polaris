@@ -66,6 +66,10 @@ type Server struct {
 	reconcileState         map[string]reconcileAttempt
 	taskWaitMu             sync.Mutex
 	taskWaiters            map[string]chan wire.TaskResult
+	subscriptionLimiter    *rateLimiter
+	// now is the clock the subscription access window and expiry are read
+	// against; tests replace it to reach a specific moment.
+	now func() time.Time
 }
 
 // listenerNameCacheTTL bounds how stale a resolved listener name may be in
@@ -103,6 +107,8 @@ func NewServer(store *Store, secureCookies bool) (*Server, error) {
 		latestSingBoxReleaseFn: LatestOfficialSingBoxRelease,
 		connHub:                newConnectionsHub(), liveHub: newLiveHub(), ipLocator: ipLocator,
 		connectionsInterval:    DefaultConnectionsInterval,
+		subscriptionLimiter:    newRateLimiter(subscriptionRateWindow, subscriptionRateLimit, subscriptionRateMaxKeys),
+		now:                    time.Now,
 	}, nil
 }
 
@@ -230,7 +236,7 @@ func (s *Server) registerBrowserRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/v1/subscriptions/{id}/token/rotate", s.rotateClientSubscriptionToken)
 	mux.HandleFunc("POST /api/v1/subscriptions/{id}/enabled", s.setSubscriptionEnabled)
 	mux.HandleFunc("DELETE /api/v1/subscriptions/{id}", s.deleteSubscription)
-	mux.HandleFunc("GET /api/v1/subscriptions/access/{token}", s.clientSubscriptionContent)
+	mux.HandleFunc("GET /api/v1/subscriptions/access/{token}", s.throttleSubscription(s.clientSubscriptionContent))
 	mux.HandleFunc("GET /api/v1/mihomo/proxy-groups", s.listMihomoProxyGroups)
 	mux.HandleFunc("POST /api/v1/mihomo/proxy-groups", s.createMihomoProxyGroup)
 	mux.HandleFunc("PUT /api/v1/mihomo/proxy-groups/{id}", s.updateMihomoProxyGroup)
@@ -247,7 +253,7 @@ func (s *Server) registerBrowserRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/v1/mihomo/client-configs/{id}/enabled", s.setMihomoClientConfigEnabled)
 	mux.HandleFunc("DELETE /api/v1/mihomo/client-configs/{id}", s.deleteMihomoClientConfig)
 	mux.HandleFunc("POST /api/v1/mihomo/client-configs/{id}/subscription/rotate", s.rotateMihomoClientSubscription)
-	mux.HandleFunc("GET /api/v1/mihomo/subscriptions/{token}", s.mihomoClientSubscription)
+	mux.HandleFunc("GET /api/v1/mihomo/subscriptions/{token}", s.throttleSubscription(s.mihomoClientSubscription))
 	mux.HandleFunc("POST /api/v1/nodes/{id}/configurations/publish", s.publishNodeConfiguration)
 	mux.HandleFunc("POST /api/v1/nodes/{id}/nginx/publish", s.publishNodeNginx)
 	mux.HandleFunc("GET /api/v1/system/update", s.systemUpdateStatus)

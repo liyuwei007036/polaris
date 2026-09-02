@@ -274,6 +274,16 @@ test('浏览器页面回归：真实登录，核心工作区 API 使用路由替
       savedClientConfig.enabled = request.postDataJSON().enabled
       return route.fulfill({ json: { enabled: savedClientConfig.enabled } })
     }
+    if (request.method() === 'PUT' && path === '/api/v1/mihomo/client-configs/client-1') {
+      const payload = request.postDataJSON()
+      // 服务端把有效期按 UTC 回显，这里照做，好验证前端会不会把它换算回本地时间。
+      savedClientConfig = {
+        ...savedClientConfig, ...payload,
+        access_user_agent: payload.access_secret ? `polaris/${payload.access_secret}` : '',
+        access_expires_at: payload.access_expires_at ? '2026-09-10T04:00:00Z' : '',
+      }
+      return route.fulfill({ json: savedClientConfig })
+    }
     return route.continue()
   })
   await page.getByRole('button', { name: '服务器', exact: true }).click()
@@ -489,6 +499,8 @@ test('浏览器页面回归：真实登录，核心工作区 API 使用路由替
   await expect(subscriptionQrDialog.getByTestId('qr-value')).toHaveText(`${process.env.POLARIS_E2E_BASE_URL}/api/v1/mihomo/subscriptions/test-token`)
   await subscriptionQrDialog.getByRole('button', { name: '关闭此对话框', exact: true }).click()
   await expect(subscriptionQrDialog).toBeHidden()
+  // 一键导入交给本机 Clash 客户端，点下去会跳 clash:// 协议，这里只确认入口在。
+  await expect(clientConfigRow.getByRole('button', { name: '导入 Clash', exact: true })).toBeEnabled()
   await clientConfigRow.getByRole('button', { name: '编辑', exact: true }).click()
   await expect(page.getByRole('heading', { name: '编辑客户端配置', exact: true })).toBeVisible()
   const editClientForm = page.locator('.form-page')
@@ -497,6 +509,35 @@ test('浏览器页面回归：真实登录，核心工作区 API 使用路由替
   await editClientForm.locator('.form-nav__item').filter({ hasText: '访问规则' }).click()
   await expect(editClientForm.getByLabel('规则供应商', { exact: true })).toBeVisible()
   await expect(editClientForm.locator('.rule-table tbody tr')).toHaveCount(3)
+  // 订阅限制整节都是可选项：密钥可以手填，也可以随机生成，留空即不校验。
+  await editClientForm.locator('.form-nav__item').filter({ hasText: '订阅限制' }).click()
+  const accessSecretInput = editClientForm.getByRole('textbox', { name: '访问密钥' })
+  await expect(accessSecretInput).toHaveValue('')
+  await editClientForm.getByRole('button', { name: '随机生成', exact: true }).click()
+  await expect(accessSecretInput).toHaveValue(/^[A-Za-z0-9]{24}$/)
+  await editClientForm.getByRole('button', { name: '复制 UA', exact: true }).click()
+  await expect(page.getByText('User-Agent 已复制', { exact: true })).toBeVisible()
+  const generatedSecret = await accessSecretInput.inputValue()
+  await expect.poll(() => page.evaluate(() => window.__copiedText)).toBe(`polaris/${generatedSecret}`)
+  await expect(editClientForm.getByLabel('时间段开始')).toBeVisible()
+  await editClientForm.getByLabel('有效期').fill('2026-09-10 12:00:00')
+  await page.keyboard.press('Enter')
+  await page.getByRole('button', { name: '保存', exact: true }).click()
+  await expect(page.getByText('客户端配置已保存', { exact: true })).toBeVisible()
+  expect(savedClientConfig.access_secret).toBe(generatedSecret)
+  expect(savedClientConfig.access_expires_at).toBeTruthy()
+
+  // 服务端按 UTC 回显有效期，重新打开必须换算回本地时间，否则每保存一次
+  // 就会平移一个时区。期望值在测试里现算，不写死时区。
+  const storedExpiry = new Date('2026-09-10T04:00:00Z')
+  const pad = (value) => String(value).padStart(2, '0')
+  const localExpiry = `${storedExpiry.getFullYear()}-${pad(storedExpiry.getMonth() + 1)}-${pad(storedExpiry.getDate())} `
+    + `${pad(storedExpiry.getHours())}:${pad(storedExpiry.getMinutes())}:${pad(storedExpiry.getSeconds())}`
+  await clientConfigRow.getByRole('button', { name: '编辑', exact: true }).click()
+  await editClientForm.locator('.form-nav__item').filter({ hasText: '订阅限制' }).click()
+  await expect(editClientForm.getByRole('textbox', { name: '访问密钥' })).toHaveValue(generatedSecret)
+  await expect(editClientForm.getByLabel('有效期')).toHaveValue(localExpiry)
+  await editClientForm.locator('.form-nav__item').filter({ hasText: '访问规则' }).click()
   await page.setViewportSize({ width: 390, height: 844 })
   await expect.poll(() => editClientForm.evaluate((element) => element.scrollWidth <= element.clientWidth)).toBe(true)
   await expect.poll(() => editClientForm.locator('.form-body').evaluate((element) => element.scrollWidth <= element.clientWidth)).toBe(true)

@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/liyuwei007036/polaris/internal/security"
@@ -54,6 +55,8 @@ type Store struct {
 	dataDir           string
 	masterKey         []byte
 	releaseSigningKey ed25519.PrivateKey
+	accessPruneMu     sync.Mutex
+	accessPrunedAt    time.Time
 }
 
 type Operator struct {
@@ -2444,6 +2447,26 @@ CREATE INDEX IF NOT EXISTS idx_node_metrics_updated ON node_metrics(updated_at);
 		return err
 	}
 	if err := s.addMihomoClientConfigV3Column(ctx, "dns_json TEXT NOT NULL DEFAULT ''"); err != nil {
+		return err
+	}
+	// Both stay nullable: a configuration without an access secret keeps the
+	// behaviour it had before the column existed, so subscriptions already in
+	// the field go on working untouched.
+	if err := s.addMihomoClientConfigV3Column(ctx, "access_secret_hash BLOB"); err != nil {
+		return err
+	}
+	if err := s.addMihomoClientConfigV3Column(ctx, "access_secret_encrypted BLOB"); err != nil {
+		return err
+	}
+	// Minutes past local midnight, both NULL when a subscription may be pulled
+	// at any hour; a start past the end spans midnight.
+	if err := s.addMihomoClientConfigV3Column(ctx, "access_window_start INTEGER"); err != nil {
+		return err
+	}
+	if err := s.addMihomoClientConfigV3Column(ctx, "access_window_end INTEGER"); err != nil {
+		return err
+	}
+	if err := s.addMihomoClientConfigV3Column(ctx, "access_expires_at INTEGER"); err != nil {
 		return err
 	}
 	if err := s.adoptHardCodedMihomoClientDNS(ctx); err != nil {

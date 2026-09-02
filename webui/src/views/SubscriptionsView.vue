@@ -1,7 +1,7 @@
 <script setup>
 import { computed, inject, onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { ArrowDown, ArrowLeft, ArrowUp, CopyDocument, Delete, DocumentCopy, Edit, Grid, Plus, Refresh, RefreshRight, Search } from '@element-plus/icons-vue'
+import { ArrowDown, ArrowLeft, ArrowUp, CopyDocument, Delete, DocumentCopy, Download, Edit, Grid, Plus, Refresh, RefreshRight, Search } from '@element-plus/icons-vue'
 import { api, del, post, put } from '../api'
 import { writeClipboard } from '../clipboard'
 import { formatDateTime, includesText } from '../format'
@@ -71,11 +71,15 @@ function cloneDNS(dns) {
     direct_nameserver_follow_policy: Boolean(dns.direct_nameserver_follow_policy),
   }
 }
-const form = reactive({ name: '', proxy_group_ids: [], rule_provider_ids: [], rule_mode: 'table', rules: [], raw_rules: '', dns_mode: 'form', dns: defaultDNS(), raw_dns: '' })
+const form = reactive({ name: '', proxy_group_ids: [], rule_provider_ids: [], rule_mode: 'table', rules: [], raw_rules: '', dns_mode: 'form', dns: defaultDNS(), raw_dns: '', access_secret: '', access_window_start: '', access_window_end: '', access_expires_at: '' })
+function emptyForm() {
+  return { name: '', proxy_group_ids: [], rule_provider_ids: [], rule_mode: 'table', rules: [], raw_rules: '', dns_mode: 'form', dns: defaultDNS(), raw_dns: '', access_secret: '', access_window_start: '', access_window_end: '', access_expires_at: '' }
+}
 const sections = [
   { key: 'basic', label: '基础信息', hint: '名称 · 代理分组 · 规则供应商' },
   { key: 'rules', label: '访问规则', hint: '决定流量走哪个分组' },
   { key: 'dns', label: 'DNS', hint: '下发给客户端的解析设置' },
+  { key: 'access', label: '订阅限制', hint: '密钥 · 时间段 · 有效期' },
 ]
 const activeSection = ref('basic')
 const formBody = ref(null)
@@ -146,7 +150,8 @@ const rulesValid = computed(() => {
 })
 // Mihomo refuses to start without these two lists once dns is enabled.
 const dnsValid = computed(() => !(form.dns_mode === 'form' && form.dns.enable) || Boolean(form.dns.nameserver.length && form.dns.default_nameserver.length))
-const sectionValid = computed(() => ({ basic: basicValid.value, rules: rulesValid.value, dns: dnsValid.value }))
+// 订阅限制整节都是可选项，留空即不限制，所以没有「待填」这一说。
+const sectionValid = computed(() => ({ basic: basicValid.value, rules: rulesValid.value, dns: dnsValid.value, access: true }))
 const formValid = computed(() => basicValid.value && rulesValid.value && dnsValid.value)
 
 function resolveGroups(ids) {
@@ -221,7 +226,11 @@ function openForm(config = null) {
     dns_mode: config.dns_mode || 'form',
     dns: cloneDNS(config.dns),
     raw_dns: config.raw_dns || '',
-  } : { name: '', proxy_group_ids: [], rule_provider_ids: [], rule_mode: 'table', rules: [], raw_rules: '', dns_mode: 'form', dns: defaultDNS(), raw_dns: '' })
+    access_secret: config.access_secret || '',
+    access_window_start: config.access_window_start || '',
+    access_window_end: config.access_window_end || '',
+    access_expires_at: config.access_expires_at || '',
+  } : emptyForm())
   mode.value = 'form'
 }
 
@@ -286,6 +295,10 @@ async function save() {
       dns_mode: form.dns_mode,
       dns: form.dns,
       raw_dns: form.raw_dns,
+      access_secret: form.access_secret.trim(),
+      access_window_start: form.access_window_start || '',
+      access_window_end: form.access_window_end || '',
+      access_expires_at: form.access_expires_at || '',
     }
     if (editing.value) await put(`/mihomo/client-configs/${editing.value.id}`, payload)
     else await post('/mihomo/client-configs', payload)
@@ -323,10 +336,51 @@ function absoluteSubscription(config) {
   return new URL(config.subscription_path, window.location.origin).toString()
 }
 
+function expired(config) {
+  return Boolean(config.access_expires_at) && new Date(config.access_expires_at).getTime() <= Date.now()
+}
+
 function showQrCode(config) {
   qrTitle.value = `${config.name} · 更新地址`
   qrItems.value = [{ key: config.id, label: config.name, value: absoluteSubscription(config) }]
   qrOpen.value = true
+}
+
+// 密钥要能从 User-Agent 里原样取回，所以只用服务端认得的字母表。24 位在这个
+// 字母表下约合 142 位熵，远超挡住误转发所需要的强度。
+function generateAccessSecret() {
+  const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789'
+  const bytes = new Uint8Array(24)
+  crypto.getRandomValues(bytes)
+  form.access_secret = Array.from(bytes, (byte) => alphabet[byte % alphabet.length]).join('')
+}
+
+async function copyAccessUserAgent() {
+  try {
+    await writeClipboard(`polaris/${form.access_secret.trim()}`)
+    ElMessage.success('User-Agent 已复制')
+  } catch {
+    ElMessage.error('自动复制失败，请使用 HTTPS 访问后重试')
+  }
+}
+
+// Clash 系客户端都认这个 scheme，点一下就把订阅装进本机客户端。
+function clashImportURL(config) {
+  return `clash://install-config?url=${encodeURIComponent(absoluteSubscription(config))}&name=${encodeURIComponent(config.name)}`
+}
+
+async function importToClash(config) {
+  // 一键导入带不上 User-Agent，设了密钥就必须让人知道还得手工补一步，
+  // 否则客户端装上了却每次更新都失败，比直接失败更难查。
+  if (config.access_user_agent) {
+    const confirmed = await ElMessageBox.confirm(
+      `这份配置设了访问密钥，一键导入带不上它。导入后请在客户端把 User-Agent 改成 ${config.access_user_agent}，否则更新会失败。`,
+      '导入到 Clash',
+      { confirmButtonText: '仍然导入', type: 'warning' },
+    ).catch(() => null)
+    if (!confirmed) return
+  }
+  window.location.href = clashImportURL(config)
 }
 
 async function setEnabled(config, enabled) {
@@ -381,7 +435,16 @@ onMounted(() => { load(); loadAccess() })
               <el-select v-model="selectedStatus" clearable placeholder="全部状态" style="width: 140px"><el-option label="启用" value="true" /><el-option label="停用" value="false" /></el-select>
             </div>
         <PagedTable :rows="filteredConfigs" empty-text="还没有客户端配置">
-          <el-table-column label="配置名称" min-width="180" prop="name" />
+          <el-table-column label="配置名称" min-width="210">
+            <template #default="{ row }">
+              {{ row.name }}
+              <el-tag v-if="row.access_user_agent" size="small" type="success" effect="plain">密钥</el-tag>
+              <el-tag v-if="row.access_window_start" size="small" type="warning" effect="plain">{{ row.access_window_start }}-{{ row.access_window_end }}</el-tag>
+              <el-tag v-if="row.access_expires_at" size="small" :type="expired(row) ? 'danger' : 'info'" effect="plain">
+                {{ expired(row) ? '已过期' : `${formatDateTime(row.access_expires_at)} 到期` }}
+              </el-tag>
+            </template>
+          </el-table-column>
           <el-table-column label="引用代理分组" min-width="280">
             <template #default="{ row }">
               <el-tag v-for="id in (row.proxy_group_ids || []).slice(0, groupPreviewCount)" :key="id" type="info" class="group-tag">
@@ -404,10 +467,11 @@ onMounted(() => { load(); loadAccess() })
               <el-switch :model-value="row.enabled" inline-prompt active-text="启用" inactive-text="停用" :loading="changingState === row.id" :disabled="changingState === row.id || !canWrite" @change="setEnabled(row, $event)" />
             </template>
           </el-table-column>
-          <el-table-column label="操作" width="424" fixed="right" class-name="action-column">
+          <el-table-column label="操作" width="490" fixed="right" class-name="action-column">
             <template #default="{ row }">
               <el-button link :icon="CopyDocument" @click="copySubscription(row)">复制</el-button>
               <el-button link :icon="Grid" @click="showQrCode(row)">二维码</el-button>
+              <el-button link :icon="Download" @click="importToClash(row)">导入 Clash</el-button>
               <el-button v-if="canWrite" link :icon="DocumentCopy" @click="copyConfig(row)">复制配置</el-button>
               <el-button v-if="canWrite" link :icon="RefreshRight" @click="rotateSubscription(row)">更换</el-button>
               <el-button v-if="canWrite" link :icon="Edit" @click="openForm(row)">编辑</el-button>
@@ -534,6 +598,54 @@ onMounted(() => { load(); loadAccess() })
             <el-input v-else v-model="form.raw_rules" type="textarea" :rows="10" aria-label="高级规则文本" placeholder="RULE-SET,供应商名称,代理组&#10;DOMAIN-SUFFIX,example.com,代理组&#10;MATCH,DIRECT" />
           </section>
 
+          <section v-else-if="activeSection === 'access'">
+            <div class="section-heading">
+              <div><h3>订阅限制</h3></div>
+            </div>
+            <div class="subtle" style="margin-bottom: 16px">
+              三项都可以留空，留空即不限制。它们管的是「拿到更新地址之后还能不能拉到配置」；
+              已经下载过的配置照样能连节点，要断掉某个人请去停用他名下的端点。
+            </div>
+
+            <el-form-item label="访问密钥">
+              <div class="access-row">
+                <el-input v-model="form.access_secret" maxlength="64" aria-label="访问密钥" placeholder="留空表示不校验" />
+                <el-button :icon="RefreshRight" @click="generateAccessSecret">随机生成</el-button>
+                <el-button :icon="CopyDocument" :disabled="!form.access_secret.trim()" @click="copyAccessUserAgent">复制 UA</el-button>
+              </div>
+              <div class="subtle" style="margin-top: 6px">
+                填写后，客户端订阅设置里的 User-Agent 必须包含
+                <code>polaris/{{ form.access_secret.trim() || '密钥' }}</code>
+                才能拉到配置。只能用字母、数字、下划线和短横线，长度 8-64 位。转达时请和更新地址分开发送。
+              </div>
+            </el-form-item>
+
+            <el-form-item label="允许访问的时间段">
+              <div class="access-row">
+                <el-time-select v-model="form.access_window_start" start="00:00" step="00:30" end="23:30" placeholder="开始时间" aria-label="时间段开始" style="width: 150px" />
+                <span class="subtle">至</span>
+                <el-time-select v-model="form.access_window_end" start="00:00" step="00:30" end="23:30" placeholder="结束时间" aria-label="时间段结束" style="width: 150px" />
+                <el-button link @click="form.access_window_start = ''; form.access_window_end = ''">清除</el-button>
+              </div>
+              <div class="subtle" style="margin-top: 6px">
+                按控制台所在服务器的本地时间判断。两端都留空表示任意时间都能拉；
+                开始晚于结束表示跨过午夜，例如 22:00 至 06:00 指的是整个夜间。
+              </div>
+            </el-form-item>
+
+            <el-form-item label="有效期">
+              <el-date-picker
+                v-model="form.access_expires_at"
+                type="datetime"
+                value-format="YYYY-MM-DDTHH:mm:ssZ"
+                aria-label="有效期"
+                placeholder="留空表示长期有效"
+                style="width: 260px"
+              />
+              <div class="subtle" style="margin-top: 6px">到期后这个更新地址不再返回配置。需要续期就回来往后调，或者清空。</div>
+            </el-form-item>
+          </section>
+
           <section v-else>
             <div class="section-heading">
               <div><h3>DNS</h3></div>
@@ -588,11 +700,13 @@ onMounted(() => { load(); loadAccess() })
     </main>
 
     <QrCodeDialog v-model="qrOpen" :title="qrTitle" :items="qrItems" />
+
   </div>
 </template>
 
 <style scoped>
 .group-tag { margin: 3px 6px 3px 0; }
+.access-row { display: flex; align-items: center; gap: 8px; width: 100%; }
 .option-meta { float: right; margin-left: 18px; color: var(--sb-muted); font-size: 12px; }
 
 /* 整页编辑：左侧导航固定，右侧只渲染当前一节并独立滚动，
