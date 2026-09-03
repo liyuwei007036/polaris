@@ -8,7 +8,7 @@ import { CanvasRenderer } from 'echarts/renderers'
 import { api } from '../../api'
 import { formatBytes } from '../../format'
 import { subscribeLive } from '../../live'
-import { connectionSnapshots, subscribeConnections, subscribeFleetTotals } from '../../connections'
+import { fleetTotals, subscribeFleetTotals } from '../../connections'
 import MPage from '../components/MPage.vue'
 
 use([BarChart, LineChart, PieChart, GridComponent, LegendComponent, TitleComponent, TooltipComponent, CanvasRenderer])
@@ -35,10 +35,7 @@ const chartTooltip = { backgroundColor: '#101a2c', borderColor: 'rgba(148,163,18
 const chartLegend = { bottom: 4, itemWidth: 14, itemHeight: 8, textStyle: { color: chartInk.label, fontSize: 11 } }
 // 节点按秒上报，手机上保留一分钟——再长在这块屏上也分辨不出来，还费电。
 const historyLength = 60
-const nodeWindowMinutes = 10
-const nodeActivity = new Map()
 let stopLive
-let stopConnections
 let stopTotals
 let refreshTimer
 let resizeObserver
@@ -46,10 +43,10 @@ let renderQueued = false
 
 const online = computed(() => appState.nodes.filter((node) => node.online).length)
 const offline = computed(() => appState.nodes.length - online.value)
-const connections = computed(() => [...connectionSnapshots.value.values()].flatMap(
-  (item) => (item.connections || []).map((connection) => ({ ...connection, node_id: item.node_id })),
-))
-const activeConnections = computed(() => connections.value.length)
+// 这一页的实时数字全部来自 master 每轮汇总的那一条 totals 事件：连接数、流量、
+// 传输协议、热门节点。浏览器不再自己遍历连接列表——同一份数据算两遍，只会让
+// 卡片和曲线差一拍，也让每个控制台各算各的。
+const activeConnections = computed(() => Number(fleetTotals.value?.connection_count || 0))
 
 const metrics = computed(() => [
   { label: '服务器总数', value: appState.nodes.length, view: 'nodes', query: '' },
@@ -163,12 +160,7 @@ function renderCharts() {
     yAxis: { ...axis, type: 'value', minInterval: 1 },
     series: [{ name: '连接数', type: 'line', data: connectionHistory.value.map((item) => [item.time, item.count]), showSymbol: false, smooth: 0.25, lineStyle: { width: 2, color: '#a78bfa' }, areaStyle: { color: 'rgba(167,139,250,.14)' } }],
   }, true)
-  const protocolCounts = Object.entries(connections.value.reduce((result, row) => {
-    const network = String(row.network || '').toLowerCase()
-    const key = network === 'tcp' || network === 'udp' ? network.toUpperCase() : '其他'
-    result[key] = (result[key] || 0) + 1
-    return result
-  }, {}))
+  const protocolCounts = Object.entries(fleetTotals.value?.protocols || {})
   charts[3].setOption({
     animation: false,
     title: chartBase('传输协议').title,
@@ -183,14 +175,14 @@ function renderCharts() {
       ? protocolCounts.map(([name, value]) => ({ name, value, itemStyle: { color: protocolColors[name] || '#64748b' } }))
       : [{ name: '暂无连接', value: 1, itemStyle: { color: chartInk.empty } }] }],
   }, true)
-  const popular = popularNodes()
+  const popular = fleetTotals.value?.popular_nodes || []
   charts[4].setOption({
-    ...chartBase(`热门节点（最近 ${nodeWindowMinutes} 分钟）`),
+    ...chartBase(`热门节点（最近 ${Number(fleetTotals.value?.popular_window_minutes) || 10} 分钟）`),
     grid: { left: 92, right: 20, top: 44, bottom: 16 },
     tooltip: { ...chartTooltip, trigger: 'axis', confine: true, formatter: (items) => `${items[0].name}<br>${items[0].value} 次连接` },
     xAxis: { ...axis, type: 'value', minInterval: 1 },
-    yAxis: { ...axis, type: 'category', inverse: true, data: popular.map(([name]) => name), axisLabel: { ...axis.axisLabel, width: 78, overflow: 'truncate' } },
-    series: [{ type: 'bar', data: popular.map(([, value]) => value), barMaxWidth: 14, itemStyle: { color: '#22d3ee', borderRadius: [0, 3, 3, 0] } }],
+    yAxis: { ...axis, type: 'category', inverse: true, data: popular.map((item) => item.name), axisLabel: { ...axis.axisLabel, width: 78, overflow: 'truncate' } },
+    series: [{ type: 'bar', data: popular.map((item) => item.count), barMaxWidth: 14, itemStyle: { color: '#22d3ee', borderRadius: [0, 3, 3, 0] } }],
   }, true)
 }
 
@@ -198,38 +190,17 @@ function renderCharts() {
 // 轮到齐后算好合计再推过来，浏览器不再自己求和——原先按到达顺序累加，会把同一
 // 台服务器的读数画进相邻好几个点，曲线画的其实是上报相位而不是流量。
 function appendTotals(totals) {
-  // 还没有节点测出速率——刚从"没人看"恢复上报，基线还没建立。这里的 0 是
-  // "不知道"而不是"没有流量"，画上去会在曲线上留一个没发生过的凹坑。
-  if (!totals.has_rates && Number(totals.nodes) > 0) return
-  const at = Date.parse(totals.at) || Date.now()
-  trafficHistory.value = [...trafficHistory.value, {
-    time: at, download: Number(totals.download_rate || 0), upload: Number(totals.upload_rate || 0),
-  }].slice(-historyLength)
-  connectionHistory.value = [...connectionHistory.value, { time: at, count: Number(totals.connection_count || 0) }].slice(-historyLength)
-  scheduleRender()
-}
-
-// 协议分布和热门节点读的是当前快照而不是历史序列，仍然跟着每次推送更新。
-function onPush() {
-  recordNodeActivity(Date.now())
-  scheduleRender()
-}
-
-function recordNodeActivity(now) {
-  for (const row of connections.value) {
-    const key = `${row.node_id}/${row.id}`
-    if (!row.id || nodeActivity.has(key)) continue
-    nodeActivity.set(key, { label: row.user || row.listener_name || '未知', at: now })
+  // 协议分布和热门节点是当轮的即时数字，每一轮都照画；只有两条曲线要挑，
+  // 因为整个舰队都还没测出速率时的那个 0 是"不知道"而不是"没有流量"，画上去
+  // 会在曲线上留一个没发生过的凹坑。
+  if (totals.has_rates || Number(totals.nodes) === 0) {
+    const at = Date.parse(totals.at) || Date.now()
+    trafficHistory.value = [...trafficHistory.value, {
+      time: at, download: Number(totals.download_rate || 0), upload: Number(totals.upload_rate || 0),
+    }].slice(-historyLength)
+    connectionHistory.value = [...connectionHistory.value, { time: at, count: Number(totals.connection_count || 0) }].slice(-historyLength)
   }
-  for (const [key, entry] of nodeActivity) {
-    if (now - entry.at > nodeWindowMinutes * 60_000) nodeActivity.delete(key)
-  }
-}
-
-function popularNodes() {
-  const counts = {}
-  for (const entry of nodeActivity.values()) counts[entry.label] = (counts[entry.label] || 0) + 1
-  return Object.entries(counts).sort((left, right) => right[1] - left[1]).slice(0, 5)
+  scheduleRender()
 }
 
 async function load(silent = false) {
@@ -266,7 +237,6 @@ onMounted(async () => {
   await load()
   await nextTick()
   initCharts()
-  stopConnections = subscribeConnections(onPush)
   stopTotals = subscribeFleetTotals(appendTotals)
   stopLive = subscribeLive((event) => {
     if (event.kind === 'node' || event.kind === 'task') scheduleLoad()
@@ -276,7 +246,6 @@ onMounted(async () => {
 onBeforeUnmount(() => {
   stopLive?.()
   stopTotals?.()
-  stopConnections?.()
   window.clearTimeout(refreshTimer)
   resizeObserver?.disconnect()
   charts.forEach((chart) => chart.dispose())

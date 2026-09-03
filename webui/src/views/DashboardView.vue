@@ -8,7 +8,7 @@ import { CanvasRenderer } from 'echarts/renderers'
 import { api } from '../api'
 import { formatBytes } from '../format'
 import { subscribeLive } from '../live'
-import { connectionSnapshots, subscribeConnections, subscribeFleetTotals } from '../connections'
+import { fleetTotals, subscribeFleetTotals } from '../connections'
 import PageHeader from '../components/PageHeader.vue'
 
 use([BarChart, LineChart, PieChart, GridComponent, LegendComponent, TitleComponent, TooltipComponent, CanvasRenderer])
@@ -33,11 +33,7 @@ const protocolColors = { TCP: '#38bdf8', UDP: '#34d399', 其他: '#64748b' }
 const chartInk = { title: '#e8eef8', label: '#8496b0', line: 'rgba(148,163,184,.22)', split: 'rgba(148,163,184,.10)', empty: 'rgba(148,163,184,.16)' }
 const chartTooltip = { backgroundColor: '#101a2c', borderColor: 'rgba(148,163,184,.28)', textStyle: { color: chartInk.title, fontSize: 12 } }
 const chartLegend = { bottom: 10, textStyle: { color: chartInk.label } }
-// How far back "recently" reaches when ranking the busiest nodes.
-const nodeWindowMinutes = 10
-const nodeActivity = new Map()
 let stopLive
-let stopConnections
 let stopTotals
 let refreshTimer
 let resizeObserver
@@ -45,10 +41,10 @@ let renderQueued = false
 
 const online = computed(() => appState.nodes.filter((node) => node.online).length)
 const offline = computed(() => appState.nodes.length - online.value)
-const connections = computed(() => [...connectionSnapshots.value.values()].flatMap(
-  (item) => (item.connections || []).map((connection) => ({ ...connection, node_id: item.node_id })),
-))
-const activeConnections = computed(() => connections.value.length)
+// 这一页的实时数字全部来自 master 每轮汇总的那一条 totals 事件：连接数、流量、
+// 传输协议、热门节点。浏览器不再自己遍历连接列表——同一份数据算两遍，只会让
+// 卡片和曲线差一拍，也让每个控制台各算各的。
+const activeConnections = computed(() => Number(fleetTotals.value?.connection_count || 0))
 
 function readDismissed(key) {
   const stored = Number(window.localStorage.getItem(key))
@@ -145,14 +141,7 @@ function renderCharts() {
     yAxis: { ...axis, type: 'value', minInterval: 1 },
     series: [{ name: '连接数', type: 'line', data: connectionHistory.value.map((item) => [item.time, item.count]), showSymbol: false, smooth: 0.25, lineStyle: { width: 2, color: '#a78bfa' }, areaStyle: { color: 'rgba(167,139,250,.14)' } }],
   }, true)
-  // sing-box reports the transport protocol a connection uses, so this counts
-  // TCP against UDP rather than inventing categories of its own.
-  const protocolCounts = Object.entries(connections.value.reduce((result, row) => {
-    const network = String(row.network || '').toLowerCase()
-    const key = network === 'tcp' || network === 'udp' ? network.toUpperCase() : '其他'
-    result[key] = (result[key] || 0) + 1
-    return result
-  }, {}))
+  const protocolCounts = Object.entries(fleetTotals.value?.protocols || {})
   charts[3].setOption({
     animation: false,
     title: chartBase('传输协议').title,
@@ -166,14 +155,14 @@ function renderCharts() {
       ? protocolCounts.map(([name, value]) => ({ name, value, itemStyle: { color: protocolColors[name] || '#64748b' } }))
       : [{ name: '暂无连接', value: 1, itemStyle: { color: chartInk.empty } }] }],
   }, true)
-  const popular = popularNodes()
+  const popular = fleetTotals.value?.popular_nodes || []
   charts[4].setOption({
-    ...chartBase(`热门节点（最近 ${nodeWindowMinutes} 分钟）`),
+    ...chartBase(`热门节点（最近 ${Number(fleetTotals.value?.popular_window_minutes) || 10} 分钟）`),
     grid: { left: 112, right: 28, top: 58, bottom: 24 },
     tooltip: { ...chartTooltip, trigger: 'axis', formatter: (items) => `${items[0].name}<br>${items[0].value} 次连接` },
     xAxis: { ...axis, type: 'value', minInterval: 1 },
-    yAxis: { ...axis, type: 'category', inverse: true, data: popular.map(([name]) => name), axisLabel: { ...axis.axisLabel, width: 92, overflow: 'truncate' } },
-    series: [{ type: 'bar', data: popular.map(([, value]) => value), barMaxWidth: 16, itemStyle: { color: '#22d3ee', borderRadius: [0, 3, 3, 0] } }],
+    yAxis: { ...axis, type: 'category', inverse: true, data: popular.map((item) => item.name), axisLabel: { ...axis.axisLabel, width: 92, overflow: 'truncate' } },
+    series: [{ type: 'bar', data: popular.map((item) => item.count), barMaxWidth: 16, itemStyle: { color: '#22d3ee', borderRadius: [0, 3, 3, 0] } }],
   }, true)
 }
 
@@ -186,49 +175,17 @@ function renderCharts() {
 // Two minutes of history at the one-second cadence the nodes report on.
 const historyLength = 120
 function appendTotals(totals) {
-  // No node has measured a rate yet — the fleet has only just started
-  // reporting again after nobody was watching. That zero means "not known",
-  // not "no traffic", and drawing it would put a dip in the line that never
-  // happened.
-  if (!totals.has_rates && Number(totals.nodes) > 0) return
-  const at = Date.parse(totals.at) || Date.now()
-  trafficHistory.value = [...trafficHistory.value, {
-    time: at, download: Number(totals.download_rate || 0), upload: Number(totals.upload_rate || 0),
-  }].slice(-historyLength)
-  connectionHistory.value = [...connectionHistory.value, { time: at, count: Number(totals.connection_count || 0) }].slice(-historyLength)
-  scheduleRender()
-}
-
-// The protocol split and the busiest-nodes ranking read the current snapshot
-// rather than a series, so they keep following each push as it arrives.
-function onPush() {
-  recordNodeActivity(Date.now())
-  scheduleRender()
-}
-
-// Nodes are ranked by how often they connected recently, not by how many
-// connections happen to be open at this instant: a node that carried a hundred
-// short requests a minute ago matters more than one holding a single idle
-// connection. Each connection is counted once, when it is first seen, and
-// drops out of the ranking when it ages past the window.
-// A connection is attributed to the client node that authenticated it; the
-// inbound service stands in only for connections that matched no account rule
-// and therefore carry no account name.
-function recordNodeActivity(now) {
-  for (const row of connections.value) {
-    const key = `${row.node_id}/${row.id}`
-    if (!row.id || nodeActivity.has(key)) continue
-    nodeActivity.set(key, { label: row.user || row.listener_name || '未知', at: now })
+  // 协议分布和热门节点是当轮的即时数字，每一轮都照画；只有两条曲线要挑，
+  // 因为整个舰队都还没测出速率时的那个 0 是"不知道"，不是"没有流量"，把它
+  // 画进去会留下一个从未发生过的凹陷。
+  if (totals.has_rates || Number(totals.nodes) === 0) {
+    const at = Date.parse(totals.at) || Date.now()
+    trafficHistory.value = [...trafficHistory.value, {
+      time: at, download: Number(totals.download_rate || 0), upload: Number(totals.upload_rate || 0),
+    }].slice(-historyLength)
+    connectionHistory.value = [...connectionHistory.value, { time: at, count: Number(totals.connection_count || 0) }].slice(-historyLength)
   }
-  for (const [key, entry] of nodeActivity) {
-    if (now - entry.at > nodeWindowMinutes * 60_000) nodeActivity.delete(key)
-  }
-}
-
-function popularNodes() {
-  const counts = {}
-  for (const entry of nodeActivity.values()) counts[entry.label] = (counts[entry.label] || 0) + 1
-  return Object.entries(counts).sort((left, right) => right[1] - left[1]).slice(0, 5)
+  scheduleRender()
 }
 
 async function load(silent = false) {
@@ -269,7 +226,6 @@ onMounted(async () => {
   await load()
   await nextTick()
   initCharts()
-  stopConnections = subscribeConnections(onPush)
   stopTotals = subscribeFleetTotals(appendTotals)
   stopLive = subscribeLive((event) => {
     if (event.kind === 'node' || event.kind === 'task') scheduleLoad()
@@ -279,7 +235,6 @@ onMounted(async () => {
 onBeforeUnmount(() => {
   stopLive?.()
   stopTotals?.()
-  stopConnections?.()
   window.clearTimeout(refreshTimer)
   resizeObserver?.disconnect()
   charts.forEach((chart) => chart.dispose())

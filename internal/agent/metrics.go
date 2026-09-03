@@ -109,29 +109,6 @@ func NodeTrafficCounters() (received, sent uint64, ok bool) {
 	return received, sent, true
 }
 
-// TrafficSampler turns the host's cumulative counters into an instantaneous
-// rate. The agent samples on its own fixed push interval, so it is the only
-// side that can measure a real rate; the master and browser just display it.
-type TrafficSampler struct {
-	previousReceived uint64
-	previousSent     uint64
-	previousAt       time.Time
-	seeded           bool
-}
-
-// Sample records the counters observed at now and reports the rate since the
-// previous sample. hasRate is false for the first sample, and whenever the
-// counters went backwards (interface reset) so a bogus spike is never shown.
-func (s *TrafficSampler) Sample(received, sent uint64, now time.Time) (receivedRate, sentRate float64, hasRate bool) {
-	previousReceived, previousSent, previousAt, seeded := s.previousReceived, s.previousSent, s.previousAt, s.seeded
-	s.previousReceived, s.previousSent, s.previousAt, s.seeded = received, sent, now, true
-	if !seeded || !now.After(previousAt) || received < previousReceived || sent < previousSent {
-		return 0, 0, false
-	}
-	seconds := now.Sub(previousAt).Seconds()
-	return float64(received-previousReceived) / seconds, float64(sent-previousSent) / seconds, true
-}
-
 func collectSingBoxServiceHealth(ctx context.Context) string {
 	if _, err := exec.LookPath("systemctl"); err != nil {
 		return "unavailable"

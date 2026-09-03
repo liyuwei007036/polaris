@@ -343,8 +343,17 @@ func (s *Server) handleAgentMessage(ctx context.Context, node Node, msgType byte
 		}
 		connections := s.convertConnections(ctx, node.ID, push.Connections)
 		// Rates are measured here, against the node's previous push, because
-		// sing-box reports each connection's totals and nothing else.
-		s.connRates.measure(node.ID, connections, time.Now())
+		// sing-box reports each connection's totals and nothing else. The
+		// node's own throughput is those per-connection rates added up, so
+		// every real-time figure in the console — the overview's live traffic
+		// and any subtotal the connection list shows for a filter — is one
+		// measurement read at different scopes.
+		now := time.Now()
+		downloadRate, uploadRate, measured := s.connRates.measure(node.ID, connections, now)
+		// The busiest-nodes ranking counts a connection once, when it first
+		// arrives, so it has to see every push rather than the round the
+		// console happens to aggregate.
+		s.connActivity.record(node.ID, connections, now)
 		connJSON, err := json.Marshal(connections)
 		if err != nil {
 			return false
@@ -355,8 +364,8 @@ func (s *Server) handleAgentMessage(ctx context.Context, node Node, msgType byte
 		// that cadence was the single largest source of load on the master.
 		s.connHub.update(nodeConnectionsSnapshot{
 			NodeID: node.ID, CollectedAt: push.CollectedAt, Connections: connJSON, ConnectionCount: len(connections),
-			HasTotals: push.HasNodeTotals, ReceivedBytes: push.NodeReceivedBytes, SentBytes: push.NodeSentBytes,
-			HasRates: push.HasNodeRates, ReceivedRate: push.ReceivedBytesRate, SentRate: push.SentBytesRate,
+			Protocols: protocolCounts(connections),
+			HasRates:  measured, ReceivedRate: downloadRate, SentRate: uploadRate,
 		})
 	case wire.MsgKeepalive:
 		// no-op

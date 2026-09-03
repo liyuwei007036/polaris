@@ -127,12 +127,12 @@ func TestConnectionRatesIgnoreSamplesOlderThanTheStalenessBound(t *testing.T) {
 	}
 }
 
-// The whole point of measuring these: the connection list has to add up to
-// what the node counters say, because that is the number the overview charts.
-// The only traffic that may go missing is what a connection carried before
-// closing inside the interval, which nothing on the node reports per
-// connection — so a run where nothing closed has to reconcile exactly.
-func TestConnectionRatesSumToTheNodeCounterDelta(t *testing.T) {
+// The node's throughput is these connection rates added up — the overview
+// charts that sum, and the connection list shows a subtotal of it — so the
+// figure measure returns has to be exactly what the list adds up to. The only
+// traffic that may go missing is what a connection carried before closing
+// inside the interval, which nothing reports per connection.
+func TestConnectionRatesSumToTheNodeThroughput(t *testing.T) {
 	rates := newConnectionRates()
 	start := time.Date(2026, 9, 2, 12, 0, 0, 0, time.UTC)
 	now := start.Add(10 * time.Second)
@@ -142,14 +142,17 @@ func TestConnectionRatesSumToTheNodeCounterDelta(t *testing.T) {
 	}, start)
 
 	// Between the pushes: "a" moved 10000 down and 1000 up, "b" sat idle, and
-	// "c" opened inside the interval carrying 2000 down and 200 up. The node's
-	// own counters therefore advanced by 12000 down and 1200 up.
+	// "c" opened inside the interval carrying 2000 down and 200 up. The node
+	// therefore moved 12000 down and 1200 up over the ten seconds.
 	second := []storedConnection{
 		{ID: "a", Upload: 1100, Download: 11000},
 		{ID: "b", Upload: 50, Download: 500},
 		{ID: "c", Upload: 200, Download: 2000, StartedAt: start.Add(3 * time.Second).Format(time.RFC3339)},
 	}
-	rates.measure("node-1", second, now)
+	nodeDownload, nodeUpload, measured := rates.measure("node-1", second, now)
+	if !measured {
+		t.Fatal("a second push against a fresh sample reported no rate, want one")
+	}
 
 	var download, upload float64
 	for _, connection := range second {
@@ -159,10 +162,37 @@ func TestConnectionRatesSumToTheNodeCounterDelta(t *testing.T) {
 		download += connection.DownloadRate
 		upload += connection.UploadRate
 	}
-	// The same figures the agent's node sampler would report for this interval.
+	if !closeEnough(nodeDownload, download) || !closeEnough(nodeUpload, upload) {
+		t.Fatalf("node throughput ↓%v ↑%v is not what its connections add up to (↓%v ↑%v)", nodeDownload, nodeUpload, download, upload)
+	}
 	const wantDownload, wantUpload = 12000.0 / 10, 1200.0 / 10
-	if !closeEnough(download, wantDownload) || !closeEnough(upload, wantUpload) {
-		t.Fatalf("connection rates add up to ↓%v ↑%v, want the node counters' ↓%v ↑%v", download, upload, wantDownload, wantUpload)
+	if !closeEnough(nodeDownload, wantDownload) || !closeEnough(nodeUpload, wantUpload) {
+		t.Fatalf("node throughput = ↓%v ↑%v, want ↓%v ↑%v", nodeDownload, nodeUpload, wantDownload, wantUpload)
+	}
+}
+
+// An idle node has measured zero, which is a reading rather than an absence:
+// two pushes were compared and they found nothing open. Reporting it as "not
+// measured" would leave the node out of the fleet total's reporting count and
+// make an idle fleet look like one that has not started reporting.
+func TestConnectionRatesReportMeasuredZeroForAnIdleNode(t *testing.T) {
+	rates := newConnectionRates()
+	start := time.Date(2026, 9, 2, 12, 0, 0, 0, time.UTC)
+	rates.measure("node-1", []storedConnection{{ID: "a", Upload: 1000, Download: 5000}}, start)
+
+	download, upload, measured := rates.measure("node-1", nil, start.Add(10*time.Second))
+	if !measured || download != 0 || upload != 0 {
+		t.Fatalf("idle node measured ↓%v ↑%v (measured=%v), want a measured zero", download, upload, measured)
+	}
+}
+
+// The first push says nothing about speed, so the node has no throughput to
+// report either — not a zero, which would draw a dip that never happened.
+func TestConnectionRatesReportNoThroughputOnFirstPush(t *testing.T) {
+	rates := newConnectionRates()
+	start := time.Date(2026, 9, 2, 12, 0, 0, 0, time.UTC)
+	if _, _, measured := rates.measure("node-1", []storedConnection{{ID: "a", Upload: 1000, Download: 5000}}, start); measured {
+		t.Fatal("first push reported a node throughput, want none")
 	}
 }
 

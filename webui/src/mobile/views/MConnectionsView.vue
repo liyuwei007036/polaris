@@ -65,14 +65,6 @@ const filteredRows = computed(() => rows.value.filter((row) => {
   ], keyword.value)
 }))
 const shown = computed(() => filteredRows.value.slice(0, visible.value))
-// 和「运行概览」的实时流量同量纲，可以直接对读；合计始终按筛选后的全部连接算，
-// 不受"加载更多"只显示前几十条的影响。
-const liveTotals = computed(() => filteredRows.value.reduce(
-  (total, row) => row.has_rates
-    ? { download: total.download + Number(row.download_rate || 0), upload: total.upload + Number(row.upload_rate || 0) }
-    : total,
-  { download: 0, upload: 0 },
-))
 
 watch([keyword, selectedNode, selectedOutbound], () => { visible.value = 30 })
 
@@ -145,7 +137,7 @@ onBeforeUnmount(() => {
         <MPicker v-model="selectedOutbound" chip :options="outboundOptions" title="按出口筛选" placeholder="全部出口" />
       </div>
     </div>
-    <div class="m-count">{{ filteredRows.length }} 条 · 合计 ↓ {{ formatBytes(liveTotals.download, '/s') }} ↑ {{ formatBytes(liveTotals.upload, '/s') }} · 采集于 {{ formatDateTime(collectedAt, '暂无数据') }}</div>
+    <div class="m-count">{{ filteredRows.length }} 条 · 采集于 {{ formatDateTime(collectedAt, '暂无数据') }}</div>
 
     <article v-for="row in shown" :key="`${row.node_id}/${row.id}`" class="m-item">
       <button type="button" class="m-item__hit" @click="openDetail(row)">

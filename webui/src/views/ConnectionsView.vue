@@ -60,16 +60,6 @@ const filteredRows = computed(() => rows.value.filter((row) => {
     row.entry, row.user, row.listener_name, row.exit, row.network,
   ], keyword.value)
 }))
-// 这些速率和「运行概览」的实时流量是同一个量纲，可以直接对读。剩下的差额只
-// 来自采样区间内已经关闭的连接：它们的字节数计进了节点计数器，人却已经不在
-// 这张表里了。累计流量那一列则是每条连接从建立至今的总量，不该拿来和速率比。
-const liveTotals = computed(() => filteredRows.value.reduce(
-  (total, row) => row.has_rates
-    ? { download: total.download + Number(row.download_rate || 0), upload: total.upload + Number(row.upload_rate || 0) }
-    : total,
-  { download: 0, upload: 0 },
-))
-
 async function load() {
   loading.value = true
   try {
@@ -119,7 +109,6 @@ onBeforeUnmount(() => {
           <el-option v-for="exit in outboundOptions" :key="exit" :label="exit" :value="exit" />
         </el-select>
         <span class="toolbar__spacer" />
-        <span class="subtle mono">合计 ↓ {{ formatBytes(liveTotals.download, '/s') }} · ↑ {{ formatBytes(liveTotals.upload, '/s') }}</span>
         <span class="subtle">{{ filteredRows.length }} 条 · {{ formatDateTime(collectedAt, '暂无数据') }}</span>
       </div>
       <div class="table-panel">

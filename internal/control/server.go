@@ -56,6 +56,7 @@ type Server struct {
 	selfUpdateRestartFn      func() error
 	connHub                *connectionsHub
 	connRates              *connectionRates
+	connActivity           *nodeActivity
 	liveHub                *liveHub
 	ipLocator              *ipLocator
 	listenerNameMu         sync.Mutex
@@ -114,7 +115,8 @@ func NewServer(store *Store, secureCookies bool) (*Server, error) {
 		controls: make(map[string]*controlSession), autoInstallChecked: make(map[string]bool),
 		taskWaiters:            make(map[string]chan wire.TaskResult),
 		latestSingBoxReleaseFn: LatestOfficialSingBoxRelease,
-		connHub:                newConnectionsHub(), connRates: newConnectionRates(), liveHub: newLiveHub(), ipLocator: ipLocator,
+		connHub:                newConnectionsHub(), connRates: newConnectionRates(), connActivity: newNodeActivity(),
+		liveHub:                newLiveHub(), ipLocator: ipLocator,
 		connectionsInterval:    DefaultConnectionsInterval,
 		subscriptionLimiter:    newRateLimiter(subscriptionRateWindow, subscriptionRateLimit, subscriptionRateMaxKeys),
 		now:                    time.Now,
@@ -209,7 +211,8 @@ func (s *Server) StartTrafficAggregation(ctx context.Context) {
 			// Nothing to add up when no console is open — the nodes are not
 			// reporting either, so any figure would be a stale one anyway.
 			if s.connHub.watched() {
-				s.connHub.broadcastTotals(s.connHub.totals(time.Now()))
+				now := time.Now()
+				s.connHub.broadcastTotals(s.connHub.totals(now, s.connActivity.popular(now, popularNodeLimit)))
 			}
 		}
 	}()

@@ -110,19 +110,13 @@ type Status struct {
 }
 
 // ConnectionsPush is the fast-cadence, independent real-time connections
-// report (agent pushes proactively; master never polls for it). It also
-// carries host traffic counters and the instantaneous rate the agent derived
-// from them: the agent is the only side sampling on a fixed interval, so it
-// is the only side that can measure a rate rather than guess one.
+// report (agent pushes proactively; master never polls for it). Each
+// connection carries the cumulative totals sing-box reports for it and
+// nothing else: rates are measured on the master, the only side that sees
+// the same connection in two consecutive pushes.
 type ConnectionsPush struct {
-	CollectedAt       string
-	Connections       []ConnectionInfo
-	HasNodeTotals     bool
-	NodeReceivedBytes uint64
-	NodeSentBytes     uint64
-	HasNodeRates      bool
-	ReceivedBytesRate float64
-	SentBytesRate     float64
+	CollectedAt string
+	Connections []ConnectionInfo
 }
 
 // Task is the subset of the master's internal task record the agent needs to

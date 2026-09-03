@@ -9,7 +9,6 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
-	"time"
 )
 
 // chains lists outbounds only, egress first. sing-box reports the inbound in
@@ -67,35 +66,6 @@ func TestProxyTrafficComesFromSingBoxNotTheHostInterfaces(t *testing.T) {
 	}
 	if !traffic.Available || traffic.ReceivedBytes != 4096 || traffic.SentBytes != 1024 {
 		t.Fatalf("proxy traffic = %+v, want sing-box's own totals", traffic)
-	}
-
-	// With no proxied traffic the counters stand still, so the rate is zero —
-	// which is the whole point: an idle node reports nothing.
-	var sampler TrafficSampler
-	start := time.Unix(1_700_000_000, 0)
-	sampler.Sample(traffic.ReceivedBytes, traffic.SentBytes, start)
-	received, sent, hasRate := sampler.Sample(traffic.ReceivedBytes, traffic.SentBytes, start.Add(5*time.Second))
-	if !hasRate || received != 0 || sent != 0 {
-		t.Fatalf("idle rate = %v/%v (hasRate=%v), want zero", received, sent, hasRate)
-	}
-}
-
-func TestTrafficSamplerReportsRateOnlyAfterTwoSamples(t *testing.T) {
-	var sampler TrafficSampler
-	start := time.Unix(1_700_000_000, 0)
-	if _, _, hasRate := sampler.Sample(1000, 500, start); hasRate {
-		t.Fatal("the first sample cannot produce a rate")
-	}
-	received, sent, hasRate := sampler.Sample(3000, 1500, start.Add(2*time.Second))
-	if !hasRate {
-		t.Fatal("the second sample should produce a rate")
-	}
-	if received != 1000 || sent != 500 {
-		t.Fatalf("rates = %v/%v, want 1000/500 bytes per second", received, sent)
-	}
-	// A counter reset must not be reported as an enormous spike.
-	if _, _, hasRate := sampler.Sample(10, 5, start.Add(4*time.Second)); hasRate {
-		t.Fatal("counters going backwards must not produce a rate")
 	}
 }
 

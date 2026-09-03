@@ -13,7 +13,7 @@ func TestFleetTotalsSumOnlyNodesThatMeasuredARate(t *testing.T) {
 	hub.update(nodeConnectionsSnapshot{NodeID: "b", ConnectionCount: 5, HasRates: true, ReceivedRate: 2500, SentRate: 250})
 	hub.update(nodeConnectionsSnapshot{NodeID: "c", ConnectionCount: 2})
 
-	totals := hub.totals(time.Now())
+	totals := hub.totals(time.Now(), nil)
 	if totals.DownloadRate != 3500 || totals.UploadRate != 350 {
 		t.Fatalf("totals = ↓%v ↑%v, want ↓3500 ↑350", totals.DownloadRate, totals.UploadRate)
 	}
@@ -28,6 +28,25 @@ func TestFleetTotalsSumOnlyNodesThatMeasuredARate(t *testing.T) {
 	}
 }
 
+// The transport split is a fleet figure like any other: each node counts its
+// own connections and the master adds the groups up.
+func TestFleetTotalsAddUpProtocolCountsAcrossNodes(t *testing.T) {
+	hub := newConnectionsHub()
+	hub.update(nodeConnectionsSnapshot{NodeID: "a", ConnectionCount: 3, Protocols: map[string]int{"TCP": 2, "UDP": 1}})
+	hub.update(nodeConnectionsSnapshot{NodeID: "b", ConnectionCount: 2, Protocols: map[string]int{"TCP": 1, "其他": 1}})
+
+	totals := hub.totals(time.Now(), []popularNode{{Name: "alice", Count: 4}})
+	if totals.Protocols["TCP"] != 3 || totals.Protocols["UDP"] != 1 || totals.Protocols["其他"] != 1 {
+		t.Fatalf("protocols = %v, want 3 TCP, 1 UDP and 1 其他", totals.Protocols)
+	}
+	if len(totals.PopularNodes) != 1 || totals.PopularNodes[0].Name != "alice" {
+		t.Fatalf("popular nodes = %+v, want the ranking passed in", totals.PopularNodes)
+	}
+	if totals.PopularWindowMinutes != int(nodeActivityWindow/time.Minute) {
+		t.Fatalf("window = %d minutes, want the master's own %v", totals.PopularWindowMinutes, nodeActivityWindow)
+	}
+}
+
 // A node that stopped reporting must drop out of the total rather than hold
 // its last reading there forever.
 func TestFleetTotalsDropNodesThatWentSilent(t *testing.T) {
@@ -38,7 +57,7 @@ func TestFleetTotalsDropNodesThatWentSilent(t *testing.T) {
 	hub.receivedAt["gone"] = time.Now().Add(-connectionsStaleAfter - time.Second)
 	hub.mu.Unlock()
 
-	totals := hub.totals(time.Now())
+	totals := hub.totals(time.Now(), nil)
 	if totals.DownloadRate != 1000 || totals.Nodes != 1 || totals.ConnectionCount != 3 {
 		t.Fatalf("totals = ↓%v across %d nodes / %d connections, want only the live node", totals.DownloadRate, totals.Nodes, totals.ConnectionCount)
 	}
@@ -47,7 +66,7 @@ func TestFleetTotalsDropNodesThatWentSilent(t *testing.T) {
 // An empty fleet reports nothing rather than a measured zero, so the console
 // can tell "no servers" apart from "servers that are idle".
 func TestFleetTotalsReportNoRateWithNothingConnected(t *testing.T) {
-	if totals := newConnectionsHub().totals(time.Now()); totals.HasRates || totals.Nodes != 0 {
+	if totals := newConnectionsHub().totals(time.Now(), nil); totals.HasRates || totals.Nodes != 0 {
 		t.Fatalf("empty fleet totals = %+v, want no nodes and no measured rate", totals)
 	}
 }

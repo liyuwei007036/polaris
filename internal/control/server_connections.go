@@ -72,7 +72,8 @@ func (s *Server) browserConnectionsStream(w http.ResponseWriter, r *http.Request
 	defer s.connHub.unsubscribeTotals(totalsCh)
 	// One total straight away, so a console that opened mid-round has a reading
 	// to show instead of an empty chart until the next one closes.
-	if !writeEvent("totals", s.connHub.totals(time.Now())) {
+	now := time.Now()
+	if !writeEvent("totals", s.connHub.totals(now, s.connActivity.popular(now, popularNodeLimit))) {
 		return
 	}
 	ticker := time.NewTicker(20 * time.Second)

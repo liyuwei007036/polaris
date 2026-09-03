@@ -231,25 +231,14 @@ func RunSession(ctx context.Context, conn *wire.Conn, handler TaskHandler, heart
 		}
 		return conn.WriteMessage(wire.MsgStatus, body)
 	}
-	var sampler TrafficSampler
 	// Report until told otherwise: a master too old to send WatchState never
 	// switches this off, and going quiet on it would leave its console blank.
 	streaming := true
 	sendConnections := func() error {
 		push := wire.ConnectionsPush{CollectedAt: time.Now().UTC().Format(time.RFC3339)}
-		connections, traffic, err := CollectConnectionsAndTraffic(ctx)
+		connections, _, err := CollectConnectionsAndTraffic(ctx)
 		if err == nil {
 			push.Connections = toWireConnections(connections)
-		}
-		// The rate reported to the console is proxied traffic. Deriving it
-		// from the host's interface counters made an idle node look busy,
-		// because those counters also carry SSH, updates and everything else
-		// on the machine.
-		if traffic.Available {
-			push.HasNodeTotals = true
-			push.NodeReceivedBytes = traffic.ReceivedBytes
-			push.NodeSentBytes = traffic.SentBytes
-			push.ReceivedBytesRate, push.SentBytesRate, push.HasNodeRates = sampler.Sample(traffic.ReceivedBytes, traffic.SentBytes, time.Now())
 		}
 		body, encodeErr := wire.Encode(push)
 		if encodeErr != nil {
@@ -297,12 +286,11 @@ func RunSession(ctx context.Context, conn *wire.Conn, handler TaskHandler, heart
 				if !streaming {
 					continue
 				}
-				// Coming back from a pause, the sampler's baseline is however
-				// old the pause was. Starting over means the first push after
-				// a console opens carries totals but no rate, and the one a
-				// tick later carries a rate measured over that tick — rather
-				// than an average across the whole time nobody was looking.
-				sampler = TrafficSampler{}
+				// Push straight away rather than waiting for the next tick,
+				// so a console that just opened is not left blank for one
+				// full interval. The master measures nothing from this first
+				// push: its own previous sample is as old as the pause, which
+				// it refuses to divide by.
 				if err := sendConnections(); err != nil {
 					return err
 				}
