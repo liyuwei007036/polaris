@@ -136,7 +136,7 @@ onMounted(load)
 </script>
 
 <template>
-  <MPage title="规则供应商" :loading="loading">
+  <MPage :loading="loading">
     <el-input v-model="keyword" clearable :prefix-icon="Search" placeholder="搜索名称、地址或类型" />
     <div class="m-count">共 {{ filtered.length }} 个供应商</div>
 
@@ -144,7 +144,6 @@ onMounted(load)
       <button type="button" class="m-item__hit" @click="openActions(row)">
         <div class="m-item__head">
           <span class="m-item__title">{{ row.name }}</span>
-          <i class="m-item__chevron" aria-hidden="true">›</i>
         </div>
         <div class="m-item__stats">
           <span class="m-stat"><b>{{ behaviorNames[row.behavior] || row.behavior }}</b><small>规则类型</small></span>

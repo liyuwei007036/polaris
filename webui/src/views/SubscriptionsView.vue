@@ -122,11 +122,17 @@ const selectedNodeNames = computed(() => endpoints.value
   })
   .filter(Boolean))
 const ruleActions = computed(() => [...selectedNodeNames.value, ...selectedGroups.value.map((group) => group.name), 'DIRECT', 'REJECT'])
-// 分组下挂多少个节点，直接标在选项上，不用挨个点开看。
-const groupSummaries = computed(() => Object.fromEntries(proxyGroups.value.map(
-  (group) => [group.id, { count: (group.members || []).length }],
-)))
-// 表格里成员多的分组标签会撑满整列，先显示前几个。
+// 分组下挂多少个节点，直接标在选项上，不用挨个点开看。节点和被引用的分组
+// 分开数：一个「8」既可能是八个节点，也可能是七个节点加一个套着的分组，
+// 那是两件不同的事。
+const groupSummaries = computed(() => Object.fromEntries(proxyGroups.value.map((group) => {
+  const members = group.members || []
+  return [group.id, {
+    nodes: members.filter((member) => member.kind !== 'group').length,
+    nested: members.filter((member) => member.kind === 'group').length,
+  }]
+})))
+// 引用的分组多时标签会撑满整列，先显示前几个。
 const groupPreviewCount = 4
 // Providers are maintained under their own menu; a configuration only picks
 // which of them it uses.
@@ -529,11 +535,11 @@ onMounted(() => { load(); loadAccess() })
                 style="width: 100%"
                 placeholder="选择代理分组"
               >
-                <!-- 图标与成员数量对读屏无意义，隐藏起来，选项名保持为分组名。 -->
+                <!-- 图标与节点数量对读屏无意义，隐藏起来，选项名保持为分组名。 -->
                 <el-option v-for="group in proxyGroups" :key="group.id" :label="`${group.name} · ${strategyNames[group.strategy]}`" :value="group.id">
                   <span>{{ group.name }} · {{ strategyNames[group.strategy] }}</span>
                   <span class="option-meta" aria-hidden="true">
-                    {{ groupSummaries[group.id]?.count || 0 }} 个成员
+                    {{ groupSummaries[group.id]?.nodes || 0 }} 个节点<template v-if="groupSummaries[group.id]?.nested"> · 套 {{ groupSummaries[group.id].nested }} 个分组</template>
                   </span>
                 </el-option>
               </el-select>

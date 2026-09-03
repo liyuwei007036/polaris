@@ -2,15 +2,20 @@
 // 手机上代替弹窗的抽屉：默认从底部升起，full 时占满整屏用于长表单。
 // 关掉它有三条路，够不到哪条都还有别的：往下拖顶部那道横条、点遮罩、
 // 点右上角的 ✕。正在保存的表单可以把 dismissible 关掉。
-import { ref } from 'vue'
+// 底部操作栏里已经有「取消 / 关闭 / 完成」时不再画右上角的 ✕：同一件事
+// 给两个按钮，拇指够得到的那个反而更远。底部只有「确定」这种提交类按钮
+// 的抽屉（多选选择器）必须显式传 keep-close，否则就没有放弃的路了。
+import { ref, useSlots } from 'vue'
 
 const props = defineProps({
   modelValue: { type: Boolean, default: false },
   title: { type: String, default: '' },
   full: { type: Boolean, default: false },
   dismissible: { type: Boolean, default: true },
+  keepClose: { type: Boolean, default: false },
 })
 const emit = defineEmits(['update:modelValue'])
+const slots = useSlots()
 
 // 拖动只跟着手指走，松手时拖过 70px 才算关，否则弹回去。
 const dragOffset = ref(0)
@@ -60,7 +65,13 @@ function onDragEnd() {
           >
             <span v-if="!full" class="m-sheet__grab" aria-hidden="true" />
             <strong>{{ title }}</strong>
-            <button type="button" class="m-sheet__close" aria-label="关闭" @click="emit('update:modelValue', false)">✕</button>
+            <button
+              v-if="keepClose || !slots.footer"
+              type="button"
+              class="m-sheet__close"
+              aria-label="关闭"
+              @click="emit('update:modelValue', false)"
+            >✕</button>
           </header>
           <div class="m-sheet__body"><slot /></div>
           <footer v-if="$slots.footer" class="m-sheet__foot"><slot name="footer" /></footer>

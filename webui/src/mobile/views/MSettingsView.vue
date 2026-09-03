@@ -172,7 +172,7 @@ onMounted(load)
 </script>
 
 <template>
-  <MPage title="系统设置" :loading="loading">
+  <MPage :loading="loading">
     <MSegmented v-model="tab" :options="tabs" />
 
     <template v-if="tab === 'account'">
@@ -196,7 +196,6 @@ onMounted(load)
             <span class="m-item__title">{{ row.username }}</span>
             <span v-if="row.must_change_password" class="m-pill m-pill--warning">待改密码</span>
             <span v-if="!row.enabled" class="m-pill m-pill--info">停用</span>
-            <i class="m-item__chevron" aria-hidden="true">›</i>
           </div>
           <div class="m-item__stats">
             <span class="m-stat"><b>{{ roleNames[row.role] || row.role }}</b><small>权限</small></span>

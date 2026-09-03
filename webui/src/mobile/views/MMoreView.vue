@@ -87,7 +87,7 @@ async function confirmLogout() {
 </script>
 
 <template>
-  <MPage title="更多">
+  <MPage>
     <section class="m-card who">
       <span class="who__avatar"><el-icon :size="20"><User /></el-icon></span>
       <span class="who__info">

@@ -86,6 +86,22 @@ async function loadEndpoints(listenerID) {
   endpointMap.value = { ...endpointMap.value, [listenerID]: result.endpoints || [] }
 }
 
+// 一眼分出协议：同一台服务器上常同时挂着 VLESS 和 Hysteria2，两者的端口
+// 行为和排障方向都不一样，用颜色区分比逐条读字快。
+const protocolPills = { vless: 'm-pill--accent', hysteria2: 'm-pill--success' }
+function protocolPill(listener) {
+  return protocolPills[listener.spec?.protocol] || 'm-pill--info'
+}
+
+function protocolLabel(listener) {
+  return protocolMap[listener.spec?.protocol]?.label || listener.spec?.protocol || '未知协议'
+}
+
+function transportLabel(listener) {
+  const network = (listener.spec?.network || 'tcp').toUpperCase()
+  return listener.spec?.transport?.type ? `${network} · ${listener.spec.transport.type}` : network
+}
+
 function securityLabel(listener) {
   if (listener.spec?.reality?.enabled) return 'Reality'
   if (listener.spec?.tls?.enabled) return 'TLS'
@@ -107,9 +123,9 @@ const details = computed(() => {
   return [
     { label: '所在服务器', value: nodeNames.value[row.node_id] || row.node_id },
     { label: '连接地址', value: addressText(row), mono: true },
-    { label: '协议', value: protocolMap[row.spec?.protocol]?.label || row.spec?.protocol || '—' },
+    { label: '协议', value: protocolLabel(row) },
     { label: '加密', value: securityLabel(row) },
-    { label: '传输', value: `${(row.spec?.network || 'tcp').toUpperCase()}${row.spec?.transport?.type ? ` · ${row.spec.transport.type}` : ''}` },
+    { label: '传输', value: transportLabel(row) },
     { label: '用户数', value: `${row.endpoint_count ?? 0} 位` },
     { label: '状态', value: row.enabled ? '启用' : '停用' },
   ]
@@ -292,7 +308,7 @@ onMounted(load)
 </script>
 
 <template>
-  <MPage title="接入服务" :loading="loading">
+  <MPage :loading="loading">
     <div class="m-listbar">
       <el-input v-model="keyword" clearable :prefix-icon="Search" placeholder="搜索服务、协议或端口" />
       <div class="m-filters">
@@ -310,12 +326,12 @@ onMounted(load)
       <button type="button" class="m-item__hit" @click="openActions(row)">
         <div class="m-item__head">
           <span class="m-item__title">{{ row.name }}</span>
+          <span class="m-pill" :class="protocolPill(row)">{{ protocolLabel(row) }}</span>
           <span v-if="!row.enabled" class="m-pill m-pill--info">停用</span>
-          <i class="m-item__chevron" aria-hidden="true">›</i>
         </div>
         <div class="m-item__stats">
-          <span class="m-stat"><b>{{ protocolMap[row.spec?.protocol]?.label || row.spec?.protocol }}</b><small>协议</small></span>
           <span class="m-stat"><b>{{ securityLabel(row) }}</b><small>加密</small></span>
+          <span class="m-stat"><b>{{ transportLabel(row) }}</b><small>传输</small></span>
           <span class="m-stat"><b>{{ row.endpoint_count ?? 0 }}</b><small>用户</small></span>
         </div>
         <div class="m-item__meta">{{ nodeNames[row.node_id] || row.node_id }} · {{ addressText(row) }}</div>

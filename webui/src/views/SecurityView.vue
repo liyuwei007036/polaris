@@ -27,21 +27,6 @@ const keyword = ref('')
 const nodeNames = computed(() => Object.fromEntries(appState.nodes.map((node) => [node.id, node.name])))
 const nodeName = (nodeID) => nodeNames.value[nodeID] || nodeID
 
-// Servers that could not be read are called out on their own. Showing an empty
-// table for them would read as "this server has no restrictions", which is the
-// opposite of what is known about it. They are summarised in one line rather
-// than one each, so a handful of offline servers cannot push the rules off the
-// screen.
-const unreachable = computed(() => {
-  const reasons = {}
-  for (const node of firewallNodes.value) if (node.error) reasons[node.node_id] = node.error
-  for (const node of fail2banNodes.value) if (node.error && !reasons[node.node_id]) reasons[node.node_id] = node.error
-  const entries = Object.entries(reasons).filter(([nodeID]) => !selectedNode.value || nodeID === selectedNode.value)
-  if (!entries.length) return ''
-  const names = entries.map(([nodeID]) => nodeName(nodeID)).join('、')
-  return `${names}：${entries[0][1]}`
-})
-
 // What each server's own firewall decides about each port it names — opened or
 // refused. That is the whole of access restriction: a rule that blocks one
 // address says nothing about which ports a server offers, so address bans are
@@ -70,24 +55,6 @@ function sourceLabel(row) {
     return location ? `${source} · ${location}` : source
   }).join('、')
 }
-
-// A server whose firewall lets everything in has no meaningful port list: the
-// ports below are only the ones written down, not the only ones reachable.
-// Saying so is the difference between a useful list and a misleading one.
-const wideOpenNodes = computed(() => firewallNodes.value
-  .filter((node) => node.available && node.default_incoming === 'accept')
-  .filter((node) => !selectedNode.value || node.node_id === selectedNode.value)
-  .map((node) => nodeName(node.node_id)))
-
-// A server with more rules than one answer carries only reported part of them,
-// and on a server with no ufw or firewalld the list below is worked out from
-// that answer. Automatic banning is what fills a ruleset up — one rule per
-// blocked address — so this is exactly the case where a port could be missing,
-// and a short list that does not say it is short is a wrong answer.
-const truncatedNodes = computed(() => firewallNodes.value
-  .filter((node) => node.truncated)
-  .filter((node) => !selectedNode.value || node.node_id === selectedNode.value)
-  .map((node) => nodeName(node.node_id)))
 
 const jails = computed(() => fail2banNodes.value.flatMap((node) => (node.jails || [])
   .map((jail) => ({ ...jail, key: `${node.node_id}-${jail.name}` })))
@@ -328,26 +295,12 @@ onMounted(load)
   <div class="page-shell">
     <PageHeader title="网络防护"><el-button :icon="Refresh" :loading="loading" @click="load">刷新</el-button></PageHeader>
     <main class="page-content page-content--tight">
-      <el-alert
-        title="这里显示的是各台服务器上正在生效的防火墙与封禁规则，每次打开或刷新都会实时读取；添加和删除会立即写入服务器。"
-        type="info" show-icon :closable="false" style="margin-bottom: 12px" />
-      <el-alert
-        v-if="unreachable" :title="unreachable"
-        type="warning" show-icon :closable="false" style="margin-bottom: 8px" />
       <div class="search-toolbar">
         <el-input v-model="keyword" clearable :prefix-icon="Search" placeholder="搜索服务器、地址或规则" style="width: 270px" />
         <el-select v-model="selectedNode" clearable placeholder="全部服务器" style="width: 220px">
           <el-option v-for="node in appState.nodes" :key="node.id" :label="node.name" :value="node.id" />
         </el-select>
       </div>
-      <el-alert
-        v-if="wideOpenNodes.length" :closable="false" show-icon type="warning"
-        :title="`${wideOpenNodes.join('、')} 的防火墙默认放行所有入站流量，下面列出的端口不是全部可访问的端口。`"
-        style="margin-bottom: 8px" />
-      <el-alert
-        v-if="truncatedNodes.length" :closable="false" show-icon type="warning"
-        :title="`${truncatedNodes.join('、')} 的防火墙规则过多，只读取了前面一部分，下面的端口可能不全。`"
-        style="margin-bottom: 8px" />
       <div class="table-panel">
         <el-tabs v-model="tab" class="panel-tabs">
           <el-tab-pane :label="`访问限制（${portRules.length}）`" name="ports">

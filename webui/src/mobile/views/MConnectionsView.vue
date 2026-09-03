@@ -38,6 +38,13 @@ function entryLabel(connection) {
   return connection.user || connection.listener_name || '—'
 }
 
+// 卡上的脚注：从哪个入站节点进来、从哪个地址来的。服务器名不在这里 ——
+// 一条连接落在哪台机器上是筛选用的条件，不是认出这条连接靠的东西。
+function sourceLine(row) {
+  return [row.entry !== '—' ? row.entry : '', row.source_ip || row.source, row.source_location]
+    .filter(Boolean).join(' · ') || '未知来源'
+}
+
 const rows = computed(() => [...connectionSnapshots.value.values()].flatMap((result) => {
   const node = appState.nodes.find((item) => item.id === result.node_id)
   return (result.connections || []).map((connection) => ({
@@ -125,7 +132,7 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <MPage title="当前连接" :loading="loading">
+  <MPage :loading="loading">
     <div class="m-listbar">
       <el-input v-model="keyword" clearable :prefix-icon="Search" placeholder="搜索 IP、目标、入站节点或出口" />
       <div class="m-filters">
@@ -136,18 +143,23 @@ onBeforeUnmount(() => {
     <div class="m-count">{{ filteredRows.length }} 条 · 采集于 {{ formatDateTime(collectedAt, '暂无数据') }}</div>
 
     <article v-for="row in shown" :key="`${row.node_id}/${row.id}`" class="m-item">
-      <button type="button" class="m-item__hit" @click="openDetail(row)">
-        <div class="m-item__head">
-          <span class="m-item__title m-item__title--mono">{{ row.target }}</span>
-          <span class="m-pill m-pill--accent">{{ row.exit }}</span>
-          <i class="m-item__chevron" aria-hidden="true">›</i>
+      <!-- 出口靠右居中：目标、速率、来源三层是这条连接「是什么」，出口是它
+           「走哪儿出去」，两件事分列左右比串在标题行里挤更好认。 -->
+      <button type="button" class="m-item__hit conn" @click="openDetail(row)">
+        <div class="conn__main">
+          <div class="m-item__head">
+            <span class="m-item__title m-item__title--mono">{{ row.target }}</span>
+            <span class="m-pill m-pill--info">{{ (row.network || '').toUpperCase() || '—' }}</span>
+          </div>
+          <!-- 出口占掉右边一截后，三格速率会把「4.60 MB/s」截成「4.60 M…」。
+               TCP/UDP 是个短标签，挪到标题行；留下的两格才装得下完整的数。 -->
+          <div class="m-item__stats">
+            <span class="m-stat"><b>↓ {{ row.has_rates ? formatBytes(row.download_rate, '/s') : '—' }}</b><small>实时下行</small></span>
+            <span class="m-stat"><b>↑ {{ row.has_rates ? formatBytes(row.upload_rate, '/s') : '—' }}</b><small>实时上行</small></span>
+          </div>
+          <div class="m-item__meta">{{ sourceLine(row) }}</div>
         </div>
-        <div class="m-item__stats">
-          <span class="m-stat"><b>↓ {{ row.has_rates ? formatBytes(row.download_rate, '/s') : '—' }}</b><small>实时下行</small></span>
-          <span class="m-stat"><b>↑ {{ row.has_rates ? formatBytes(row.upload_rate, '/s') : '—' }}</b><small>实时上行</small></span>
-          <span class="m-stat"><b>{{ (row.network || '').toUpperCase() || '—' }}</b><small>网络</small></span>
-        </div>
-        <div class="m-item__meta">{{ [row.source_ip || row.source, row.source_location, row.node_name].filter(Boolean).join(' · ') || '未知来源' }}</div>
+        <span class="conn__exit">{{ row.exit }}</span>
       </button>
     </article>
 
@@ -159,3 +171,22 @@ onBeforeUnmount(() => {
     <MActionSheet v-model="detailOpen" :title="detailTarget?.target" :details="details" />
   </MPage>
 </template>
+<style scoped>
+.conn { display: flex; align-items: center; gap: 10px; }
+.conn__main { flex: 1; min-width: 0; }
+/* 出口名长短不一（DIRECT、直连、机场名），宽了就折行而不是截断：
+   一条连接走哪儿出去是排障的落点，截成「美国家宽…」等于没写。 */
+.conn__exit {
+  flex: none;
+  max-width: 34%;
+  padding: 6px 11px;
+  color: #7dd3fc;
+  background: rgba(56, 189, 248, .14);
+  border-radius: 12px;
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.4;
+  text-align: center;
+  word-break: break-word;
+}
+</style>

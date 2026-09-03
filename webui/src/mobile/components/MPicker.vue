@@ -94,7 +94,8 @@ function chosen(option) {
     <span class="m-picker__arrow" aria-hidden="true">›</span>
   </button>
 
-  <MSheet v-model="open" :title="title" full>
+  <!-- 底部只有「清空 / 确定」，两个都不是放弃：右上角的 ✕ 是唯一的退路。 -->
+  <MSheet v-model="open" :title="title" full keep-close>
     <div class="m-picker__search">
       <el-input v-model="keyword" clearable placeholder="搜索" />
     </div>

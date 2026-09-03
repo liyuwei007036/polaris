@@ -158,9 +158,16 @@ function statOf(node, pick) {
   return formatBytes(pick === 'down' ? snapshot.received_rate : snapshot.sent_rate, '/s')
 }
 
-function metaLine(node) {
-  if (!node.online) return `离线 · 最后在线 ${formatDateTime(node.last_seen_at, '从未在线')}`
-  return [node.os, node.architecture, node.agent_version && `agent ${node.agent_version}`].filter(Boolean).join(' · ') || '等待上报系统信息'
+// 脚注答的是「客户端连的是哪个地址」和「这台机器到现在搬了多少数据」。
+// 系统、架构、版本号看一眼就够，留在详情里，不和这两条抢同一行。
+function totalText(node) {
+  const proxy = metrics.value[node.id]?.proxy
+  if (!proxy) return '累计流量等待上报'
+  return `累计 ↓ ${formatBytes(proxy.received_bytes)} · ↑ ${formatBytes(proxy.sent_bytes)}`
+}
+
+function addressText(node) {
+  return node.client_address || '未填写连接地址'
 }
 
 const details = computed(() => {
@@ -264,7 +271,7 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <MPage title="服务器" :loading="loading">
+  <MPage :loading="loading">
     <div class="m-listbar">
       <el-input v-model="keyword" clearable :prefix-icon="Search" placeholder="搜索名称、地址或版本" />
       <div class="m-filters">
@@ -300,14 +307,15 @@ onBeforeUnmount(() => {
           </span>
           <span v-if="!node.client_address" class="m-pill m-pill--warning">缺地址</span>
           <span v-if="agentUpdateAvailable(node)" class="m-pill m-pill--warning">可升级</span>
-          <i class="m-item__chevron" aria-hidden="true">›</i>
         </div>
         <div class="m-item__stats">
           <span class="m-stat"><b :class="{ 'is-muted': !node.online }">↓ {{ statOf(node, 'down') }}</b><small>实时下行</small></span>
           <span class="m-stat"><b :class="{ 'is-muted': !node.online }">↑ {{ statOf(node, 'up') }}</b><small>实时上行</small></span>
           <span class="m-stat"><b :class="{ 'is-muted': !node.online }">{{ statOf(node, 'connections') }}</b><small>活动连接</small></span>
         </div>
-        <div class="m-item__meta">{{ metaLine(node) }}</div>
+        <div class="m-item__meta">{{ addressText(node) }} · {{ totalText(node) }}</div>
+        <!-- 离线这件事状态点已经说了，但「最后一次在线是什么时候」只有写出来才知道。 -->
+        <div v-if="!node.online" class="m-item__meta">离线 · 最后在线 {{ formatDateTime(node.last_seen_at, '从未在线') }}</div>
       </button>
     </article>
 

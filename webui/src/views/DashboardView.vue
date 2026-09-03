@@ -34,6 +34,16 @@ const protocolColors = { TCP: '#38bdf8', UDP: '#34d399', 其他: '#64748b' }
 const chartInk = { title: '#e8eef8', label: '#8496b0', line: 'rgba(148,163,184,.22)', split: 'rgba(148,163,184,.10)', empty: 'rgba(148,163,184,.16)' }
 const chartTooltip = { backgroundColor: '#101a2c', borderColor: 'rgba(148,163,184,.28)', textStyle: { color: chartInk.title, fontSize: 12 } }
 const chartLegend = { bottom: 10, textStyle: { color: chartInk.label } }
+// 环形图上的数字：一根引导线牵到环外。数值直接写在图上，不必先悬停出提示，
+// 也不必对着图例猜哪一段是哪一个。
+function donutLabels(formatter, show) {
+  return {
+    label: show ? { show: true, color: chartInk.title, fontSize: 12, formatter } : { show: false },
+    labelLine: show
+      ? { show: true, length: 14, length2: 14, lineStyle: { color: chartInk.line } }
+      : { show: false },
+  }
+}
 let stopLive
 let stopTotals
 let refreshTimer
@@ -129,10 +139,20 @@ function renderCharts() {
     // 没有流量时只显示占位圆环，不要把占位用的 1 当成流量报出来。
     tooltip: { ...chartTooltip, trigger: 'item', formatter: ({ name, value }) => (totals > 0 ? `${name}<br>${formatBytes(value)}` : name) },
     legend: { ...chartLegend, show: totals > 0 },
-    series: [{ type: 'pie', silent: totals === 0, radius: ['48%', '70%'], center: ['50%', '49%'], label: { show: false }, itemStyle: { borderColor: '#0e1524', borderWidth: 2 }, data: totals > 0 ? [
-      { name: '下载', value: cumulative.value.download, itemStyle: { color: '#38bdf8' } },
-      { name: '上传', value: cumulative.value.upload, itemStyle: { color: '#34d399' } },
-    ] : [{ name: '暂无流量', value: 1, itemStyle: { color: chartInk.empty } }] }],
+    series: [{
+      type: 'pie',
+      silent: totals === 0,
+      // 引导线和标签要占掉环两边各 60px 上下，环得比原来收一档才不会被面板裁掉。
+      radius: ['38%', '55%'],
+      center: ['50%', '48%'],
+      avoidLabelOverlap: true,
+      ...donutLabels(({ value }) => formatBytes(value), totals > 0),
+      itemStyle: { borderColor: '#0e1524', borderWidth: 2 },
+      data: totals > 0 ? [
+        { name: '下载', value: cumulative.value.download, itemStyle: { color: '#38bdf8' } },
+        { name: '上传', value: cumulative.value.upload, itemStyle: { color: '#34d399' } },
+      ] : [{ name: '暂无流量', value: 1, itemStyle: { color: chartInk.empty } }],
+    }],
   }, true)
   charts[2].setOption({
     ...chartBase('活动连接'),
@@ -152,19 +172,35 @@ function renderCharts() {
       formatter: ({ name, value, percent }) => (protocolCounts.length ? `${name}<br>${value} 条连接（${percent}%）` : name),
     },
     legend: { ...chartLegend, show: protocolCounts.length > 0 },
-    series: [{ type: 'pie', silent: protocolCounts.length === 0, radius: ['48%', '70%'], center: ['50%', '49%'], label: { show: false }, itemStyle: { borderColor: '#0e1524', borderWidth: 2 }, data: protocolCounts.length
-      ? protocolCounts.map(([name, value]) => ({ name, value, itemStyle: { color: protocolColors[name] || '#64748b' } }))
-      : [{ name: '暂无连接', value: 1, itemStyle: { color: chartInk.empty } }] }],
+    series: [{
+      type: 'pie',
+      silent: protocolCounts.length === 0,
+      radius: ['38%', '55%'],
+      center: ['50%', '48%'],
+      avoidLabelOverlap: true,
+      ...donutLabels(({ value }) => `${value} 条`, protocolCounts.length > 0),
+      itemStyle: { borderColor: '#0e1524', borderWidth: 2 },
+      data: protocolCounts.length
+        ? protocolCounts.map(([name, value]) => ({ name, value, itemStyle: { color: protocolColors[name] || '#64748b' } }))
+        : [{ name: '暂无连接', value: 1, itemStyle: { color: chartInk.empty } }],
+    }],
   }, true)
   const popular = fleetTotals.value?.popular_nodes || []
   charts[4].setOption({
     ...chartBase(`热门节点（最近 ${Number(fleetTotals.value?.popular_window_minutes) || 10} 分钟）`),
-    grid: { left: 148, right: 28, top: 58, bottom: 24 },
+    grid: { left: 148, right: 52, top: 58, bottom: 24 },
     tooltip: { ...chartTooltip, trigger: 'axis', formatter: (items) => `${items[0].name}<br>${items[0].value} 次连接` },
     xAxis: { ...axis, type: 'value', minInterval: 1 },
     // 这一列是名称而不是刻度，用标题的亮度写，暗一档在深底上就糊了。
     yAxis: { ...axis, type: 'category', inverse: true, data: popular.map((item) => item.name), axisLabel: { ...axis.axisLabel, color: chartInk.title, width: 128, overflow: 'truncate' } },
-    series: [{ type: 'bar', data: popular.map((item) => item.count), barMaxWidth: 16, itemStyle: { color: '#22d3ee', borderRadius: [0, 3, 3, 0] } }],
+    series: [{
+      type: 'bar',
+      data: popular.map((item) => item.count),
+      barMaxWidth: 16,
+      // 数字写在柱子末端：横条上比长短要来回对轴上的刻度，直接写出来省这一步。
+      label: { show: true, position: 'right', color: chartInk.title, fontSize: 11, formatter: '{c}' },
+      itemStyle: { color: '#22d3ee', borderRadius: [0, 3, 3, 0] },
+    }],
   }, true)
 }
 

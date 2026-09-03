@@ -122,7 +122,7 @@ onMounted(() => { loadTasks(); loadAudit() })
 </script>
 
 <template>
-  <MPage title="操作记录" :loading="loading">
+  <MPage :loading="loading">
     <MSegmented v-model="tab" :options="tabs" />
     <div class="m-count">保留最近 7 天 · 时间按 {{ timeZoneLabel }} 显示</div>
 

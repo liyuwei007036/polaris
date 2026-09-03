@@ -189,7 +189,7 @@ onMounted(load)
 </script>
 
 <template>
-  <MPage title="上网出口" :loading="loading">
+  <MPage :loading="loading">
     <el-input v-model="keyword" clearable :prefix-icon="Search" placeholder="搜索名称、地址或用户" />
     <div class="m-filters">
       <MSegmented
@@ -203,7 +203,6 @@ onMounted(load)
         <div class="m-item__head">
           <span class="m-item__title">{{ row.name }}</span>
           <span v-if="!row.enabled" class="m-pill m-pill--info">停用</span>
-          <i class="m-item__chevron" aria-hidden="true">›</i>
         </div>
         <div class="m-item__stats">
           <span class="m-stat"><b>{{ row.type.toUpperCase() }}</b><small>类型</small></span>

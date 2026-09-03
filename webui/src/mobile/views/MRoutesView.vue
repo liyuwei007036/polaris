@@ -200,7 +200,7 @@ onMounted(load)
 </script>
 
 <template>
-  <MPage title="服务器访问规则" :loading="loading">
+  <MPage :loading="loading">
     <el-input v-model="keyword" clearable :prefix-icon="Search" placeholder="搜索匹配条件或处理方式" />
     <div class="m-filters">
       <MPicker v-model="selectedNode" chip :options="nodeFilterOptions" title="按服务器筛选" placeholder="全部服务器" />
@@ -216,7 +216,6 @@ onMounted(load)
         <div class="m-item__head">
           <span class="m-item__title">{{ matchText(row) }}</span>
           <span v-if="!row.enabled" class="m-pill m-pill--info">停用</span>
-          <i class="m-item__chevron" aria-hidden="true">›</i>
         </div>
         <div class="m-item__stats">
           <span class="m-stat">

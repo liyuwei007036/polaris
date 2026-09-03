@@ -29,22 +29,25 @@ const actionTarget = ref(null)
 const supported = new Set(['vless', 'hysteria2'])
 const strategyNames = { select: '手动选择', 'url-test': '自动测速', fallback: '故障切换' }
 
-const clientNodes = computed(() => listeners.value
-  .filter((listener) => listener.enabled && supported.has(listener.spec?.protocol))
-  .flatMap((listener) => endpoints.value
-    .filter((endpoint) => endpoint.listener_id === listener.id && endpoint.enabled)
-    .map((endpoint) => {
-      const node = appState.nodes.find((item) => item.id === listener.node_id)
-      const address = listener.connection_domain || node?.client_address || ''
-      const name = endpoint.alias || `${node?.name || listener.node_id} · ${listener.name} · ${endpoint.name}`
-      return {
-        id: endpoint.id,
-        label: name,
-        desc: `${protocolMap[listener.spec?.protocol]?.label || listener.spec?.protocol} · ${address ? `${address}:${listener.port}` : '未填写连接地址'}`,
-        disabled: !address,
-      }
-    })))
-const nodeNames = computed(() => Object.fromEntries(clientNodes.value.map((item) => [item.id, item.label])))
+// 停用的接入服务和用户不筛掉：一个分组里「洛杉矶 40 这条停用了」和「这一条
+// 指向的东西已经没了」是两回事，都显示成「节点已失效」等于把前者说成了后者。
+// 停用只是换个颜色，名字照写；选项里也留着，否则编辑一次就把它从分组里抹掉了。
+const clientNodes = computed(() => endpoints.value.flatMap((endpoint) => {
+  const listener = listeners.value.find((item) => item.id === endpoint.listener_id)
+  if (!listener || !supported.has(listener.spec?.protocol)) return []
+  const node = appState.nodes.find((item) => item.id === listener.node_id)
+  const address = listener.connection_domain || node?.client_address || ''
+  const enabled = Boolean(listener.enabled && endpoint.enabled)
+  const protocol = protocolMap[listener.spec?.protocol]?.label || listener.spec?.protocol
+  return [{
+    id: endpoint.id,
+    label: endpoint.alias || `${node?.name || listener.node_id} · ${listener.name} · ${endpoint.name}`,
+    desc: `${protocol} · ${address ? `${address}:${listener.port}` : '未填写连接地址'}${enabled ? '' : ' · 已停用'}`,
+    enabled,
+    disabled: !address,
+  }]
+}))
+const nodeStates = computed(() => Object.fromEntries(clientNodes.value.map((item) => [item.id, item])))
 const groupNames = computed(() => Object.fromEntries(groups.value.map((item) => [item.id, item.name])))
 const memberOptions = computed(() => [
   ...clientNodes.value.map((node) => ({ value: `endpoint:${node.id}`, label: node.label, desc: node.desc, disabled: node.disabled, group: '接入节点' })),
@@ -82,9 +85,46 @@ async function load() {
   }
 }
 
-function memberLabel(member) {
-  return member.kind === 'group' ? groupNames.value[member.id] || '分组已失效' : nodeNames.value[member.id] || '节点已失效'
+// 三种状态要分开：正常、停用（名字照写，换个颜色）、真的指不到东西了。
+function resolveMember(member) {
+  if (member.kind === 'group') {
+    const name = groupNames.value[member.id]
+    return { name: name || '分组已失效', missing: !name, off: false }
+  }
+  const state = nodeStates.value[member.id]
+  if (!state) return { name: '节点已失效', missing: true, off: false }
+  return { name: state.label, missing: false, off: !state.enabled }
 }
+
+// 详情里一行一个，停用的橙、指不到的红。
+const toneOf = (item) => (item.missing ? { text: item.name, tone: 'danger' } : item.off ? { text: item.name, tone: 'warning' } : item.name)
+
+function memberLabel(member) {
+  return resolveMember(member).name
+}
+
+// 一个分组挂着什么，其实是三个不同的问题：里面有几个节点、引用了几个别的
+// 分组、有几条已经指不到东西了。原来卡上只有一个「成员」总数，把这三样
+// 揉成一个数字，结果既数不出有多少个节点，也看不出里面混着几条坏的。
+const summaries = computed(() => Object.fromEntries(groups.value.map((group) => {
+  const members = group.members || []
+  const nodes = members.filter((member) => member.kind !== 'group').map(resolveMember)
+  const nested = members.filter((member) => member.kind === 'group').map(resolveMember)
+  return [group.id, {
+    nodes,
+    nested,
+    broken: [...nodes, ...nested].filter((member) => member.missing).length,
+  }]
+})))
+
+const emptySummary = { nodes: [], nested: [], broken: 0 }
+const summaryOf = (group) => summaries.value[group.id] || emptySummary
+
+// 卡上只摆得下前几个名字，剩下的折成一个计数。全部铺开时十几枚标签会把
+// 一张卡撑到大半屏，一屏就只剩两个分组。
+const PREVIEW = 3
+const previewNodes = (group) => summaryOf(group).nodes.slice(0, PREVIEW)
+const restCount = (group) => Math.max(0, summaryOf(group).nodes.length - PREVIEW)
 
 function openForm(group = null) {
   editing.value = group
@@ -96,13 +136,6 @@ function openForm(group = null) {
   sheetOpen.value = true
 }
 
-// 成员在卡上压成一行：一个分组挂十几个节点时，一节点一枚药丸会把卡撑成三四行。
-function memberSummary(group) {
-  const members = (group.members || []).map((member) => memberLabel(member))
-  if (!members.length) return '还没有成员，客户端会拿到一个空分组'
-  return members.join(' · ')
-}
-
 function openActions(group) {
   actionTarget.value = group
   actionsOpen.value = true
@@ -111,10 +144,15 @@ function openActions(group) {
 const details = computed(() => {
   const group = actionTarget.value
   if (!group) return []
-  return [
+  const summary = summaryOf(group)
+  // 节点一行一个：挤成一段用「·」隔开时，十几个名字会流成一整块，
+  // 既数不清有几个，也认不出具体是哪几个。
+  const list = [
     { label: '选点方式', value: strategyNames[group.strategy] || group.strategy },
-    { label: '成员', value: memberSummary(group) },
+    { label: `节点（${summary.nodes.length}）`, list: summary.nodes.map(toneOf), empty: '这个分组里还没有节点' },
   ]
+  if (summary.nested.length) list.push({ label: `引用分组（${summary.nested.length}）`, list: summary.nested.map(toneOf) })
+  return list
 })
 
 const actions = computed(() => {
@@ -161,21 +199,37 @@ onMounted(load)
 </script>
 
 <template>
-  <MPage title="代理分组" :loading="loading">
-    <el-input v-model="keyword" clearable :prefix-icon="Search" placeholder="搜索分组或成员" />
+  <MPage :loading="loading">
+    <el-input v-model="keyword" clearable :prefix-icon="Search" placeholder="搜索分组或节点" />
     <div class="m-count">共 {{ filteredGroups.length }} 个分组</div>
 
     <article v-for="group in filteredGroups" :key="group.id" class="m-item">
       <button type="button" class="m-item__hit" @click="openActions(group)">
         <div class="m-item__head">
           <span class="m-item__title">{{ group.name }}</span>
-          <i class="m-item__chevron" aria-hidden="true">›</i>
+          <span class="m-pill m-pill--accent">{{ strategyNames[group.strategy] }}</span>
         </div>
         <div class="m-item__stats">
-          <span class="m-stat"><b>{{ strategyNames[group.strategy] }}</b><small>选点方式</small></span>
-          <span class="m-stat"><b>{{ (group.members || []).length }}</b><small>成员</small></span>
+          <span class="m-stat"><b>{{ summaryOf(group).nodes.length }}</b><small>节点</small></span>
+          <span class="m-stat">
+            <b :class="{ 'is-muted': !summaryOf(group).nested.length }">{{ summaryOf(group).nested.length }}</b>
+            <small>引用分组</small>
+          </span>
+          <span class="m-stat">
+            <b :class="summaryOf(group).broken ? 'm-danger' : 'is-muted'">{{ summaryOf(group).broken }}</b>
+            <small>已失效</small>
+          </span>
         </div>
-        <div class="m-item__meta">{{ memberSummary(group) }}</div>
+        <div v-if="previewNodes(group).length" class="picks">
+          <span
+            v-for="(item, index) in previewNodes(group)"
+            :key="index"
+            class="pick"
+            :class="{ 'is-off': item.off, 'is-broken': item.missing }"
+          >{{ item.name }}</span>
+          <span v-if="restCount(group)" class="pick pick--more">还有 {{ restCount(group) }} 个</span>
+        </div>
+        <div v-else class="m-item__meta">还没有节点，客户端会拿到一个空分组</div>
       </button>
     </article>
 
@@ -193,8 +247,8 @@ onMounted(load)
         <MPicker v-model="form.strategy" :options="Object.entries(strategyNames).map(([value, label]) => ({ value, label }))" title="选择策略" />
       </div>
       <div class="m-field">
-        <label class="m-field__label">分组成员 <em>*</em></label>
-        <MPicker v-model="memberKeys" :options="memberOptions" multiple title="选择分组成员" placeholder="选择节点或代理分组" />
+        <label class="m-field__label">包含的节点 <em>*</em></label>
+        <MPicker v-model="memberKeys" :options="memberOptions" multiple title="选择节点或分组" placeholder="选择节点或代理分组" />
         <div class="m-field__hint">没有填写连接地址的节点无法加入分组。</div>
       </div>
       <template #footer>
@@ -210,3 +264,25 @@ onMounted(load)
     </template>
   </MPage>
 </template>
+
+<style scoped>
+/* 前几个节点名摆成标签，剩下的折成一个计数：一眼能认出这个分组里
+   大致是哪一批线路，又不会被十几枚标签撑成大半屏。 */
+.picks { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 9px; }
+.pick {
+  max-width: 100%;
+  padding: 4px 9px;
+  color: var(--sb-text-2);
+  background: rgba(148, 163, 184, .09);
+  border-radius: 8px;
+  font-size: 11.5px;
+  line-height: 1.5;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.pick--more { color: var(--sb-muted); background: transparent; border: 1px dashed var(--sb-line); }
+/* 停用的照常写名字，只换颜色；真的指不到东西了才是红的。 */
+.pick.is-off { color: #fcd34d; background: rgba(251, 191, 36, .10); }
+.pick.is-broken { color: var(--sb-danger); background: rgba(251, 113, 133, .10); }
+</style>

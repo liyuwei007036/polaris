@@ -33,6 +33,19 @@ const protocolColors = { TCP: '#38bdf8', UDP: '#34d399', 其他: '#64748b' }
 const chartInk = { title: '#e8eef8', label: '#8496b0', line: 'rgba(148,163,184,.22)', split: 'rgba(148,163,184,.10)', empty: 'rgba(148,163,184,.16)' }
 const chartTooltip = { backgroundColor: '#101a2c', borderColor: 'rgba(148,163,184,.28)', textStyle: { color: chartInk.title, fontSize: 12 } }
 const chartLegend = { bottom: 4, itemWidth: 14, itemHeight: 8, textStyle: { color: chartInk.label, fontSize: 11 } }
+// 环形图上的数字：一根引导线牵到环外。这要求图有整行的宽度——两张并排时每张
+// 只剩 178px，一个「203.88 GB」连引导线要 110px，两边加起来放不下，标签会溢出
+// 卡片压住标题。所以这两张图改成各占一整行（见 .chart-pair）。
+function donutLabels(formatter, show) {
+  return {
+    label: show
+      ? { show: true, color: chartInk.title, fontSize: 11, formatter }
+      : { show: false },
+    labelLine: show
+      ? { show: true, length: 12, length2: 12, lineStyle: { color: chartInk.line } }
+      : { show: false },
+  }
+}
 // 节点按秒上报，手机上保留一分钟——再长在这块屏上也分辨不出来，还费电。
 const historyLength = 60
 let stopLive
@@ -147,10 +160,19 @@ function renderCharts() {
     // 没有流量时只画占位圆环，不要把占位用的 1 当成流量报出来。
     tooltip: { ...chartTooltip, trigger: 'item', confine: true, formatter: ({ name, value }) => (totals > 0 ? `${name}<br>${formatBytes(value)}` : name) },
     legend: { ...chartLegend, show: totals > 0 },
-    series: [{ type: 'pie', silent: totals === 0, radius: ['46%', '68%'], center: ['50%', '48%'], label: { show: false }, itemStyle: { borderColor: '#0e1524', borderWidth: 2 }, data: totals > 0 ? [
-      { name: '下载', value: cumulative.value.download, itemStyle: { color: '#38bdf8' } },
-      { name: '上传', value: cumulative.value.upload, itemStyle: { color: '#34d399' } },
-    ] : [{ name: '暂无流量', value: 1, itemStyle: { color: chartInk.empty } }] }],
+    series: [{
+      type: 'pie',
+      silent: totals === 0,
+      radius: ['40%', '58%'],
+      center: ['50%', '48%'],
+      avoidLabelOverlap: true,
+      ...donutLabels(({ value }) => formatBytes(value), totals > 0),
+      itemStyle: { borderColor: '#0e1524', borderWidth: 2 },
+      data: totals > 0 ? [
+        { name: '下载', value: cumulative.value.download, itemStyle: { color: '#38bdf8' } },
+        { name: '上传', value: cumulative.value.upload, itemStyle: { color: '#34d399' } },
+      ] : [{ name: '暂无流量', value: 1, itemStyle: { color: chartInk.empty } }],
+    }],
   }, true)
   charts[2].setOption({
     ...chartBase('活动连接'),
@@ -171,19 +193,35 @@ function renderCharts() {
       formatter: ({ name, value, percent }) => (protocolCounts.length ? `${name}<br>${value} 条连接（${percent}%）` : name),
     },
     legend: { ...chartLegend, show: protocolCounts.length > 0 },
-    series: [{ type: 'pie', silent: protocolCounts.length === 0, radius: ['46%', '68%'], center: ['50%', '48%'], label: { show: false }, itemStyle: { borderColor: '#0e1524', borderWidth: 2 }, data: protocolCounts.length
-      ? protocolCounts.map(([name, value]) => ({ name, value, itemStyle: { color: protocolColors[name] || '#64748b' } }))
-      : [{ name: '暂无连接', value: 1, itemStyle: { color: chartInk.empty } }] }],
+    series: [{
+      type: 'pie',
+      silent: protocolCounts.length === 0,
+      radius: ['40%', '58%'],
+      center: ['50%', '48%'],
+      avoidLabelOverlap: true,
+      ...donutLabels(({ value }) => `${value} 条`, protocolCounts.length > 0),
+      itemStyle: { borderColor: '#0e1524', borderWidth: 2 },
+      data: protocolCounts.length
+        ? protocolCounts.map(([name, value]) => ({ name, value, itemStyle: { color: protocolColors[name] || '#64748b' } }))
+        : [{ name: '暂无连接', value: 1, itemStyle: { color: chartInk.empty } }],
+    }],
   }, true)
   const popular = fleetTotals.value?.popular_nodes || []
   charts[4].setOption({
     ...chartBase(`热门节点（最近 ${Number(fleetTotals.value?.popular_window_minutes) || 10} 分钟）`),
-    grid: { left: 110, right: 20, top: 44, bottom: 16 },
+    grid: { left: 110, right: 42, top: 44, bottom: 16 },
     tooltip: { ...chartTooltip, trigger: 'axis', confine: true, formatter: (items) => `${items[0].name}<br>${items[0].value} 次连接` },
     xAxis: { ...axis, type: 'value', minInterval: 1 },
     // 这一列是名称而不是刻度，用标题的亮度写，暗一档在深底上就糊了。
     yAxis: { ...axis, type: 'category', inverse: true, data: popular.map((item) => item.name), axisLabel: { ...axis.axisLabel, color: chartInk.title, width: 94, overflow: 'truncate' } },
-    series: [{ type: 'bar', data: popular.map((item) => item.count), barMaxWidth: 14, itemStyle: { color: '#22d3ee', borderRadius: [0, 3, 3, 0] } }],
+    series: [{
+      type: 'bar',
+      data: popular.map((item) => item.count),
+      barMaxWidth: 14,
+      // 数字写在柱子末端：横条上比长短要来回对轴上的刻度，直接写出来省这一步。
+      label: { show: true, position: 'right', color: chartInk.title, fontSize: 10, formatter: '{c}' },
+      itemStyle: { color: '#22d3ee', borderRadius: [0, 3, 3, 0] },
+    }],
   }, true)
 }
 
@@ -256,7 +294,7 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <MPage title="运行概览" :loading="loading">
+  <MPage :loading="loading">
     <div v-if="offline > 0 && dismissedOffline !== offline" class="m-notice m-notice--warning offline">
       <button type="button" class="offline__go" @click="navigate('nodes', 'status=offline')">
         {{ offline }} 台服务器离线，去看看 ›
@@ -340,6 +378,7 @@ onBeforeUnmount(() => {
 }
 .chart--tall { height: 210px; }
 .chart--bars { height: 220px; }
-.chart-pair { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
-.chart-pair .chart { height: 170px; }
+/* 这两张环形图各占一整行：并排时每张只有 178px 宽，牵出来的数字标签
+   会溢出卡片、压住标题。整行之后环两边各剩 130px，标签放得下。 */
+.chart-pair .chart { height: 185px; }
 </style>

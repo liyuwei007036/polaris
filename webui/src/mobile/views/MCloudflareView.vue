@@ -235,16 +235,16 @@ onMounted(load)
 </script>
 
 <template>
-  <MPage title="域名解析" :loading="loading">
-    <template #actions>
-      <el-button v-if="isAdmin && tab === 'records'" :icon="Setting" circle aria-label="连接设置" @click="openSettings" />
-    </template>
-
-    <div class="m-notice" :class="settings.connected ? 'm-notice--info' : settings.configured ? 'm-notice--danger' : 'm-notice--warning'">
-      {{ settings.connected ? `已连接 ${settings.zone_name || settings.zone_id}` : settings.configured ? '连接异常' : '未连接 Cloudflare' }}
+  <MPage :loading="loading">
+    <!-- 连接状态和「设置」入口连在一起：改的就是这条状态里说的那件事。 -->
+    <div class="m-notice conn" :class="settings.connected ? 'm-notice--info' : settings.configured ? 'm-notice--danger' : 'm-notice--warning'">
+      <span class="conn__text">
+        {{ settings.connected ? `已连接 ${settings.zone_name || settings.zone_id}` : settings.configured ? '连接异常' : '未连接 Cloudflare' }}
+      </span>
+      <el-button v-if="isAdmin" size="small" :icon="Setting" @click="openSettings">设置</el-button>
     </div>
     <div v-if="tab === 'records' && remoteError" class="m-notice m-notice--danger">
-      读取 Cloudflare 失败：{{ remoteError }}。请点右上角「设置」检查区域编号与访问令牌，并确认这台控制机可以访问 api.cloudflare.com。
+      读取 Cloudflare 失败：{{ remoteError }}。请点上面的「设置」检查区域编号与访问令牌，并确认这台控制机可以访问 api.cloudflare.com。
     </div>
 
     <MSegmented v-model="tab" :options="[{ value: 'records', label: '域名记录' }, { value: 'certificates', label: '源证书', badge: certificates.length }]" />
@@ -265,7 +265,6 @@ onMounted(load)
           <div class="m-item__head">
             <span class="m-pill m-pill--accent">{{ row.type }}</span>
             <span class="m-item__title">{{ row.name }}</span>
-            <i v-if="isAdmin" class="m-item__chevron" aria-hidden="true">›</i>
           </div>
           <div class="m-item__stats">
             <span class="m-stat"><b>{{ row.proxied ? '已启用' : '未启用' }}</b><small>CDN 代理</small></span>
@@ -292,7 +291,6 @@ onMounted(load)
           <div class="m-item__head">
             <span class="m-item__title">{{ row.domain }}</span>
             <span v-if="row.expired" class="m-pill m-pill--danger">已过期</span>
-            <i v-if="isAdmin" class="m-item__chevron" aria-hidden="true">›</i>
           </div>
           <div class="m-item__stats">
             <span class="m-stat"><b>{{ formatDate(row.not_after) }}</b><small>有效期至</small></span>
@@ -402,5 +400,7 @@ onMounted(load)
 </template>
 
 <style scoped>
+.conn { display: flex; align-items: center; gap: 10px; }
+.conn__text { flex: 1; min-width: 0; }
 .pick { border-style: dashed; cursor: pointer; }
 </style>

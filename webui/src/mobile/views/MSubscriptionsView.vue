@@ -4,7 +4,7 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import { Plus, Search } from '@element-plus/icons-vue'
 import { api, del, post, put } from '../../api'
 import { writeClipboard } from '../../clipboard'
-import { formatDateTime, includesText } from '../../format'
+import { formatDate, formatDateTime, includesText, parseServerTime } from '../../format'
 import MPage from '../components/MPage.vue'
 import MSegmented from '../components/MSegmented.vue'
 import MSheet from '../components/MSheet.vue'
@@ -138,7 +138,7 @@ const ruleActionOptions = computed(() => [
 const groupOptions = computed(() => proxyGroups.value.map((group) => ({
   value: group.id,
   label: group.name,
-  desc: `${strategyNames[group.strategy]} · ${(group.members || []).length} 个成员`,
+  desc: `${strategyNames[group.strategy]} · ${(group.members || []).length} 个节点`,
 })))
 const providerOptions = computed(() => ruleProviders.value.map((provider) => ({ value: provider.id, label: provider.name, desc: provider.url })))
 const selectedProviders = computed(() => form.rule_provider_ids
@@ -336,6 +336,17 @@ function openActions(config) {
   actionsOpen.value = true
 }
 
+// 卡上的三格答的是同一个问题：这份配置现在还能不能拉到、谁能拉、什么时候能拉。
+// 过期不会自动停用，所以过了期要标红，而不是把这条藏起来。
+function isExpired(config) {
+  const expiry = parseServerTime(config.access_expires_at)
+  return Boolean(expiry) && expiry.getTime() < Date.now()
+}
+
+function windowText(config) {
+  return config.access_window_start ? `${config.access_window_start}-${config.access_window_end}` : '不限'
+}
+
 function groupNames(config) {
   const names = (config.proxy_group_ids || []).map((id) => groupByID.value[id]?.name || '分组已失效')
   return names.length ? names.join(' · ') : '未引用分组，客户端会拿到空配置'
@@ -351,7 +362,7 @@ const details = computed(() => {
     { label: '规则', value: `${row.rule_mode === 'text' ? '高级文本' : '表格配置'} · ${row.rules?.length || 0} 条` },
     { label: '更新地址', value: absoluteSubscription(row), mono: true },
     { label: '访问密钥', value: row.access_user_agent || '未设置', mono: Boolean(row.access_user_agent) },
-    { label: '访问时间段', value: row.access_window_start ? `${row.access_window_start} - ${row.access_window_end}` : '不限' },
+    { label: '访问时间段', value: windowText(row) },
     { label: '有效期', value: row.access_expires_at ? formatDateTime(row.access_expires_at) : '长期有效' },
   ]
 })
@@ -486,7 +497,7 @@ onMounted(() => { load(); loadAccess() })
 </script>
 
 <template>
-  <MPage v-if="mode === 'list'" title="客户端配置" :loading="loading">
+  <MPage v-if="mode === 'list'" :loading="loading">
     <MSegmented v-model="tab" :options="[{ value: 'configs', label: '客户端配置' }, { value: 'access', label: '访问记录' }]" />
 
     <template v-if="tab === 'configs'">
@@ -505,14 +516,22 @@ onMounted(() => { load(); loadAccess() })
           <div class="m-item__head">
             <span class="m-item__title">{{ row.name }}</span>
             <span v-if="!row.enabled" class="m-pill m-pill--info">停用</span>
-            <i class="m-item__chevron" aria-hidden="true">›</i>
           </div>
           <div class="m-item__stats">
-            <span class="m-stat"><b>{{ (row.proxy_group_ids || []).length }}</b><small>代理分组</small></span>
-            <span class="m-stat"><b>{{ row.rules?.length || 0 }}</b><small>访问规则</small></span>
-            <span class="m-stat"><b>{{ row.rule_providers?.length || 0 }}</b><small>规则供应商</small></span>
+            <span class="m-stat">
+              <b :class="{ 'm-danger': isExpired(row) }">{{ formatDate(row.access_expires_at, '长期有效') }}</b>
+              <small>有效期至</small>
+            </span>
+            <span class="m-stat">
+              <b :class="{ 'is-muted': !row.access_user_agent }">{{ row.access_user_agent ? '已开启' : '未开启' }}</b>
+              <small>访问密钥</small>
+            </span>
+            <span class="m-stat">
+              <b :class="{ 'is-muted': !row.access_window_start }">{{ windowText(row) }}</b>
+              <small>可访问时段</small>
+            </span>
           </div>
-          <div class="m-item__meta">{{ groupNames(row) }}</div>
+          <div class="m-item__meta">{{ (row.proxy_group_ids || []).length }} 个分组 · {{ row.rules?.length || 0 }} 条规则 · {{ groupNames(row) }}</div>
         </button>
       </article>
       <div v-if="!filteredConfigs.length && !loading" class="m-empty">还没有客户端配置</div>
@@ -577,7 +596,7 @@ onMounted(() => { load(); loadAccess() })
     </template>
   </MPage>
 
-  <MPage v-else :title="editing ? '编辑客户端配置' : '新建客户端配置'" back @back="mode = 'list'">
+  <MPage v-else>
     <MSegmented v-model="activeSection" :options="sectionOptions" />
 
     <template v-if="activeSection === 'basic'">

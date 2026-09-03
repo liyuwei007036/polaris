@@ -31,17 +31,6 @@ const nodeName = (nodeID) => nodeNames.value[nodeID] || nodeID
 const nodeOptions = computed(() => appState.nodes.map((node) => ({ value: node.id, label: node.name })))
 const nodeFilterOptions = computed(() => [{ value: '', label: '全部服务器' }, ...nodeOptions.value])
 
-// 读不到的服务器单独点名。给它们显示一张空表等于说「这台没有限制」，
-// 而那正好是相反的意思。
-const unreachable = computed(() => {
-  const reasons = {}
-  for (const node of firewallNodes.value) if (node.error) reasons[node.node_id] = node.error
-  for (const node of fail2banNodes.value) if (node.error && !reasons[node.node_id]) reasons[node.node_id] = node.error
-  const entries = Object.entries(reasons).filter(([nodeID]) => !selectedNode.value || nodeID === selectedNode.value)
-  if (!entries.length) return ''
-  return `${entries.map(([nodeID]) => nodeName(nodeID)).join('、')}：${entries[0][1]}`
-})
-
 const portRules = computed(() => firewallNodes.value.flatMap((node) => (node.port_rules || [])
   .map((rule, index) => ({ ...rule, key: `${node.node_id}-port-${index}`, manager: node.manager })))
   .filter((row) => {
@@ -65,18 +54,6 @@ function sourceLabel(row) {
     return location ? `${source} · ${location}` : source
   }).join('、')
 }
-
-// 防火墙默认放行一切的服务器，下面这份端口清单只是「写下来的」，
-// 不是「能连上的全部」。不说明就是一份误导人的清单。
-const wideOpenNodes = computed(() => firewallNodes.value
-  .filter((node) => node.available && node.default_incoming === 'accept')
-  .filter((node) => !selectedNode.value || node.node_id === selectedNode.value)
-  .map((node) => nodeName(node.node_id)))
-
-const truncatedNodes = computed(() => firewallNodes.value
-  .filter((node) => node.truncated)
-  .filter((node) => !selectedNode.value || node.node_id === selectedNode.value)
-  .map((node) => nodeName(node.node_id)))
 
 const jails = computed(() => fail2banNodes.value.flatMap((node) => (node.jails || [])
   .map((jail) => ({ ...jail, key: `${node.node_id}-${jail.name}` })))
@@ -349,12 +326,7 @@ onMounted(load)
 </script>
 
 <template>
-  <MPage title="网络防护" :loading="loading">
-    <div class="m-notice m-notice--info">
-      这里是各台服务器上正在生效的防火墙与封禁规则，每次打开或刷新都会实时读取；添加和删除会立即写入服务器。
-    </div>
-    <div v-if="unreachable" class="m-notice m-notice--warning">{{ unreachable }}</div>
-
+  <MPage :loading="loading">
     <MSegmented v-model="tab" :options="tabs" />
 
     <el-input v-model="keyword" clearable :prefix-icon="Search" placeholder="搜索服务器、地址或规则" />
@@ -363,13 +335,6 @@ onMounted(load)
     </div>
 
     <template v-if="tab === 'ports'">
-      <div v-if="wideOpenNodes.length" class="m-notice m-notice--warning">
-        {{ wideOpenNodes.join('、') }} 的防火墙默认放行所有入站流量，下面列出的端口不是全部可访问的端口。
-      </div>
-      <div v-if="truncatedNodes.length" class="m-notice m-notice--warning">
-        {{ truncatedNodes.join('、') }} 的防火墙规则过多，只读取了前面一部分，下面的端口可能不全。
-      </div>
-
       <article v-for="row in portRules" :key="row.key" class="m-item">
         <div class="m-item__hit is-static">
           <div class="m-item__head">
@@ -404,7 +369,6 @@ onMounted(load)
           <div class="m-item__head">
             <span class="m-item__title">{{ row.name }}</span>
             <span class="m-pill" :class="jailRuntime(row).pill">{{ jailRuntime(row).text }}</span>
-            <i v-if="canEditJail(row)" class="m-item__chevron" aria-hidden="true">›</i>
           </div>
           <div class="m-item__stats">
             <span class="m-stat"><b>{{ row.max_retry || '—' }}</b><small>失败次数</small></span>

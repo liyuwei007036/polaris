@@ -7,17 +7,18 @@ test.use({
   hasTouch: true,
 })
 
-// 「更多」页里的九个二级页面，以及点进去之后页面标题应当是什么。
+// 「更多」页里的九个二级页面：入口名，以及点进去之后应当落在哪个页面标识上。
+// 页面顶部不再有标题栏，认「到没到对的页面」只能靠路由和页面本身画出了东西。
 const morePages = [
-  '服务器',
-  '网络防护',
-  '服务器访问规则',
-  '上网出口',
-  '代理分组',
-  '规则供应商',
-  '操作记录',
-  '域名解析',
-  '系统设置',
+  ['服务器', 'nodes'],
+  ['网络防护', 'security'],
+  ['服务器访问规则', 'routes'],
+  ['上网出口', 'outbounds'],
+  ['代理分组', 'proxy-groups'],
+  ['规则供应商', 'rule-providers'],
+  ['操作记录', 'audit'],
+  ['域名解析', 'cloudflare'],
+  ['系统设置', 'settings'],
 ]
 
 test('手机端页面回归：自动进入手机版，走完登录与全部页面', async ({ page }) => {
@@ -56,7 +57,7 @@ test('手机端页面回归：自动进入手机版，走完登录与全部页�
   await page.getByPlaceholder('请再次输入新密码').fill(process.env.POLARIS_E2E_CHANGED_PASSWORD)
   await page.getByRole('button', { name: '保存', exact: true }).click()
 
-  await expect(page.getByRole('heading', { name: '运行概览', exact: true })).toBeVisible()
+  await expect(page.locator('.m-page')).toBeVisible()
   authenticated = true
 
   // 概览：四张指标卡和五张图都要在。
@@ -76,35 +77,45 @@ test('手机端页面回归：自动进入手机版，走完登录与全部页�
   expect(tabGeometry.bottom).toBeLessThanOrEqual(tabGeometry.viewport)
 
   // 底部四个入口按打开频率排：看板、当前连接、客户端配置、接入服务。
-  for (const [tab, heading] of [['连接', '当前连接'], ['配置', '客户端配置'], ['接入', '接入服务'], ['更多', '更多']]) {
+  // 每一页各认一件只有它才画得出来的东西，光看路由变了不能说明页面真的挂上了。
+  const tabMarks = [
+    ['连接', 'connections', page.getByPlaceholder('搜索 IP、目标、入站节点或出口')],
+    ['配置', 'subscriptions', page.getByRole('button', { name: '新建客户端配置', exact: true })],
+    ['接入', 'inbounds', page.getByPlaceholder('搜索服务、协议或端口')],
+    ['更多', 'more', page.getByRole('button', { name: '退出登录', exact: true })],
+  ]
+  for (const [tab, view, mark] of tabMarks) {
     await tabBar.getByRole('button', { name: tab, exact: true }).click()
-    await expect(page.getByRole('heading', { name: heading, exact: true })).toBeVisible()
+    await expect(page).toHaveURL(new RegExp(`#/${view}$`))
+    await expect(mark).toBeVisible()
     // 一次只挂一个页面：过渡没走完会把两页叠在一起，看着像点了没反应。
     await expect(page.locator('.m-page')).toHaveCount(1)
-    await expectNoSideways(heading)
+    await expectNoSideways(tab)
   }
 
   // 「更多」里的九个二级页面逐个点开。
-  for (const heading of morePages) {
+  for (const [entry, view] of morePages) {
     await page.evaluate(() => { location.hash = '#/more' })
-    await expect(page.getByRole('heading', { name: '更多', exact: true })).toBeVisible()
-    await page.getByRole('button', { name: heading, exact: true }).click()
-    await expect(page.getByRole('heading', { name: heading, exact: true })).toBeVisible()
+    await expect(page.getByRole('button', { name: '退出登录', exact: true })).toBeVisible()
+    await page.getByRole('button', { name: entry, exact: true }).click()
+    await expect(page).toHaveURL(new RegExp(`#/${view}$`))
     await expect(page.locator('.m-page')).toHaveCount(1)
-    await expectNoSideways(heading)
+    await expectNoSideways(entry)
     // 二级页面停留时底部要高亮「更多」，否则看不出自己在哪一层。
     await expect(tabBar.getByRole('button', { name: '更多', exact: true })).toHaveClass(/is-active/)
   }
 
   // 接入服务的新建表单是整屏抽屉，里面的选择器点开后仍然不能撑宽页面。
   await page.evaluate(() => { location.hash = '#/inbounds' })
-  await expect(page.getByRole('heading', { name: '接入服务', exact: true })).toBeVisible()
+  await expect(page.getByPlaceholder('搜索服务、协议或端口')).toBeVisible()
   await page.getByRole('button', { name: '新建接入服务', exact: true }).click()
   const form = page.locator('.m-sheet__panel')
   await expect(form.getByText('新建接入服务', { exact: true })).toBeVisible()
   await expect(form.getByText('VLESS + Reality', { exact: true })).toBeVisible()
   await expectNoSideways('新建接入服务')
-  await form.getByRole('button', { name: '关闭', exact: true }).click()
+  // 底部操作栏里已经有「取消」，右上角不再画一个 ✕：同一件事只留一个按钮。
+  await expect(form.locator('.m-sheet__close')).toHaveCount(0)
+  await form.getByRole('button', { name: '取消', exact: true }).click()
   await expect(page.locator('.m-sheet')).toHaveCount(0)
 
   // 服务器页的接入向导：命令要能显示出来。
@@ -119,7 +130,7 @@ test('手机端页面回归：自动进入手机版，走完登录与全部页�
   // 客户端配置的规则编辑：桌面版是一张五列表格，手机上应当是可点开的卡片。
   await page.evaluate(() => { location.hash = '#/subscriptions' })
   await page.getByRole('button', { name: '新建客户端配置', exact: true }).click()
-  await expect(page.getByRole('heading', { name: '新建客户端配置', exact: true })).toBeVisible()
+  await expect(page.getByRole('tab', { name: /基础信息/ })).toBeVisible()
   await page.getByRole('tab', { name: /访问规则/ }).click()
   await page.getByRole('button', { name: '添加规则', exact: true }).click()
   const ruleSheet = page.locator('.m-sheet__panel')
@@ -128,7 +139,8 @@ test('手机端页面回归：自动进入手机版，走完登录与全部页�
   await ruleSheet.getByRole('button', { name: '完成', exact: true }).click()
   await expect(page.locator('.rule')).toHaveCount(1)
   await page.getByRole('button', { name: '返回', exact: true }).click()
-  await expect(page.getByRole('heading', { name: '客户端配置', exact: true })).toBeVisible()
+  // 回到列表：只有列表形态才画得出右下角那个新建浮钮。
+  await expect(page.getByRole('button', { name: '新建客户端配置', exact: true })).toBeVisible()
 
   // 退出登录回到手机版登录页。
   await page.evaluate(() => { location.hash = '#/more' })
