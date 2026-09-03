@@ -1,6 +1,6 @@
 <script setup>
 import { computed, inject, onMounted, reactive, ref } from 'vue'
-import { Refresh, Search } from '@element-plus/icons-vue'
+import { Search } from '@element-plus/icons-vue'
 import { api } from '../../api'
 import { formatDateTime, includesText, localTimeZoneLabel } from '../../format'
 import MPage from '../components/MPage.vue'
@@ -123,10 +123,6 @@ onMounted(() => { loadTasks(); loadAudit() })
 
 <template>
   <MPage title="操作记录" :loading="loading">
-    <template #actions>
-      <el-button :icon="Refresh" circle aria-label="刷新" @click="tab === 'tasks' ? loadTasks() : loadAudit()" />
-    </template>
-
     <MSegmented v-model="tab" :options="tabs" />
     <div class="m-count">保留最近 7 天 · 时间按 {{ timeZoneLabel }} 显示</div>
 

@@ -5,7 +5,6 @@ import { ArrowDown, ArrowLeft, ArrowUp, CopyDocument, Delete, DocumentCopy, Down
 import { api, del, post, put } from '../api'
 import { writeClipboard } from '../clipboard'
 import { formatDateTime, includesText } from '../format'
-import { regionFlag } from '../flags'
 import PageHeader from '../components/PageHeader.vue'
 import PagedTable from '../components/PagedTable.vue'
 import QrCodeDialog from '../components/QrCodeDialog.vue'
@@ -123,17 +122,10 @@ const selectedNodeNames = computed(() => endpoints.value
   })
   .filter(Boolean))
 const ruleActions = computed(() => [...selectedNodeNames.value, ...selectedGroups.value.map((group) => group.name), 'DIRECT', 'REJECT'])
-// 分组下挂多少个节点、分别在哪些地区，直接标在选项上，不用挨个点开看。
-const groupSummaries = computed(() => Object.fromEntries(proxyGroups.value.map((group) => {
-  const members = group.members || []
-  const flags = [...new Set(members.map((member) => regionFlag(endpointNames.value[member.id] || groupByID.value[member.id]?.name)).filter(Boolean))]
-  return [group.id, { count: members.length, flags }]
-})))
-const endpointNames = computed(() => Object.fromEntries(endpoints.value.map((endpoint) => {
-  const listener = listeners.value.find((item) => item.id === endpoint.listener_id)
-  const node = appState.nodes.find((item) => item.id === listener?.node_id)
-  return [endpoint.id, endpoint.alias || `${node?.name || ''} ${listener?.name || ''}`]
-})))
+// 分组下挂多少个节点，直接标在选项上，不用挨个点开看。
+const groupSummaries = computed(() => Object.fromEntries(proxyGroups.value.map(
+  (group) => [group.id, { count: (group.members || []).length }],
+)))
 // 表格里成员多的分组标签会撑满整列，先显示前几个。
 const groupPreviewCount = 4
 // Providers are maintained under their own menu; a configuration only picks
@@ -448,7 +440,6 @@ onMounted(() => { load(); loadAccess() })
           <el-table-column label="引用代理分组" min-width="195">
             <template #default="{ row }">
               <el-tag v-for="id in (row.proxy_group_ids || []).slice(0, groupPreviewCount)" :key="id" type="info" class="group-tag">
-                <span v-for="flag in (groupSummaries[id]?.flags || []).slice(0, 3)" :key="flag" class="region-flag">{{ flag }}</span>
                 {{ groupByID[id]?.name || '分组已失效' }}
               </el-tag>
               <el-tooltip v-if="(row.proxy_group_ids || []).length > groupPreviewCount" placement="top">
@@ -542,7 +533,6 @@ onMounted(() => { load(); loadAccess() })
                 <el-option v-for="group in proxyGroups" :key="group.id" :label="`${group.name} · ${strategyNames[group.strategy]}`" :value="group.id">
                   <span>{{ group.name }} · {{ strategyNames[group.strategy] }}</span>
                   <span class="option-meta" aria-hidden="true">
-                    <span v-for="flag in (groupSummaries[group.id]?.flags || []).slice(0, 5)" :key="flag" class="region-flag">{{ flag }}</span>
                     {{ groupSummaries[group.id]?.count || 0 }} 个成员
                   </span>
                 </el-option>
@@ -579,7 +569,7 @@ onMounted(() => { load(); loadAccess() })
                       <td data-label="动作">
                         <el-select v-model="rule.action" aria-label="规则动作" filterable>
                           <el-option v-for="action in ruleActions" :key="action" :label="action" :value="action">
-                            <span v-if="regionFlag(action)" class="region-flag" aria-hidden="true">{{ regionFlag(action) }}</span>{{ action }}
+                            {{ action }}
                           </el-option>
                         </el-select>
                       </td>

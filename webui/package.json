@@ -12,6 +12,7 @@
   },
   "dependencies": {
     "@element-plus/icons-vue": "2.3.2",
+    "country-flag-emoji-polyfill": "^0.1.10",
     "echarts": "^6.1.0",
     "element-plus": "2.14.3",
     "qrcode": "1.5.4",

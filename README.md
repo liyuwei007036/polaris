@@ -225,3 +225,11 @@ You may obtain a copy of the License at
 
     http://www.apache.org/licenses/LICENSE-2.0
 ```
+
+### 内嵌的第三方资源
+
+控制台内嵌了 [Twemoji Country Flags](https://github.com/talkjs/country-flag-emoji-polyfill)
+字体（78 KB），用来在没有国旗字形的系统上把名称里的国旗画出来——Windows 与多数 Linux
+桌面缺这套字形，否则 🇭🇰 会退化成两个小字母。字形取自 Twitter 的
+[Twemoji](https://github.com/twitter/twemoji)，按 CC-BY 4.0 使用并再分发；打包这套字体的
+代码按 MIT 授权。

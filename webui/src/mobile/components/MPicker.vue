@@ -8,7 +8,7 @@ import MSheet from './MSheet.vue'
 const props = defineProps({
   // 单选是字符串，多选是数组
   modelValue: { type: [String, Number, Array], default: '' },
-  // [{ value, label, desc, flag, disabled, group }]
+  // [{ value, label, desc, disabled, group }]
   options: { type: Array, default: () => [] },
   title: { type: String, default: '请选择' },
   placeholder: { type: String, default: '请选择' },
@@ -27,7 +27,7 @@ const draft = ref([])
 const selected = computed(() => (props.multiple ? [...(props.modelValue || [])] : props.modelValue === '' || props.modelValue === undefined || props.modelValue === null ? [] : [props.modelValue]))
 const labels = computed(() => selected.value.map((value) => {
   const option = props.options.find((item) => item.value === value)
-  return option ? `${option.flag ? `${option.flag} ` : ''}${option.label}` : String(value)
+  return option ? option.label : String(value)
 }))
 // 分组保持传入顺序，没有 group 的都归到最前面的空组。
 const groups = computed(() => {
@@ -109,9 +109,7 @@ function chosen(option) {
         :disabled="option.disabled"
         @click="toggle(option)"
       >
-        <span class="m-picker__label">
-          <span v-if="option.flag" class="region-flag">{{ option.flag }}</span>{{ option.label }}
-        </span>
+        <span class="m-picker__label">{{ option.label }}</span>
         <small v-if="option.desc">{{ option.desc }}</small>
         <i v-if="chosen(option)" class="m-picker__tick" aria-hidden="true">✓</i>
       </button>

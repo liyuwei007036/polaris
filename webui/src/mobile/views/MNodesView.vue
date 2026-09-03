@@ -1,11 +1,10 @@
 <script setup>
 import { computed, inject, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Check, Plus, Refresh, Search } from '@element-plus/icons-vue'
+import { Check, Plus, Search } from '@element-plus/icons-vue'
 import { api, post, put } from '../../api'
 import { writeClipboard } from '../../clipboard'
 import { formatBytes, formatDateTime, includesText } from '../../format'
-import { regionFlag } from '../../flags'
 import { subscribeLive } from '../../live'
 import { connectionSnapshots, subscribeConnections } from '../../connections'
 import MPage from '../components/MPage.vue'
@@ -266,10 +265,6 @@ onBeforeUnmount(() => {
 
 <template>
   <MPage title="服务器" :loading="loading">
-    <template #actions>
-      <el-button :icon="Refresh" circle aria-label="刷新" @click="load" />
-    </template>
-
     <div class="m-listbar">
       <el-input v-model="keyword" clearable :prefix-icon="Search" placeholder="搜索名称、地址或版本" />
       <div class="m-filters">
@@ -301,7 +296,7 @@ onBeforeUnmount(() => {
         <div class="m-item__head">
           <span class="m-item__dot" :class="{ 'is-on': node.online }" />
           <span class="m-item__title">
-            <span v-if="regionFlag(node.name)" class="region-flag">{{ regionFlag(node.name) }}</span>{{ node.name }}
+            {{ node.name }}
           </span>
           <span v-if="!node.client_address" class="m-pill m-pill--warning">缺地址</span>
           <span v-if="agentUpdateAvailable(node)" class="m-pill m-pill--warning">可升级</span>

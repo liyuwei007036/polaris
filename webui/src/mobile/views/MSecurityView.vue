@@ -1,7 +1,7 @@
 <script setup>
 import { computed, inject, onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Delete, Loading, Plus, Refresh, Search, Unlock } from '@element-plus/icons-vue'
+import { Delete, Loading, Plus, Search, Unlock } from '@element-plus/icons-vue'
 import { api, post } from '../../api'
 import { formatDateTime, includesText } from '../../format'
 import MPage from '../components/MPage.vue'
@@ -350,10 +350,6 @@ onMounted(load)
 
 <template>
   <MPage title="网络防护" :loading="loading">
-    <template #actions>
-      <el-button :icon="Refresh" circle aria-label="刷新" :loading="loading" @click="load" />
-    </template>
-
     <div class="m-notice m-notice--info">
       这里是各台服务器上正在生效的防火墙与封禁规则，每次打开或刷新都会实时读取；添加和删除会立即写入服务器。
     </div>

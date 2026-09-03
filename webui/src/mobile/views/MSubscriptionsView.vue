@@ -1,11 +1,10 @@
 <script setup>
 import { computed, inject, onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Plus, Refresh, Search } from '@element-plus/icons-vue'
+import { Plus, Search } from '@element-plus/icons-vue'
 import { api, del, post, put } from '../../api'
 import { writeClipboard } from '../../clipboard'
 import { formatDateTime, includesText } from '../../format'
-import { regionFlag } from '../../flags'
 import MPage from '../components/MPage.vue'
 import MSegmented from '../components/MSegmented.vue'
 import MSheet from '../components/MSheet.vue'
@@ -131,26 +130,17 @@ const selectedNodeNames = computed(() => endpoints.value
   })
   .filter(Boolean))
 const ruleActionOptions = computed(() => [
-  ...selectedNodeNames.value.map((name) => ({ value: name, label: name, flag: regionFlag(name), group: '节点' })),
+  ...selectedNodeNames.value.map((name) => ({ value: name, label: name, group: '节点' })),
   ...selectedGroups.value.map((group) => ({ value: group.name, label: group.name, group: '代理分组' })),
   { value: 'DIRECT', label: 'DIRECT', desc: '直连', group: '内置' },
   { value: 'REJECT', label: 'REJECT', desc: '阻断', group: '内置' },
 ])
-const groupOptions = computed(() => proxyGroups.value.map((group) => {
-  const members = group.members || []
-  const flags = [...new Set(members.map((member) => regionFlag(endpointNames.value[member.id] || groupByID.value[member.id]?.name)).filter(Boolean))]
-  return {
-    value: group.id,
-    label: group.name,
-    desc: `${strategyNames[group.strategy]} · ${members.length} 个成员 ${flags.slice(0, 6).join('')}`,
-  }
-}))
-const providerOptions = computed(() => ruleProviders.value.map((provider) => ({ value: provider.id, label: provider.name, desc: provider.url })))
-const endpointNames = computed(() => Object.fromEntries(endpoints.value.map((endpoint) => {
-  const listener = listeners.value.find((item) => item.id === endpoint.listener_id)
-  const node = appState.nodes.find((item) => item.id === listener?.node_id)
-  return [endpoint.id, endpoint.alias || `${node?.name || ''} ${listener?.name || ''}`]
+const groupOptions = computed(() => proxyGroups.value.map((group) => ({
+  value: group.id,
+  label: group.name,
+  desc: `${strategyNames[group.strategy]} · ${(group.members || []).length} 个成员`,
 })))
+const providerOptions = computed(() => ruleProviders.value.map((provider) => ({ value: provider.id, label: provider.name, desc: provider.url })))
 const selectedProviders = computed(() => form.rule_provider_ids
   .map((id) => ruleProviders.value.find((provider) => provider.id === id))
   .filter(Boolean))
@@ -497,10 +487,6 @@ onMounted(() => { load(); loadAccess() })
 
 <template>
   <MPage v-if="mode === 'list'" title="客户端配置" :loading="loading">
-    <template #actions>
-      <el-button :icon="Refresh" circle aria-label="刷新" @click="load(); loadAccess()" />
-    </template>
-
     <MSegmented v-model="tab" :options="[{ value: 'configs', label: '客户端配置' }, { value: 'access', label: '访问记录' }]" />
 
     <template v-if="tab === 'configs'">

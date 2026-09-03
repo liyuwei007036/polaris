@@ -1,10 +1,9 @@
 <script setup>
 import { computed, inject, onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Plus, Refresh, Search } from '@element-plus/icons-vue'
+import { Plus, Search } from '@element-plus/icons-vue'
 import { api, del, post, put } from '../../api'
 import { includesText } from '../../format'
-import { regionFlag } from '../../flags'
 import { protocolMap } from '../../protocols'
 import MPage from '../components/MPage.vue'
 import MSheet from '../components/MSheet.vue'
@@ -40,18 +39,15 @@ const clientNodes = computed(() => listeners.value
       const name = endpoint.alias || `${node?.name || listener.node_id} · ${listener.name} · ${endpoint.name}`
       return {
         id: endpoint.id,
-        // 地区图标先从节点别名认，认不出再看服务器名。
-        flag: regionFlag(name) || regionFlag(node?.name),
         label: name,
         desc: `${protocolMap[listener.spec?.protocol]?.label || listener.spec?.protocol} · ${address ? `${address}:${listener.port}` : '未填写连接地址'}`,
         disabled: !address,
       }
     })))
 const nodeNames = computed(() => Object.fromEntries(clientNodes.value.map((item) => [item.id, item.label])))
-const nodeFlags = computed(() => Object.fromEntries(clientNodes.value.map((item) => [item.id, item.flag])))
 const groupNames = computed(() => Object.fromEntries(groups.value.map((item) => [item.id, item.name])))
 const memberOptions = computed(() => [
-  ...clientNodes.value.map((node) => ({ value: `endpoint:${node.id}`, label: node.label, desc: node.desc, flag: node.flag, disabled: node.disabled, group: '接入节点' })),
+  ...clientNodes.value.map((node) => ({ value: `endpoint:${node.id}`, label: node.label, desc: node.desc, disabled: node.disabled, group: '接入节点' })),
   ...groups.value.filter((item) => item.id !== editing.value?.id).map((group) => ({ value: `group:${group.id}`, label: group.name, desc: strategyNames[group.strategy], group: '代理分组' })),
 ])
 const memberKeys = computed({
@@ -90,10 +86,6 @@ function memberLabel(member) {
   return member.kind === 'group' ? groupNames.value[member.id] || '分组已失效' : nodeNames.value[member.id] || '节点已失效'
 }
 
-function memberFlag(member) {
-  return member.kind === 'group' ? '' : nodeFlags.value[member.id] || ''
-}
-
 function openForm(group = null) {
   editing.value = group
   Object.assign(form, group ? {
@@ -106,7 +98,7 @@ function openForm(group = null) {
 
 // 成员在卡上压成一行：一个分组挂十几个节点时，一节点一枚药丸会把卡撑成三四行。
 function memberSummary(group) {
-  const members = (group.members || []).map((member) => `${memberFlag(member)}${memberLabel(member)}`)
+  const members = (group.members || []).map((member) => memberLabel(member))
   if (!members.length) return '还没有成员，客户端会拿到一个空分组'
   return members.join(' · ')
 }
@@ -170,10 +162,6 @@ onMounted(load)
 
 <template>
   <MPage title="代理分组" :loading="loading">
-    <template #actions>
-      <el-button :icon="Refresh" circle aria-label="刷新" @click="load" />
-    </template>
-
     <el-input v-model="keyword" clearable :prefix-icon="Search" placeholder="搜索分组或成员" />
     <div class="m-count">共 {{ filteredGroups.length }} 个分组</div>
 

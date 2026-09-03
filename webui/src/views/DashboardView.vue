@@ -9,6 +9,7 @@ import { api } from '../api'
 import { formatBytes } from '../format'
 import { subscribeLive } from '../live'
 import { fleetTotals, subscribeFleetTotals } from '../connections'
+import { FLAG_FONT_FAMILY } from '../flags'
 import PageHeader from '../components/PageHeader.vue'
 
 use([BarChart, LineChart, PieChart, GridComponent, LegendComponent, TitleComponent, TooltipComponent, CanvasRenderer])
@@ -62,7 +63,7 @@ function chartBase(title) {
     title: { text: title, left: 16, top: 14, textStyle: { color: chartInk.title, fontSize: 13, fontWeight: 600 } },
     tooltip: { ...chartTooltip, trigger: 'axis' },
     grid: { left: 56, right: 22, top: 58, bottom: 66 },
-    textStyle: { fontFamily: 'Inter, Segoe UI, Microsoft YaHei, sans-serif' },
+    textStyle: { fontFamily: `"${FLAG_FONT_FAMILY}", Inter, Segoe UI, Microsoft YaHei, sans-serif` },
   }
 }
 
@@ -114,11 +115,11 @@ function renderCharts() {
     // beat, and spacing them evenly drew a twenty-second gap exactly as wide as
     // a one-second one — and printed a label per sample, so the same second
     // appeared twice in a row. Points now sit where their clock reading says.
-    xAxis: { ...axis, type: 'time', axisLabel: { ...axis.axisLabel, formatter: timeLabel } },
+    xAxis: { ...axis, type: 'time', splitNumber: 5, axisLabel: { ...axis.axisLabel, hideOverlap: true, formatter: timeLabel } },
     yAxis: { ...axis, type: 'value', minInterval: 1, axisLabel: { ...axis.axisLabel, formatter: (value) => formatBytes(value, '/s') } },
     series: [
-      { name: '下载', type: 'line', data: trafficHistory.value.map((item) => [item.time, item.download]), showSymbol: false, smooth: 0.25, lineStyle: { width: 2, color: '#38bdf8' }, areaStyle: { color: 'rgba(56,189,248,.14)' } },
-      { name: '上传', type: 'line', data: trafficHistory.value.map((item) => [item.time, item.upload]), showSymbol: false, smooth: 0.25, lineStyle: { width: 2, color: '#34d399' }, areaStyle: { color: 'rgba(52,211,153,.12)' } },
+      { name: '下载', type: 'line', data: trafficHistory.value.map((item) => [item.time, item.download]), showSymbol: false, smooth: 0.25, itemStyle: { color: '#38bdf8' }, lineStyle: { width: 2, color: '#38bdf8' }, areaStyle: { color: 'rgba(56,189,248,.14)' } },
+      { name: '上传', type: 'line', data: trafficHistory.value.map((item) => [item.time, item.upload]), showSymbol: false, smooth: 0.25, itemStyle: { color: '#34d399' }, lineStyle: { width: 2, color: '#34d399' }, areaStyle: { color: 'rgba(52,211,153,.12)' } },
     ],
   }, true)
   const totals = cumulative.value.download + cumulative.value.upload
@@ -130,16 +131,16 @@ function renderCharts() {
     legend: { ...chartLegend, show: totals > 0 },
     series: [{ type: 'pie', silent: totals === 0, radius: ['48%', '70%'], center: ['50%', '49%'], label: { show: false }, itemStyle: { borderColor: '#0e1524', borderWidth: 2 }, data: totals > 0 ? [
       { name: '下载', value: cumulative.value.download, itemStyle: { color: '#38bdf8' } },
-      { name: '上传', value: cumulative.value.upload, itemStyle: { color: '#6366f1' } },
+      { name: '上传', value: cumulative.value.upload, itemStyle: { color: '#34d399' } },
     ] : [{ name: '暂无流量', value: 1, itemStyle: { color: chartInk.empty } }] }],
   }, true)
   charts[2].setOption({
     ...chartBase('活动连接'),
     tooltip: { ...chartTooltip, trigger: 'axis', formatter: (items) => `${timeLabel(items[0].axisValue)}<br>${items[0].marker}${items[0].seriesName} ${items[0].value[1]}` },
     legend: { ...chartLegend, data: ['连接数'] },
-    xAxis: { ...axis, type: 'time', axisLabel: { ...axis.axisLabel, formatter: timeLabel } },
+    xAxis: { ...axis, type: 'time', splitNumber: 5, axisLabel: { ...axis.axisLabel, hideOverlap: true, formatter: timeLabel } },
     yAxis: { ...axis, type: 'value', minInterval: 1 },
-    series: [{ name: '连接数', type: 'line', data: connectionHistory.value.map((item) => [item.time, item.count]), showSymbol: false, smooth: 0.25, lineStyle: { width: 2, color: '#a78bfa' }, areaStyle: { color: 'rgba(167,139,250,.14)' } }],
+    series: [{ name: '连接数', type: 'line', data: connectionHistory.value.map((item) => [item.time, item.count]), showSymbol: false, smooth: 0.25, itemStyle: { color: '#a78bfa' }, lineStyle: { width: 2, color: '#a78bfa' }, areaStyle: { color: 'rgba(167,139,250,.14)' } }],
   }, true)
   const protocolCounts = Object.entries(fleetTotals.value?.protocols || {})
   charts[3].setOption({
@@ -158,10 +159,11 @@ function renderCharts() {
   const popular = fleetTotals.value?.popular_nodes || []
   charts[4].setOption({
     ...chartBase(`热门节点（最近 ${Number(fleetTotals.value?.popular_window_minutes) || 10} 分钟）`),
-    grid: { left: 112, right: 28, top: 58, bottom: 24 },
+    grid: { left: 148, right: 28, top: 58, bottom: 24 },
     tooltip: { ...chartTooltip, trigger: 'axis', formatter: (items) => `${items[0].name}<br>${items[0].value} 次连接` },
     xAxis: { ...axis, type: 'value', minInterval: 1 },
-    yAxis: { ...axis, type: 'category', inverse: true, data: popular.map((item) => item.name), axisLabel: { ...axis.axisLabel, width: 92, overflow: 'truncate' } },
+    // 这一列是名称而不是刻度，用标题的亮度写，暗一档在深底上就糊了。
+    yAxis: { ...axis, type: 'category', inverse: true, data: popular.map((item) => item.name), axisLabel: { ...axis.axisLabel, color: chartInk.title, width: 128, overflow: 'truncate' } },
     series: [{ type: 'bar', data: popular.map((item) => item.count), barMaxWidth: 16, itemStyle: { color: '#22d3ee', borderRadius: [0, 3, 3, 0] } }],
   }, true)
 }
@@ -226,6 +228,8 @@ onMounted(async () => {
   await load()
   await nextTick()
   initCharts()
+  // 国旗字体是异步加载的，画布上已经画好的字不会自己更新，就绪后补画一次。
+  document.fonts?.ready.then(scheduleRender)
   stopTotals = subscribeFleetTotals(appendTotals)
   stopLive = subscribeLive((event) => {
     if (event.kind === 'node' || event.kind === 'task') scheduleLoad()

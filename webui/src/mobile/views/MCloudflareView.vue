@@ -1,7 +1,7 @@
 <script setup>
 import { computed, inject, onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Plus, Refresh, Search, Setting } from '@element-plus/icons-vue'
+import { Plus, Search, Setting } from '@element-plus/icons-vue'
 import { api, del, post, put } from '../../api'
 import { formatDate, formatDateTime, includesText } from '../../format'
 import MPage from '../components/MPage.vue'
@@ -237,7 +237,6 @@ onMounted(load)
 <template>
   <MPage title="域名解析" :loading="loading">
     <template #actions>
-      <el-button :icon="Refresh" circle aria-label="刷新" @click="load" />
       <el-button v-if="isAdmin && tab === 'records'" :icon="Setting" circle aria-label="连接设置" @click="openSettings" />
     </template>
 

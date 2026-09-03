@@ -1,7 +1,7 @@
 <script setup>
 import { computed, inject, onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Plus, Refresh, Search } from '@element-plus/icons-vue'
+import { Plus, Search } from '@element-plus/icons-vue'
 import QRCode from 'qrcode'
 import { api, post, put } from '../../api'
 import { formatDateTime, includesText } from '../../format'
@@ -173,10 +173,6 @@ onMounted(load)
 
 <template>
   <MPage title="系统设置" :loading="loading">
-    <template #actions>
-      <el-button :icon="Refresh" circle aria-label="刷新" @click="load" />
-    </template>
-
     <MSegmented v-model="tab" :options="tabs" />
 
     <template v-if="tab === 'account'">

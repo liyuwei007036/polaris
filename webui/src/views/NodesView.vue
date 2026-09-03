@@ -4,7 +4,6 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import { CopyDocument, Edit, Plus, Refresh, RemoveFilled, Search, Top } from '@element-plus/icons-vue'
 import { api, post, put } from '../api'
 import { formatBytes, formatDateTime, includesText } from '../format'
-import { regionFlag } from '../flags'
 import { subscribeLive } from '../live'
 import { connectionSnapshots, subscribeConnections } from '../connections'
 import PageHeader from '../components/PageHeader.vue'
@@ -229,7 +228,6 @@ onBeforeUnmount(() => {
             <template #default="{ row }">
               <div class="cell-main">
                 <span class="status-dot" :class="row.online ? 'online' : 'offline'" />
-                <span v-if="regionFlag(row.name)" class="region-flag">{{ regionFlag(row.name) }}</span>
                 <strong>{{ row.name }}</strong>
               </div>
               <div class="cell-sub">{{ row.os || '—' }} · {{ row.architecture || '—' }}</div>

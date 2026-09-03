@@ -3,7 +3,9 @@
    同一套颜色、圆角、间距与描边，避免各页面各自定义样式。 */
 :root {
   color-scheme: dark;
-  font-family: Inter, "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
+  /* 国旗字体排在最前：它的 @font-face 只声明了国旗那段码位，别的字符照旧
+     落到后面的字体上。见 main.js 的注入逻辑。 */
+  font-family: "Twemoji Country Flags", Inter, "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
   font-synthesis: none;
   text-rendering: optimizeLegibility;
 
@@ -267,20 +269,6 @@ button, input, textarea, select { font: inherit; }
 .status-dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; margin-right: 7px; }
 .status-dot.online { background: var(--sb-success); box-shadow: 0 0 0 3px rgba(52, 211, 153, .16), 0 0 10px rgba(52, 211, 153, .8); }
 .status-dot.offline { background: #64748b; }
-/* 地区图标：只是名称前面的装饰，字号略大保证 emoji 旗帜清晰。 */
-.region-flag { margin-right: 6px; font-size: 14px; line-height: 1; }
-/* 画不出国旗的系统上，退化出来的字母对做成地区徽章，不至于像乱码。 */
-html.no-flag-emoji .region-flag {
-  display: inline-block;
-  padding: 1px 5px;
-  border-radius: 5px;
-  background: rgba(56, 189, 248, .14);
-  color: #7dd3fc;
-  font-size: 10px;
-  font-weight: 700;
-  letter-spacing: .6px;
-  vertical-align: 1px;
-}
 .inbound-name { font-weight: 600; color: var(--sb-text); }
 .inbound-meta { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 6px; }
 

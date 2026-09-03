@@ -1,7 +1,7 @@
 <script setup>
 import { computed, inject, onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Loading, Plus, Refresh, Search } from '@element-plus/icons-vue'
+import { Loading, Plus, Search } from '@element-plus/icons-vue'
 import { api, del, friendlyError, post, put } from '../../api'
 import { formatDate, formatDateTime, includesText, parseServerTime } from '../../format'
 import { waitForTask } from '../../live'
@@ -190,10 +190,6 @@ onMounted(load)
 
 <template>
   <MPage title="上网出口" :loading="loading">
-    <template #actions>
-      <el-button :icon="Refresh" circle aria-label="刷新" @click="load" />
-    </template>
-
     <el-input v-model="keyword" clearable :prefix-icon="Search" placeholder="搜索名称、地址或用户" />
     <div class="m-filters">
       <MSegmented

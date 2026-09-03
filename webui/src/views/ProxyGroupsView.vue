@@ -4,7 +4,6 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import { Delete, Edit, Plus, Refresh, Search } from '@element-plus/icons-vue'
 import { api, del, post, put } from '../api'
 import { includesText } from '../format'
-import { regionFlag } from '../flags'
 import PageHeader from '../components/PageHeader.vue'
 import PagedTable from '../components/PagedTable.vue'
 import { protocolMap } from '../protocols'
@@ -36,8 +35,6 @@ const clientNodes = computed(() => listeners.value
       const name = endpoint.alias || `${node?.name || listener.node_id} · ${listener.name} · ${endpoint.name}`
       return {
         id: endpoint.id,
-        // 地区图标先从节点别名认，认不出再看服务器名。
-        flag: regionFlag(name) || regionFlag(node?.name),
         label: name,
         detail: `${node?.name || listener.node_id} · ${listener.name} · ${endpoint.name}`,
         protocol: protocolMap[listener.spec?.protocol]?.label || listener.spec?.protocol,
@@ -46,7 +43,6 @@ const clientNodes = computed(() => listeners.value
       }
     })))
 const nodeNames = computed(() => Object.fromEntries(clientNodes.value.map((item) => [item.id, item.label])))
-const nodeFlags = computed(() => Object.fromEntries(clientNodes.value.map((item) => [item.id, item.flag])))
 const groupNames = computed(() => Object.fromEntries(groups.value.map((item) => [item.id, item.name])))
 // 成员多的时候整行标签会挤满表格，先显示前几个，其余折叠成计数。
 const memberPreviewCount = 6
@@ -96,10 +92,6 @@ function setMembers(keys) {
 
 function memberLabel(member) {
   return member.kind === 'group' ? groupNames.value[member.id] || '分组已失效' : nodeNames.value[member.id] || '节点已失效'
-}
-
-function memberFlag(member) {
-  return member.kind === 'group' ? '' : nodeFlags.value[member.id] || ''
 }
 
 async function save() {
@@ -155,8 +147,7 @@ onMounted(load)
                 :type="member.kind === 'group' ? 'primary' : 'info'"
                 class="member-tag"
               >
-                <span v-if="memberFlag(member)" class="region-flag">{{ memberFlag(member) }}</span>
-                <span v-else class="member-tag__kind">分组</span>
+                <span v-if="member.kind === 'group'" class="member-tag__kind">分组</span>
                 {{ memberLabel(member) }}
               </el-tag>
               <el-tooltip v-if="(row.members || []).length > memberPreviewCount" placement="top">
@@ -202,10 +193,8 @@ onMounted(load)
             @update:model-value="setMembers"
           >
             <el-option-group label="接入节点">
-              <el-option v-for="node in clientNodes" :key="`endpoint:${node.id}`" :value="`endpoint:${node.id}`" :label="node.flag ? `${node.flag} ${node.label}` : node.label" :disabled="node.disabled">
-                <span class="option-name">
-                  <span v-if="node.flag" class="region-flag">{{ node.flag }}</span>{{ node.label }}
-                </span>
+              <el-option v-for="node in clientNodes" :key="`endpoint:${node.id}`" :value="`endpoint:${node.id}`" :label="node.label" :disabled="node.disabled">
+                <span class="option-name">{{ node.label }}</span>
                 <span class="option-meta">{{ node.detail }} · {{ node.protocol }} · {{ node.address }}</span>
               </el-option>
             </el-option-group>

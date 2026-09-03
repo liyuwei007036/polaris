@@ -1,7 +1,7 @@
 <script setup>
 import { computed, inject, onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Plus, Refresh, Search } from '@element-plus/icons-vue'
+import { Plus, Search } from '@element-plus/icons-vue'
 import { api, del, post, put } from '../../api'
 import { includesText } from '../../format'
 import MPage from '../components/MPage.vue'
@@ -137,10 +137,6 @@ onMounted(load)
 
 <template>
   <MPage title="规则供应商" :loading="loading">
-    <template #actions>
-      <el-button :icon="Refresh" circle aria-label="刷新" @click="load" />
-    </template>
-
     <el-input v-model="keyword" clearable :prefix-icon="Search" placeholder="搜索名称、地址或类型" />
     <div class="m-count">共 {{ filtered.length }} 个供应商</div>
 
