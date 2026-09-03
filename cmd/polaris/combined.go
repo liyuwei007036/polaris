@@ -175,6 +175,7 @@ func serveCombined(ctx context.Context, masterConfiguration masterConfig, agentC
 	combinedContext, cancel := context.WithCancel(ctx)
 	defer cancel()
 	server.StartMaintenance(combinedContext)
+	server.StartTrafficAggregation(combinedContext)
 	go func() {
 		<-combinedContext.Done()
 		_ = agentListener.Close()

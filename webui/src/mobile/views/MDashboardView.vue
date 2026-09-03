@@ -8,7 +8,7 @@ import { CanvasRenderer } from 'echarts/renderers'
 import { api } from '../../api'
 import { formatBytes } from '../../format'
 import { subscribeLive } from '../../live'
-import { connectionSnapshots, subscribeConnections } from '../../connections'
+import { connectionSnapshots, subscribeConnections, subscribeFleetTotals } from '../../connections'
 import MPage from '../components/MPage.vue'
 
 use([BarChart, LineChart, PieChart, GridComponent, LegendComponent, TitleComponent, TooltipComponent, CanvasRenderer])
@@ -33,12 +33,13 @@ const protocolColors = { TCP: '#38bdf8', UDP: '#34d399', 其他: '#64748b' }
 const chartInk = { title: '#e8eef8', label: '#8496b0', line: 'rgba(148,163,184,.22)', split: 'rgba(148,163,184,.10)', empty: 'rgba(148,163,184,.16)' }
 const chartTooltip = { backgroundColor: '#101a2c', borderColor: 'rgba(148,163,184,.28)', textStyle: { color: chartInk.title, fontSize: 12 } }
 const chartLegend = { bottom: 4, itemWidth: 14, itemHeight: 8, textStyle: { color: chartInk.label, fontSize: 11 } }
-// 手机上只保留最近十个采样点，点再密也看不出差别，还更省电。
-const historyLength = 10
+// 节点按秒上报，手机上保留一分钟——再长在这块屏上也分辨不出来，还费电。
+const historyLength = 60
 const nodeWindowMinutes = 10
 const nodeActivity = new Map()
 let stopLive
 let stopConnections
+let stopTotals
 let refreshTimer
 let resizeObserver
 let renderQueued = false
@@ -49,12 +50,6 @@ const connections = computed(() => [...connectionSnapshots.value.values()].flatM
   (item) => (item.connections || []).map((connection) => ({ ...connection, node_id: item.node_id })),
 ))
 const activeConnections = computed(() => connections.value.length)
-const liveRates = computed(() => [...connectionSnapshots.value.values()].reduce(
-  (total, item) => item.has_rates
-    ? { download: total.download + Number(item.received_rate || 0), upload: total.upload + Number(item.sent_rate || 0) }
-    : total,
-  { download: 0, upload: 0 },
-))
 
 const metrics = computed(() => [
   { label: '服务器总数', value: appState.nodes.length, view: 'nodes', query: '' },
@@ -199,28 +194,24 @@ function renderCharts() {
   }, true)
 }
 
-// 采样跟着各节点的上报走，不另起定时器：比上报还快地取样只会把
-// 上一个读数重复画一遍，看着像测过其实没有。
-// 每台服务器按各自的节拍上报，一轮下来这里会被调用多次——每次带的都是同一份
-// 汇总值，只差一瞬。逐次追加会让好几个点挤在同一个时刻上，横轴因此出现重复
-// 刻度，折线也被画成台阶。落在同一个窗口内的上报合并成一个点，并保留最新值。
-const sampleWindow = 1000
-function appendSamples() {
-  const now = Date.now()
-  const traffic = [...trafficHistory.value]
-  const counts = [...connectionHistory.value]
-  const sample = { time: now, ...liveRates.value }
-  const count = { time: now, count: activeConnections.value }
-  if (traffic.length && now - traffic[traffic.length - 1].time < sampleWindow) {
-    traffic[traffic.length - 1] = sample
-    counts[counts.length - 1] = count
-  } else {
-    traffic.push(sample)
-    counts.push(count)
-  }
-  trafficHistory.value = traffic.slice(-historyLength)
-  connectionHistory.value = counts.slice(-historyLength)
-  recordNodeActivity(now)
+// 一个上报节拍对应图上一个点。各服务器在同一个墙钟时刻采样并上报，主控等这一
+// 轮到齐后算好合计再推过来，浏览器不再自己求和——原先按到达顺序累加，会把同一
+// 台服务器的读数画进相邻好几个点，曲线画的其实是上报相位而不是流量。
+function appendTotals(totals) {
+  // 还没有节点测出速率——刚从"没人看"恢复上报，基线还没建立。这里的 0 是
+  // "不知道"而不是"没有流量"，画上去会在曲线上留一个没发生过的凹坑。
+  if (!totals.has_rates && Number(totals.nodes) > 0) return
+  const at = Date.parse(totals.at) || Date.now()
+  trafficHistory.value = [...trafficHistory.value, {
+    time: at, download: Number(totals.download_rate || 0), upload: Number(totals.upload_rate || 0),
+  }].slice(-historyLength)
+  connectionHistory.value = [...connectionHistory.value, { time: at, count: Number(totals.connection_count || 0) }].slice(-historyLength)
+  scheduleRender()
+}
+
+// 协议分布和热门节点读的是当前快照而不是历史序列，仍然跟着每次推送更新。
+function onPush() {
+  recordNodeActivity(Date.now())
   scheduleRender()
 }
 
@@ -275,7 +266,8 @@ onMounted(async () => {
   await load()
   await nextTick()
   initCharts()
-  stopConnections = subscribeConnections(appendSamples)
+  stopConnections = subscribeConnections(onPush)
+  stopTotals = subscribeFleetTotals(appendTotals)
   stopLive = subscribeLive((event) => {
     if (event.kind === 'node' || event.kind === 'task') scheduleLoad()
   })
@@ -283,6 +275,7 @@ onMounted(async () => {
 
 onBeforeUnmount(() => {
   stopLive?.()
+  stopTotals?.()
   stopConnections?.()
   window.clearTimeout(refreshTimer)
   resizeObserver?.disconnect()

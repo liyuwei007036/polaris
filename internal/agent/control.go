@@ -232,6 +232,9 @@ func RunSession(ctx context.Context, conn *wire.Conn, handler TaskHandler, heart
 		return conn.WriteMessage(wire.MsgStatus, body)
 	}
 	var sampler TrafficSampler
+	// Report until told otherwise: a master too old to send WatchState never
+	// switches this off, and going quiet on it would leave its console blank.
+	streaming := true
 	sendConnections := func() error {
 		push := wire.ConnectionsPush{CollectedAt: time.Now().UTC().Format(time.RFC3339)}
 		connections, traffic, err := CollectConnectionsAndTraffic(ctx)
@@ -268,8 +271,15 @@ func RunSession(ctx context.Context, conn *wire.Conn, handler TaskHandler, heart
 
 	heartbeatTicker := time.NewTicker(heartbeatInterval)
 	defer heartbeatTicker.Stop()
-	connectionsTicker := time.NewTicker(connectionsInterval)
-	defer connectionsTicker.Stop()
+	// Connection pushes ride a wall-clock grid rather than a ticker started
+	// whenever this session happened to connect. Every node in the fleet
+	// therefore reports at the same instants, and the master can add their
+	// rates together: readings taken over the same window sum to a fleet
+	// total, readings taken over windows that only overlap by chance do not.
+	// The timer is re-armed against the clock each round so it cannot drift
+	// off the grid the way a free-running ticker would.
+	connectionsTimer := time.NewTimer(untilNextTick(time.Now(), connectionsInterval))
+	defer connectionsTimer.Stop()
 
 	for {
 		select {
@@ -278,6 +288,26 @@ func RunSession(ctx context.Context, conn *wire.Conn, handler TaskHandler, heart
 		case err := <-readErr:
 			return err
 		case msg := <-incoming:
+			if msg.msgType == wire.MsgWatch {
+				var state wire.WatchState
+				if wire.Decode(msg.body, &state) != nil || state.Streaming == streaming {
+					continue
+				}
+				streaming = state.Streaming
+				if !streaming {
+					continue
+				}
+				// Coming back from a pause, the sampler's baseline is however
+				// old the pause was. Starting over means the first push after
+				// a console opens carries totals but no rate, and the one a
+				// tick later carries a rate measured over that tick — rather
+				// than an average across the whole time nobody was looking.
+				sampler = TrafficSampler{}
+				if err := sendConnections(); err != nil {
+					return err
+				}
+				continue
+			}
 			if msg.msgType != wire.MsgTask {
 				continue // keepalive or anything else: nothing to do
 			}
@@ -311,12 +341,36 @@ func RunSession(ctx context.Context, conn *wire.Conn, handler TaskHandler, heart
 			if err := sendStatus(); err != nil {
 				return err
 			}
-		case <-connectionsTicker.C:
+		case <-connectionsTimer.C:
+			// The timer keeps running while paused so pushes stay on the grid
+			// the moment they resume; skipping the work is what makes a fleet
+			// nobody is watching cost nothing.
+			connectionsTimer.Reset(untilNextTick(time.Now(), connectionsInterval))
+			if !streaming {
+				continue
+			}
 			if err := sendConnections(); err != nil {
 				return err
 			}
 		}
 	}
+}
+
+// untilNextTick reports how long to wait for the next instant that divides the
+// wall clock evenly by interval. Nodes reach the same instants without
+// exchanging anything as long as their clocks agree, which is already assumed
+// elsewhere in this system. A node whose clock is off reports off the grid and
+// simply lands in a neighbouring round; nothing breaks, its reading is just
+// added to the total one beat late.
+func untilNextTick(now time.Time, interval time.Duration) time.Duration {
+	if interval <= 0 {
+		return time.Second
+	}
+	remainder := time.Duration(now.UnixNano()) % interval
+	if remainder == 0 {
+		return interval
+	}
+	return interval - remainder
 }
 
 func detectSingBoxVersion(ctx context.Context) string {

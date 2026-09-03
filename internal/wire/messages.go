@@ -16,7 +16,18 @@ const (
 	MsgTaskResult                  // agent -> master
 	MsgConnections                 // agent -> master, fast-cadence real-time push
 	MsgKeepalive                   // either direction
+	MsgWatch                       // master -> agent, start/stop the real-time push
 )
+
+// WatchState tells an agent whether anyone is looking. The real-time push runs
+// at a cadence measured in seconds, which earns its cost — a Clash API call per
+// node per tick — only while a console has the live stream open. The master
+// switches it off when the last browser disconnects and back on when one
+// arrives. An agent that never receives this, because it is talking to an older
+// master, keeps pushing: the safe default is to report.
+type WatchState struct {
+	Streaming bool
+}
 
 // RegisterRequest is sent by an agent whose public key the master does not
 // yet recognize as an approved node.

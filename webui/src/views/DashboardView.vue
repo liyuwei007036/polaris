@@ -8,7 +8,7 @@ import { CanvasRenderer } from 'echarts/renderers'
 import { api } from '../api'
 import { formatBytes } from '../format'
 import { subscribeLive } from '../live'
-import { connectionSnapshots, subscribeConnections } from '../connections'
+import { connectionSnapshots, subscribeConnections, subscribeFleetTotals } from '../connections'
 import PageHeader from '../components/PageHeader.vue'
 
 use([BarChart, LineChart, PieChart, GridComponent, LegendComponent, TitleComponent, TooltipComponent, CanvasRenderer])
@@ -38,6 +38,7 @@ const nodeWindowMinutes = 10
 const nodeActivity = new Map()
 let stopLive
 let stopConnections
+let stopTotals
 let refreshTimer
 let resizeObserver
 let renderQueued = false
@@ -48,14 +49,6 @@ const connections = computed(() => [...connectionSnapshots.value.values()].flatM
   (item) => (item.connections || []).map((connection) => ({ ...connection, node_id: item.node_id })),
 ))
 const activeConnections = computed(() => connections.value.length)
-// Rates come from the agents, which are the only side sampling the counters
-// on a fixed interval. The browser never derives a rate from two page loads.
-const liveRates = computed(() => [...connectionSnapshots.value.values()].reduce(
-  (total, item) => item.has_rates
-    ? { download: total.download + Number(item.received_rate || 0), upload: total.upload + Number(item.sent_rate || 0) }
-    : total,
-  { download: 0, upload: 0 },
-))
 
 function readDismissed(key) {
   const stored = Number(window.localStorage.getItem(key))
@@ -184,32 +177,32 @@ function renderCharts() {
   }, true)
 }
 
-// The charts advance when the agents actually report, not on a timer of their
-// own: sampling faster than the push interval just repeated the last value
-// and made the line look like data that was never measured.
-// Every node reports on its own clock, so one round of reports calls this once
-// per node — each time with the same aggregate, a moment apart. Appending all
-// of them left several points sharing one timestamp, which is what put
-// repeated labels on the axis and drew the line as a staircase. Reports that
-// land inside the same window collapse onto one point, kept at the freshest
-// aggregate.
-const sampleWindow = 1000
-function appendSamples() {
-  const now = Date.now()
-  const traffic = [...trafficHistory.value]
-  const counts = [...connectionHistory.value]
-  const sample = { time: now, ...liveRates.value }
-  const count = { time: now, count: activeConnections.value }
-  if (traffic.length && now - traffic[traffic.length - 1].time < sampleWindow) {
-    traffic[traffic.length - 1] = sample
-    counts[counts.length - 1] = count
-  } else {
-    traffic.push(sample)
-    counts.push(count)
-  }
-  trafficHistory.value = traffic.slice(-30)
-  connectionHistory.value = counts.slice(-30)
-  recordNodeActivity(now)
+// One beat of the reporting grid, one point. The master publishes the fleet
+// total once per round, after every node's push for that round has landed, so
+// the browser has nothing left to add up: it plots what arrives. This is what
+// keeps the line an account of traffic rather than of reporting phases — the
+// browser used to sum whatever had arrived and append a point per push, which
+// meant each node's reading was drawn into several consecutive points.
+// Two minutes of history at the one-second cadence the nodes report on.
+const historyLength = 120
+function appendTotals(totals) {
+  // No node has measured a rate yet — the fleet has only just started
+  // reporting again after nobody was watching. That zero means "not known",
+  // not "no traffic", and drawing it would put a dip in the line that never
+  // happened.
+  if (!totals.has_rates && Number(totals.nodes) > 0) return
+  const at = Date.parse(totals.at) || Date.now()
+  trafficHistory.value = [...trafficHistory.value, {
+    time: at, download: Number(totals.download_rate || 0), upload: Number(totals.upload_rate || 0),
+  }].slice(-historyLength)
+  connectionHistory.value = [...connectionHistory.value, { time: at, count: Number(totals.connection_count || 0) }].slice(-historyLength)
+  scheduleRender()
+}
+
+// The protocol split and the busiest-nodes ranking read the current snapshot
+// rather than a series, so they keep following each push as it arrives.
+function onPush() {
+  recordNodeActivity(Date.now())
   scheduleRender()
 }
 
@@ -276,7 +269,8 @@ onMounted(async () => {
   await load()
   await nextTick()
   initCharts()
-  stopConnections = subscribeConnections(appendSamples)
+  stopConnections = subscribeConnections(onPush)
+  stopTotals = subscribeFleetTotals(appendTotals)
   stopLive = subscribeLive((event) => {
     if (event.kind === 'node' || event.kind === 'task') scheduleLoad()
   })
@@ -284,6 +278,7 @@ onMounted(async () => {
 
 onBeforeUnmount(() => {
   stopLive?.()
+  stopTotals?.()
   stopConnections?.()
   window.clearTimeout(refreshTimer)
   resizeObserver?.disconnect()

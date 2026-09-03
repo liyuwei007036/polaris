@@ -65,7 +65,7 @@ func defaultMasterConfig() masterConfig {
 func defaultAgentConfig() agentConfig {
 	// Ten seconds is frequent enough for a live view and a fifth of the
 	// traffic the old two-second cadence generated per node.
-	return agentConfig{DataDir: "agent-data", HeartbeatInterval: "30s", ConnectionsInterval: "10s"}
+	return agentConfig{DataDir: "agent-data", HeartbeatInterval: "30s", ConnectionsInterval: "1s"}
 }
 
 func addMasterFlags(flags *flag.FlagSet) masterFlagValues {

@@ -178,6 +178,7 @@ func serveMaster(ctx context.Context, configuration masterConfig) error {
 	server.SetAgentPort(configuration.AgentPort)
 	applyConnectionsInterval(server, configuration.ConnectionsInterval)
 	server.StartMaintenance(ctx)
+	server.StartTrafficAggregation(ctx)
 	agentAddress := portAddress(configuration.AgentPort)
 	agentListener, err := net.Listen("tcp", agentAddress)
 	if err != nil {

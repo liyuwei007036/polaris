@@ -6,8 +6,16 @@ import { shallowRef, triggerRef } from 'vue'
 // re-renders per push — whenever more than one such page had been visited.
 export const connectionSnapshots = shallowRef(new Map())
 
+// The fleet total the master sums once per reporting round. Every node pushes
+// on the same wall-clock grid, so only the master ever sees a complete round —
+// a browser adding up whatever had arrived by the time it redrew was folding
+// the same node reading into several points in a row. Charts read this series
+// instead of doing arithmetic of their own.
+export const fleetTotals = shallowRef(null)
+
 let source
 let subscribers = new Set()
+let totalsSubscribers = new Set()
 
 function notify() {
   triggerRef(connectionSnapshots)
@@ -35,6 +43,12 @@ function ensureSource() {
     applyNode(item)
     notify()
   })
+  source.addEventListener('totals', (event) => {
+    let payload
+    try { payload = JSON.parse(event.data) } catch { return }
+    fleetTotals.value = payload
+    totalsSubscribers.forEach((subscriber) => subscriber(payload))
+  })
 }
 
 // subscribeConnections registers a callback fired whenever a snapshot lands.
@@ -44,13 +58,30 @@ export function subscribeConnections(subscriber) {
   ensureSource()
   return () => {
     subscribers.delete(subscriber)
-    if (subscribers.size === 0) closeConnectionEvents()
+    closeWhenIdle()
   }
+}
+
+// subscribeFleetTotals registers a callback fired once per reporting round,
+// when the master publishes the summed figure. One call means one beat, so a
+// chart can append exactly one point per call.
+export function subscribeFleetTotals(subscriber) {
+  totalsSubscribers.add(subscriber)
+  ensureSource()
+  return () => {
+    totalsSubscribers.delete(subscriber)
+    closeWhenIdle()
+  }
+}
+
+function closeWhenIdle() {
+  if (subscribers.size === 0 && totalsSubscribers.size === 0) closeConnectionEvents()
 }
 
 export function closeConnectionEvents() {
   source?.close()
   source = undefined
+  fleetTotals.value = null
   connectionSnapshots.value.clear()
   triggerRef(connectionSnapshots)
 }

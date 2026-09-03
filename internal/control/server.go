@@ -63,7 +63,11 @@ type Server struct {
 	outboundNameCache      map[string]string
 	outboundNameCachedAt   time.Time
 	connectionsInterval    time.Duration
-	reconcileMu            sync.Mutex
+	// fleetStreaming is whether nodes should currently be pushing their
+	// real-time connection lists. Guarded by controlMu alongside the sessions
+	// it is announced to.
+	fleetStreaming bool
+	reconcileMu    sync.Mutex
 	reconcileState         map[string]reconcileAttempt
 	taskWaitMu             sync.Mutex
 	taskWaiters            map[string]chan wire.TaskResult
@@ -86,6 +90,10 @@ type listenerNameEntry struct {
 type controlSession struct {
 	done  chan struct{}
 	tasks chan Task
+	// watch is a nudge, not a value: it says the streaming state changed, and
+	// the session reads the current one when it wakes. Carrying the value here
+	// instead would let a fast open-close arrive in the wrong order.
+	watch chan struct{}
 	// questions carries the request-response tasks a screen asks on demand.
 	// They are never stored, so they travel on their own channel rather than
 	// through the task table. See AskNode.
@@ -101,7 +109,7 @@ func NewServer(store *Store, secureCookies bool) (*Server, error) {
 	if err != nil {
 		return nil, fmt.Errorf("load IP location database: %w", err)
 	}
-	return &Server{
+	server := &Server{
 		store: store, noiseKeypair: keypair, agentPort: defaultAgentPort, secureCookies: secureCookies,
 		controls: make(map[string]*controlSession), autoInstallChecked: make(map[string]bool),
 		taskWaiters:            make(map[string]chan wire.TaskResult),
@@ -110,14 +118,47 @@ func NewServer(store *Store, secureCookies bool) (*Server, error) {
 		connectionsInterval:    DefaultConnectionsInterval,
 		subscriptionLimiter:    newRateLimiter(subscriptionRateWindow, subscriptionRateLimit, subscriptionRateMaxKeys),
 		now:                    time.Now,
-	}, nil
+	}
+	server.connHub.onWatchers = server.setFleetStreaming
+	return server, nil
+}
+
+// setFleetStreaming switches every connected node's real-time push on or off.
+// It runs when the first console opens the live stream and when the last one
+// closes it, so a fleet nobody is watching is not polling sing-box on every
+// node once a second for a screen that is not up. The sessions are only
+// nudged; each reads the current state for itself, which keeps a fast
+// open-close-open from delivering the states out of order.
+func (s *Server) setFleetStreaming(streaming bool) {
+	s.controlMu.Lock()
+	s.fleetStreaming = streaming
+	sessions := make([]*controlSession, 0, len(s.controls))
+	for _, session := range s.controls {
+		sessions = append(sessions, session)
+	}
+	s.controlMu.Unlock()
+	for _, session := range sessions {
+		select {
+		case session.watch <- struct{}{}:
+		default: // a nudge is already pending; it will read the same state
+		}
+	}
+}
+
+func (s *Server) fleetStreamingState() bool {
+	s.controlMu.Lock()
+	defer s.controlMu.Unlock()
+	return s.fleetStreaming
 }
 
 // DefaultConnectionsInterval paces the real-time connection push every node
 // sends. It is deliberately a master-side value: agents adopt whatever the
 // handshake hands them, so changing the cadence never means editing or
 // restarting anything on the nodes themselves.
-const DefaultConnectionsInterval = 10 * time.Second
+// One second is what "real-time" has to mean for a traffic chart to be worth
+// reading, and it is affordable because nodes only push while a console has
+// the live stream open — see setFleetStreaming.
+const DefaultConnectionsInterval = time.Second
 
 // SetConnectionsInterval overrides the cadence handed to agents on their next
 // handshake. Values outside the range agents accept are ignored, because an
@@ -148,6 +189,42 @@ func (s *Server) StartMaintenance(ctx context.Context) {
 			}
 		}
 	}()
+}
+
+// StartTrafficAggregation publishes the fleet's total throughput once per
+// reporting round. Every node pushes on the same wall-clock grid, so the
+// master waits for that round's pushes to land and then adds the readings up:
+// one series, summed once, identical in every open console. It returns as soon
+// as the loop is running in the background and stops with ctx.
+func (s *Server) StartTrafficAggregation(ctx context.Context) {
+	go func() {
+		for {
+			timer := time.NewTimer(untilNextRound(time.Now(), s.connectionsInterval))
+			select {
+			case <-ctx.Done():
+				timer.Stop()
+				return
+			case <-timer.C:
+			}
+			// Nothing to add up when no console is open — the nodes are not
+			// reporting either, so any figure would be a stale one anyway.
+			if s.connHub.watched() {
+				s.connHub.broadcastTotals(s.connHub.totals(time.Now()))
+			}
+		}
+	}()
+}
+
+// untilNextRound waits for the next instant on the reporting grid plus a short
+// grace period, so the pushes every node sent on that instant have arrived
+// before they are added together. The grace scales with the cadence, because a
+// one-second cadence cannot afford the wait a thirty-second one can.
+func untilNextRound(now time.Time, interval time.Duration) time.Duration {
+	if interval <= 0 {
+		interval = DefaultConnectionsInterval
+	}
+	grace := min(max(interval/4, 200*time.Millisecond), 2*time.Second)
+	return interval - time.Duration(now.UnixNano())%interval + grace
 }
 
 // NoisePublicKey returns the master's static public key, base64-encoded, for

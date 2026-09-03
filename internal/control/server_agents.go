@@ -140,7 +140,7 @@ type agentInboundMessage struct {
 // connection. This replaces the old controlSession NDJSON stream plus the
 // three separate HTTP endpoints (heartbeat, connections push, task result).
 func (s *Server) runAgentSession(ctx context.Context, conn *wire.Conn, node Node) {
-	session := &controlSession{done: make(chan struct{}), tasks: make(chan Task, 16), questions: make(chan wire.Task, 16)}
+	session := &controlSession{done: make(chan struct{}), tasks: make(chan Task, 16), questions: make(chan wire.Task, 16), watch: make(chan struct{}, 1)}
 	s.controlMu.Lock()
 	if previous := s.controls[node.ID]; previous != nil {
 		close(previous.done)
@@ -172,6 +172,14 @@ func (s *Server) runAgentSession(ctx context.Context, conn *wire.Conn, node Node
 		}
 	}()
 
+	// A node that just connected assumes it should be reporting, which is the
+	// right default against an older master but wrong here whenever no console
+	// is open. Say so before anything else, so it goes quiet after the one
+	// push it always sends on connect.
+	if !s.sendWatchState(conn, s.fleetStreamingState()) {
+		return
+	}
+
 	pending, err := s.store.PendingTasks(ctx, node.ID)
 	if err == nil {
 		for _, task := range pending {
@@ -195,6 +203,10 @@ func (s *Server) runAgentSession(ctx context.Context, conn *wire.Conn, node Node
 			if !s.handleAgentMessage(ctx, node, msg.msgType, msg.body) {
 				return
 			}
+		case <-session.watch:
+			if !s.sendWatchState(conn, s.fleetStreamingState()) {
+				return
+			}
 		case task := <-session.tasks:
 			if !s.sendTask(conn, node.ID, task) {
 				return
@@ -213,6 +225,17 @@ func (s *Server) runAgentSession(ctx context.Context, conn *wire.Conn, node Node
 			}
 		}
 	}
+}
+
+// sendWatchState tells one node whether to run its real-time push. Agents too
+// old to know the message ignore it and keep reporting, which is why nothing
+// here treats a node that keeps pushing as an error.
+func (s *Server) sendWatchState(conn *wire.Conn, streaming bool) bool {
+	body, err := wire.Encode(wire.WatchState{Streaming: streaming})
+	if err != nil {
+		return false
+	}
+	return conn.WriteMessage(wire.MsgWatch, body) == nil
 }
 
 func (s *Server) sendTask(conn *wire.Conn, nodeID string, task Task) bool {

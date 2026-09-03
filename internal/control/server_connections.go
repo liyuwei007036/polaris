@@ -64,6 +64,17 @@ func (s *Server) browserConnectionsStream(w http.ResponseWriter, r *http.Request
 	}
 	ch := s.connHub.subscribe()
 	defer s.connHub.unsubscribe(ch)
+	// The fleet total the master sums once per reporting round. It is its own
+	// event because it is a different measurement from any one node's push:
+	// browsers chart this series directly instead of adding up whatever had
+	// arrived by the time they redrew.
+	totalsCh := s.connHub.subscribeTotals()
+	defer s.connHub.unsubscribeTotals(totalsCh)
+	// One total straight away, so a console that opened mid-round has a reading
+	// to show instead of an empty chart until the next one closes.
+	if !writeEvent("totals", s.connHub.totals(time.Now())) {
+		return
+	}
 	ticker := time.NewTicker(20 * time.Second)
 	defer ticker.Stop()
 	for {
@@ -72,6 +83,10 @@ func (s *Server) browserConnectionsStream(w http.ResponseWriter, r *http.Request
 			return
 		case snap := <-ch:
 			if !writeEvent("node", snap) {
+				return
+			}
+		case totals := <-totalsCh:
+			if !writeEvent("totals", totals) {
 				return
 			}
 		case <-ticker.C:

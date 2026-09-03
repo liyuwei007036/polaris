@@ -7,10 +7,13 @@ import (
 )
 
 // connectionsStaleAfter bounds how long a node's last-pushed connection list
-// is trusted. Agents push every few seconds while online; a node that has
-// gone silent for longer than this is presumed offline and is cleared
-// instead of leaving stale entries in the aggregated view forever. It allows
-// for several missed pushes at the default five-second cadence.
+// is trusted. A node that has gone silent for longer than this is presumed
+// offline and is cleared, instead of leaving stale entries in the aggregated
+// view forever. It is a wall-clock tolerance rather than a count of missed
+// pushes, so it holds whatever cadence is configured — and it is also what
+// clears the view out after the last console closes and the fleet stops
+// reporting, which is why a console that opens later starts from what the
+// nodes say now rather than from whatever was true when it last closed.
 const connectionsStaleAfter = 30 * time.Second
 
 // connectionRates turns the cumulative byte counts sing-box reports per
@@ -129,18 +132,94 @@ type nodeConnectionsSnapshot struct {
 // browser over Server-Sent Events. Agents push proactively as connections
 // change; the master never polls an agent for this data.
 type connectionsHub struct {
-	mu         sync.Mutex
-	latest     map[string]nodeConnectionsSnapshot
-	receivedAt map[string]time.Time
-	clients    map[chan nodeConnectionsSnapshot]struct{}
+	mu           sync.Mutex
+	latest       map[string]nodeConnectionsSnapshot
+	receivedAt   map[string]time.Time
+	clients      map[chan nodeConnectionsSnapshot]struct{}
+	totalClients map[chan fleetTotals]struct{}
+	// onWatchers fires when the number of open browser streams crosses between
+	// none and some. That transition is what starts and stops the fleet's
+	// real-time push: nodes sample once a second while a console is open, and
+	// stay quiet the rest of the time rather than polling sing-box around the
+	// clock for a screen nobody has up.
+	onWatchers func(watching bool)
 }
 
 func newConnectionsHub() *connectionsHub {
 	return &connectionsHub{
-		latest:     make(map[string]nodeConnectionsSnapshot),
-		receivedAt: make(map[string]time.Time),
-		clients:    make(map[chan nodeConnectionsSnapshot]struct{}),
+		latest:       make(map[string]nodeConnectionsSnapshot),
+		receivedAt:   make(map[string]time.Time),
+		clients:      make(map[chan nodeConnectionsSnapshot]struct{}),
+		totalClients: make(map[chan fleetTotals]struct{}),
 	}
+}
+
+// fleetTotals is the whole fleet's throughput for one beat of the reporting
+// grid. Every node samples its counters over the same wall-clock window, so
+// these readings describe one moment and adding them up means something. The
+// master sums them once per round rather than leaving each browser to add up
+// whatever had arrived by the time it happened to redraw — which folded the
+// same node reading into several points in a row and drew the line as a
+// staircase built out of reporting phases rather than traffic.
+type fleetTotals struct {
+	At              string  `json:"at"`
+	DownloadRate    float64 `json:"download_rate"`
+	UploadRate      float64 `json:"upload_rate"`
+	ConnectionCount int     `json:"connection_count"`
+	Nodes           int     `json:"nodes"`
+	Reporting       int     `json:"reporting"`
+	HasRates        bool    `json:"has_rates"`
+}
+
+// totals adds up what every node still considered live has reported. Nodes
+// that have not measured a rate yet are counted as present but contribute
+// nothing, so a fleet still warming up reads as slow rather than as fast as
+// whichever node happened to report first.
+func (h *connectionsHub) totals(now time.Time) fleetTotals {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.pruneLocked(now)
+	out := fleetTotals{At: now.UTC().Format(time.RFC3339Nano), Nodes: len(h.latest)}
+	for _, snapshot := range h.latest {
+		out.ConnectionCount += snapshot.ConnectionCount
+		if !snapshot.HasRates {
+			continue
+		}
+		out.Reporting++
+		out.HasRates = true
+		out.DownloadRate += snapshot.ReceivedRate
+		out.UploadRate += snapshot.SentRate
+	}
+	return out
+}
+
+func (h *connectionsHub) broadcastTotals(totals fleetTotals) {
+	h.mu.Lock()
+	clients := make([]chan fleetTotals, 0, len(h.totalClients))
+	for c := range h.totalClients {
+		clients = append(clients, c)
+	}
+	h.mu.Unlock()
+	for _, c := range clients {
+		select {
+		case c <- totals:
+		default:
+		}
+	}
+}
+
+func (h *connectionsHub) subscribeTotals() chan fleetTotals {
+	c := make(chan fleetTotals, 4)
+	h.mu.Lock()
+	h.totalClients[c] = struct{}{}
+	h.mu.Unlock()
+	return c
+}
+
+func (h *connectionsHub) unsubscribeTotals(c chan fleetTotals) {
+	h.mu.Lock()
+	delete(h.totalClients, c)
+	h.mu.Unlock()
 }
 
 // pruneLocked drops nodes that have not pushed recently and returns their
@@ -213,12 +292,27 @@ func (h *connectionsHub) subscribe() chan nodeConnectionsSnapshot {
 	c := make(chan nodeConnectionsSnapshot, 8)
 	h.mu.Lock()
 	h.clients[c] = struct{}{}
+	first, notify := len(h.clients) == 1, h.onWatchers
 	h.mu.Unlock()
+	if first && notify != nil {
+		notify(true)
+	}
 	return c
 }
 
 func (h *connectionsHub) unsubscribe(c chan nodeConnectionsSnapshot) {
 	h.mu.Lock()
 	delete(h.clients, c)
+	last, notify := len(h.clients) == 0, h.onWatchers
 	h.mu.Unlock()
+	if last && notify != nil {
+		notify(false)
+	}
+}
+
+// watched reports whether any console currently has the live stream open.
+func (h *connectionsHub) watched() bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return len(h.clients) > 0
 }
