@@ -21,7 +21,9 @@ const props = defineProps({
   listener: { type: Object, default: null },
   template: { type: Object, default: null },
   nodes: { type: Array, default: () => [] },
+  listeners: { type: Array, default: () => [] },
   outbounds: { type: Array, default: () => [] },
+  allEndpoints: { type: Array, default: () => [] },
   dnsRecords: { type: Array, default: () => [] },
   endpoints: { type: Array, default: () => [] },
   saving: { type: Boolean, default: false },
@@ -36,10 +38,38 @@ const selectedProfile = computed(() => listenerProfileMap[model.value.profile])
 const showReality = computed(() => model.value.security === 'reality')
 const nodeAddress = computed(() => props.nodes.find((node) => node.id === model.value.node_id)?.client_address || '')
 const nodeOptions = computed(() => props.nodes.map((node) => ({ value: node.id, label: node.name, desc: node.client_address || '未填写客户端连接地址' })))
-const outboundOptions = computed(() => [
-  { value: 'direct', label: '服务器直连' },
-  ...props.outbounds.filter((item) => item.type !== 'direct').map((item) => ({ value: item.id, label: item.name, desc: `${item.type.toUpperCase()} ${item.server}:${item.server_port}` })),
-])
+
+const chainTargets = computed(() => {
+  const currentNodeID = model.value.node_id
+  const currentListenerID = props.listener?.id || ''
+  const supported = new Set(['vless', 'hysteria2'])
+  return (props.allEndpoints || []).flatMap((endpoint) => {
+    if (currentListenerID && endpoint.listener_id === currentListenerID) return []
+    const listener = (props.listeners || []).find((item) => item.id === endpoint.listener_id)
+    if (!listener || !supported.has(listener.spec?.protocol)) return []
+    if (currentNodeID && listener.node_id === currentNodeID) return []
+    if (!listener.enabled || !endpoint.enabled) return []
+    const node = (props.nodes || []).find((item) => item.id === listener.node_id)
+    const nodeName = node?.name || listener.node_id
+    const userLabel = endpoint.alias ? `${endpoint.alias} (${endpoint.name})` : endpoint.name
+    return [{
+      value: `chain:${endpoint.id}`,
+      label: `${nodeName} · ${listener.name} · ${userLabel}`,
+      desc: `${(protocolMap[listener.spec?.protocol]?.label || listener.spec?.protocol).toUpperCase()} · 端口 ${listener.port}`,
+    }]
+  })
+})
+
+const outboundOptions = computed(() => {
+  const result = [{ value: 'direct', label: '服务器直连', desc: '经本机网卡直接发出', group: '直连' }]
+  for (const item of props.outbounds.filter((item) => item.type !== 'direct')) {
+    result.push({ value: item.id, label: item.name, desc: `${item.type.toUpperCase()} ${item.server}:${item.server_port}`, group: '上网出口' })
+  }
+  for (const item of chainTargets.value) {
+    result.push({ value: item.value, label: item.label, desc: item.desc, group: '链式代理（其他服务器节点用户）' })
+  }
+  return result
+})
 
 function recordName(record) {
   return String(record.name || '').replace(/\.$/, '')
@@ -289,8 +319,8 @@ function save() {
             <el-input v-model="account.alias" maxlength="128" aria-label="客户端节点别名" placeholder="会写入该用户的订阅配置" />
           </div>
           <div class="m-field">
-            <label class="m-field__label">上网出口</label>
-            <MPicker v-model="account.outbound_id" :options="outboundOptions" title="选择上网出口" />
+            <label class="m-field__label">上网出口与链式代理</label>
+            <MPicker v-model="account.outbound_id" :options="outboundOptions" title="选择出口或链式用户" />
           </div>
           <div class="m-field m-field--inline">
             <label class="m-field__label">启用该用户</label>

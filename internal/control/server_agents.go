@@ -3,6 +3,7 @@ package control
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log"
 	"net"
 	"strings"
@@ -627,6 +628,12 @@ func outboundDisplayName(tag string, names map[string]string) string {
 			return name
 		}
 	}
+	if id, found := strings.CutPrefix(tag, "chain-"); found {
+		if name := names["chain-"+id]; name != "" {
+			return name
+		}
+		return "链式代理"
+	}
 	return tag
 }
 
@@ -642,19 +649,31 @@ func (s *Server) outboundNames(ctx context.Context) map[string]string {
 	}
 	names := map[string]string{}
 	rows, err := s.store.db.QueryContext(ctx, `SELECT id, name FROM outbounds`)
-	if err != nil {
-		return names
-	}
-	defer rows.Close()
-	for rows.Next() {
-		var id, name string
-		if err := rows.Scan(&id, &name); err != nil {
-			return names
+	if err == nil {
+		defer rows.Close()
+		for rows.Next() {
+			var id, name string
+			if err := rows.Scan(&id, &name); err == nil {
+				names[id] = name
+			}
 		}
-		names[id] = name
 	}
-	if rows.Err() != nil {
-		return names
+	chainRows, err := s.store.db.QueryContext(ctx, `SELECT e.id, e.name, e.alias, l.name, n.name
+		FROM endpoints e
+		JOIN listeners l ON l.id = e.listener_id
+		JOIN nodes n ON n.id = l.node_id`)
+	if err == nil {
+		defer chainRows.Close()
+		for chainRows.Next() {
+			var epID, epName, epAlias, listName, nName string
+			if err := chainRows.Scan(&epID, &epName, &epAlias, &listName, &nName); err == nil {
+				label := epAlias
+				if label == "" {
+					label = epName
+				}
+				names["chain-"+epID] = fmt.Sprintf("%s · %s (%s)", nName, listName, label)
+			}
+		}
 	}
 	s.listenerNameMu.Lock()
 	s.outboundNameCache, s.outboundNameCachedAt = names, time.Now()

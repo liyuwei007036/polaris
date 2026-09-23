@@ -1709,12 +1709,13 @@ func (s *Server) updateListener(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
-	task, err := s.dispatchNodeConfiguration(r.Context(), updated.NodeID, operator.ID)
+	chainNodeIDs, _ := s.store.ListenerChainedNodeIDs(r.Context(), updated.ID)
+	tasks, err := s.dispatchNodeConfigurations(r.Context(), deduplicateStrings(append([]string{updated.NodeID}, chainNodeIDs...)), operator.ID)
 	if err != nil {
 		writeError(w, err)
 		return
 	}
-	setAutoApplyTaskHeader(w, task)
+	setAutoApplyTaskHeaders(w, tasks)
 	hasIngress, err := s.listenerHasIngressRoute(r.Context(), updated.ID)
 	if err != nil {
 		writeError(w, err)
@@ -1847,6 +1848,7 @@ func (s *Server) deleteListener(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
+	chainNodeIDs, _ := s.store.ListenerChainedNodeIDs(r.Context(), r.PathValue("id"))
 	if err := s.store.DeleteListener(r.Context(), r.PathValue("id")); err != nil {
 		writeError(w, err)
 		return
@@ -1855,12 +1857,12 @@ func (s *Server) deleteListener(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
-	task, err := s.dispatchNodeConfiguration(r.Context(), nodeID, operator.ID)
+	tasks, err := s.dispatchNodeConfigurations(r.Context(), deduplicateStrings(append([]string{nodeID}, chainNodeIDs...)), operator.ID)
 	if err != nil {
 		writeError(w, err)
 		return
 	}
-	setAutoApplyTaskHeader(w, task)
+	setAutoApplyTaskHeaders(w, tasks)
 	if hasIngress {
 		nginxTask, err := s.dispatchNodeNginx(r.Context(), nodeID, operator.ID)
 		if err != nil {
@@ -2159,12 +2161,13 @@ func (s *Server) updateEndpoint(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
-	task, err := s.dispatchNodeConfiguration(r.Context(), nodeID, operator.ID)
+	chainNodeIDs, _ := s.store.ChainedEndpointNodeIDs(r.Context(), updated.ID)
+	tasks, err := s.dispatchNodeConfigurations(r.Context(), deduplicateStrings(append([]string{nodeID}, chainNodeIDs...)), operator.ID)
 	if err != nil {
 		writeError(w, err)
 		return
 	}
-	setAutoApplyTaskHeader(w, task)
+	setAutoApplyTaskHeaders(w, tasks)
 	writeJSON(w, http.StatusOK, updated)
 }
 
@@ -2185,6 +2188,7 @@ func (s *Server) setEndpointEnabled(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
+	chainNodeIDs, _ := s.store.ChainedEndpointNodeIDs(r.Context(), r.PathValue("id"))
 	if err := s.store.SetEndpointEnabled(r.Context(), r.PathValue("id"), input.Enabled); err != nil {
 		writeError(w, err)
 		return
@@ -2193,12 +2197,12 @@ func (s *Server) setEndpointEnabled(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
-	task, err := s.dispatchNodeConfiguration(r.Context(), nodeID, operator.ID)
+	tasks, err := s.dispatchNodeConfigurations(r.Context(), deduplicateStrings(append([]string{nodeID}, chainNodeIDs...)), operator.ID)
 	if err != nil {
 		writeError(w, err)
 		return
 	}
-	setAutoApplyTaskHeader(w, task)
+	setAutoApplyTaskHeaders(w, tasks)
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -2213,6 +2217,7 @@ func (s *Server) deleteEndpoint(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
+	chainNodeIDs, _ := s.store.ChainedEndpointNodeIDs(r.Context(), r.PathValue("id"))
 	if err := s.store.DeleteEndpoint(r.Context(), r.PathValue("id")); err != nil {
 		writeError(w, err)
 		return
@@ -2221,12 +2226,12 @@ func (s *Server) deleteEndpoint(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
-	task, err := s.dispatchNodeConfiguration(r.Context(), nodeID, operator.ID)
+	tasks, err := s.dispatchNodeConfigurations(r.Context(), deduplicateStrings(append([]string{nodeID}, chainNodeIDs...)), operator.ID)
 	if err != nil {
 		writeError(w, err)
 		return
 	}
-	setAutoApplyTaskHeader(w, task)
+	setAutoApplyTaskHeaders(w, tasks)
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -2668,3 +2673,16 @@ func securityHeaders(next http.Handler) http.Handler {
 		next.ServeHTTP(w, r)
 	})
 }
+
+func deduplicateStrings(values []string) []string {
+	seen := make(map[string]bool, len(values))
+	result := make([]string, 0, len(values))
+	for _, v := range values {
+		if v != "" && !seen[v] {
+			seen[v] = true
+			result = append(result, v)
+		}
+	}
+	return result
+}
+

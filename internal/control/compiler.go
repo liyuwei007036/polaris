@@ -3,9 +3,11 @@ package control
 import (
 	"context"
 	"crypto/sha256"
+	"database/sql"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"github.com/liyuwei007036/polaris/internal/security"
 )
@@ -69,6 +71,19 @@ func (s *Store) CompileNodeConfig(ctx context.Context, nodeID string) (string, s
 		tag := "outbound-" + ob.ID
 		outbounds = append(outbounds, compileOutbound(ob, tag))
 		outboundTags[ob.ID] = tag
+	}
+	for _, selection := range endpointSelections {
+		if IsChainOutbound(selection.OutboundID) {
+			if _, ok := outboundTags[selection.OutboundID]; !ok {
+				targetEndpointID := ChainTargetEndpointID(selection.OutboundID)
+				tag := "chain-" + targetEndpointID
+				chainOutbound, err := s.compileChainOutbound(ctx, targetEndpointID, tag)
+				if err == nil {
+					outbounds = append(outbounds, chainOutbound)
+					outboundTags[selection.OutboundID] = tag
+				}
+			}
+		}
 	}
 	compiledRules := make([]map[string]any, 0, len(rules))
 	for _, rule := range rules {
@@ -372,4 +387,149 @@ func compileUser(protocol string, endpoint endpointWithCredentials) (map[string]
 		return nil, fmt.Errorf("unsupported inbound protocol %q", protocol)
 	}
 	return user, nil
+}
+
+func (s *Store) compileChainOutbound(ctx context.Context, targetEndpointID, tag string) (map[string]any, error) {
+	var (
+		encrypted     []byte
+		targetEnabled bool
+		listenerID    string
+		listenerName  string
+		domain        string
+		port          uint16
+		specJSON      string
+		listEnabled   bool
+		nodeID        string
+		nodeName      string
+		clientAddress string
+		revokedAt     sql.NullInt64
+	)
+	err := s.db.QueryRowContext(ctx, `SELECT e.credentials, e.enabled,
+		l.id, l.name, l.connection_domain, l.port, l.spec, l.enabled,
+		n.id, n.name, n.client_address, n.revoked_at
+		FROM endpoints e
+		JOIN listeners l ON l.id = e.listener_id
+		JOIN nodes n ON n.id = l.node_id
+		WHERE e.id = ?`, targetEndpointID).
+		Scan(&encrypted, &targetEnabled, &listenerID, &listenerName, &domain, &port, &specJSON, &listEnabled, &nodeID, &nodeName, &clientAddress, &revokedAt)
+	if err != nil {
+		return nil, fmt.Errorf("load target endpoint %s: %w", targetEndpointID, err)
+	}
+	if !targetEnabled || !listEnabled || revokedAt.Valid {
+		return nil, fmt.Errorf("target endpoint %s is not active", targetEndpointID)
+	}
+
+	plain, err := security.Decrypt(s.masterKey, encrypted)
+	if err != nil {
+		return nil, fmt.Errorf("decrypt target endpoint credentials: %w", err)
+	}
+	var creds EndpointCredentials
+	if err := json.Unmarshal(plain, &creds); err != nil {
+		return nil, fmt.Errorf("unmarshal target endpoint credentials: %w", err)
+	}
+
+	var spec ProtocolSpec
+	if err := json.Unmarshal([]byte(specJSON), &spec); err != nil {
+		return nil, fmt.Errorf("unmarshal target listener spec: %w", err)
+	}
+
+	server := strings.TrimSpace(domain)
+	if server == "" {
+		server = strings.TrimSpace(clientAddress)
+	}
+	if server == "" {
+		return nil, fmt.Errorf("node %s has no connection address", nodeName)
+	}
+
+	switch spec.Protocol {
+	case "vless":
+		outbound := map[string]any{
+			"type":            "vless",
+			"tag":             tag,
+			"server":          server,
+			"server_port":     port,
+			"uuid":            creds.UUID,
+			"packet_encoding": "xudp",
+		}
+		if creds.Flow != "" {
+			outbound["flow"] = creds.Flow
+		}
+		if spec.Reality.Enabled {
+			publicKey, err := s.realityPublicKey(ctx, spec.Reality.KeyID)
+			if err != nil {
+				return nil, fmt.Errorf("load Reality public key: %w", err)
+			}
+			realityConfig := map[string]any{
+				"enabled":    true,
+				"public_key": publicKey,
+			}
+			if len(spec.Reality.ShortIDs) > 0 {
+				realityConfig["short_id"] = spec.Reality.ShortIDs[0]
+			}
+			outbound["tls"] = map[string]any{
+				"enabled":     true,
+				"server_name": spec.Reality.HandshakeServer,
+				"utls": map[string]any{
+					"enabled":     true,
+					"fingerprint": "chrome",
+				},
+				"reality": realityConfig,
+			}
+		} else if spec.TLS.Enabled {
+			tlsConfig := map[string]any{
+				"enabled":  true,
+				"insecure": true,
+			}
+			if domain != "" {
+				tlsConfig["server_name"] = domain
+			}
+			if len(spec.TLS.ALPN) > 0 {
+				tlsConfig["alpn"] = spec.TLS.ALPN
+			}
+			outbound["tls"] = tlsConfig
+		}
+		switch spec.Transport.Type {
+		case "ws":
+			wsConfig := map[string]any{
+				"type": "ws",
+				"path": spec.Transport.Path,
+			}
+			host := strings.TrimSpace(spec.Transport.Host)
+			if host == "" {
+				host = strings.TrimSpace(domain)
+			}
+			if host != "" {
+				wsConfig["headers"] = map[string]any{"Host": host}
+			}
+			outbound["transport"] = wsConfig
+		case "grpc":
+			outbound["transport"] = map[string]any{
+				"type":         "grpc",
+				"service_name": spec.Transport.ServiceName,
+			}
+		}
+		return outbound, nil
+
+	case "hysteria2":
+		tlsConfig := map[string]any{
+			"enabled":  true,
+			"insecure": true,
+			"alpn":     []string{"h3"},
+		}
+		if domain != "" {
+			tlsConfig["server_name"] = domain
+		}
+		outbound := map[string]any{
+			"type":        "hysteria2",
+			"tag":         tag,
+			"server":      server,
+			"server_port": port,
+			"password":    creds.Password,
+			"tls":         tlsConfig,
+		}
+		return outbound, nil
+
+	default:
+		return nil, fmt.Errorf("unsupported protocol %q for chain outbound", spec.Protocol)
+	}
 }

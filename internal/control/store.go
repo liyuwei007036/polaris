@@ -1621,6 +1621,9 @@ func (s *Store) DeleteListener(ctx context.Context, listenerID string) error {
 	if err := removeEndpointReferences(ctx, tx, endpointIDs); err != nil {
 		return err
 	}
+	if _, err := tx.ExecContext(ctx, `UPDATE endpoints SET outbound_id = 'direct', updated_at = ? WHERE outbound_id IN (SELECT 'chain:' || id FROM endpoints WHERE listener_id = ?)`, nowUnix(), listenerID); err != nil {
+		return fmt.Errorf("clear chained listener endpoint references: %w", err)
+	}
 	if _, err := tx.ExecContext(ctx, `DELETE FROM ingress_routes WHERE listener_id = ?`, listenerID); err != nil {
 		return fmt.Errorf("delete listener ingress routes: %w", err)
 	}
@@ -1661,7 +1664,7 @@ func (s *Store) CreateEndpoint(ctx context.Context, endpoint Endpoint, credentia
 	if err := ValidateEndpointCredentials(listenerSpec.Protocol, credentials); err != nil {
 		return Endpoint{}, err
 	}
-	if err := s.ensureEndpointOutboundExists(ctx, endpoint.OutboundID); err != nil {
+	if err := s.validateEndpointOutbound(ctx, endpoint.OutboundID, endpoint.ListenerID, ""); err != nil {
 		return Endpoint{}, err
 	}
 	var duplicate string
@@ -1713,7 +1716,7 @@ func (s *Store) UpdateEndpoint(ctx context.Context, endpoint Endpoint, credentia
 	if existingListener != endpoint.ListenerID {
 		return Endpoint{}, ErrForbidden
 	}
-	if err := s.ensureEndpointOutboundExists(ctx, endpoint.OutboundID); err != nil {
+	if err := s.validateEndpointOutbound(ctx, endpoint.OutboundID, endpoint.ListenerID, endpoint.ID); err != nil {
 		return Endpoint{}, err
 	}
 	var duplicate string
@@ -1801,6 +1804,9 @@ func (s *Store) DeleteEndpoint(ctx context.Context, endpointID string) error {
 	// the same way deleting its service is.
 	if err := removeEndpointReferences(ctx, tx, map[string]bool{endpointID: true}); err != nil {
 		return err
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE endpoints SET outbound_id = 'direct', updated_at = ? WHERE outbound_id = ?`, nowUnix(), ChainOutboundPrefix+endpointID); err != nil {
+		return fmt.Errorf("clear chained endpoint references: %w", err)
 	}
 	result, err := tx.ExecContext(ctx, `DELETE FROM endpoints WHERE id = ?`, endpointID)
 	if err != nil {

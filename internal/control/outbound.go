@@ -336,11 +336,88 @@ func (s *Store) ensureOutboundExists(ctx context.Context, outboundID string) err
 	return err
 }
 
-func (s *Store) ensureEndpointOutboundExists(ctx context.Context, outboundID string) error {
+const ChainOutboundPrefix = "chain:"
+
+func IsChainOutbound(outboundID string) bool {
+	return strings.HasPrefix(outboundID, ChainOutboundPrefix)
+}
+
+func ChainTargetEndpointID(outboundID string) string {
+	return strings.TrimPrefix(outboundID, ChainOutboundPrefix)
+}
+
+func (s *Store) validateEndpointOutbound(ctx context.Context, outboundID, listenerID, endpointID string) error {
 	if outboundID == "" || outboundID == "direct" {
 		return nil
 	}
+	if IsChainOutbound(outboundID) {
+		targetEndpointID := ChainTargetEndpointID(outboundID)
+		if targetEndpointID == "" {
+			return userErrorf("链式代理目标节点用户不能为空")
+		}
+		if endpointID != "" && targetEndpointID == endpointID {
+			return userErrorf("不能将链式代理指向用户自身")
+		}
+		var target struct {
+			EndpointID      string
+			ListenerID      string
+			EndpointEnabled bool
+			TargetOutbound  string
+			NodeID          string
+			ListenerEnabled bool
+			RevokedAt       sql.NullInt64
+		}
+		err := s.db.QueryRowContext(ctx, `SELECT e.id, e.listener_id, e.enabled, e.outbound_id, l.node_id, l.enabled, n.revoked_at
+			FROM endpoints e
+			JOIN listeners l ON l.id = e.listener_id
+			JOIN nodes n ON n.id = l.node_id
+			WHERE e.id = ?`, targetEndpointID).
+			Scan(&target.EndpointID, &target.ListenerID, &target.EndpointEnabled, &target.TargetOutbound, &target.NodeID, &target.ListenerEnabled, &target.RevokedAt)
+		if errors.Is(err, sql.ErrNoRows) {
+			return userErrorf("指定的链式代理节点用户不存在")
+		}
+		if err != nil {
+			return fmt.Errorf("check chain endpoint: %w", err)
+		}
+		if !target.EndpointEnabled || !target.ListenerEnabled || target.RevokedAt.Valid {
+			return userErrorf("指定的链式代理节点用户已被停用或所属服务器不可用")
+		}
+		var currentNodeID string
+		if listenerID != "" {
+			_ = s.db.QueryRowContext(ctx, `SELECT node_id FROM listeners WHERE id = ?`, listenerID).Scan(&currentNodeID)
+		}
+		if currentNodeID != "" && target.NodeID == currentNodeID {
+			return userErrorf("链式代理只能指定其他服务器上的节点用户")
+		}
+		// Cycle detection
+		visited := map[string]bool{targetEndpointID: true}
+		if endpointID != "" {
+			visited[endpointID] = true
+		}
+		nextID := target.TargetOutbound
+		for i := 0; i < 16; i++ {
+			if !IsChainOutbound(nextID) {
+				break
+			}
+			nextEndpointID := ChainTargetEndpointID(nextID)
+			if visited[nextEndpointID] {
+				return userErrorf("链式代理不能形成循环引用")
+			}
+			visited[nextEndpointID] = true
+			var chainedOutbound string
+			err := s.db.QueryRowContext(ctx, `SELECT outbound_id FROM endpoints WHERE id = ?`, nextEndpointID).Scan(&chainedOutbound)
+			if err != nil {
+				break
+			}
+			nextID = chainedOutbound
+		}
+		return nil
+	}
 	return s.ensureOutboundExists(ctx, outboundID)
+}
+
+func (s *Store) ensureEndpointOutboundExists(ctx context.Context, outboundID string) error {
+	return s.validateEndpointOutbound(ctx, outboundID, "", "")
 }
 
 func (s *Store) ensureEnabledOutboundExists(ctx context.Context, outboundID string) error {
@@ -385,3 +462,50 @@ func (s *Store) OutboundNodeIDs(ctx context.Context, outboundID string) ([]strin
 	}
 	return nodeIDs, rows.Err()
 }
+
+// ChainedEndpointNodeIDs returns node IDs that have endpoints configured to chain to the given endpoint ID.
+func (s *Store) ChainedEndpointNodeIDs(ctx context.Context, endpointID string) ([]string, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT DISTINCT l.node_id
+		FROM endpoints e
+		JOIN listeners l ON l.id = e.listener_id
+		WHERE e.outbound_id = ?`, ChainOutboundPrefix+endpointID)
+	if err != nil {
+		return nil, fmt.Errorf("list chained endpoint nodes: %w", err)
+	}
+	defer rows.Close()
+	var nodeIDs []string
+	for rows.Next() {
+		var nodeID string
+		if err := rows.Scan(&nodeID); err != nil {
+			return nil, fmt.Errorf("read chained endpoint node: %w", err)
+		}
+		nodeIDs = append(nodeIDs, nodeID)
+	}
+	return nodeIDs, rows.Err()
+}
+
+// ListenerChainedNodeIDs returns node IDs that have endpoints configured to chain to any endpoint under the given listener.
+func (s *Store) ListenerChainedNodeIDs(ctx context.Context, listenerID string) ([]string, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT DISTINCT l.node_id
+		FROM endpoints e
+		JOIN listeners l ON l.id = e.listener_id
+		WHERE e.outbound_id IN (
+			SELECT 'chain:' || id FROM endpoints WHERE listener_id = ?
+		)`, listenerID)
+	if err != nil {
+		return nil, fmt.Errorf("list listener chained nodes: %w", err)
+	}
+	defer rows.Close()
+	var nodeIDs []string
+	for rows.Next() {
+		var nodeID string
+		if err := rows.Scan(&nodeID); err != nil {
+			return nil, fmt.Errorf("read listener chained node: %w", err)
+		}
+		nodeIDs = append(nodeIDs, nodeID)
+	}
+	return nodeIDs, rows.Err()
+}
+

@@ -20,7 +20,9 @@ const props = defineProps({
   // and users can all still be changed first.
   template: { type: Object, default: null },
   nodes: { type: Array, default: () => [] },
+  listeners: { type: Array, default: () => [] },
   outbounds: { type: Array, default: () => [] },
+  allEndpoints: { type: Array, default: () => [] },
   // DNS records of the configured zone, used to offer the domains that already
   // resolve to the selected server.
   dnsRecords: { type: Array, default: () => [] },
@@ -36,6 +38,46 @@ const selectedProfile = computed(() => listenerProfileMap[model.value.profile])
 const showReality = computed(() => model.value.security === 'reality')
 
 const nodeAddress = computed(() => props.nodes.find((node) => node.id === model.value.node_id)?.client_address || '')
+
+const chainTargets = computed(() => {
+  const currentNodeID = model.value.node_id
+  const currentListenerID = props.listener?.id || ''
+  const supported = new Set(['vless', 'hysteria2'])
+  return (props.allEndpoints || []).flatMap((endpoint) => {
+    if (currentListenerID && endpoint.listener_id === currentListenerID) return []
+    const listener = (props.listeners || []).find((item) => item.id === endpoint.listener_id)
+    if (!listener || !supported.has(listener.spec?.protocol)) return []
+    if (currentNodeID && listener.node_id === currentNodeID) return []
+    if (!listener.enabled || !endpoint.enabled) return []
+    const node = (props.nodes || []).find((item) => item.id === listener.node_id)
+    const nodeName = node?.name || listener.node_id
+    const userLabel = endpoint.alias ? `${endpoint.alias} (${endpoint.name})` : endpoint.name
+    return [{
+      value: `chain:${endpoint.id}`,
+      label: `${nodeName} · ${listener.name} · ${userLabel}`,
+    }]
+  })
+})
+
+function isOrphanChain(outboundID) {
+  if (!outboundID || !outboundID.startsWith('chain:')) return false
+  return !chainTargets.value.some((target) => target.value === outboundID)
+}
+
+function orphanChainLabel(outboundID) {
+  if (!outboundID || !outboundID.startsWith('chain:')) return ''
+  const targetID = outboundID.slice(6)
+  const targetEndpoint = (props.allEndpoints || []).find((e) => e.id === targetID)
+  if (targetEndpoint) {
+    const listener = (props.listeners || []).find((item) => item.id === targetEndpoint.listener_id)
+    const node = (props.nodes || []).find((item) => item.id === listener?.node_id)
+    const nodeName = node?.name || listener?.node_id || '其他服务器'
+    const listName = listener?.name || '未知服务'
+    const name = targetEndpoint.alias || targetEndpoint.name
+    return `${nodeName} · ${listName} · ${name} (已停用或同服务器)`
+  }
+  return `已删除的节点用户 (${targetID.slice(0, 8)})`
+}
 
 function recordName(record) {
   return String(record.name || '').replace(/\.$/, '')
@@ -338,9 +380,19 @@ async function save() {
               <span class="account-index">{{ index + 1 }}</span>
               <el-input v-model="account.name" aria-label="用户名称" placeholder="用户名称" />
               <el-input v-model="account.alias" aria-label="客户端节点别名" maxlength="128" placeholder="客户端节点别名" />
-              <el-select v-model="account.outbound_id" style="width: 100%">
-                <el-option label="服务器直连" value="direct" />
-                <el-option v-for="outbound in outbounds.filter((item) => item.type !== 'direct')" :key="outbound.id" :label="outbound.name" :value="outbound.id" />
+              <el-select v-model="account.outbound_id" filterable style="width: 100%" placeholder="选择出口或链式用户">
+                <el-option-group label="直连">
+                  <el-option label="服务器直连" value="direct" />
+                </el-option-group>
+                <el-option-group v-if="outbounds.filter((item) => item.type !== 'direct').length" label="上网出口">
+                  <el-option v-for="outbound in outbounds.filter((item) => item.type !== 'direct')" :key="outbound.id" :label="outbound.name" :value="outbound.id" />
+                </el-option-group>
+                <el-option-group v-if="chainTargets.length" label="链式代理（其他服务器节点用户）">
+                  <el-option v-for="target in chainTargets" :key="target.value" :label="target.label" :value="target.value" />
+                </el-option-group>
+                <el-option-group v-if="isOrphanChain(account.outbound_id)" label="已失效的链式代理">
+                  <el-option :label="orphanChainLabel(account.outbound_id)" :value="account.outbound_id" />
+                </el-option-group>
               </el-select>
               <el-switch v-model="account.enabled" inline-prompt active-text="启用" inactive-text="停用" />
               <el-button text type="danger" :icon="Delete" :disabled="accounts.length === 1" aria-label="删除用户" @click="removeAccount(index)" />

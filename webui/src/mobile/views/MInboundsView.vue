@@ -22,6 +22,7 @@ const loading = ref(false)
 const saving = ref(false)
 const listeners = ref([])
 const outbounds = ref([])
+const allEndpoints = ref([])
 const dnsRecords = ref([])
 const endpointMap = ref({})
 const formOpen = ref(false)
@@ -58,12 +59,14 @@ async function load() {
   loading.value = true
   try {
     await loadNodes()
-    const [listenerResult, outboundResult] = await Promise.all([
+    const [listenerResult, outboundResult, endpointResult] = await Promise.all([
       api('/listeners'),
       api('/outbounds').catch(() => ({ outbounds: [] })),
+      api('/endpoints').catch(() => ({ endpoints: [] })),
     ])
     listeners.value = listenerResult.listeners || []
     outbounds.value = outboundResult.outbounds || []
+    allEndpoints.value = endpointResult.endpoints || []
     // 域名候选是次要信息，读取区域可能很慢，让它自己补上，不挡列表。
     loadDomainSuggestions().catch(() => { dnsRecords.value = [] })
   } finally {
@@ -356,7 +359,9 @@ onMounted(load)
       :listener="editing"
       :template="copying"
       :nodes="appState.nodes"
+      :listeners="listeners"
       :outbounds="outbounds"
+      :all-endpoints="allEndpoints"
       :dns-records="dnsRecords"
       :endpoints="formEndpoints"
       :saving="saving"
