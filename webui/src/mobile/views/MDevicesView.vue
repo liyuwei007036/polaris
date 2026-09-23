@@ -113,7 +113,6 @@ async function exportCSV() {
     if (filter.ip) params.set('ip', filter.ip.trim())
     if (filter.node_id) params.set('node_id', filter.node_id)
     if (filter.keyword) params.set('keyword', filter.keyword.trim())
-    params.set('limit', '5000')
 
     const headers = {}
     if (csrfToken.value) headers['X-CSRF-Token'] = csrfToken.value

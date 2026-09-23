@@ -118,7 +118,6 @@ async function exportCSV() {
   exporting.value = true
   try {
     const params = buildQueryParams()
-    params.set('limit', '5000')
 
     const headers = {}
     if (csrfToken.value) headers['X-CSRF-Token'] = csrfToken.value
@@ -269,7 +268,7 @@ onBeforeUnmount(() => {
             </template>
           </el-table-column>
 
-          <el-table-column label="目标" min-width="210" show-overflow-tooltip>
+          <el-table-column label="目标" prop="host" sortable="custom" min-width="210" show-overflow-tooltip>
             <template #default="{ row }">
               <div class="mono font-medium">{{ row.host || row.destination }}</div>
               <div v-if="row.host && row.destination && row.host !== row.destination" class="subtle mono" style="font-size: 11px">

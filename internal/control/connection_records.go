@@ -122,15 +122,7 @@ func (s *Store) SaveConnectionRecords(ctx context.Context, records []ConnectionR
 	return tx.Commit()
 }
 
-// ListConnectionRecords returns paginated connection records matching the filter.
-func (s *Store) ListConnectionRecords(ctx context.Context, filter ConnectionRecordFilter, page, pageSize int) ([]ConnectionRecord, int, error) {
-	if page < 1 {
-		page = 1
-	}
-	if pageSize < 1 || pageSize > 500 {
-		pageSize = 20
-	}
-
+func buildConnectionRecordsWhereAndOrder(filter ConnectionRecordFilter) (string, []any, string, string) {
 	where := " WHERE 1 = 1"
 	args := []any{}
 
@@ -168,12 +160,6 @@ func (s *Store) ListConnectionRecords(ctx context.Context, filter ConnectionReco
 		args = append(args, kw, kw, kw, kw, kw, kw, kw)
 	}
 
-	var total int
-	countSQL := "SELECT COUNT(*) FROM connection_records" + where
-	if err := s.db.QueryRowContext(ctx, countSQL, args...).Scan(&total); err != nil {
-		return nil, 0, fmt.Errorf("count connection records: %w", err)
-	}
-
 	orderCol := "started_at"
 	switch strings.ToLower(strings.TrimSpace(filter.OrderBy)) {
 	case "started_at":
@@ -188,6 +174,10 @@ func (s *Store) ListConnectionRecords(ctx context.Context, filter ConnectionReco
 		orderCol = "upload"
 	case "source_ip", "ip":
 		orderCol = "source_ip"
+	case "host", "destination", "target":
+		orderCol = "CASE WHEN host != '' THEN host ELSE destination END"
+	case "node_name", "node":
+		orderCol = "node_name"
 	case "user":
 		orderCol = "user"
 	}
@@ -198,6 +188,26 @@ func (s *Store) ListConnectionRecords(ctx context.Context, filter ConnectionReco
 		orderDir = "ASC"
 	case "desc", "descending":
 		orderDir = "DESC"
+	}
+
+	return where, args, orderCol, orderDir
+}
+
+// ListConnectionRecords returns paginated connection records matching the filter.
+func (s *Store) ListConnectionRecords(ctx context.Context, filter ConnectionRecordFilter, page, pageSize int) ([]ConnectionRecord, int, error) {
+	if page < 1 {
+		page = 1
+	}
+	if pageSize < 1 || pageSize > 500 {
+		pageSize = 20
+	}
+
+	where, args, orderCol, orderDir := buildConnectionRecordsWhereAndOrder(filter)
+
+	var total int
+	countSQL := "SELECT COUNT(*) FROM connection_records" + where
+	if err := s.db.QueryRowContext(ctx, countSQL, args...).Scan(&total); err != nil {
+		return nil, 0, fmt.Errorf("count connection records: %w", err)
 	}
 
 	querySQL := fmt.Sprintf(`
@@ -243,6 +253,50 @@ func (s *Store) ListConnectionRecords(ctx context.Context, filter ConnectionReco
 	}
 
 	return records, total, nil
+}
+
+// StreamConnectionRecords streams all matching connection records row-by-row without paging limits.
+func (s *Store) StreamConnectionRecords(ctx context.Context, filter ConnectionRecordFilter, fn func(ConnectionRecord) error) error {
+	where, args, orderCol, orderDir := buildConnectionRecordsWhereAndOrder(filter)
+
+	querySQL := fmt.Sprintf(`
+		SELECT id, node_id, node_name, connection_id, source_ip, source_port, source_location,
+		       destination, host, network, user, listener_name, outbound_name,
+		       upload, download, started_at, closed_at
+		FROM connection_records%s
+		ORDER BY %s %s, id DESC
+	`, where, orderCol, orderDir)
+	rows, err := s.db.QueryContext(ctx, querySQL, args...)
+	if err != nil {
+		return fmt.Errorf("query connection records stream: %w", err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var r ConnectionRecord
+		var startedAt, closedAt int64
+		err := rows.Scan(
+			&r.ID, &r.NodeID, &r.NodeName, &r.ConnectionID, &r.SourceIP, &r.SourcePort, &r.SourceLocation,
+			&r.Destination, &r.Host, &r.Network, &r.User, &r.ListenerName, &r.OutboundName,
+			&r.Upload, &r.Download, &startedAt, &closedAt,
+		)
+		if err != nil {
+			return fmt.Errorf("scan connection record: %w", err)
+		}
+		if startedAt > 0 {
+			r.StartedAt = time.Unix(startedAt, 0).UTC().Format(time.RFC3339)
+		}
+		if closedAt > 0 {
+			r.ClosedAt = time.Unix(closedAt, 0).UTC().Format(time.RFC3339)
+			if closedAt >= startedAt {
+				r.DurationSeconds = closedAt - startedAt
+			}
+		}
+		if err := fn(r); err != nil {
+			return err
+		}
+	}
+	return rows.Err()
 }
 
 // PopularDevices returns top active devices/clients grouped by source IP within the given time window.

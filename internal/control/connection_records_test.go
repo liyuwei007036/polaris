@@ -559,5 +559,39 @@ func TestConnectionRecordsSorting(t *testing.T) {
 	if res[0].SourceIP != "10.0.0.3" || res[2].SourceIP != "10.0.0.1" {
 		t.Fatalf("source_ip desc failed: got [%s, %s, %s]", res[0].SourceIP, res[1].SourceIP, res[2].SourceIP)
 	}
+
+	// 4. Sort by target / host ASC
+	records2 := []ConnectionRecord{
+		{ID: "t-1", Host: "b.com", StartedAt: now.Format(time.RFC3339)},
+		{ID: "t-2", Host: "a.com", StartedAt: now.Format(time.RFC3339)},
+		{ID: "t-3", Host: "c.com", StartedAt: now.Format(time.RFC3339)},
+	}
+	if err := store.SaveConnectionRecords(ctx, records2); err != nil {
+		t.Fatal(err)
+	}
+	res, _, err = store.ListConnectionRecords(ctx, ConnectionRecordFilter{
+		Keyword:  ".com",
+		OrderBy:  "host",
+		OrderDir: "asc",
+	}, 1, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res) != 3 || res[0].Host != "a.com" || res[1].Host != "b.com" || res[2].Host != "c.com" {
+		t.Fatalf("host asc sort failed: got [%s, %s, %s]", res[0].Host, res[1].Host, res[2].Host)
+	}
+
+	// 5. StreamConnectionRecords full export
+	var streamedCount int
+	err = store.StreamConnectionRecords(ctx, ConnectionRecordFilter{}, func(r ConnectionRecord) error {
+		streamedCount++
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if streamedCount != 6 {
+		t.Fatalf("expected 6 streamed records, got %d", streamedCount)
+	}
 }
 
