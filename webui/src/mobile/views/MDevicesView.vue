@@ -155,10 +155,10 @@ onMounted(async () => {
           <div class="m-item__head">
             <div class="m-rank-title">
               <span class="m-pill" :class="index < 3 ? 'm-pill--warning' : 'm-pill--info'">#{{ index + 1 }}</span>
-              <span class="m-item__title" style="margin-left: 6px">{{ row.user || '未知设备' }}</span>
+              <span class="m-item__title m-item__title--mono" style="margin-left: 6px"><strong>{{ row.source_ip }}</strong></span>
             </div>
             <el-button size="small" link type="primary" :icon="Filter" @click="filterByDeviceIP(row.source_ip)">
-              查连接
+              查此 IP 连接
             </el-button>
           </div>
           <div class="m-item__stats">
@@ -166,7 +166,7 @@ onMounted(async () => {
             <span class="m-stat"><b>{{ formatBytes(row.total_bytes) }}</b><small>累计流量</small></span>
           </div>
           <div class="m-item__meta">
-            {{ row.source_ip }} {{ row.source_location ? `· ${row.source_location}` : '' }} · {{ formatDateTime(row.last_seen_at) }}
+            {{ row.source_location || '未知归属地' }}{{ row.user ? ` · ${row.user}` : '' }} · {{ formatDateTime(row.last_seen_at) }}
           </div>
         </div>
       </article>

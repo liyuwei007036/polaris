@@ -45,9 +45,10 @@ type ConnectionRecordFilter struct {
 }
 
 type PopularDevice struct {
-	User            string `json:"user"`
 	SourceIP        string `json:"source_ip"`
 	SourceLocation  string `json:"source_location"`
+	User            string `json:"user,omitempty"`
+	NodeNames       string `json:"node_names,omitempty"`
 	ConnectionCount int    `json:"connection_count"`
 	Upload          int64  `json:"upload"`
 	Download        int64  `json:"download"`
@@ -216,7 +217,7 @@ func (s *Store) ListConnectionRecords(ctx context.Context, filter ConnectionReco
 	return records, total, nil
 }
 
-// PopularDevices returns top active devices/clients within the given time window.
+// PopularDevices returns top active devices/clients grouped by source IP within the given time window.
 func (s *Store) PopularDevices(ctx context.Context, since time.Time, limit int) ([]PopularDevice, error) {
 	if limit <= 0 || limit > 100 {
 		limit = 20
@@ -225,16 +226,17 @@ func (s *Store) PopularDevices(ctx context.Context, since time.Time, limit int) 
 
 	querySQL := `
 		SELECT
-			COALESCE(NULLIF(user, ''), source_ip) AS device_name,
 			source_ip,
-			source_location,
+			COALESCE(MAX(source_location), '') AS source_location,
+			COALESCE(GROUP_CONCAT(DISTINCT NULLIF(user, '')), '') AS user_names,
+			COALESCE(GROUP_CONCAT(DISTINCT NULLIF(node_name, '')), '') AS node_names,
 			COUNT(*) AS conn_count,
-			SUM(upload) AS total_upload,
-			SUM(download) AS total_download,
+			COALESCE(SUM(upload), 0) AS total_upload,
+			COALESCE(SUM(download), 0) AS total_download,
 			MAX(started_at) AS last_seen
 		FROM connection_records
-		WHERE started_at >= ?
-		GROUP BY device_name, source_ip
+		WHERE started_at >= ? AND source_ip != ''
+		GROUP BY source_ip
 		ORDER BY conn_count DESC, total_download DESC
 		LIMIT ?
 	`
@@ -249,16 +251,27 @@ func (s *Store) PopularDevices(ctx context.Context, since time.Time, limit int) 
 		var item PopularDevice
 		var lastSeen int64
 		var upload, download sql.NullInt64
+		var sourceLocation, userNames, nodeNames sql.NullString
 		if err := rows.Scan(
-			&item.User,
 			&item.SourceIP,
-			&item.SourceLocation,
+			&sourceLocation,
+			&userNames,
+			&nodeNames,
 			&item.ConnectionCount,
 			&upload,
 			&download,
 			&lastSeen,
 		); err != nil {
 			return nil, fmt.Errorf("scan popular device: %w", err)
+		}
+		if sourceLocation.Valid {
+			item.SourceLocation = sourceLocation.String
+		}
+		if userNames.Valid {
+			item.User = userNames.String
+		}
+		if nodeNames.Valid {
+			item.NodeNames = nodeNames.String
 		}
 		if upload.Valid {
 			item.Upload = upload.Int64
@@ -282,12 +295,12 @@ func (s *Store) DeviceSummaryStats(ctx context.Context, since time.Time) (Device
 	querySQL := `
 		SELECT
 			COUNT(*),
-			COUNT(DISTINCT NULLIF(user, '')),
+			COUNT(DISTINCT source_ip),
 			COUNT(DISTINCT source_ip),
 			COALESCE(SUM(upload), 0),
 			COALESCE(SUM(download), 0)
 		FROM connection_records
-		WHERE started_at >= ?
+		WHERE started_at >= ? AND source_ip != ''
 	`
 	var stats DeviceSummaryStats
 	err := s.db.QueryRowContext(ctx, querySQL, sinceUnix).Scan(
@@ -299,10 +312,6 @@ func (s *Store) DeviceSummaryStats(ctx context.Context, since time.Time) (Device
 	)
 	if err != nil {
 		return DeviceSummaryStats{}, fmt.Errorf("query device summary stats: %w", err)
-	}
-	// If unique devices count (named users) is smaller than unique IPs, provide at least unique IPs as devices
-	if stats.UniqueDevices == 0 {
-		stats.UniqueDevices = stats.UniqueIPs
 	}
 	return stats, nil
 }

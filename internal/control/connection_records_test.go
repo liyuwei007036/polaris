@@ -210,8 +210,8 @@ func TestPopularDevicesAndSummary(t *testing.T) {
 	if len(devices) != 2 {
 		t.Fatalf("expected 2 popular devices, got %d", len(devices))
 	}
-	if devices[0].User != "user-a" || devices[0].ConnectionCount != 2 {
-		t.Fatalf("expected user-a to be rank 1 with 2 connections, got %s with %d", devices[0].User, devices[0].ConnectionCount)
+	if devices[0].SourceIP != "1.1.1.1" || devices[0].ConnectionCount != 2 {
+		t.Fatalf("expected 1.1.1.1 to be rank 1 with 2 connections, got %s with %d", devices[0].SourceIP, devices[0].ConnectionCount)
 	}
 	if devices[0].Upload != 300 || devices[0].Download != 1300 {
 		t.Fatalf("user-a bytes mismatch: upload=%d download=%d", devices[0].Upload, devices[0].Download)

@@ -149,25 +149,25 @@ onMounted(() => {
           <div class="metric__value">{{ summary.total_connections.toLocaleString() }}</div>
         </div>
         <div class="metric">
-          <div class="metric__label">活跃设备数</div>
-          <div class="metric__value">{{ summary.unique_devices }}</div>
-        </div>
-        <div class="metric">
-          <div class="metric__label">独立 IP 数</div>
+          <div class="metric__label">热门设备数 (独立来源 IP)</div>
           <div class="metric__value">{{ summary.unique_ips }}</div>
         </div>
         <div class="metric">
-          <div class="metric__label">累计传输流量</div>
-          <div class="metric__value">{{ formatBytes(summary.total_download + summary.total_upload) }}</div>
+          <div class="metric__label">累计下行流量</div>
+          <div class="metric__value">{{ formatBytes(summary.total_download) }}</div>
+        </div>
+        <div class="metric">
+          <div class="metric__label">累计上行流量</div>
+          <div class="metric__value">{{ formatBytes(summary.total_upload) }}</div>
         </div>
       </section>
 
-      <!-- 热门设备排行 -->
+      <!-- 热门设备排行（按来源 IP） -->
       <div class="table-panel">
         <div class="panel-header">
           <div class="panel-title">
-            <strong>热门设备排行</strong>
-            <span class="subtle" style="margin-left: 8px">按连接频次与流量排序</span>
+            <strong>热门设备排行（来源 IP）</strong>
+            <span class="subtle" style="margin-left: 8px">按来源 IP 统计连接频次与流量</span>
           </div>
           <el-radio-group v-model="popularRange" size="small" @change="loadPopular">
             <el-radio-button label="24h">最近 24 小时</el-radio-button>
@@ -184,17 +184,22 @@ onMounted(() => {
               </el-tag>
             </template>
           </el-table-column>
-          <el-table-column label="设备 / 账号" min-width="150" show-overflow-tooltip>
+          <el-table-column label="来源 IP（设备）" min-width="170" show-overflow-tooltip>
             <template #default="{ row }">
-              <span class="device-name clickable" @click="filterByUser(row.user || row.source_ip)">
-                {{ row.user || '未知设备' }}
-              </span>
+              <div class="mono clickable device-ip" @click="filterByIP(row.source_ip)">
+                <strong>{{ row.source_ip }}</strong>
+              </div>
             </template>
           </el-table-column>
-          <el-table-column label="常用来源 IP" min-width="180" show-overflow-tooltip>
+          <el-table-column label="归属地" min-width="160" show-overflow-tooltip>
             <template #default="{ row }">
-              <div class="mono clickable" @click="filterByIP(row.source_ip)">{{ row.source_ip }}</div>
-              <div class="subtle">{{ row.source_location || '未知归属地' }}</div>
+              <span>{{ row.source_location || '未知归属地' }}</span>
+            </template>
+          </el-table-column>
+          <el-table-column label="接入账号" min-width="120" show-overflow-tooltip>
+            <template #default="{ row }">
+              <span v-if="row.user" class="clickable" @click="filterByUser(row.user)">{{ row.user }}</span>
+              <span v-else class="subtle">—</span>
             </template>
           </el-table-column>
           <el-table-column label="连接次数" min-width="110" align="right">
@@ -202,7 +207,7 @@ onMounted(() => {
               <strong>{{ row.connection_count.toLocaleString() }}</strong> 次
             </template>
           </el-table-column>
-          <el-table-column label="总流量" min-width="130" align="right">
+          <el-table-column label="总流量" min-width="140" align="right">
             <template #default="{ row }">
               <div class="mono font-bold">{{ formatBytes(row.total_bytes) }}</div>
               <div class="mono subtle" style="font-size: 11px">↓{{ formatBytes(row.download) }} ↑{{ formatBytes(row.upload) }}</div>
@@ -214,7 +219,7 @@ onMounted(() => {
           <el-table-column label="操作" width="130" align="center">
             <template #default="{ row }">
               <el-button link type="primary" size="small" :icon="Filter" @click="filterByIP(row.source_ip)">
-                查连接
+                查此 IP 连接
               </el-button>
             </template>
           </el-table-column>
@@ -276,20 +281,10 @@ onMounted(() => {
         </div>
 
         <el-table v-loading="loading" :data="records" empty-text="未找到匹配的历史连接记录">
-          <el-table-column label="服务器" prop="node_name" min-width="100" show-overflow-tooltip>
-            <template #default="{ row }">
-              {{ row.node_name || row.node_id }}
-            </template>
-          </el-table-column>
-          <el-table-column label="设备 / 账号" min-width="130" show-overflow-tooltip>
-            <template #default="{ row }">
-              <strong>{{ row.user || row.listener_name || '—' }}</strong>
-            </template>
-          </el-table-column>
-          <el-table-column label="来源" min-width="160" show-overflow-tooltip>
+          <el-table-column label="来源 IP（设备）" min-width="170" show-overflow-tooltip>
             <template #default="{ row }">
               <div class="mono clickable" @click="filterByIP(row.source_ip)">
-                {{ row.source_ip }}{{ row.source_port ? `:${row.source_port}` : '' }}
+                <strong>{{ row.source_ip }}</strong>{{ row.source_port ? `:${row.source_port}` : '' }}
               </div>
               <div class="subtle">{{ row.source_location || '未知归属地' }}</div>
             </template>
@@ -300,6 +295,17 @@ onMounted(() => {
               <div v-if="row.host && row.destination && row.host !== row.destination" class="subtle mono" style="font-size: 11px">
                 {{ row.destination }}
               </div>
+            </template>
+          </el-table-column>
+          <el-table-column label="服务器" prop="node_name" min-width="100" show-overflow-tooltip>
+            <template #default="{ row }">
+              {{ row.node_name || row.node_id }}
+            </template>
+          </el-table-column>
+          <el-table-column label="认证账号" min-width="120" show-overflow-tooltip>
+            <template #default="{ row }">
+              <span v-if="row.user">{{ row.user }}</span>
+              <span v-else class="subtle">—</span>
             </template>
           </el-table-column>
           <el-table-column label="网络 / 出口" min-width="120" show-overflow-tooltip>
