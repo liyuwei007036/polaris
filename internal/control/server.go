@@ -58,6 +58,8 @@ type Server struct {
 	connHub                *connectionsHub
 	connRates              *connectionRates
 	connActivity           *nodeActivity
+	connRecorder           *connectionRecorder
+	recordConnections      bool
 	liveHub                *liveHub
 	ipLocator              *ipLocator
 	listenerNameMu         sync.Mutex
@@ -117,6 +119,7 @@ func NewServer(store *Store, secureCookies bool) (*Server, error) {
 		taskWaiters:            make(map[string]chan wire.TaskResult),
 		latestSingBoxReleaseFn: LatestOfficialSingBoxRelease,
 		connHub:                newConnectionsHub(), connRates: newConnectionRates(), connActivity: newNodeActivity(),
+		connRecorder:           newConnectionRecorder(store),
 		liveHub:                newLiveHub(), ipLocator: ipLocator,
 		connectionsInterval:    DefaultConnectionsInterval,
 		subscriptionLimiter:    newRateLimiter(subscriptionRateWindow, subscriptionRateLimit, subscriptionRateMaxKeys),
@@ -134,7 +137,11 @@ func NewServer(store *Store, secureCookies bool) (*Server, error) {
 // open-close-open from delivering the states out of order.
 func (s *Server) setFleetStreaming(streaming bool) {
 	s.controlMu.Lock()
-	s.fleetStreaming = streaming
+	if s.recordConnections {
+		s.fleetStreaming = true
+	} else {
+		s.fleetStreaming = streaming
+	}
 	sessions := make([]*controlSession, 0, len(s.controls))
 	for _, session := range s.controls {
 		sessions = append(sessions, session)
@@ -152,6 +159,18 @@ func (s *Server) fleetStreamingState() bool {
 	s.controlMu.Lock()
 	defer s.controlMu.Unlock()
 	return s.fleetStreaming
+}
+
+// EnableConnectionRecording switches on continuous connection streaming and
+// starts the background recorder worker so all connection records are persisted.
+func (s *Server) EnableConnectionRecording(ctx context.Context) {
+	s.controlMu.Lock()
+	s.recordConnections = true
+	s.controlMu.Unlock()
+	if s.connRecorder != nil {
+		s.connRecorder.Start(ctx)
+	}
+	s.setFleetStreaming(true)
 }
 
 // DefaultConnectionsInterval paces the real-time connection push every node
@@ -174,9 +193,9 @@ func (s *Server) SetConnectionsInterval(interval time.Duration) {
 	s.connectionsInterval = interval
 }
 
-// StartMaintenance runs the periodic housekeeping the master owns: today that
-// is trimming operation records to the retention window. It returns as soon as
-// the loop is running in the background and stops with ctx.
+// StartMaintenance runs the periodic housekeeping the master owns: trimming
+// operation records and connection records to their retention window.
+// It returns as soon as the loop is running in the background and stops with ctx.
 func (s *Server) StartMaintenance(ctx context.Context) {
 	go func() {
 		ticker := time.NewTicker(time.Hour)
@@ -184,6 +203,9 @@ func (s *Server) StartMaintenance(ctx context.Context) {
 		for {
 			if err := s.store.PurgeExpiredOperationRecords(ctx); err != nil && ctx.Err() == nil {
 				fmt.Fprintln(os.Stderr, "purge operation records:", err)
+			}
+			if _, err := s.store.PurgeExpiredConnectionRecords(ctx, ConnectionRecordsRetention); err != nil && ctx.Err() == nil {
+				fmt.Fprintln(os.Stderr, "purge expired connection records:", err)
 			}
 			select {
 			case <-ctx.Done():
@@ -299,6 +321,8 @@ func (s *Server) registerBrowserRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/v1/nodes/{id}/connections", s.nodeConnections)
 	mux.HandleFunc("GET /api/v1/events/connections", s.browserConnectionsStream)
 	mux.HandleFunc("GET /api/v1/events/live", s.browserLiveStream)
+	mux.HandleFunc("GET /api/v1/devices/connections", s.listDeviceConnections)
+	mux.HandleFunc("GET /api/v1/devices/popular", s.popularDevices)
 	mux.HandleFunc("GET /api/v1/cloudflare/settings", s.cloudflareSettings)
 	mux.HandleFunc("PUT /api/v1/cloudflare/settings", s.setCloudflareSettings)
 	mux.HandleFunc("GET /api/v1/cloudflare/records", s.listCloudflareRecords)

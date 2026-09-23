@@ -15,6 +15,7 @@ import {
   Share,
   SwitchButton,
   Tickets,
+  TrendCharts,
   User,
 } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
@@ -67,6 +68,7 @@ const groups = [
     label: '状态与记录',
     items: [
       { id: 'connections', label: '当前连接', icon: List },
+      { id: 'devices', label: '热门设备', icon: TrendCharts },
       { id: 'audit', label: '操作记录', icon: Tickets },
     ],
   },
@@ -93,6 +95,7 @@ const views = {
   routes: defineAsyncComponent(() => import('./views/RoutesView.vue')),
   outbounds: defineAsyncComponent(() => import('./views/OutboundsView.vue')),
   connections: defineAsyncComponent(() => import('./views/ConnectionsView.vue')),
+  devices: defineAsyncComponent(() => import('./views/DevicesView.vue')),
   security: defineAsyncComponent(() => import('./views/SecurityView.vue')),
   cloudflare: defineAsyncComponent(() => import('./views/CloudflareView.vue')),
   audit: defineAsyncComponent(() => import('./views/AuditView.vue')),

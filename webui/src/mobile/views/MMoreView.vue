@@ -2,7 +2,7 @@
 import { computed, inject, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import {
-  Collection, Connection, Document, Lock, Monitor, Operation, Refresh, Setting, Share, Tickets, User,
+  Collection, Connection, Document, Lock, Monitor, Operation, Refresh, Setting, Share, Tickets, TrendCharts, User,
 } from '@element-plus/icons-vue'
 import { post } from '../../api'
 import MPage from '../components/MPage.vue'
@@ -33,9 +33,15 @@ const groups = [
     ],
   },
   {
+    label: '状态与记录',
+    items: [
+      { id: 'devices', label: '热门设备', icon: TrendCharts },
+      { id: 'audit', label: '操作记录', icon: Tickets },
+    ],
+  },
+  {
     label: '系统管理',
     items: [
-      { id: 'audit', label: '操作记录', icon: Tickets },
       { id: 'cloudflare', label: '域名解析', icon: Document },
       { id: 'settings', label: '系统设置', icon: Setting },
     ],

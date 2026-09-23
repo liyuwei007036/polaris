@@ -355,6 +355,9 @@ func (s *Server) handleAgentMessage(ctx context.Context, node Node, msgType byte
 		// arrives, so it has to see every push rather than the round the
 		// console happens to aggregate.
 		s.connActivity.record(node.ID, connections, now)
+		if s.connRecorder != nil {
+			s.connRecorder.RecordPush(node.ID, node.Name, connections)
+		}
 		connJSON, err := json.Marshal(connections)
 		if err != nil {
 			return false

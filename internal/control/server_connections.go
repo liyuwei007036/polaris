@@ -5,7 +5,10 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strconv"
 	"time"
+
+	"github.com/liyuwei007036/polaris/internal/security"
 )
 
 // nodeConnections returns the connection list exactly as the agent last
@@ -148,3 +151,94 @@ func (s *Server) browserLiveStream(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 }
+
+// listDeviceConnections returns paginated historical connection records from SQLite.
+func (s *Server) listDeviceConnections(w http.ResponseWriter, r *http.Request) {
+	if _, err := s.operator(r, false); err != nil {
+		writeError(w, err)
+		return
+	}
+	page, err := security.ParsePositiveInt(r.URL.Query().Get("page"), 1, 1_000_000)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	pageSize, err := security.ParsePositiveInt(r.URL.Query().Get("page_size"), 20, 200)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+
+	filter := ConnectionRecordFilter{
+		NodeID:       r.URL.Query().Get("node_id"),
+		SourceIP:     r.URL.Query().Get("ip"),
+		User:         r.URL.Query().Get("user"),
+		Network:      r.URL.Query().Get("network"),
+		OutboundName: r.URL.Query().Get("outbound"),
+		Keyword:      r.URL.Query().Get("keyword"),
+	}
+	if startRaw := r.URL.Query().Get("start_time"); startRaw != "" {
+		if t, err := time.Parse(time.RFC3339, startRaw); err == nil {
+			filter.StartTime = t.Unix()
+		} else if sec, err := strconv.ParseInt(startRaw, 10, 64); err == nil {
+			filter.StartTime = sec
+		}
+	}
+	if endRaw := r.URL.Query().Get("end_time"); endRaw != "" {
+		if t, err := time.Parse(time.RFC3339, endRaw); err == nil {
+			filter.EndTime = t.Unix()
+		} else if sec, err := strconv.ParseInt(endRaw, 10, 64); err == nil {
+			filter.EndTime = sec
+		}
+	}
+
+	records, total, err := s.store.ListConnectionRecords(r.Context(), filter, page, pageSize)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"records": records,
+		"total":   total,
+	})
+}
+
+// popularDevices returns aggregated metrics and top ranked client devices.
+func (s *Server) popularDevices(w http.ResponseWriter, r *http.Request) {
+	if _, err := s.operator(r, false); err != nil {
+		writeError(w, err)
+		return
+	}
+	rangeStr := r.URL.Query().Get("range")
+	var since time.Time
+	now := time.Now()
+	switch rangeStr {
+	case "24h":
+		since = now.Add(-24 * time.Hour)
+	case "30d":
+		since = now.Add(-30 * 24 * time.Hour)
+	default:
+		rangeStr = "7d"
+		since = now.Add(-7 * 24 * time.Hour)
+	}
+
+	limit, _ := security.ParsePositiveInt(r.URL.Query().Get("limit"), 20, 100)
+
+	devices, err := s.store.PopularDevices(r.Context(), since, limit)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	summary, err := s.store.DeviceSummaryStats(r.Context(), since)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"range":   rangeStr,
+		"summary": summary,
+		"devices": devices,
+	})
+}
+

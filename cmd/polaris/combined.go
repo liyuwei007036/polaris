@@ -174,6 +174,7 @@ func serveCombined(ctx context.Context, masterConfiguration masterConfig, agentC
 	defer browserServer.Close()
 	combinedContext, cancel := context.WithCancel(ctx)
 	defer cancel()
+	server.EnableConnectionRecording(combinedContext)
 	server.StartMaintenance(combinedContext)
 	server.StartTrafficAggregation(combinedContext)
 	go func() {

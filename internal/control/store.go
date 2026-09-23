@@ -2343,6 +2343,17 @@ CREATE TABLE IF NOT EXISTS cloudflare_settings (
   id INTEGER PRIMARY KEY CHECK (id = 1), zone_id TEXT NOT NULL, zone_name TEXT NOT NULL,
   api_token BLOB NOT NULL, updated_at INTEGER NOT NULL
 );
+CREATE TABLE IF NOT EXISTS connection_records (
+  id TEXT PRIMARY KEY, node_id TEXT NOT NULL, node_name TEXT NOT NULL DEFAULT '',
+  connection_id TEXT NOT NULL DEFAULT '', source_ip TEXT NOT NULL DEFAULT '',
+  source_port TEXT NOT NULL DEFAULT '', source_location TEXT NOT NULL DEFAULT '',
+  destination TEXT NOT NULL DEFAULT '', host TEXT NOT NULL DEFAULT '',
+  network TEXT NOT NULL DEFAULT '', user TEXT NOT NULL DEFAULT '',
+  listener_name TEXT NOT NULL DEFAULT '', outbound_name TEXT NOT NULL DEFAULT '',
+  upload INTEGER NOT NULL DEFAULT 0, download INTEGER NOT NULL DEFAULT 0,
+  started_at INTEGER NOT NULL, closed_at INTEGER NOT NULL DEFAULT 0,
+  created_at INTEGER NOT NULL
+);
 CREATE INDEX IF NOT EXISTS idx_sessions_expiry ON sessions(expires_at);
 CREATE INDEX IF NOT EXISTS idx_registrations_public_key ON registrations(public_key);
 CREATE INDEX IF NOT EXISTS idx_tasks_node_status ON tasks(node_id, status, created_at);
@@ -2360,6 +2371,10 @@ CREATE INDEX IF NOT EXISTS idx_subscription_rules_subscription ON subscription_r
 CREATE INDEX IF NOT EXISTS idx_subscription_access_time ON subscription_access_logs(accessed_at DESC);
 CREATE INDEX IF NOT EXISTS idx_subscription_access_config ON subscription_access_logs(config_id, accessed_at DESC);
 CREATE INDEX IF NOT EXISTS idx_node_metrics_updated ON node_metrics(updated_at);
+CREATE INDEX IF NOT EXISTS idx_conn_records_started_at ON connection_records(started_at DESC);
+CREATE INDEX IF NOT EXISTS idx_conn_records_source_ip ON connection_records(source_ip, started_at DESC);
+CREATE INDEX IF NOT EXISTS idx_conn_records_user ON connection_records(user, started_at DESC);
+CREATE INDEX IF NOT EXISTS idx_conn_records_node_id ON connection_records(node_id, started_at DESC);
 `)
 	if err != nil {
 		return fmt.Errorf("migrate database: %w", err)

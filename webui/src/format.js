@@ -62,3 +62,16 @@ export function includesText(values, query) {
   if (!keyword) return true
   return values.some((value) => String(value ?? '').toLocaleLowerCase().includes(keyword))
 }
+
+export function formatDuration(seconds) {
+  const s = Math.round(Number(seconds || 0))
+  if (s <= 0) return '< 1 秒'
+  if (s < 60) return `${s} 秒`
+  const m = Math.floor(s / 60)
+  const remSec = s % 60
+  if (m < 60) return remSec ? `${m} 分 ${remSec} 秒` : `${m} 分钟`
+  const h = Math.floor(m / 60)
+  const remMin = m % 60
+  return remMin ? `${h} 小时 ${remMin} 分` : `${h} 小时`
+}
+
