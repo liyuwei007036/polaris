@@ -81,16 +81,15 @@ function resetForm(group = null) {
   dialogVisible.value = true
 }
 
-function memberKeys() {
-  return form.members.map((member) => `${member.kind}:${member.id}`)
-}
-
-function setMembers(keys) {
-  form.members = keys.map((key) => {
-    const separator = key.indexOf(':')
-    return { kind: key.slice(0, separator), id: key.slice(separator + 1) }
-  })
-}
+const memberKeys = computed({
+  get: () => form.members.map((member) => `${member.kind}:${member.id}`),
+  set: (keys) => {
+    form.members = keys.map((key) => {
+      const separator = key.indexOf(':')
+      return { kind: key.slice(0, separator), id: key.slice(separator + 1) }
+    })
+  },
+})
 
 // 三种状态要分开：正常、停用（名字照写，换个颜色）、真的指不到东西了。
 function resolveMember(member) {
@@ -232,7 +231,7 @@ onMounted(load)
         <el-form-item label="包含的节点" required>
           <!-- 一个分组可能挂几十个节点，标签折叠起来，选项里带地区图标和线路信息便于分辨。 -->
           <el-select
-            :model-value="memberKeys()"
+            v-model="memberKeys"
             multiple
             filterable
             collapse-tags
@@ -241,7 +240,6 @@ onMounted(load)
             style="width: 100%"
             aria-label="包含的节点"
             placeholder="选择节点或代理分组"
-            @update:model-value="setMembers"
           >
             <el-option-group label="接入节点">
               <el-option v-for="node in clientNodes" :key="`endpoint:${node.id}`" :value="`endpoint:${node.id}`" :label="node.label" :disabled="node.disabled">

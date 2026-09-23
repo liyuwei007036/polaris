@@ -2,6 +2,7 @@ package control
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
 	"embed"
 	"encoding/base64"
@@ -1146,6 +1147,17 @@ func (s *Server) clientSubscriptionContent(w http.ResponseWriter, r *http.Reques
 	if err != nil {
 		writeError(w, ErrNotFound)
 		return
+	}
+	etag := fmt.Sprintf(`"%x"`, sha256.Sum256([]byte(content)))
+	w.Header().Set("ETag", etag)
+	w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
+	w.Header().Set("Pragma", "no-cache")
+	w.Header().Set("Expires", "0")
+	if match := r.Header.Get("If-None-Match"); match != "" {
+		if strings.Trim(match, `"`) == strings.Trim(etag, `"`) || match == etag {
+			w.WriteHeader(http.StatusNotModified)
+			return
+		}
 	}
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	w.Header().Set("Content-Disposition", "attachment; filename=polaris-subscription.txt")

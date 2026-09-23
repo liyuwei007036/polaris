@@ -1,6 +1,7 @@
 package control
 
 import (
+	"crypto/sha256"
 	"fmt"
 	"log"
 	"net/http"
@@ -424,6 +425,17 @@ func (s *Server) mihomoClientSubscription(w http.ResponseWriter, r *http.Request
 	}, name)
 	if filename == "" {
 		filename = "mihomo"
+	}
+	etag := fmt.Sprintf(`"%x"`, sha256.Sum256([]byte(yaml)))
+	w.Header().Set("ETag", etag)
+	w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
+	w.Header().Set("Pragma", "no-cache")
+	w.Header().Set("Expires", "0")
+	if match := r.Header.Get("If-None-Match"); match != "" {
+		if strings.Trim(match, `"`) == strings.Trim(etag, `"`) || match == etag {
+			w.WriteHeader(http.StatusNotModified)
+			return
+		}
 	}
 	w.Header().Set("Content-Type", "application/yaml; charset=utf-8")
 	utf8Filename := url.PathEscape(name + ".yaml")

@@ -261,7 +261,26 @@ func (s *Store) validateMihomoProxyGroupClients(ctx context.Context, candidate M
 		if err := json.Unmarshal([]byte(item.rules), &rules); err != nil {
 			return err
 		}
-		for _, rule := range rules.Rules {
+		clientRules := rules.Rules
+		if len(clientRules) == 0 && strings.TrimSpace(rules.RawRules) != "" {
+			lines := strings.Split(strings.ReplaceAll(rules.RawRules, "\r\n", "\n"), "\n")
+			for _, line := range lines {
+				line = strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(line), "-"))
+				if line == "" || strings.HasPrefix(line, "#") {
+					continue
+				}
+				parts, err := splitMihomoRuleFields(line)
+				if err != nil {
+					continue
+				}
+				if len(parts) == 2 && strings.EqualFold(parts[0], "MATCH") {
+					clientRules = append(clientRules, MihomoRule{Type: "MATCH", Action: parts[1]})
+				} else if len(parts) >= 3 {
+					clientRules = append(clientRules, MihomoRule{Type: parts[0], Value: parts[1], Action: parts[2]})
+				}
+			}
+		}
+		for _, rule := range clientRules {
 			action := rule.Action
 			if strings.EqualFold(action, oldName) {
 				action = candidate.Name
@@ -352,6 +371,55 @@ func (s *Store) CreateMihomoProxyGroup(ctx context.Context, group MihomoProxyGro
 	return group, nil
 }
 
+func rewriteMihomoRawRulesAction(raw, oldName, newName string) (string, bool) {
+	if oldName == newName || strings.TrimSpace(raw) == "" {
+		return raw, false
+	}
+	lines := strings.Split(strings.ReplaceAll(raw, "\r\n", "\n"), "\n")
+	changed := false
+	for i, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
+			continue
+		}
+		prefix := ""
+		content := trimmed
+		if strings.HasPrefix(content, "-") {
+			prefix = "-"
+			content = strings.TrimSpace(strings.TrimPrefix(content, "-"))
+		}
+		parts, err := splitMihomoRuleFields(content)
+		if err != nil {
+			continue
+		}
+		ruleChanged := false
+		if len(parts) == 2 && strings.EqualFold(parts[0], "MATCH") {
+			if strings.EqualFold(parts[1], oldName) {
+				parts[1] = newName
+				ruleChanged = true
+			}
+		} else if len(parts) >= 3 {
+			if strings.EqualFold(parts[2], oldName) {
+				parts[2] = newName
+				ruleChanged = true
+			}
+		}
+		if ruleChanged {
+			changed = true
+			newLine := strings.Join(parts, ",")
+			if prefix != "" {
+				newLine = prefix + " " + newLine
+			}
+			indent := line[:len(line)-len(strings.TrimLeft(line, " \t"))]
+			lines[i] = indent + newLine
+		}
+	}
+	if !changed {
+		return raw, false
+	}
+	return strings.Join(lines, "\n"), true
+}
+
 func rewriteMihomoClientActions(ctx context.Context, tx *sql.Tx, oldName, newName string, configIDs map[string]bool) error {
 	if oldName == newName {
 		return nil
@@ -385,6 +453,12 @@ func rewriteMihomoClientActions(ctx context.Context, tx *sql.Tx, oldName, newNam
 		}
 		if changed {
 			rules.RawRules = formatMihomoRules(rules.Rules)
+		}
+		if newRaw, rawChanged := rewriteMihomoRawRulesAction(rules.RawRules, oldName, newName); rawChanged {
+			rules.RawRules = newRaw
+			changed = true
+		}
+		if changed {
 			value, err := json.Marshal(rules)
 			if err != nil {
 				rows.Close()
