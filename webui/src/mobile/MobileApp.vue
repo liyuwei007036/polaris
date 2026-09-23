@@ -38,6 +38,7 @@ const views = {
   outbounds: defineAsyncComponent(() => import('./views/MOutboundsView.vue')),
   connections: defineAsyncComponent(() => import('./views/MConnectionsView.vue')),
   devices: defineAsyncComponent(() => import('./views/MDevicesView.vue')),
+  'connection-history': defineAsyncComponent(() => import('./views/MDevicesView.vue')),
   audit: defineAsyncComponent(() => import('./views/MAuditView.vue')),
   security: defineAsyncComponent(() => import('./views/MSecurityView.vue')),
   cloudflare: defineAsyncComponent(() => import('./views/MCloudflareView.vue')),

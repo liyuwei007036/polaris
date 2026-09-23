@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 )
@@ -453,6 +454,110 @@ func TestDeviceAPIs(t *testing.T) {
 	devices, ok := res2["devices"].([]any)
 	if !ok || len(devices) != 1 {
 		t.Fatalf("expected 1 popular device, got %v", res2["devices"])
+	}
+
+	// Test 3: GET /api/v1/devices/connections/export
+	req3 := httptest.NewRequest("GET", "/api/v1/devices/connections/export?ip=203.0.113.195", nil)
+	req3.AddCookie(&http.Cookie{Name: sessionCookieName, Value: session.Token})
+	w3 := httptest.NewRecorder()
+	handler.ServeHTTP(w3, req3)
+
+	if w3.Code != http.StatusOK {
+		t.Fatalf("expected 200 for export, got %d: %s", w3.Code, w3.Body.String())
+	}
+	if ct := w3.Header().Get("Content-Type"); ct != "text/csv; charset=utf-8" {
+		t.Fatalf("unexpected content type: %s", ct)
+	}
+	body := w3.Body.Bytes()
+	if len(body) < 3 || body[0] != 0xEF || body[1] != 0xBB || body[2] != 0xBF {
+		t.Fatalf("expected UTF-8 BOM at start of CSV")
+	}
+	csvContent := string(body)
+	if !strings.Contains(csvContent, "203.0.113.195") {
+		t.Fatalf("CSV missing expected IP: %s", csvContent)
+	}
+}
+
+func TestConnectionRecordsSorting(t *testing.T) {
+	store, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+
+	ctx := context.Background()
+	now := time.Now().UTC()
+
+	records := []ConnectionRecord{
+		{
+			ID:        "rec-1",
+			NodeID:    "node-1",
+			SourceIP:  "10.0.0.1",
+			Upload:    100,
+			Download:  100,
+			StartedAt: now.Add(-3 * time.Hour).Format(time.RFC3339),
+			ClosedAt:  now.Add(-2 * time.Hour).Format(time.RFC3339), // duration 3600
+		},
+		{
+			ID:        "rec-2",
+			NodeID:    "node-1",
+			SourceIP:  "10.0.0.2",
+			Upload:    500,
+			Download:  500,
+			StartedAt: now.Add(-1 * time.Hour).Format(time.RFC3339),
+			ClosedAt:  now.Format(time.RFC3339), // duration 3600
+		},
+		{
+			ID:        "rec-3",
+			NodeID:    "node-1",
+			SourceIP:  "10.0.0.3",
+			Upload:    1000,
+			Download:  1000,
+			StartedAt: now.Add(-2 * time.Hour).Format(time.RFC3339),
+			ClosedAt:  now.Add(-1 * time.Hour).Format(time.RFC3339),
+		},
+	}
+	if err := store.SaveConnectionRecords(ctx, records); err != nil {
+		t.Fatal(err)
+	}
+
+	// 1. Sort by total_bytes DESC
+	res, total, err := store.ListConnectionRecords(ctx, ConnectionRecordFilter{
+		OrderBy:  "total_bytes",
+		OrderDir: "desc",
+	}, 1, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if total != 3 || len(res) != 3 {
+		t.Fatalf("expected 3 records, got %d (total %d)", len(res), total)
+	}
+	if res[0].ID != "rec-3" || res[1].ID != "rec-2" || res[2].ID != "rec-1" {
+		t.Fatalf("total_bytes desc failed: got [%s, %s, %s]", res[0].ID, res[1].ID, res[2].ID)
+	}
+
+	// 2. Sort by started_at ASC
+	res, _, err = store.ListConnectionRecords(ctx, ConnectionRecordFilter{
+		OrderBy:  "started_at",
+		OrderDir: "asc",
+	}, 1, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res[0].ID != "rec-1" || res[1].ID != "rec-3" || res[2].ID != "rec-2" {
+		t.Fatalf("started_at asc failed: got [%s, %s, %s]", res[0].ID, res[1].ID, res[2].ID)
+	}
+
+	// 3. Sort by source_ip DESC
+	res, _, err = store.ListConnectionRecords(ctx, ConnectionRecordFilter{
+		OrderBy:  "source_ip",
+		OrderDir: "desc",
+	}, 1, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res[0].SourceIP != "10.0.0.3" || res[2].SourceIP != "10.0.0.1" {
+		t.Fatalf("source_ip desc failed: got [%s, %s, %s]", res[0].SourceIP, res[1].SourceIP, res[2].SourceIP)
 	}
 }
 

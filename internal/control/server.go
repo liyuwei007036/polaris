@@ -322,6 +322,7 @@ func (s *Server) registerBrowserRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/v1/events/connections", s.browserConnectionsStream)
 	mux.HandleFunc("GET /api/v1/events/live", s.browserLiveStream)
 	mux.HandleFunc("GET /api/v1/devices/connections", s.listDeviceConnections)
+	mux.HandleFunc("GET /api/v1/devices/connections/export", s.exportDeviceConnections)
 	mux.HandleFunc("GET /api/v1/devices/popular", s.popularDevices)
 	mux.HandleFunc("GET /api/v1/cloudflare/settings", s.cloudflareSettings)
 	mux.HandleFunc("PUT /api/v1/cloudflare/settings", s.setCloudflareSettings)

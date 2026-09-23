@@ -42,6 +42,8 @@ type ConnectionRecordFilter struct {
 	Keyword      string
 	StartTime    int64 // Unix timestamp in seconds
 	EndTime      int64 // Unix timestamp in seconds
+	OrderBy      string
+	OrderDir     string
 }
 
 type PopularDevice struct {
@@ -172,14 +174,40 @@ func (s *Store) ListConnectionRecords(ctx context.Context, filter ConnectionReco
 		return nil, 0, fmt.Errorf("count connection records: %w", err)
 	}
 
-	querySQL := `
+	orderCol := "started_at"
+	switch strings.ToLower(strings.TrimSpace(filter.OrderBy)) {
+	case "started_at":
+		orderCol = "started_at"
+	case "duration", "duration_seconds":
+		orderCol = "(CASE WHEN closed_at > 0 THEN closed_at - started_at ELSE 0 END)"
+	case "total_bytes", "traffic":
+		orderCol = "(upload + download)"
+	case "download":
+		orderCol = "download"
+	case "upload":
+		orderCol = "upload"
+	case "source_ip", "ip":
+		orderCol = "source_ip"
+	case "user":
+		orderCol = "user"
+	}
+
+	orderDir := "DESC"
+	switch strings.ToLower(strings.TrimSpace(filter.OrderDir)) {
+	case "asc", "ascending":
+		orderDir = "ASC"
+	case "desc", "descending":
+		orderDir = "DESC"
+	}
+
+	querySQL := fmt.Sprintf(`
 		SELECT id, node_id, node_name, connection_id, source_ip, source_port, source_location,
 		       destination, host, network, user, listener_name, outbound_name,
 		       upload, download, started_at, closed_at
-		FROM connection_records` + where + `
-		ORDER BY started_at DESC, id DESC
+		FROM connection_records%s
+		ORDER BY %s %s, id DESC
 		LIMIT ? OFFSET ?
-	`
+	`, where, orderCol, orderDir)
 	queryArgs := append(append([]any{}, args...), pageSize, (page-1)*pageSize)
 	rows, err := s.db.QueryContext(ctx, querySQL, queryArgs...)
 	if err != nil {

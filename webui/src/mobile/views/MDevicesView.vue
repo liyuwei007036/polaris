@@ -1,7 +1,7 @@
 <script setup>
 import { computed, inject, onMounted, reactive, ref } from 'vue'
-import { Filter, Refresh, Search } from '@element-plus/icons-vue'
-import { api } from '../../api'
+import { Download, Filter, Refresh, Search } from '@element-plus/icons-vue'
+import { api, csrfToken } from '../../api'
 import { formatBytes, formatDateTime, formatDuration } from '../../format'
 import MPage from '../components/MPage.vue'
 import MSegmented from '../components/MSegmented.vue'
@@ -10,7 +10,8 @@ import MPicker from '../components/MPicker.vue'
 const appState = inject('appState')
 const loadNodes = inject('loadNodes')
 
-const tab = ref('popular')
+const isHistoryRoute = () => location.hash.includes('connection-history')
+const tab = ref(isHistoryRoute() ? 'history' : 'popular')
 const loading = ref(false)
 const popularLoading = ref(false)
 
@@ -103,6 +104,42 @@ function loadMore() {
   }
 }
 
+const exporting = ref(false)
+
+async function exportCSV() {
+  exporting.value = true
+  try {
+    const params = new URLSearchParams()
+    if (filter.ip) params.set('ip', filter.ip.trim())
+    if (filter.node_id) params.set('node_id', filter.node_id)
+    if (filter.keyword) params.set('keyword', filter.keyword.trim())
+    params.set('limit', '5000')
+
+    const headers = {}
+    if (csrfToken.value) headers['X-CSRF-Token'] = csrfToken.value
+
+    const res = await fetch(`/api/v1/devices/connections/export?${params}`, {
+      method: 'GET',
+      credentials: 'same-origin',
+      headers,
+    })
+    if (!res.ok) throw new Error('导出失败')
+    const blob = await res.blob()
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `connections_${Date.now()}.csv`
+    document.body.appendChild(a)
+    a.click()
+    document.body.removeChild(a)
+    URL.revokeObjectURL(url)
+  } catch (err) {
+    console.error('Export error', err)
+  } finally {
+    exporting.value = false
+  }
+}
+
 function filterByDeviceIP(ip) {
   filter.ip = ip
   tab.value = 'history'
@@ -183,7 +220,12 @@ onMounted(async () => {
         </div>
       </div>
 
-      <div class="m-count">{{ total }} 条历史记录</div>
+      <div class="m-count" style="display: flex; justify-content: space-between; align-items: center">
+        <span>{{ total }} 条历史记录</span>
+        <el-button size="small" link type="primary" :icon="Download" :loading="exporting" @click="exportCSV">
+          导出 CSV
+        </el-button>
+      </div>
 
       <article v-for="row in records" :key="row.id" class="m-item">
         <div class="m-item__hit" style="cursor: default">

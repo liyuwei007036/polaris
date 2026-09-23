@@ -2,6 +2,7 @@
 import { computed, defineAsyncComponent, onBeforeUnmount, onMounted, provide, reactive, ref } from 'vue'
 import {
   Aim,
+  Clock,
   Collection,
   Connection,
   DataAnalysis,
@@ -29,9 +30,17 @@ import PasswordChangeView from './views/PasswordChangeView.vue'
 
 const authenticated = ref(false)
 const checking = ref(true)
-const viewAliases = { 'ingress-routes': 'inbounds' }
-const requestedView = location.hash.replace(/^#\/?/, '') || 'dashboard'
-const currentView = ref(viewAliases[requestedView] || requestedView)
+const viewAliases = {
+  'ingress-routes': 'inbounds',
+  history: 'connection-history',
+  'history-connections': 'connection-history',
+}
+const resolveInitialView = () => {
+  const raw = location.hash.replace(/^#\/?/, '') || 'dashboard'
+  const [view] = raw.split('?')
+  return viewAliases[view] || view
+}
+const currentView = ref(resolveInitialView())
 const appState = reactive({
   username: '',
   role: '',
@@ -69,6 +78,7 @@ const groups = [
     items: [
       { id: 'connections', label: '当前连接', icon: List },
       { id: 'devices', label: '热门设备', icon: TrendCharts },
+      { id: 'connection-history', label: '历史连接', icon: Clock },
       { id: 'audit', label: '操作记录', icon: Tickets },
     ],
   },
@@ -96,6 +106,7 @@ const views = {
   outbounds: defineAsyncComponent(() => import('./views/OutboundsView.vue')),
   connections: defineAsyncComponent(() => import('./views/ConnectionsView.vue')),
   devices: defineAsyncComponent(() => import('./views/DevicesView.vue')),
+  'connection-history': defineAsyncComponent(() => import('./views/ConnectionHistoryView.vue')),
   security: defineAsyncComponent(() => import('./views/SecurityView.vue')),
   cloudflare: defineAsyncComponent(() => import('./views/CloudflareView.vue')),
   audit: defineAsyncComponent(() => import('./views/AuditView.vue')),
@@ -195,15 +206,17 @@ async function logout() {
   }
 }
 
-function navigate(view) {
-  currentView.value = views[view] ? view : 'dashboard'
-  location.hash = `#/${currentView.value}`
+function navigate(view, query = '') {
+  const resolved = viewAliases[view] || view
+  currentView.value = views[resolved] ? resolved : 'dashboard'
+  location.hash = `#/${currentView.value}${query ? `?${query}` : ''}`
 }
 
 function onHashChange() {
-	const view = location.hash.replace(/^#\/?/, '') || 'dashboard'
-	const resolved = viewAliases[view] || view
-	currentView.value = views[resolved] ? resolved : 'dashboard'
+  const raw = location.hash.replace(/^#\/?/, '') || 'dashboard'
+  const [view] = raw.split('?')
+  const resolved = viewAliases[view] || view
+  currentView.value = views[resolved] ? resolved : 'dashboard'
 }
 
 function onUnauthorized() {

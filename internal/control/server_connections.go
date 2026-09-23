@@ -1,6 +1,7 @@
 package control
 
 import (
+	"encoding/csv"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -152,6 +153,34 @@ func (s *Server) browserLiveStream(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+func parseConnectionRecordFilter(r *http.Request) ConnectionRecordFilter {
+	filter := ConnectionRecordFilter{
+		NodeID:       r.URL.Query().Get("node_id"),
+		SourceIP:     r.URL.Query().Get("ip"),
+		User:         r.URL.Query().Get("user"),
+		Network:      r.URL.Query().Get("network"),
+		OutboundName: r.URL.Query().Get("outbound"),
+		Keyword:      r.URL.Query().Get("keyword"),
+		OrderBy:      r.URL.Query().Get("order_by"),
+		OrderDir:     r.URL.Query().Get("order_dir"),
+	}
+	if startRaw := r.URL.Query().Get("start_time"); startRaw != "" {
+		if t, err := time.Parse(time.RFC3339, startRaw); err == nil {
+			filter.StartTime = t.Unix()
+		} else if sec, err := strconv.ParseInt(startRaw, 10, 64); err == nil {
+			filter.StartTime = sec
+		}
+	}
+	if endRaw := r.URL.Query().Get("end_time"); endRaw != "" {
+		if t, err := time.Parse(time.RFC3339, endRaw); err == nil {
+			filter.EndTime = t.Unix()
+		} else if sec, err := strconv.ParseInt(endRaw, 10, 64); err == nil {
+			filter.EndTime = sec
+		}
+	}
+	return filter
+}
+
 // listDeviceConnections returns paginated historical connection records from SQLite.
 func (s *Server) listDeviceConnections(w http.ResponseWriter, r *http.Request) {
 	if _, err := s.operator(r, false); err != nil {
@@ -169,29 +198,7 @@ func (s *Server) listDeviceConnections(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	filter := ConnectionRecordFilter{
-		NodeID:       r.URL.Query().Get("node_id"),
-		SourceIP:     r.URL.Query().Get("ip"),
-		User:         r.URL.Query().Get("user"),
-		Network:      r.URL.Query().Get("network"),
-		OutboundName: r.URL.Query().Get("outbound"),
-		Keyword:      r.URL.Query().Get("keyword"),
-	}
-	if startRaw := r.URL.Query().Get("start_time"); startRaw != "" {
-		if t, err := time.Parse(time.RFC3339, startRaw); err == nil {
-			filter.StartTime = t.Unix()
-		} else if sec, err := strconv.ParseInt(startRaw, 10, 64); err == nil {
-			filter.StartTime = sec
-		}
-	}
-	if endRaw := r.URL.Query().Get("end_time"); endRaw != "" {
-		if t, err := time.Parse(time.RFC3339, endRaw); err == nil {
-			filter.EndTime = t.Unix()
-		} else if sec, err := strconv.ParseInt(endRaw, 10, 64); err == nil {
-			filter.EndTime = sec
-		}
-	}
-
+	filter := parseConnectionRecordFilter(r)
 	records, total, err := s.store.ListConnectionRecords(r.Context(), filter, page, pageSize)
 	if err != nil {
 		writeError(w, err)
@@ -201,6 +208,66 @@ func (s *Server) listDeviceConnections(w http.ResponseWriter, r *http.Request) {
 		"records": records,
 		"total":   total,
 	})
+}
+
+// exportDeviceConnections streams historical connection records as CSV with UTF-8 BOM.
+func (s *Server) exportDeviceConnections(w http.ResponseWriter, r *http.Request) {
+	if _, err := s.operator(r, false); err != nil {
+		writeError(w, err)
+		return
+	}
+	filter := parseConnectionRecordFilter(r)
+	limit, _ := security.ParsePositiveInt(r.URL.Query().Get("limit"), 5000, 10000)
+
+	records, _, err := s.store.ListConnectionRecords(r.Context(), filter, 1, limit)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+
+	w.Header().Set("Content-Type", "text/csv; charset=utf-8")
+	filename := fmt.Sprintf("connections_%s.csv", time.Now().Format("20060102_150405"))
+	w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s"`, filename))
+
+	// Write UTF-8 BOM so Excel opens with proper Chinese characters
+	if _, err := w.Write([]byte("\xEF\xBB\xBF")); err != nil {
+		return
+	}
+
+	writer := csv.NewWriter(w)
+	_ = writer.Write([]string{
+		"记录ID", "来源IP", "来源端口", "归属地", "目标主机", "目标地址",
+		"服务器节点", "认证账号", "入站名", "出站出口", "网络协议",
+		"上行流量(字节)", "下行流量(字节)", "总流量(字节)", "开始时间", "结束时间", "持续时长(秒)",
+	})
+	for _, rec := range records {
+		var dur string
+		if rec.ClosedAt != "" {
+			dur = strconv.FormatInt(rec.DurationSeconds, 10)
+		} else {
+			dur = "连接中"
+		}
+		_ = writer.Write([]string{
+			rec.ID,
+			rec.SourceIP,
+			rec.SourcePort,
+			rec.SourceLocation,
+			rec.Host,
+			rec.Destination,
+			rec.NodeName,
+			rec.User,
+			rec.ListenerName,
+			rec.OutboundName,
+			rec.Network,
+			strconv.FormatInt(rec.Upload, 10),
+			strconv.FormatInt(rec.Download, 10),
+			strconv.FormatInt(rec.Upload+rec.Download, 10),
+			rec.StartedAt,
+			rec.ClosedAt,
+			dur,
+		})
+	}
+	writer.Flush()
 }
 
 // popularDevices returns aggregated metrics and top ranked client devices.
