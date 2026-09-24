@@ -66,8 +66,11 @@ async function load(silent = false) {
     pending.value = registrations.registrations || []
     metrics.value = Object.fromEntries((metricResult.nodes || []).map((entry) => [entry.node_id, entry.report]))
     speedtests.value = Object.fromEntries((speedtestResult.speedtests || []).map((s) => {
-      if (s.mobile_route && (s.mobile_route.includes('移动优化') || s.mobile_route.includes('CN2'))) {
-        s.mobile_route = '移动 CMI'
+      if (s.mobile_route && (s.mobile_route.includes('移动优化') || s.mobile_route === 'CN2 GIA (移动优化)')) {
+        s.mobile_route = 'CN2 GIA'
+      }
+      if (s.unicom_route && (s.unicom_route.includes('联通优化') || s.unicom_route === 'CN2 GIA (联通优化)')) {
+        s.unicom_route = 'CN2 GIA'
       }
       return [s.node_id, s]
     }))
@@ -115,8 +118,11 @@ async function runSpeedtest(node) {
   try {
     const res = await post(`/nodes/${node.id}/speedtest`, {})
     if (res?.result) {
-      if (res.result.mobile_route && (res.result.mobile_route.includes('移动优化') || res.result.mobile_route.includes('CN2'))) {
-        res.result.mobile_route = '移动 CMI'
+      if (res.result.mobile_route && (res.result.mobile_route.includes('移动优化') || res.result.mobile_route === 'CN2 GIA (移动优化)')) {
+        res.result.mobile_route = 'CN2 GIA'
+      }
+      if (res.result.unicom_route && (res.result.unicom_route.includes('联通优化') || res.result.unicom_route === 'CN2 GIA (联通优化)')) {
+        res.result.unicom_route = 'CN2 GIA'
       }
       speedtests.value = { ...speedtests.value, [node.id]: res.result }
     }
@@ -277,10 +283,10 @@ function isValidRoute(route) {
   return trimmed !== '' && trimmed !== '未知' && trimmed !== '不可达'
 }
 
-function cleanMobileRoute(route) {
+function cleanRoute(route) {
   if (!route) return ''
-  if (route.includes('移动优化') || route.includes('CN2')) {
-    return '移动 CMI'
+  if (route.includes('移动优化') || route.includes('联通优化')) {
+    return 'CN2 GIA'
   }
   return route
 }
@@ -380,25 +386,25 @@ onBeforeUnmount(() => {
             <template #default="{ row }">
               <template v-if="speedtests[row.id]">
                 <div class="cell-main speedtest-badges">
-                  <el-tooltip :content="'中国移动: ' + (cleanMobileRoute(speedtests[row.id].mobile_route) || '标准直连')">
+                  <el-tooltip :content="'中国移动: ' + (cleanRoute(speedtests[row.id].mobile_route) || '标准直连')">
                     <span class="ping-badge ping-mobile">移 {{ getPingStr(speedtests[row.id].mobile_latency_ms ?? speedtests[row.id].mobile_ping_ms) }}</span>
                   </el-tooltip>
-                  <el-tooltip :content="'中国联通: ' + (speedtests[row.id].unicom_route || '标准直连')">
+                  <el-tooltip :content="'中国联通: ' + (cleanRoute(speedtests[row.id].unicom_route) || '标准直连')">
                     <span class="ping-badge ping-unicom">联 {{ getPingStr(speedtests[row.id].unicom_latency_ms ?? speedtests[row.id].unicom_ping_ms) }}</span>
                   </el-tooltip>
-                  <el-tooltip :content="'中国电信: ' + (speedtests[row.id].telecom_route || '标准直连')">
+                  <el-tooltip :content="'中国电信: ' + (cleanRoute(speedtests[row.id].telecom_route) || '标准直连')">
                     <span class="ping-badge ping-telecom">电 {{ getPingStr(speedtests[row.id].telecom_latency_ms ?? speedtests[row.id].telecom_ping_ms) }}</span>
                   </el-tooltip>
                 </div>
                 <div v-if="hasRecognizedRoutes(speedtests[row.id])" class="route-tags">
                   <span v-if="isValidRoute(speedtests[row.id].telecom_route)" :class="['route-tag', speedtests[row.id].telecom_route.includes('CN2') ? 'route-premium' : 'route-normal']">
-                    {{ speedtests[row.id].telecom_route }}
+                    {{ cleanRoute(speedtests[row.id].telecom_route) }}
                   </span>
                   <span v-if="isValidRoute(speedtests[row.id].unicom_route)" :class="['route-tag', speedtests[row.id].unicom_route.includes('9929') || speedtests[row.id].unicom_route.includes('CN2') ? 'route-premium' : 'route-normal']">
-                    {{ speedtests[row.id].unicom_route }}
+                    {{ cleanRoute(speedtests[row.id].unicom_route) }}
                   </span>
-                  <span v-if="isValidRoute(speedtests[row.id].mobile_route)" :class="['route-tag', speedtests[row.id].mobile_route.includes('CMIN2') ? 'route-premium' : 'route-normal']">
-                    {{ cleanMobileRoute(speedtests[row.id].mobile_route) }}
+                  <span v-if="isValidRoute(speedtests[row.id].mobile_route)" :class="['route-tag', speedtests[row.id].mobile_route.includes('CMIN2') || speedtests[row.id].mobile_route.includes('CN2') ? 'route-premium' : 'route-normal']">
+                    {{ cleanRoute(speedtests[row.id].mobile_route) }}
                   </span>
                 </div>
               </template>

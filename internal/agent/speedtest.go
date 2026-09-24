@@ -130,7 +130,7 @@ func analyzeUnicomRoute(hops []string, allHopsCombined []string, latencyMs int) 
 		}
 		// In three-network CN2 GIA VPS (e.g. BandwagonHost DC6/DC9), Unicom returns via CN2
 		if hasCN2Hop(hops) {
-			return "CN2 GIA (联通优化)"
+			return "CN2 GIA"
 		}
 		if hasHopPrefix(hops, "219.158.") {
 			return "联通 4837"
@@ -151,8 +151,12 @@ func analyzeMobileRoute(hops []string, allHopsCombined []string, latencyMs int) 
 				return "移动 CMIN2"
 			}
 		}
-		// 2. Regular CMI / CMNET (221.183.*, general 223.120.*, or transit hops)
-		if hasHopPrefix(hops, "221.183.") || hasHopPrefix(hops, "223.120.") || hasCN2Hop(hops) {
+		// 2. Mobile routed via CN2 GIA (59.43.*)
+		if hasCN2Hop(hops) {
+			return "CN2 GIA"
+		}
+		// 3. Regular CMI / CMNET (221.183.*, general 223.120.*)
+		if hasHopPrefix(hops, "221.183.") || hasHopPrefix(hops, "223.120.") {
 			return "移动 CMI"
 		}
 	}
@@ -242,13 +246,13 @@ func runSpeedtest(ctx context.Context, task Task) TaskResult {
 	unicomRoute := analyzeUnicomRoute(unicomHops, allHopsCombined, unicomLatency)
 	mobileRoute := analyzeMobileRoute(mobileHops, allHopsCombined, mobileLatency)
 
-	// In three-network servers, only mark cross-carrier CN2 GIA if the carrier's own hops genuinely transit CN2 (59.43.*)
+	// In three-network servers, mark cross-carrier CN2 GIA if the carrier's own hops genuinely transit CN2 (59.43.*)
 	if strings.Contains(telecomRoute, "CN2") {
 		if hasCN2Hop(unicomHops) {
-			unicomRoute = "CN2 GIA (联通优化)"
+			unicomRoute = "CN2 GIA"
 		}
-		if hasCN2Hop(mobileHops) && mobileRoute != "移动 CMIN2" {
-			mobileRoute = "移动 CMI"
+		if hasCN2Hop(mobileHops) {
+			mobileRoute = "CN2 GIA"
 		}
 	}
 
