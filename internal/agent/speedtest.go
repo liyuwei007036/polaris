@@ -55,16 +55,22 @@ func traceRouteHops(ctx context.Context, targetHost string) []string {
 		defer cancel()
 		out, err = exec.CommandContext(traceCtx, "traceroute", "-I", "-n", "-m", "15", "-q", "1", "-w", "1", "-N", "16", targetHost).Output()
 		if err != nil || len(out) == 0 {
-			// 2. Try standard parallel traceroute (UDP with -N 16)
+			// 2. Try TCP SYN probe (-T -p 443): highest pass-through rate across international border firewalls
 			traceCtx2, cancel2 := context.WithTimeout(ctx, 8*time.Second)
 			defer cancel2()
-			out, err = exec.CommandContext(traceCtx2, "traceroute", "-n", "-m", "15", "-q", "1", "-w", "1", "-N", "16", targetHost).Output()
+			out, err = exec.CommandContext(traceCtx2, "traceroute", "-T", "-p", "443", "-n", "-m", "15", "-q", "1", "-w", "1", "-N", "16", targetHost).Output()
 		}
 		if err != nil || len(out) == 0 {
-			// 3. Fallback without -N (for older busybox/traceroute builds)
-			traceCtx3, cancel3 := context.WithTimeout(ctx, 6*time.Second)
+			// 3. Try standard parallel traceroute (UDP with -N 16)
+			traceCtx3, cancel3 := context.WithTimeout(ctx, 8*time.Second)
 			defer cancel3()
-			out, err = exec.CommandContext(traceCtx3, "traceroute", "-n", "-m", "15", "-q", "1", "-w", "1", targetHost).Output()
+			out, err = exec.CommandContext(traceCtx3, "traceroute", "-n", "-m", "15", "-q", "1", "-w", "1", "-N", "16", targetHost).Output()
+		}
+		if err != nil || len(out) == 0 {
+			// 4. Fallback without -N (for older busybox/traceroute builds)
+			traceCtx4, cancel4 := context.WithTimeout(ctx, 6*time.Second)
+			defer cancel4()
+			out, err = exec.CommandContext(traceCtx4, "traceroute", "-n", "-m", "15", "-q", "1", "-w", "1", targetHost).Output()
 		}
 	} else if commandExists("tracepath") {
 		traceCtx, cancel := context.WithTimeout(ctx, 8*time.Second)
@@ -112,14 +118,6 @@ func analyzeTelecomRoute(hops []string, allHopsCombined []string, latencyMs int)
 		if hasCN2Hop(allHopsCombined) {
 			return "CN2 GIA"
 		}
-		// Trans-Pacific / US West Coast CN2 GIA is ~125ms - 170ms
-		// Asia CN2 GIA is ~25ms - 60ms
-		if latencyMs <= 170 {
-			return "CN2 GIA / 优质直连"
-		}
-		if latencyMs > 210 {
-			return "163 骨干网 / 普通直连"
-		}
 		return "电信直连"
 	}
 	return "不可达"
@@ -139,10 +137,7 @@ func analyzeUnicomRoute(hops []string, allHopsCombined []string, latencyMs int) 
 		}
 	}
 	if latencyMs > 0 {
-		if latencyMs <= 170 {
-			return "联通 9929"
-		}
-		return "联通 4837 / 普通直连"
+		return "联通直连"
 	}
 	return "不可达"
 }
@@ -166,11 +161,7 @@ func analyzeMobileRoute(hops []string, allHopsCombined []string, latencyMs int) 
 		}
 	}
 	if latencyMs > 0 {
-		// Low latency from US West Coast (<=160ms) indicates premium routing (CMIN2)
-		if latencyMs <= 160 {
-			return "移动 CMIN2"
-		}
-		return "移动 CMI"
+		return "移动直连"
 	}
 	return "不可达"
 }
