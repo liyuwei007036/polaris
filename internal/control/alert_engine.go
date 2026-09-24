@@ -5,10 +5,35 @@ import (
 	"fmt"
 	"log"
 	"net"
+	"os"
 	"strings"
 	"sync"
 	"time"
 )
+
+// NotificationLocation returns the location used for alert notification timestamps: Asia/Shanghai (CST, UTC+8).
+// If the TZ environment variable is set, it respects TZ.
+var NotificationLocation = func() *time.Location {
+	if tz := os.Getenv("TZ"); tz != "" {
+		if loc, err := time.LoadLocation(tz); err == nil {
+			return loc
+		}
+	}
+	if loc, err := time.LoadLocation("Asia/Shanghai"); err == nil {
+		return loc
+	}
+	return time.FixedZone("CST", 8*3600)
+}()
+
+// NowAlertTime returns current time formatted in Beijing Time (Asia/Shanghai, UTC+8).
+func NowAlertTime() string {
+	return FormatAlertTime(time.Now())
+}
+
+// FormatAlertTime formats a time in the notification timezone (Asia/Shanghai, UTC+8).
+func FormatAlertTime(t time.Time) string {
+	return t.In(NotificationLocation).Format("2006-01-02 15:04:05")
+}
 
 type AlertEngine struct {
 	store         *Store
@@ -146,7 +171,7 @@ func (e *AlertEngine) CheckConnectionsTelemetry(nodeID, nodeName string, downloa
 	}
 
 	now := time.Now()
-	timeStr := now.Format("2006-01-02 15:04:05")
+	timeStr := FormatAlertTime(now)
 	totalRateBytes := downloadRate + uploadRate
 	maxRateMbps := (totalRateBytes * 8) / (1000 * 1000)
 
@@ -285,7 +310,7 @@ func (e *AlertEngine) NotifyNodeOffline(nodeID, nodeName string) {
 	alertKey := "offline:" + nodeID
 	if e.canAlert(alertKey, settings.CooldownMinutes) {
 		body := fmt.Sprintf("• 服务器: %s\n• 节点状态: 已失去心跳连接 (离线)\n• 影响说明: 节点代理服务暂停，可能由于网络中断、机房维护或宕机\n🕒 离线时间: %s",
-			nodeName, time.Now().Format("2006-01-02 15:04:05"))
+			nodeName, NowAlertTime())
 		e.sendAlert(context.Background(), "⚠️ [Polaris] 节点已离线", body, "Polaris-节点状态", "critical", "alarm", "")
 	}
 }
@@ -299,7 +324,7 @@ func (e *AlertEngine) NotifyNodeOnline(nodeID, nodeName string) {
 	alertKey := "online:" + nodeID
 	if e.canAlert(alertKey, settings.CooldownMinutes) {
 		body := fmt.Sprintf("• 服务器: %s\n• 节点状态: 重新建立加密控制通道 (在线)\n• 服务说明: 代理与监控服务已全部恢复就绪\n🕒 恢复时间: %s",
-			nodeName, time.Now().Format("2006-01-02 15:04:05"))
+			nodeName, NowAlertTime())
 		e.sendAlert(context.Background(), "✅ [Polaris] 节点已恢复正常", body, "Polaris-节点状态", "active", "calypso", "")
 	}
 }
@@ -317,7 +342,7 @@ func (e *AlertEngine) NotifyFail2BanBlock(nodeID, nodeName, ip, jail string) {
 	}
 	if e.canAlert(alertKey, cooldown) {
 		body := fmt.Sprintf("• 服务器: %s\n• 拦截目标: %s\n• 触发规则: %s\n• 防护状态: 已自动加入节点防火墙阻断列表\n🕒 拦截时间: %s",
-			nodeName, e.formatIP(ip), jail, time.Now().Format("2006-01-02 15:04:05"))
+			nodeName, e.formatIP(ip), jail, NowAlertTime())
 		e.sendAlert(context.Background(), "🛡️ [Polaris] 拦截恶意扫描源", body, "Polaris-防御日志", "passive", "", "")
 	}
 }
@@ -327,7 +352,7 @@ func (e *AlertEngine) NotifyConsoleBruteForce(clientIP string, attempts int) {
 	alertKey := "bruteforce:" + clientIP
 	if e.canAlert(alertKey, 15) {
 		body := fmt.Sprintf("• 攻击来源: %s\n• 失败次数: 连续密码错误 %d 次\n• 安全策略: 已触发控制台防爆破拦截，该 IP 已被限制登录\n🕒 触发时间: %s",
-			e.formatIP(clientIP), attempts, time.Now().Format("2006-01-02 15:04:05"))
+			e.formatIP(clientIP), attempts, NowAlertTime())
 		e.sendAlert(context.Background(), "🔒 [Polaris] 控制台防爆破触发", body, "Polaris-系统安全", "active", "silence", "")
 	}
 }
@@ -377,7 +402,7 @@ func (e *AlertEngine) NotifyLoginFailed(username, ip, reason, userAgent string) 
 			reason = "用户名或密码错误"
 		}
 		body := fmt.Sprintf("• 尝试账号: %s\n• 登录来源: %s\n• 客户端: %s\n• 失败原因: %s\n• 风险提示: 若非本人操作，请确认登录凭据是否泄露\n🕒 尝试时间: %s",
-			username, e.formatIP(clean), ua, reason, time.Now().Format("2006-01-02 15:04:05"))
+			username, e.formatIP(clean), ua, reason, NowAlertTime())
 		e.sendAlert(context.Background(), "⚠️ [Polaris] 控制台登录失败", body, "Polaris-系统安全", "active", "silence", "")
 	}
 }
@@ -406,7 +431,7 @@ func (e *AlertEngine) NotifySubscriptionPullSuccess(configName, ip, userAgent st
 			ua = "未知客户端"
 		}
 		body := fmt.Sprintf("• 订阅配置: %s\n• 请求来源: %s\n• 客户端: %s\n• 获取状态: 正常获取配置 (200 OK)\n🕒 下载时间: %s",
-			configName, e.formatIP(clean), ua, time.Now().Format("2006-01-02 15:04:05"))
+			configName, e.formatIP(clean), ua, NowAlertTime())
 		e.sendAlert(context.Background(), "📥 [Polaris] 订阅下载成功", body, "Polaris-订阅分发", "passive", "glass", "")
 	}
 }
@@ -434,7 +459,7 @@ func (e *AlertEngine) NotifySubscriptionPullFailed(tokenHint, reason, ip, userAg
 			tokenHint = tokenHint[:8] + "..." + tokenHint[len(tokenHint)-4:]
 		}
 		body := fmt.Sprintf("• 请求凭据: %s\n• 请求来源: %s\n• 客户端: %s\n• 失败原因: %s\n• 安全提示: 订阅请求未通过验证，可能为过期配置或外部扫描\n🕒 尝试时间: %s",
-			tokenHint, e.formatIP(clean), ua, reason, time.Now().Format("2006-01-02 15:04:05"))
+			tokenHint, e.formatIP(clean), ua, reason, NowAlertTime())
 		e.sendAlert(context.Background(), "❌ [Polaris] 订阅下载失败", body, "Polaris-订阅分发", "active", "horn", "")
 	}
 }
@@ -487,7 +512,7 @@ func (e *AlertEngine) NotifyProbeSummary(items []ProbeResultItem) {
 		}
 	}
 
-	nowStr := time.Now().Format("2006-01-02 15:04:05")
+	nowStr := NowAlertTime()
 
 	if len(blockedList) > 0 {
 		if settings.GFWAlertEnabled || settings.ProbeNotifyAlways {
@@ -532,7 +557,7 @@ func (e *AlertEngine) NotifySpeedtestReport(nodeName string, st NodeSpeedtest) {
 	} else if st.MobileLatencyMs > 0 {
 		lines = append(lines, fmt.Sprintf("• 移动线路: %d ms", st.MobileLatencyMs))
 	}
-	lines = append(lines, fmt.Sprintf("🕒 检测时间: %s", time.Now().Format("2006-01-02 15:04:05")))
+	lines = append(lines, fmt.Sprintf("🕒 检测时间: %s", NowAlertTime()))
 
 	body := strings.Join(lines, "\n")
 	e.sendAlert(context.Background(), title, body, "Polaris-巡检报告", "active", "telegraph", "")

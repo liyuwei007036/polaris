@@ -150,7 +150,7 @@ func (s *Server) testAlert(w http.ResponseWriter, r *http.Request) {
 
 	client := NewBarkClient()
 	testBody := fmt.Sprintf("• 系统状态: 正常在线\n• 推送通道: Apple APNs (Bark)\n• 提示铃声: %s\n• 分组标识: %s\n🕒 发送时间: %s",
-		sound, group, time.Now().Format("2006-01-02 15:04:05"))
+		sound, group, NowAlertTime())
 	msg := BarkMessage{
 		Title: "🔔 [Polaris] 测试推送成功",
 		Body:  testBody,
