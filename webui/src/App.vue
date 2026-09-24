@@ -34,6 +34,8 @@ const viewAliases = {
   'ingress-routes': 'inbounds',
   history: 'connection-history',
   'history-connections': 'connection-history',
+  'security-center': 'security',
+  firewall: 'security',
 }
 const resolveInitialView = () => {
   const raw = location.hash.replace(/^#\/?/, '') || 'dashboard'
@@ -85,7 +87,7 @@ const groups = [
   {
     label: '系统管理',
     items: [
-      { id: 'security', label: '网络防护', icon: Lock },
+      { id: 'security', label: '安全中心', icon: Lock },
       { id: 'cloudflare', label: '域名解析', icon: Document },
       { id: 'settings', label: '系统设置', icon: Setting },
     ],

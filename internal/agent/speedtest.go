@@ -164,7 +164,7 @@ func analyzeUnicomRoute(hops []string, allHopsCombined []string, latencyMs int) 
 			return "联通 9929"
 		}
 		// In three-network CN2 GIA VPS (e.g. BandwagonHost DC6/DC9), Unicom returns via CN2
-		if hasCN2Hop(hops) || hasCN2Hop(allHopsCombined) {
+		if hasCN2Hop(hops) {
 			return "CN2 GIA (联通优化)"
 		}
 		if hasHopPrefix(hops, "219.158.") {
@@ -172,14 +172,8 @@ func analyzeUnicomRoute(hops []string, allHopsCombined []string, latencyMs int) 
 		}
 	}
 	if latencyMs > 0 {
-		if hasCN2Hop(allHopsCombined) {
-			return "CN2 GIA (联通优化)"
-		}
-		if latencyMs < 100 {
-			return "联通 9929 / 优质直连"
-		}
-		if latencyMs <= 175 {
-			return "联通 优质直连"
+		if latencyMs <= 170 {
+			return "联通 9929"
 		}
 		return "联通 4837 / 普通直连"
 	}
@@ -188,29 +182,23 @@ func analyzeUnicomRoute(hops []string, allHopsCombined []string, latencyMs int) 
 
 func analyzeMobileRoute(hops []string, allHopsCombined []string, latencyMs int) string {
 	if len(hops) > 0 {
-		for _, ip := range hops {
-			if strings.HasPrefix(ip, "223.120.16") || strings.HasPrefix(ip, "223.120.17") ||
-				strings.HasPrefix(ip, "223.120.18") || strings.HasPrefix(ip, "223.120.19") {
-				return "移动 CMIN2"
-			}
+		// 1. CMIN2 (China Mobile International Next-generation Network, AS58807) uses 223.120.*
+		if hasHopPrefix(hops, "223.120.") {
+			return "移动 CMIN2"
 		}
-		// In three-network CN2 GIA VPS, Mobile returns via CN2
-		if hasCN2Hop(hops) || hasCN2Hop(allHopsCombined) {
+		// 2. Mobile routed via CN2 GIA (59.43.* in Mobile's own path)
+		if hasCN2Hop(hops) {
 			return "CN2 GIA (移动优化)"
 		}
-		if hasHopPrefix(hops, "221.183.") || hasHopPrefix(hops, "223.120.") {
+		// 3. Regular CMI / CMNET (221.183.*)
+		if hasHopPrefix(hops, "221.183.") {
 			return "移动 CMI"
 		}
 	}
 	if latencyMs > 0 {
-		if hasCN2Hop(allHopsCombined) {
-			return "CN2 GIA (移动优化)"
-		}
-		if latencyMs < 100 {
-			return "移动 CMIN2 / 优质直连"
-		}
-		if latencyMs <= 180 {
-			return "移动 CMIN2 / 优质直连"
+		// Low latency from US West Coast (<=170ms) indicates boutique routing (CMIN2)
+		if latencyMs <= 170 {
+			return "移动 CMIN2"
 		}
 		return "移动 CMI / 普通直连"
 	}

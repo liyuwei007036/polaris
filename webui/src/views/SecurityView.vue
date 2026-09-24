@@ -308,7 +308,7 @@ onMounted(load)
 
 <template>
   <div class="page-shell">
-    <PageHeader title="网络防护"><el-button :icon="Refresh" :loading="loading" @click="load">刷新</el-button></PageHeader>
+    <PageHeader title="安全中心"><el-button :icon="Refresh" :loading="loading" @click="load">刷新</el-button></PageHeader>
     <main class="page-content page-content--tight">
       <div class="search-toolbar">
         <el-input v-model="keyword" clearable :prefix-icon="Search" placeholder="搜索服务器、地址或规则" style="width: 270px" />

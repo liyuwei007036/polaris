@@ -20,7 +20,7 @@ const groups = [
     label: '服务器',
     items: [
       { id: 'nodes', label: '服务器', icon: Monitor },
-      { id: 'security', label: '网络防护', icon: Lock },
+      { id: 'security', label: '安全中心', icon: Lock },
       { id: 'routes', label: '服务器访问规则', icon: Operation },
       { id: 'outbounds', label: '上网出口', icon: Connection },
     ],

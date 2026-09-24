@@ -11,7 +11,7 @@ test.use({
 // 页面顶部不再有标题栏，认「到没到对的页面」只能靠路由和页面本身画出了东西。
 const morePages = [
   ['服务器', 'nodes'],
-  ['网络防护', 'security'],
+  ['安全中心', 'security'],
   ['服务器访问规则', 'routes'],
   ['上网出口', 'outbounds'],
   ['代理分组', 'proxy-groups'],

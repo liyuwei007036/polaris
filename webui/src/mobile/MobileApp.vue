@@ -12,7 +12,13 @@ import MPasswordChangeView from './views/MPasswordChangeView.vue'
 // 页面标识与桌面版保持一致，收藏的链接在两端都能打开。
 const authenticated = ref(false)
 const checking = ref(true)
-const viewAliases = { 'ingress-routes': 'inbounds' }
+const viewAliases = {
+  'ingress-routes': 'inbounds',
+  history: 'connection-history',
+  'history-connections': 'connection-history',
+  'security-center': 'security',
+  firewall: 'security',
+}
 // 页面标识后面可以带查询串，用来从看板直接跳进筛选好的列表（#/nodes?status=offline）。
 const viewOf = (hash) => hash.replace(/^#\/?/, '').split('?')[0] || 'dashboard'
 const requestedView = viewOf(location.hash)
