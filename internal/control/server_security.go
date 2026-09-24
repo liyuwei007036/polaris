@@ -1,6 +1,7 @@
 package control
 
 import (
+	"context"
 	"encoding/json"
 	"net"
 	"net/http"
@@ -481,6 +482,13 @@ func (s *Server) decodeNodeFail2Ban(nodeID string, answer liveAnswer) (nodeFail2
 				NodeID: nodeID, Jail: fail2banName, RuleName: jail.Name, Managed: jail.Managed,
 				IP: ban.IP, Location: s.ipLocator.Locate(ban.IP), BannedAt: ban.BannedAt, UnbanAt: ban.UnbanAt,
 			})
+			if s.alertEngine != nil {
+				nodeName := nodeID
+				if node, err := s.store.NodeByID(context.Background(), nodeID); err == nil && node.Name != "" {
+					nodeName = node.Name
+				}
+				s.alertEngine.NotifyFail2BanBlock(nodeID, nodeName, ban.IP, jail.Name)
+			}
 		}
 	}
 	return node, banned

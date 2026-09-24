@@ -1125,6 +1125,24 @@ func (s *Store) ListNodes(ctx context.Context) ([]Node, error) {
 	return nodes, nil
 }
 
+func (s *Store) NodeByID(ctx context.Context, nodeID string) (Node, error) {
+	var node Node
+	var lastSeen sql.NullInt64
+	row := s.db.QueryRowContext(ctx, `SELECT id, name, client_address, agent_version, os, architecture, sing_box_version,
+		COALESCE(capabilities, ''), last_seen_at FROM nodes WHERE id = ? AND revoked_at IS NULL`, nodeID)
+	if err := row.Scan(&node.ID, &node.Name, &node.ClientAddress, &node.AgentVersion, &node.OS, &node.Architecture, &node.SingBox, &node.Capabilities, &lastSeen); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return Node{}, ErrNotFound
+		}
+		return Node{}, fmt.Errorf("read node by id: %w", err)
+	}
+	if lastSeen.Valid {
+		node.Online = lastSeen.Int64 >= time.Now().UTC().Add(-90*time.Second).Unix()
+		node.LastSeenAt = time.Unix(lastSeen.Int64, 0).UTC().Format(time.RFC3339)
+	}
+	return node, nil
+}
+
 func (s *Store) SetNodeName(ctx context.Context, nodeID, name string) error {
 	name = strings.TrimSpace(name)
 	if nodeID == "" || name == "" || len(name) > 128 || strings.ContainsAny(name, "\r\n") {

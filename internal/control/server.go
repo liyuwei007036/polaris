@@ -125,7 +125,7 @@ func NewServer(store *Store, secureCookies bool) (*Server, error) {
 		liveHub:                newLiveHub(), ipLocator: ipLocator,
 		connectionsInterval:    DefaultConnectionsInterval,
 		subscriptionLimiter:    newRateLimiter(subscriptionRateWindow, subscriptionRateLimit, subscriptionRateMaxKeys),
-		alertEngine:            NewAlertEngine(store),
+		alertEngine:            NewAlertEngine(store, ipLocator),
 		now:                    time.Now,
 	}
 	server.connHub.onWatchers = server.setFleetStreaming
@@ -473,6 +473,14 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 	}
 	result, err := s.store.StartLogin(r.Context(), input.Username, input.Password)
 	if err != nil {
+		ip := requestIP(r.RemoteAddr, map[string]string{
+			"CF-Connecting-IP": r.Header.Get("CF-Connecting-IP"),
+			"X-Real-IP":        r.Header.Get("X-Real-IP"),
+			"X-Forwarded-For":  r.Header.Get("X-Forwarded-For"),
+		})
+		if s.alertEngine != nil {
+			s.alertEngine.NotifyLoginFailed(input.Username, ip, "密码错误或用户不存在", r.UserAgent())
+		}
 		writeError(w, err)
 		return
 	}
@@ -493,6 +501,14 @@ func (s *Server) finishLogin(w http.ResponseWriter, r *http.Request) {
 	}
 	session, err := s.store.FinishLogin(r.Context(), input.ChallengeID, input.Code)
 	if err != nil {
+		ip := requestIP(r.RemoteAddr, map[string]string{
+			"CF-Connecting-IP": r.Header.Get("CF-Connecting-IP"),
+			"X-Real-IP":        r.Header.Get("X-Real-IP"),
+			"X-Forwarded-For":  r.Header.Get("X-Forwarded-For"),
+		})
+		if s.alertEngine != nil {
+			s.alertEngine.NotifyLoginFailed("两步验证 (2FA)", ip, "动态验证码错误或已失效", r.UserAgent())
+		}
 		writeError(w, err)
 		return
 	}
@@ -1188,8 +1204,17 @@ func (s *Server) deleteSubscription(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) clientSubscriptionContent(w http.ResponseWriter, r *http.Request) {
-	content, err := s.store.GenerateClientSubscription(r.Context(), r.PathValue("token"))
+	token := r.PathValue("token")
+	content, err := s.store.GenerateClientSubscription(r.Context(), token)
+	ip := requestIP(r.RemoteAddr, map[string]string{
+		"CF-Connecting-IP": r.Header.Get("CF-Connecting-IP"),
+		"X-Real-IP":        r.Header.Get("X-Real-IP"),
+		"X-Forwarded-For":  r.Header.Get("X-Forwarded-For"),
+	})
 	if err != nil {
+		if s.alertEngine != nil {
+			s.alertEngine.NotifySubscriptionPullFailed(token, "通用订阅凭据无效或已失效", ip, r.UserAgent())
+		}
 		writeError(w, ErrNotFound)
 		return
 	}
@@ -1203,6 +1228,9 @@ func (s *Server) clientSubscriptionContent(w http.ResponseWriter, r *http.Reques
 			w.WriteHeader(http.StatusNotModified)
 			return
 		}
+	}
+	if s.alertEngine != nil {
+		s.alertEngine.NotifySubscriptionPullSuccess("通用节点订阅", ip, r.UserAgent())
 	}
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	w.Header().Set("Content-Disposition", "attachment; filename=polaris-subscription.txt")

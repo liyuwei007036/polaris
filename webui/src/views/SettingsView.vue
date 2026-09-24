@@ -77,7 +77,7 @@ async function saveAlertSettings() {
     if (res?.settings) {
       Object.assign(alertSettings, res.settings)
     }
-    ElMessage.success('告警与探测配置已保存')
+    ElMessage.success('配置已保存')
   } catch (error) {
     ElMessage.error(error instanceof Error ? error.message : '保存失败')
   } finally {
@@ -100,7 +100,7 @@ async function sendTestAlert() {
       group: alertSettings.bark_group,
       url: alertSettings.bark_url,
     })
-    ElMessage.success('配置已保存，测试通知已发出，请在 iOS 设备上查看 Bark 推送')
+    ElMessage.success('测试通知已发出')
   } catch (error) {
     ElMessage.error(error instanceof Error ? error.message : '发送测试通知失败')
   } finally {
@@ -115,7 +115,7 @@ async function triggerGFWCheck() {
     const items = res.nodes || res.results || []
     gfwResults.value = items
     gfwResultDialogVisible.value = true
-    ElMessage.success(`国内真机探测已完成（共检测 ${items.length} 个节点）`)
+    ElMessage.success('国内探测完成')
   } catch (error) {
     ElMessage.error(error instanceof Error ? error.message : '触发 GFW 探测失败')
   } finally {

@@ -93,15 +93,15 @@ async function save() {
   try {
     if (editing.value) await put(`/rules/${editing.value.id}`, payload())
     else await post(`/nodes/${form.node_id}/rules`, payload())
-    ElMessage.success(editing.value ? '服务器访问规则已保存，正在自动应用' : '服务器访问规则已创建，正在自动应用')
+    ElMessage.success(editing.value ? '访问规则已保存' : '访问规则已创建')
     dialogOpen.value = false
     await load()
   } finally { saving.value = false }
 }
-async function toggle(row) { await post(`/rules/${row.id}/enabled`, { enabled: !row.enabled }); ElMessage.success('状态已更新，系统正在自动应用'); await load() }
+async function toggle(row) { await post(`/rules/${row.id}/enabled`, { enabled: !row.enabled }); ElMessage.success('状态已更新'); await load() }
 async function remove(row) {
   await ElMessageBox.confirm('确认删除这条服务器访问规则？', '删除访问规则', { type: 'warning' })
-  await del(`/rules/${row.id}`); ElMessage.success('服务器访问规则已删除，正在自动应用'); await load()
+  await del(`/rules/${row.id}`); ElMessage.success('访问规则已删除'); await load()
 }
 function matchText(row) {
   if (row.domains?.length) return `完整域名：${row.domains.join('、')}`

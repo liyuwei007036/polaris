@@ -304,10 +304,10 @@ func (s *Server) handleAgentMessage(ctx context.Context, node Node, msgType byte
 			// any list an older build persisted so nothing stale is served.
 			m.Connections = nil
 			if st.HasNodeTotals {
-				m.Node = map[string]uint64{"received_bytes": st.NodeReceivedBytes, "sent_bytes": st.NodeSentBytes}
+				m.Node, m.RawNode = accumulateMetric(m.Node, m.RawNode, st.NodeReceivedBytes, st.NodeSentBytes)
 			}
 			if st.HasProxyTotals {
-				m.Proxy = map[string]uint64{"received_bytes": st.ProxyReceivedBytes, "sent_bytes": st.ProxySentBytes}
+				m.Proxy, m.RawProxy = accumulateMetric(m.Proxy, m.RawProxy, st.ProxyReceivedBytes, st.ProxySentBytes)
 			}
 			m.Health = &storedHealth{
 				Status: st.HealthStatus, Message: st.HealthMessage, SingBoxService: st.SingBoxService,
@@ -509,14 +509,64 @@ func (s *Server) scheduleAutomaticSingBoxInstall(ctx context.Context, nodeID, ar
 // merged with whatever was already stored so a Status update doesn't erase
 // the last-known connections and vice versa.
 type storedMetrics struct {
-	CollectedAt string            `json:"collected_at"`
-	Node        map[string]uint64 `json:"node,omitempty"`
-	// Proxy is sing-box's own cumulative byte count — the figure an operator
-	// means by "traffic". Node is the host interface total, which also counts
-	// SSH, package updates and everything else on the machine.
+	CollectedAt string             `json:"collected_at"`
+	Node        map[string]uint64  `json:"node,omitempty"`
 	Proxy       map[string]uint64  `json:"proxy,omitempty"`
+	RawNode     map[string]uint64  `json:"raw_node,omitempty"`
+	RawProxy    map[string]uint64  `json:"raw_proxy,omitempty"`
 	Connections []storedConnection `json:"connections,omitempty"`
 	Health      *storedHealth      `json:"health,omitempty"`
+}
+
+func accumulateMetric(totals map[string]uint64, rawTotals map[string]uint64, curRx, curTx uint64) (map[string]uint64, map[string]uint64) {
+	if totals == nil {
+		totals = make(map[string]uint64)
+	}
+	if rawTotals == nil {
+		rawTotals = make(map[string]uint64)
+	}
+
+	lastRawRx := rawTotals["received_bytes"]
+	lastRawTx := rawTotals["sent_bytes"]
+
+	var deltaRx, deltaTx uint64
+	if lastRawRx == 0 && lastRawTx == 0 && totals["received_bytes"] == 0 && totals["sent_bytes"] == 0 {
+		deltaRx = curRx
+		deltaTx = curTx
+	} else if lastRawRx == 0 && lastRawTx == 0 && (totals["received_bytes"] > 0 || totals["sent_bytes"] > 0) {
+		// Existing historical database without raw counters
+		if curRx >= totals["received_bytes"] {
+			deltaRx = curRx - totals["received_bytes"]
+		} else {
+			deltaRx = curRx
+		}
+		if curTx >= totals["sent_bytes"] {
+			deltaTx = curTx - totals["sent_bytes"]
+		} else {
+			deltaTx = curTx
+		}
+	} else {
+		// Standard monotonic accumulation across reboots and upgrades
+		if curRx >= lastRawRx {
+			deltaRx = curRx - lastRawRx
+		} else {
+			// Restart / upgrade detected
+			deltaRx = curRx
+		}
+		if curTx >= lastRawTx {
+			deltaTx = curTx - lastRawTx
+		} else {
+			// Restart / upgrade detected
+			deltaTx = curTx
+		}
+	}
+
+	totals["received_bytes"] += deltaRx
+	totals["sent_bytes"] += deltaTx
+	rawTotals["received_bytes"] = curRx
+	rawTotals["sent_bytes"] = curTx
+
+	return totals, rawTotals
 }
 
 type storedHealth struct {
