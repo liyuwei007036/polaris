@@ -41,6 +41,7 @@ const alertSettings = reactive({
   probe_speedtest_interval_hours: 6,
   probe_skip_when_busy: true,
   probe_notify_always: true,
+  scan_alert_enabled: false,
 })
 const alertSaving = ref(false)
 const testSending = ref(false)
@@ -375,6 +376,14 @@ onMounted(load)
                       <el-form-item label="重复报警静默冷却 (分钟)">
                         <el-input-number v-model="alertSettings.cooldown_minutes" :min="1" :max="1440" :step="5" style="width: 100%" />
                         <div class="form-tip">同一节点同一类型的告警在此期间不重复轰炸。</div>
+                      </el-form-item>
+                    </el-col>
+                  </el-row>
+                  <el-row :gutter="16">
+                    <el-col :span="12">
+                      <el-form-item label="异常网络扫描预警 (防恶意扫网/探针)">
+                        <el-switch v-model="alertSettings.scan_alert_enabled" active-text="开启预警" inactive-text="关闭 (推荐)" />
+                        <div class="form-tip">仅在探测到多端口嗅探、高危服务端口（如 SSH/RDP/Redis）探测或纯 IP 扫段时预警，已彻底豁免正常网页与应用浏览。</div>
                       </el-form-item>
                     </el-col>
                   </el-row>

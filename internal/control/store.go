@@ -2416,6 +2416,7 @@ CREATE TABLE IF NOT EXISTS alert_settings (
   probe_speedtest_interval_hours INTEGER NOT NULL DEFAULT 6,
   probe_skip_when_busy INTEGER NOT NULL DEFAULT 1,
   probe_notify_always INTEGER NOT NULL DEFAULT 1,
+  scan_alert_enabled INTEGER NOT NULL DEFAULT 0,
   updated_at INTEGER NOT NULL
 );
 CREATE TABLE IF NOT EXISTS node_speedtests (
@@ -2449,6 +2450,7 @@ INSERT OR IGNORE INTO alert_settings (id, updated_at) VALUES (1, unixepoch());
 	}
 	for _, column := range []string{
 		"bark_url TEXT NOT NULL DEFAULT ''",
+		"scan_alert_enabled INTEGER NOT NULL DEFAULT 0",
 	} {
 		if err := s.addAlertSettingsColumn(ctx, column); err != nil {
 			return err

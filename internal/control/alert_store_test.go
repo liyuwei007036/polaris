@@ -24,6 +24,9 @@ func TestAlertSettingsLifecycle(t *testing.T) {
 	if !settings.ProbeNotifyAlways {
 		t.Errorf("expected default probe notify always true, got %v", settings.ProbeNotifyAlways)
 	}
+	if settings.ScanAlertEnabled {
+		t.Errorf("expected default scan alert enabled false, got %v", settings.ScanAlertEnabled)
+	}
 
 	// Update settings
 	settings.BarkDeviceKey = "test_key_12345"
@@ -32,6 +35,7 @@ func TestAlertSettingsLifecycle(t *testing.T) {
 	settings.SingleIPThresholdCount = 80
 	settings.ProbeGFWIntervalMinutes = 15
 	settings.ProbeNotifyAlways = true
+	settings.ScanAlertEnabled = true
 
 	updated, err := store.UpdateAlertSettings(ctx, settings)
 	if err != nil {
@@ -48,6 +52,9 @@ func TestAlertSettingsLifecycle(t *testing.T) {
 	}
 	if !updated.ProbeNotifyAlways {
 		t.Errorf("expected probe notify always true, got %v", updated.ProbeNotifyAlways)
+	}
+	if !updated.ScanAlertEnabled {
+		t.Errorf("expected scan alert enabled true, got %v", updated.ScanAlertEnabled)
 	}
 
 	// Speedtest lifecycle

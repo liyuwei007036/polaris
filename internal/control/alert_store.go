@@ -31,6 +31,7 @@ type AlertSettings struct {
 	ProbeSpeedtestIntervalHours int   `json:"probe_speedtest_interval_hours"`
 	ProbeSkipWhenBusy         bool    `json:"probe_skip_when_busy"`
 	ProbeNotifyAlways         bool    `json:"probe_notify_always"`
+	ScanAlertEnabled          bool    `json:"scan_alert_enabled"`
 	UpdatedAt                 string  `json:"updated_at,omitempty"`
 }
 
@@ -55,6 +56,7 @@ func (s *Store) GetAlertSettings(ctx context.Context) (AlertSettings, error) {
 	var (
 		trafficAlert, connAlert, singleIPAlert, gfwAlert, offlineAlert int
 		autoGFW, autoSpeed, skipBusy, notifyAlways                     int
+		scanAlert                                                      int
 	)
 
 	row := s.db.QueryRowContext(ctx, `SELECT 
@@ -65,7 +67,7 @@ func (s *Store) GetAlertSettings(ctx context.Context) (AlertSettings, error) {
 		gfw_alert_enabled, offline_alert_enabled, cooldown_minutes,
 		auto_probe_gfw_enabled, probe_gfw_interval_minutes,
 		auto_probe_speedtest_enabled, probe_speedtest_interval_hours,
-		probe_skip_when_busy, probe_notify_always, updated_at
+		probe_skip_when_busy, probe_notify_always, scan_alert_enabled, updated_at
 		FROM alert_settings WHERE id = 1`)
 
 	err := row.Scan(
@@ -76,7 +78,7 @@ func (s *Store) GetAlertSettings(ctx context.Context) (AlertSettings, error) {
 		&gfwAlert, &offlineAlert, &settings.CooldownMinutes,
 		&autoGFW, &settings.ProbeGFWIntervalMinutes,
 		&autoSpeed, &settings.ProbeSpeedtestIntervalHours,
-		&skipBusy, &notifyAlways, &updatedAt,
+		&skipBusy, &notifyAlways, &scanAlert, &updatedAt,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
 		// Default settings
@@ -101,6 +103,7 @@ func (s *Store) GetAlertSettings(ctx context.Context) (AlertSettings, error) {
 			ProbeSpeedtestIntervalHours: 6,
 			ProbeSkipWhenBusy:           true,
 			ProbeNotifyAlways:           true,
+			ScanAlertEnabled:            false,
 		}, nil
 	}
 	if err != nil {
@@ -116,6 +119,7 @@ func (s *Store) GetAlertSettings(ctx context.Context) (AlertSettings, error) {
 	settings.AutoProbeSpeedtestEnabled = autoSpeed != 0
 	settings.ProbeSkipWhenBusy = skipBusy != 0
 	settings.ProbeNotifyAlways = notifyAlways != 0
+	settings.ScanAlertEnabled = scanAlert != 0
 	if updatedAt > 0 {
 		settings.UpdatedAt = time.Unix(updatedAt, 0).UTC().Format(time.RFC3339)
 	}
@@ -158,7 +162,7 @@ func (s *Store) UpdateAlertSettings(ctx context.Context, in AlertSettings) (Aler
 		gfw_alert_enabled, offline_alert_enabled, cooldown_minutes,
 		auto_probe_gfw_enabled, probe_gfw_interval_minutes,
 		auto_probe_speedtest_enabled, probe_speedtest_interval_hours,
-		probe_skip_when_busy, probe_notify_always, updated_at
+		probe_skip_when_busy, probe_notify_always, scan_alert_enabled, updated_at
 	) VALUES (
 		1, ?, ?, ?, ?, ?,
 		?, ?, ?,
@@ -167,7 +171,7 @@ func (s *Store) UpdateAlertSettings(ctx context.Context, in AlertSettings) (Aler
 		?, ?, ?,
 		?, ?,
 		?, ?,
-		?, ?, ?
+		?, ?, ?, ?
 	) ON CONFLICT(id) DO UPDATE SET
 		bark_server=excluded.bark_server,
 		bark_device_key=excluded.bark_device_key,
@@ -190,6 +194,7 @@ func (s *Store) UpdateAlertSettings(ctx context.Context, in AlertSettings) (Aler
 		probe_speedtest_interval_hours=excluded.probe_speedtest_interval_hours,
 		probe_skip_when_busy=excluded.probe_skip_when_busy,
 		probe_notify_always=excluded.probe_notify_always,
+		scan_alert_enabled=excluded.scan_alert_enabled,
 		updated_at=excluded.updated_at`,
 		server, strings.TrimSpace(in.BarkDeviceKey), sound, group, url,
 		boolToInt(in.TrafficAlertEnabled), in.TrafficThresholdMbps, in.TrafficDurationSec,
@@ -198,7 +203,7 @@ func (s *Store) UpdateAlertSettings(ctx context.Context, in AlertSettings) (Aler
 		boolToInt(in.GFWAlertEnabled), boolToInt(in.OfflineAlertEnabled), cooldown,
 		boolToInt(in.AutoProbeGFWEnabled), gfwInterval,
 		boolToInt(in.AutoProbeSpeedtestEnabled), speedInterval,
-		boolToInt(in.ProbeSkipWhenBusy), boolToInt(in.ProbeNotifyAlways), now,
+		boolToInt(in.ProbeSkipWhenBusy), boolToInt(in.ProbeNotifyAlways), boolToInt(in.ScanAlertEnabled), now,
 	)
 	if err != nil {
 		return AlertSettings{}, fmt.Errorf("update alert settings: %w", err)

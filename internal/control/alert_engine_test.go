@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -53,6 +54,7 @@ func TestBarkClientAndAlertEngine(t *testing.T) {
 		OfflineAlertEnabled:       true,
 		CooldownMinutes:           1,
 		ProbeNotifyAlways:         true,
+		ScanAlertEnabled:          true,
 	})
 	if err != nil {
 		t.Fatalf("update alert settings: %v", err)
@@ -96,14 +98,26 @@ func TestBarkClientAndAlertEngine(t *testing.T) {
 	// 6. Test Login Failure
 	engine.NotifyLoginFailed("admin", "114.114.114.114", "密码错误", "Mozilla/5.0")
 
-	// 7. Test Abnormal Port/Host Scanning Detection
-	scanConns := make([]storedConnection, 20)
-	for i := 0; i < 20; i++ {
+	// 7. Verify Normal Web Browsing (Domain-based) DOES NOT trigger scan alert (anti-false-positive check)
+	normalWebConns := make([]storedConnection, 25)
+	for i := 0; i < 25; i++ {
+		normalWebConns[i] = storedConnection{
+			ID:          "w",
+			SourceIP:    "203.0.113.50:5000",
+			Host:        "web-asset-" + string(rune('a'+i)) + ".bilibili.com",
+			Destination: "1.1.1.1:443",
+		}
+	}
+	engine.CheckConnectionsTelemetry("node-web", "Tokyo-02", 100, 100, normalWebConns)
+
+	// 8. Test True Abnormal Port Scanning Detection (Vertical Port Scan across multiple ports on same IP)
+	testPorts := []string{"21", "22", "23", "80", "443", "445", "1433", "3306", "3389", "6379", "8080", "27017"}
+	scanConns := make([]storedConnection, len(testPorts))
+	for i, p := range testPorts {
 		scanConns[i] = storedConnection{
 			ID:          "s",
 			SourceIP:    "198.51.100.22:5000",
-			Host:        "host-" + string(rune('a'+i)) + ".com",
-			Destination: "1.1.1.1:80",
+			Destination: "192.0.2.1:" + p,
 		}
 	}
 	engine.CheckConnectionsTelemetry("node-scan", "US-West", 100, 100, scanConns)
@@ -141,7 +155,12 @@ func TestBarkClientAndAlertEngine(t *testing.T) {
 			}
 		}
 		if m.Title == "🚨 [Polaris] 检测到异常网络扫描" {
-			scanFound = true
+			if strings.Contains(m.Body, "203.0.113.50") {
+				t.Errorf("false positive: normal web browsing IP 203.0.113.50 was flagged as scan!")
+			}
+			if strings.Contains(m.Body, "198.51.100.22") {
+				scanFound = true
+			}
 			if m.Sound != "alarm.caf" {
 				t.Errorf("expected abnormal scan sound to be 'alarm.caf', got '%s'", m.Sound)
 			}

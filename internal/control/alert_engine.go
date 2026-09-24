@@ -6,6 +6,7 @@ import (
 	"log"
 	"net"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -263,42 +264,164 @@ func (e *AlertEngine) CheckConnectionsTelemetry(nodeID, nodeName string, downloa
 		}
 	}
 
-	// 4. Abnormal Port/Host Scanning Detection
-	ipDests := make(map[string]map[string]struct{})
-	for _, c := range connections {
-		ip := strings.TrimSpace(c.SourceIP)
-		if h, _, err := net.SplitHostPort(ip); err == nil {
-			ip = h
-		}
-		if ip == "" {
-			continue
-		}
-		dest := c.Host
-		if dest == "" {
-			dest = c.Destination
-		}
-		if dest == "" {
-			continue
-		}
-		if _, ok := ipDests[ip]; !ok {
-			ipDests[ip] = make(map[string]struct{})
-		}
-		ipDests[ip][dest] = struct{}{}
+	// 4. Abnormal Port/Host Scanning Detection (strictly exempts standard domain-name web browsing)
+	if !settings.ScanAlertEnabled {
+		return
 	}
-	for ip, dests := range ipDests {
-		if len(dests) >= 15 {
-			alertKey := "scan:" + nodeID + ":" + ip
+
+	sensitiveScanPorts := map[int]string{
+		21:    "FTP",
+		22:    "SSH",
+		23:    "Telnet",
+		25:    "SMTP",
+		135:   "RPC",
+		137:   "NetBIOS",
+		139:   "NetBIOS",
+		445:   "SMB",
+		1433:  "MSSQL",
+		1521:  "Oracle",
+		3306:  "MySQL",
+		3389:  "RDP",
+		5432:  "PostgreSQL",
+		5900:  "VNC",
+		6379:  "Redis",
+		9200:  "Elasticsearch",
+		11211: "Memcached",
+		27017: "MongoDB",
+	}
+
+	type clientScanStats struct {
+		targetPorts      map[string]map[int]struct{}
+		sensitiveTargets map[string]string
+		rawIPTargets     map[string]struct{}
+	}
+
+	clientStats := make(map[string]*clientScanStats)
+
+	for _, c := range connections {
+		clientIP := strings.TrimSpace(c.SourceIP)
+		if h, _, err := net.SplitHostPort(clientIP); err == nil {
+			clientIP = h
+		}
+		if clientIP == "" {
+			continue
+		}
+
+		dest := strings.TrimSpace(c.Destination)
+		destHost := dest
+		destPort := 0
+		if h, pStr, err := net.SplitHostPort(dest); err == nil {
+			destHost = h
+			if p, err := strconv.Atoi(pStr); err == nil {
+				destPort = p
+			}
+		}
+
+		// Check if host is a valid domain name (FQDN)
+		host := strings.TrimSpace(c.Host)
+		isDomain := false
+		if host != "" && net.ParseIP(host) == nil && strings.Contains(host, ".") {
+			for _, r := range host {
+				if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') {
+					isDomain = true
+					break
+				}
+			}
+		}
+
+		// Standard web browsing: domain name on common web ports (80, 443, 8080, 8443) or port 0
+		// MUST be completely exempted! Browsing modern websites naturally opens dozens of domain connections.
+		if isDomain && (destPort == 80 || destPort == 443 || destPort == 8080 || destPort == 8443 || destPort == 0) {
+			continue
+		}
+
+		// Also exempt domain-based connections to other common application services unless targeting sensitive ports
+		if isDomain {
+			if _, isSensitive := sensitiveScanPorts[destPort]; !isSensitive {
+				continue
+			}
+		}
+
+		st, exists := clientStats[clientIP]
+		if !exists {
+			st = &clientScanStats{
+				targetPorts:      make(map[string]map[int]struct{}),
+				sensitiveTargets: make(map[string]string),
+				rawIPTargets:     make(map[string]struct{}),
+			}
+			clientStats[clientIP] = st
+		}
+
+		if destHost != "" && destPort > 0 {
+			if _, ok := st.targetPorts[destHost]; !ok {
+				st.targetPorts[destHost] = make(map[int]struct{})
+			}
+			st.targetPorts[destHost][destPort] = struct{}{}
+		}
+
+		if svc, isSensitive := sensitiveScanPorts[destPort]; isSensitive {
+			st.sensitiveTargets[dest] = svc
+		}
+
+		if !isDomain && destHost != "" && net.ParseIP(destHost) != nil {
+			st.rawIPTargets[destHost] = struct{}{}
+		}
+	}
+
+	for clientIP, st := range clientStats {
+		var triggerReason, triggerDetails string
+
+		// Condition A: Vertical Port Scan (single destination IP with >= 10 distinct probed ports)
+		for targetIP, ports := range st.targetPorts {
+			if len(ports) >= 10 {
+				var portStrs []string
+				for p := range ports {
+					portStrs = append(portStrs, strconv.Itoa(p))
+					if len(portStrs) >= 6 {
+						break
+					}
+				}
+				triggerReason = fmt.Sprintf("单目标多端口嗅探 (尝试连接目标 %s 的 %d 个不同端口)", targetIP, len(ports))
+				triggerDetails = fmt.Sprintf("目标地址: %s, 端口样例: %s", targetIP, strings.Join(portStrs, ", "))
+				break
+			}
+		}
+
+		// Condition B: Sensitive Port Sweep (probing high-risk ports across >= 5 distinct targets)
+		if triggerReason == "" && len(st.sensitiveTargets) >= 5 {
+			var samples []string
+			for target, svc := range st.sensitiveTargets {
+				samples = append(samples, fmt.Sprintf("%s (%s)", target, svc))
+				if len(samples) >= 5 {
+					break
+				}
+			}
+			triggerReason = fmt.Sprintf("高危服务端口扫描 (并发探测 %d 个敏感服务端口)", len(st.sensitiveTargets))
+			triggerDetails = fmt.Sprintf("样例: %s", strings.Join(samples, ", "))
+		}
+
+		// Condition C: Mass Raw IP Sweep (>= 40 distinct raw IPs without domain names on non-web ports)
+		if triggerReason == "" && len(st.rawIPTargets) >= 40 {
+			var samples []string
+			for ip := range st.rawIPTargets {
+				samples = append(samples, ip)
+				if len(samples) >= 5 {
+					break
+				}
+			}
+			triggerReason = fmt.Sprintf("纯 IP 地址段并发漫游扫描 (并发连接 %d 个纯 IP 端点)", len(st.rawIPTargets))
+			triggerDetails = fmt.Sprintf("目标样例: %s", strings.Join(samples, ", "))
+		}
+
+		if triggerReason != "" {
+			alertKey := "scan:" + nodeID + ":" + clientIP
 			cooldown := settings.CooldownMinutes
-			if cooldown < 5 {
-				cooldown = 5
+			if cooldown < 15 {
+				cooldown = 15
 			}
 			if e.canAlert(alertKey, cooldown) {
-				var samples []string
-				for d := range dests {
-					samples = append(samples, d)
-				}
-				body := fmt.Sprintf("• 服务器: %s\n• 扫描来源: %s\n• 并发目标: %d 个不同端点/端口\n• 探测样例: %s\n• 防御建议: 疑似端口扫描或探测爬虫，可前往安全防护添加阻断规则\n🕒 发现时间: %s",
-					nodeName, e.formatIP(ip), len(dests), strings.Join(samples, ", "), timeStr)
+				body := fmt.Sprintf("• 服务器: %s\n• 来源 IP: %s\n• 扫描特征: %s\n• 探测详情: %s\n• 安全建议: 疑似端口扫描或漏洞测绘行为，请排查该来源 IP 或前往安全防护添加阻断规则\n🕒 发现时间: %s",
+					nodeName, e.formatIP(clientIP), triggerReason, triggerDetails, timeStr)
 				e.sendAlert(context.Background(), "🚨 [Polaris] 检测到异常网络扫描", body, "Polaris-安全警报", "active", "alarm.caf", "")
 			}
 		}
