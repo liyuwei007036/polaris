@@ -2,7 +2,7 @@
 import { computed, inject, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import {
-  Clock, Collection, Connection, Document, Lock, Monitor, Operation, Refresh, Setting, Share, Tickets, TrendCharts, User,
+  Bell, Clock, Collection, Connection, Document, Lock, Monitor, Operation, Refresh, Setting, Share, Tickets, TrendCharts, User,
 } from '@element-plus/icons-vue'
 import { post } from '../../api'
 import MPage from '../components/MPage.vue'
@@ -44,6 +44,7 @@ const groups = [
     label: '系统管理',
     items: [
       { id: 'cloudflare', label: '域名解析', icon: Document },
+      { id: 'alerts', label: '告警配置', icon: Bell },
       { id: 'settings', label: '系统设置', icon: Setting },
     ],
   },

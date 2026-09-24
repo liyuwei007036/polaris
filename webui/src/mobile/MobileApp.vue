@@ -18,6 +18,8 @@ const viewAliases = {
   'history-connections': 'connection-history',
   'security-center': 'security',
   firewall: 'security',
+  alerts: 'settings',
+  'alert-settings': 'settings',
 }
 // 页面标识后面可以带查询串，用来从看板直接跳进筛选好的列表（#/nodes?status=offline）。
 const viewOf = (hash) => hash.replace(/^#\/?/, '').split('?')[0] || 'dashboard'
@@ -132,8 +134,9 @@ async function logout() {
 }
 
 function navigate(view, query = '') {
-  currentView.value = views[view] ? view : 'dashboard'
-  location.hash = `#/${currentView.value}${query ? `?${query}` : ''}`
+  const resolved = viewAliases[view] || view
+  currentView.value = views[resolved] ? resolved : 'dashboard'
+  location.hash = `#/${view}${query ? `?${query}` : ''}`
 }
 
 function onHashChange() {
