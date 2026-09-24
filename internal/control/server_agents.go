@@ -148,12 +148,18 @@ func (s *Server) runAgentSession(ctx context.Context, conn *wire.Conn, node Node
 	}
 	s.controls[node.ID] = session
 	s.controlMu.Unlock()
+	if s.alertEngine != nil && ctx.Err() == nil {
+		s.alertEngine.NotifyNodeOnline(node.ID, node.Name)
+	}
 	defer func() {
 		s.controlMu.Lock()
 		if s.controls[node.ID] == session {
 			delete(s.controls, node.ID)
 		}
 		s.controlMu.Unlock()
+		if s.alertEngine != nil && ctx.Err() == nil {
+			s.alertEngine.NotifyNodeOffline(node.ID, node.Name)
+		}
 	}()
 
 	incoming := make(chan agentInboundMessage, 8)
@@ -357,6 +363,9 @@ func (s *Server) handleAgentMessage(ctx context.Context, node Node, msgType byte
 		s.connActivity.record(node.ID, connections, now)
 		if s.connRecorder != nil {
 			s.connRecorder.RecordPush(node.ID, node.Name, connections)
+		}
+		if s.alertEngine != nil {
+			s.alertEngine.CheckConnectionsTelemetry(node.ID, node.Name, downloadRate, uploadRate, connections)
 		}
 		connJSON, err := json.Marshal(connections)
 		if err != nil {

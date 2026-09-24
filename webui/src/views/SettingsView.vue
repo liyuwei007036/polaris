@@ -1,7 +1,7 @@
 <script setup>
 import { computed, inject, onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Plus, Refresh, Search } from '@element-plus/icons-vue'
+import { Bell, Check, Plus, Refresh, Search, Warning } from '@element-plus/icons-vue'
 import QRCode from 'qrcode'
 import { api, post, put } from '../api'
 import { formatDateTime, includesText } from '../format'
@@ -18,6 +18,37 @@ const totpSetup = reactive({ open: false, loading: false, secret: '', qr: '', co
 const operator = reactive({ username: '', password: '', role: 'operator' })
 const operatorKeyword = ref('')
 const operatorStatus = ref('')
+
+const alertSettings = reactive({
+  bark_server: 'https://api.day.app',
+  bark_device_key: '',
+  bark_sound: 'minuet',
+  bark_group: 'Polaris',
+  bark_url: '',
+  traffic_alert_enabled: true,
+  traffic_threshold_mbps: 50,
+  traffic_duration_sec: 10,
+  conn_alert_enabled: true,
+  conn_threshold_count: 200,
+  single_ip_alert_enabled: true,
+  single_ip_threshold_count: 60,
+  gfw_alert_enabled: true,
+  offline_alert_enabled: true,
+  cooldown_minutes: 15,
+  auto_probe_gfw_enabled: true,
+  probe_gfw_interval_minutes: 30,
+  auto_probe_speedtest_enabled: true,
+  probe_speedtest_interval_hours: 6,
+  probe_skip_when_busy: true,
+  probe_notify_always: true,
+})
+const alertSaving = ref(false)
+const testSending = ref(false)
+const gfwProbing = ref(false)
+const realityForm = reactive({ target: 'gateway.icloud.com', port: 443 })
+const realityChecking = ref(false)
+const realityResult = ref(null)
+
 const filteredOperators = computed(() => operators.value.filter((row) => {
   if (operatorStatus.value && String(row.enabled) !== operatorStatus.value) return false
   return includesText([row.username, row.role], operatorKeyword.value)
@@ -26,9 +57,83 @@ const filteredOperators = computed(() => operators.value.filter((row) => {
 async function load() {
   loading.value = true
   try {
-    const operatorResult = await (isAdmin.value ? api('/operators') : Promise.resolve({ operators: [] }))
+    const [operatorResult, alertsResult] = await Promise.all([
+      isAdmin.value ? api('/operators').catch(() => ({ operators: [] })) : Promise.resolve({ operators: [] }),
+      isAdmin.value ? api('/alerts/settings').catch(() => ({ settings: null })) : Promise.resolve({ settings: null }),
+    ])
     operators.value = operatorResult.operators || []
+    if (alertsResult?.settings) {
+      Object.assign(alertSettings, alertsResult.settings)
+    }
   } finally { loading.value = false }
+}
+
+async function saveAlertSettings() {
+  alertSaving.value = true
+  try {
+    const res = await put('/alerts/settings', alertSettings)
+    if (res?.settings) {
+      Object.assign(alertSettings, res.settings)
+    }
+    ElMessage.success('告警与探测配置已保存')
+  } catch (error) {
+    ElMessage.error(error instanceof Error ? error.message : '保存失败')
+  } finally {
+    alertSaving.value = false
+  }
+}
+
+async function sendTestAlert() {
+  if (!alertSettings.bark_device_key.trim()) {
+    return ElMessage.warning('请先填写 Bark Device Key')
+  }
+  testSending.value = true
+  try {
+    await post('/alerts/test', {
+      server: alertSettings.bark_server,
+      device_key: alertSettings.bark_device_key,
+      sound: alertSettings.bark_sound,
+      group: alertSettings.bark_group,
+      url: alertSettings.bark_url,
+    })
+    ElMessage.success('测试通知已发出，请在 iOS 设备上查看 Bark 推送')
+  } catch (error) {
+    ElMessage.error(error instanceof Error ? error.message : '发送测试通知失败')
+  } finally {
+    testSending.value = false
+  }
+}
+
+async function triggerGFWCheck() {
+  gfwProbing.value = true
+  try {
+    const res = await post('/probes/run-gfw-check', {})
+    const count = (res.nodes || []).length
+    ElMessage.success(`探测已完成（共检测 ${count} 个节点），详细报告已推送至 Bark`)
+  } catch (error) {
+    ElMessage.error(error instanceof Error ? error.message : '触发 GFW 探测失败')
+  } finally {
+    gfwProbing.value = false
+  }
+}
+
+async function checkReality() {
+  if (!realityForm.target.trim()) {
+    return ElMessage.warning('请输入待检测的目标域名')
+  }
+  realityChecking.value = true
+  try {
+    const res = await post('/tools/reality-check', {
+      target: realityForm.target.trim(),
+      port: Number(realityForm.port) || 443,
+    })
+    realityResult.value = res.reality_check
+    ElMessage.success('目标检测完成')
+  } catch (error) {
+    ElMessage.error(error instanceof Error ? error.message : 'Reality 目标检测失败')
+  } finally {
+    realityChecking.value = false
+  }
 }
 
 function open(kind) {
@@ -140,6 +245,227 @@ onMounted(load)
             </PagedTable>
           </el-tab-pane>
 
+          <el-tab-pane v-if="isAdmin" label="Bark 告警与探测" name="alerts">
+            <div class="settings-grid">
+              <!-- Bark 推送配置 -->
+              <div class="settings-card">
+                <div class="card-header">
+                  <div class="card-title">
+                    <el-icon class="card-icon"><Bell /></el-icon>
+                    <div>
+                      <h3>Bark 消息推送 (Apple 原生 APNs)</h3>
+                      <p>零国内第三方 SDK、零依赖，通过 iOS 原生 Bark 客户端即时推送通知。</p>
+                    </div>
+                  </div>
+                  <el-switch v-model="alertSettings.offline_alert_enabled" active-text="离线警报开启" inactive-text="离线警报关闭" />
+                </div>
+                <el-form label-position="top" class="card-body">
+                  <el-row :gutter="16">
+                    <el-col :span="12">
+                      <el-form-item label="Bark 服务器地址">
+                        <el-input v-model="alertSettings.bark_server" placeholder="https://api.day.app" />
+                      </el-form-item>
+                    </el-col>
+                    <el-col :span="12">
+                      <el-form-item label="Device Key (设备密钥)" required>
+                        <el-input v-model="alertSettings.bark_device_key" show-password placeholder="Bark App 中的专属 Key" />
+                      </el-form-item>
+                    </el-col>
+                  </el-row>
+                  <el-row :gutter="16">
+                    <el-col :span="8">
+                      <el-form-item label="提示铃声">
+                        <el-select v-model="alertSettings.bark_sound" style="width: 100%">
+                          <el-option label="minuet (清脆小步舞曲 - 推荐)" value="minuet" />
+                          <el-option label="anticipate (轻快期待)" value="anticipate" />
+                          <el-option label="bell (经典铃声)" value="bell" />
+                          <el-option label="glass (清澈水滴)" value="glass" />
+                          <el-option label="horn (警示号角)" value="horn" />
+                          <el-option label="telegraph (电报码)" value="telegraph" />
+                          <el-option label="silence (静音仅震动)" value="silence" />
+                        </el-select>
+                      </el-form-item>
+                    </el-col>
+                    <el-col :span="8">
+                      <el-form-item label="推送分组 (Group)">
+                        <el-input v-model="alertSettings.bark_group" placeholder="Polaris" />
+                      </el-form-item>
+                    </el-col>
+                    <el-col :span="8">
+                      <el-form-item label="点击跳转 URL (可选)">
+                        <el-input v-model="alertSettings.bark_url" placeholder="例如控制台网址" />
+                      </el-form-item>
+                    </el-col>
+                  </el-row>
+                  <div class="card-footer-action">
+                    <el-button :loading="testSending" @click="sendTestAlert">发送测试通知</el-button>
+                  </div>
+                </el-form>
+              </div>
+
+              <!-- 实时指标与阈值预警 -->
+              <div class="settings-card">
+                <div class="card-header">
+                  <div class="card-title">
+                    <el-icon class="card-icon"><Warning /></el-icon>
+                    <div>
+                      <h3>瞬时流量与连接数阈值预警</h3>
+                      <p>实时监控节点的流量突发、瞬时并发激增或单一 IP 暴力刷量行为并即时报警。</p>
+                    </div>
+                  </div>
+                  <el-switch v-model="alertSettings.traffic_alert_enabled" active-text="监控开启" inactive-text="监控关闭" />
+                </div>
+                <el-form label-position="top" class="card-body">
+                  <el-row :gutter="16">
+                    <el-col :span="12">
+                      <el-form-item label="瞬时带宽突发预警 (Mbps)">
+                        <el-input-number v-model="alertSettings.traffic_threshold_mbps" :min="0" :max="10000" :step="10" style="width: 100%" />
+                        <div class="form-tip">0 表示不限制；超过此速率持续达到观察时长即触发告警。</div>
+                      </el-form-item>
+                    </el-col>
+                    <el-col :span="12">
+                      <el-form-item label="带宽突发判定窗口 (秒)">
+                        <el-input-number v-model="alertSettings.traffic_duration_sec" :min="5" :max="300" :step="5" style="width: 100%" />
+                        <div class="form-tip">防止网络瞬间波动误报，推荐 10 ~ 60 秒。</div>
+                      </el-form-item>
+                    </el-col>
+                  </el-row>
+                  <el-row :gutter="16">
+                    <el-col :span="8">
+                      <el-form-item label="节点瞬时连接总数上限">
+                        <el-input-number v-model="alertSettings.conn_threshold_count" :min="10" :max="50000" :step="50" style="width: 100%" />
+                        <div class="form-tip">个人使用通常低于 500 个并发。</div>
+                      </el-form-item>
+                    </el-col>
+                    <el-col :span="8">
+                      <el-form-item label="单个 IP 突发并发上限">
+                        <el-input-number v-model="alertSettings.single_ip_threshold_count" :min="5" :max="5000" :step="10" style="width: 100%" />
+                        <div class="form-tip">防范单一来源 IP 大量恶意扫描或抓包。</div>
+                      </el-form-item>
+                    </el-col>
+                    <el-col :span="8">
+                      <el-form-item label="重复报警静默冷却 (分钟)">
+                        <el-input-number v-model="alertSettings.cooldown_minutes" :min="1" :max="1440" :step="5" style="width: 100%" />
+                        <div class="form-tip">同一节点同一类型的告警在此期间不重复轰炸。</div>
+                      </el-form-item>
+                    </el-col>
+                  </el-row>
+                </el-form>
+              </div>
+
+              <!-- 定时探测与三网测速 -->
+              <div class="settings-card">
+                <div class="card-header">
+                  <div class="card-title">
+                    <el-icon class="card-icon"><Check /></el-icon>
+                    <div>
+                      <h3>定时 GFW 阻断探测与三网测速</h3>
+                      <p>定时从国内视角探测各节点连通性与三网延迟，每逢探测必推通知汇报状态。</p>
+                    </div>
+                  </div>
+                  <el-switch v-model="alertSettings.auto_probe_gfw_enabled" active-text="定时探测开启" inactive-text="定时探测关闭" />
+                </div>
+                <el-form label-position="top" class="card-body">
+                  <el-row :gutter="16">
+                    <el-col :span="12">
+                      <el-form-item label="GFW 阻断探测周期 (分钟)">
+                        <el-input-number v-model="alertSettings.probe_gfw_interval_minutes" :min="1" :max="1440" :step="1" style="width: 100%" />
+                        <div class="form-tip">定时探测客户端连接端口是否被阻断。</div>
+                      </el-form-item>
+                    </el-col>
+                    <el-col :span="12">
+                      <el-form-item label="三网定时测速周期 (小时)">
+                        <el-input-number v-model="alertSettings.probe_speedtest_interval_hours" :min="1" :max="168" :step="1" style="width: 100%" />
+                        <div class="form-tip">测试电信、联通、移动 TCP 延迟及测速。</div>
+                      </el-form-item>
+                    </el-col>
+                  </el-row>
+                  <el-row :gutter="16">
+                    <el-col :span="12">
+                      <el-form-item label="每次探测必推通知 (核心要求)">
+                        <el-switch v-model="alertSettings.probe_notify_always" active-text="开启 (全绿推健康日报，异常推警报)" inactive-text="仅在发生异常时推送" />
+                        <div class="form-tip">开启后，哪怕所有节点正常运行，每次探测也发送简报让您时刻心中有数。</div>
+                      </el-form-item>
+                    </el-col>
+                    <el-col :span="12">
+                      <el-form-item label="业务繁忙时避让测速">
+                        <el-switch v-model="alertSettings.probe_skip_when_busy" active-text="避让 (节点带宽 > 5MB/s 时跳过)" inactive-text="强制执行" />
+                        <div class="form-tip">避免在您观看高清视频或下载文件时测速造成卡顿。</div>
+                      </el-form-item>
+                    </el-col>
+                  </el-row>
+                  <div class="card-footer-action">
+                    <el-button :loading="gfwProbing" @click="triggerGFWCheck">立即运行 GFW 探测</el-button>
+                    <el-button type="primary" :loading="alertSaving" @click="saveAlertSettings">保存所有告警配置</el-button>
+                  </div>
+                </el-form>
+              </div>
+
+              <!-- Reality 目标域名合格度探测工具 -->
+              <div class="settings-card">
+                <div class="card-header">
+                  <div class="card-title">
+                    <el-icon class="card-icon"><Search /></el-icon>
+                    <div>
+                      <h3>VLESS Reality 伪装域名检测工具</h3>
+                      <p>在配置 Reality 偷窥 SNI 之前，快速检测目标网站是否支持 TLS 1.3、h2 ALPN、证书有效期及网络延迟。</p>
+                    </div>
+                  </div>
+                </div>
+                <div class="card-body">
+                  <el-row :gutter="16" align="bottom">
+                    <el-col :span="14">
+                      <el-form-item label="待检测目标域名 (例如 gateway.icloud.com, dl.google.com)">
+                        <el-input v-model="realityForm.target" placeholder="gateway.icloud.com" clearable />
+                      </el-form-item>
+                    </el-col>
+                    <el-col :span="5">
+                      <el-form-item label="端口">
+                        <el-input-number v-model="realityForm.port" :min="1" :max="65535" style="width: 100%" />
+                      </el-form-item>
+                    </el-col>
+                    <el-col :span="5">
+                      <el-form-item label="&nbsp;">
+                        <el-button type="primary" style="width: 100%" :loading="realityChecking" @click="checkReality">开始检测</el-button>
+                      </el-form-item>
+                    </el-col>
+                  </el-row>
+
+                  <div v-if="realityResult" class="reality-result-panel">
+                    <div class="result-header">
+                      <div class="result-title">
+                        <strong>检测结果：{{ realityResult.target }}</strong>
+                        <el-tag :type="realityResult.compatible ? 'success' : 'danger'" size="large">
+                          {{ realityResult.compatible ? '合格 (推荐作为 Reality 偷窥域名)' : '不合格 (不建议使用)' }}
+                        </el-tag>
+                      </div>
+                      <div class="result-latency">延迟: <strong>{{ realityResult.latency_ms }} ms</strong></div>
+                    </div>
+                    <div class="result-grid">
+                      <div class="result-item">
+                        <span class="label">TLS 1.3:</span>
+                        <el-tag :type="realityResult.tls_13 ? 'success' : 'danger'">{{ realityResult.tls_13 ? '支持 (TLS 1.3)' : '不支持' }}</el-tag>
+                      </div>
+                      <div class="result-item">
+                        <span class="label">ALPN 协商:</span>
+                        <el-tag :type="realityResult.alpn?.includes('h2') ? 'success' : 'warning'">{{ realityResult.alpn || '无' }}</el-tag>
+                      </div>
+                      <div class="result-item">
+                        <span class="label">证书颁发者:</span>
+                        <span class="mono">{{ realityResult.cert_issuer || '—' }}</span>
+                      </div>
+                      <div class="result-item">
+                        <span class="label">证书到期天数:</span>
+                        <span>{{ realityResult.cert_days_left }} 天 ({{ formatDateTime(realityResult.cert_expires_at) }})</span>
+                      </div>
+                    </div>
+                    <el-alert v-if="realityResult.recommendation" :title="realityResult.recommendation" :type="realityResult.compatible ? 'success' : 'warning'" show-icon :closable="false" style="margin-top: 12px" />
+                  </div>
+                </div>
+              </div>
+            </div>
+          </el-tab-pane>
+
         </el-tabs>
       </div>
     </main>
@@ -178,8 +504,99 @@ onMounted(load)
 .totp-setup img { width: 220px; height: 220px; margin-bottom: 14px; padding: 8px; background: #fff; border-radius: var(--sb-radius-sm); }
 .totp-setup :deep(.el-form-item) { text-align: left; }
 .form-tip { margin-top: 6px; color: var(--sb-muted); font-size: 12px; }
+
+.settings-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+  padding: 18px;
+}
+.settings-card {
+  background: var(--sb-bg-card, #fff);
+  border: 1px solid var(--sb-line);
+  border-radius: var(--sb-radius);
+  overflow: hidden;
+}
+.card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 16px 20px;
+  background: rgba(148, 163, 184, .04);
+  border-bottom: 1px solid var(--sb-line);
+}
+.card-title {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.card-icon {
+  font-size: 22px;
+  color: var(--sb-primary, #3b82f6);
+}
+.card-title h3 {
+  margin: 0 0 4px;
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--sb-text);
+}
+.card-title p {
+  margin: 0;
+  font-size: 13px;
+  color: var(--sb-muted);
+}
+.card-body {
+  padding: 20px;
+}
+.card-footer-action {
+  display: flex;
+  justify-content: flex-end;
+  gap: 12px;
+  margin-top: 12px;
+  padding-top: 14px;
+  border-top: 1px solid var(--sb-line);
+}
+
+.reality-result-panel {
+  margin-top: 16px;
+  padding: 16px;
+  background: rgba(148, 163, 184, .05);
+  border: 1px solid var(--sb-line);
+  border-radius: var(--sb-radius-sm);
+}
+.result-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 12px;
+}
+.result-title {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.result-latency {
+  font-size: 13px;
+  color: var(--sb-muted);
+}
+.result-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 10px;
+}
+.result-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+}
+.result-item .label {
+  color: var(--sb-muted);
+}
+
 @media (max-width: 700px) {
   .security-card { align-items: flex-start; flex-wrap: wrap; }
   .security-card > div { flex-basis: 100%; }
+  .result-grid { grid-template-columns: 1fr; }
 }
 </style>

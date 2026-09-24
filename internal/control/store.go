@@ -2375,9 +2375,58 @@ CREATE INDEX IF NOT EXISTS idx_conn_records_started_at ON connection_records(sta
 CREATE INDEX IF NOT EXISTS idx_conn_records_source_ip ON connection_records(source_ip, started_at DESC);
 CREATE INDEX IF NOT EXISTS idx_conn_records_user ON connection_records(user, started_at DESC);
 CREATE INDEX IF NOT EXISTS idx_conn_records_node_id ON connection_records(node_id, started_at DESC);
+CREATE TABLE IF NOT EXISTS alert_settings (
+  id INTEGER PRIMARY KEY CHECK (id = 1),
+  bark_server TEXT NOT NULL DEFAULT 'https://api.day.app',
+  bark_device_key TEXT NOT NULL DEFAULT '',
+  bark_sound TEXT NOT NULL DEFAULT 'minuet',
+  bark_group TEXT NOT NULL DEFAULT 'Polaris',
+  traffic_alert_enabled INTEGER NOT NULL DEFAULT 1,
+  traffic_threshold_mbps REAL NOT NULL DEFAULT 50.0,
+  traffic_duration_sec INTEGER NOT NULL DEFAULT 10,
+  conn_alert_enabled INTEGER NOT NULL DEFAULT 1,
+  conn_threshold_count INTEGER NOT NULL DEFAULT 200,
+  single_ip_alert_enabled INTEGER NOT NULL DEFAULT 1,
+  single_ip_threshold_count INTEGER NOT NULL DEFAULT 60,
+  gfw_alert_enabled INTEGER NOT NULL DEFAULT 1,
+  offline_alert_enabled INTEGER NOT NULL DEFAULT 1,
+  cooldown_minutes INTEGER NOT NULL DEFAULT 15,
+  auto_probe_gfw_enabled INTEGER NOT NULL DEFAULT 1,
+  probe_gfw_interval_minutes INTEGER NOT NULL DEFAULT 30,
+  auto_probe_speedtest_enabled INTEGER NOT NULL DEFAULT 1,
+  probe_speedtest_interval_hours INTEGER NOT NULL DEFAULT 6,
+  probe_skip_when_busy INTEGER NOT NULL DEFAULT 1,
+  probe_notify_always INTEGER NOT NULL DEFAULT 1,
+  updated_at INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS node_speedtests (
+  id TEXT PRIMARY KEY,
+  node_id TEXT NOT NULL REFERENCES nodes(id) ON DELETE CASCADE,
+  telecom_latency_ms INTEGER NOT NULL DEFAULT 0,
+  telecom_speed_mbps REAL NOT NULL DEFAULT 0,
+  telecom_route TEXT NOT NULL DEFAULT '',
+  unicom_latency_ms INTEGER NOT NULL DEFAULT 0,
+  unicom_speed_mbps REAL NOT NULL DEFAULT 0,
+  unicom_route TEXT NOT NULL DEFAULT '',
+  mobile_latency_ms INTEGER NOT NULL DEFAULT 0,
+  mobile_speed_mbps REAL NOT NULL DEFAULT 0,
+  mobile_route TEXT NOT NULL DEFAULT '',
+  tested_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_node_speedtests_node_tested ON node_speedtests(node_id, tested_at DESC);
+INSERT OR IGNORE INTO alert_settings (id, updated_at) VALUES (1, unixepoch());
 `)
 	if err != nil {
 		return fmt.Errorf("migrate database: %w", err)
+	}
+	for _, column := range []string{
+		"telecom_route TEXT NOT NULL DEFAULT ''",
+		"unicom_route TEXT NOT NULL DEFAULT ''",
+		"mobile_route TEXT NOT NULL DEFAULT ''",
+	} {
+		if err := s.addSpeedtestColumn(ctx, column); err != nil {
+			return err
+		}
 	}
 	for _, column := range []string{
 		"client_address TEXT NOT NULL DEFAULT ''",
@@ -2565,6 +2614,14 @@ func (s *Store) addLoginChallengeColumn(ctx context.Context, definition string) 
 		return nil
 	}
 	return fmt.Errorf("migrate login challenges table: %w", err)
+}
+
+func (s *Store) addSpeedtestColumn(ctx context.Context, definition string) error {
+	_, err := s.db.ExecContext(ctx, "ALTER TABLE node_speedtests ADD COLUMN "+definition)
+	if err == nil || strings.Contains(err.Error(), "duplicate column name") {
+		return nil
+	}
+	return fmt.Errorf("migrate node_speedtests table: %w", err)
 }
 
 func (s *Store) addTaskColumn(ctx context.Context, definition string) error {

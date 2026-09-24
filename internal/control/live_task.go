@@ -52,7 +52,11 @@ func (s *Server) AskNode(ctx context.Context, nodeID, kind, payload string) (str
 		s.taskWaitMu.Unlock()
 	}()
 
-	waitCtx, cancel := context.WithTimeout(ctx, liveTaskTimeout)
+	timeout := liveTaskTimeout
+	if kind == "speedtest.run" {
+		timeout = 45 * time.Second
+	}
+	waitCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	question := wire.Task{ID: id, Kind: kind, IdempotencyKey: id, Payload: payload, ExpectedHash: hex.EncodeToString(digest[:])}
 	select {

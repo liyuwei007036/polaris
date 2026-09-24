@@ -127,6 +127,10 @@ func executeTask(ctx context.Context, task Task, options TaskOptions) TaskResult
 		return upgradeAgent(ctx, task, options.DataDir)
 	case "outbound.test":
 		return testOutbound(ctx, task)
+	case "speedtest.run":
+		return runSpeedtest(ctx, task)
+	case "firewall.toggle_scanners":
+		return toggleScannerProtection(ctx, task)
 	default:
 		return TaskResult{Status: "failed", Summary: "task kind is not implemented by this agent build"}
 	}
@@ -475,6 +479,23 @@ func mutateFirewall(ctx context.Context, task Task) TaskResult {
 		return TaskResult{Status: "failed", Summary: "编码防火墙规则失败：" + err.Error()}
 	}
 	return TaskResult{Status: "succeeded", Summary: "访问限制已在服务器防火墙上生效", Data: string(encoded)}
+}
+
+func toggleScannerProtection(ctx context.Context, task Task) TaskResult {
+	var payload struct {
+		Enabled bool `json:"enabled"`
+	}
+	_ = json.Unmarshal([]byte(task.Payload), &payload)
+	live, err := ApplyScannerProtection(ctx, payload.Enabled)
+	if err != nil {
+		return TaskResult{Status: "failed", Summary: "配置扫描器防御失败: " + err.Error()}
+	}
+	encoded, _ := json.Marshal(live)
+	msg := "已启用扫描器防御，Shodan/Censys 等公网扫描探针将被静默丢弃"
+	if !payload.Enabled {
+		msg = "已关闭扫描器防御"
+	}
+	return TaskResult{Status: "succeeded", Summary: msg, Data: string(encoded)}
 }
 
 // ensureIptablesReady makes sure the command this agent writes rules with is

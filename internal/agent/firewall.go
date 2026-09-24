@@ -59,10 +59,53 @@ type LiveFirewall struct {
 	Tool            string             `json:"tool,omitempty"`
 	Manager         string             `json:"manager,omitempty"`
 	DefaultIncoming string             `json:"default_incoming,omitempty"`
-	PortRules       []PortRule         `json:"port_rules"`
-	Rules           []LiveFirewallRule `json:"-"`
-	Truncated       bool               `json:"truncated,omitempty"`
-	Error           string             `json:"error,omitempty"`
+	PortRules         []PortRule         `json:"port_rules"`
+	Rules             []LiveFirewallRule `json:"-"`
+	ScannerProtection bool               `json:"scanner_protection"`
+	Truncated         bool               `json:"truncated,omitempty"`
+	Error             string             `json:"error,omitempty"`
+}
+
+// KnownScannerCIDRs holds the IP CIDR ranges of public internet scanners (Shodan, Censys, etc.)
+var KnownScannerCIDRs = []string{
+	"71.6.135.131/32", "71.6.165.200/32", "71.6.167.142/32",
+	"198.20.69.0/24", "198.20.70.0/24", "198.20.99.0/24",
+	"162.142.125.0/24", "167.94.138.0/24", "167.94.145.0/24",
+	"167.94.146.0/24", "167.248.133.0/24", "199.45.154.0/24",
+	"199.45.155.0/24", "206.168.34.0/24",
+}
+
+// ApplyScannerProtection configures firewall rules to block or unblock known internet scanners.
+func ApplyScannerProtection(ctx context.Context, enabled bool) (LiveFirewall, error) {
+	if !commandExists("iptables") && !commandExists("nft") {
+		live := CollectLiveFirewall(ctx)
+		return live, errors.New("服务器上未安装 iptables 或 nftables，无法配置扫描器防御")
+	}
+
+	if commandExists("iptables") {
+		_ = ensureIptablesReady(ctx)
+		for _, cidr := range KnownScannerCIDRs {
+			if enabled {
+				checkCmd := exec.CommandContext(ctx, "iptables", "-C", "INPUT", "-s", cidr, "-j", "DROP")
+				if err := checkCmd.Run(); err != nil {
+					insertCmd := exec.CommandContext(ctx, "iptables", "-I", "INPUT", "1", "-s", cidr, "-j", "DROP")
+					_ = insertCmd.Run()
+				}
+			} else {
+				for {
+					delCmd := exec.CommandContext(ctx, "iptables", "-D", "INPUT", "-s", cidr, "-j", "DROP")
+					if err := delCmd.Run(); err != nil {
+						break
+					}
+				}
+			}
+		}
+		_ = persistIptables(ctx)
+	}
+
+	live := CollectLiveFirewall(ctx)
+	live.ScannerProtection = enabled
+	return live, nil
 }
 
 // FirewallMutation is one change to the host's rules. An addition carries the
@@ -94,6 +137,12 @@ func CollectLiveFirewall(ctx context.Context) LiveFirewall {
 	// master tells that apart from a host that genuinely has none.
 	if live.PortRules == nil {
 		live.PortRules = []PortRule{}
+	}
+	for _, r := range live.Rules {
+		if r.Action == "drop" && (strings.Contains(r.Raw, "162.142.125") || strings.Contains(r.Raw, "71.6.135") || strings.Contains(r.CIDR, "162.142.125")) {
+			live.ScannerProtection = true
+			break
+		}
 	}
 	return live
 }

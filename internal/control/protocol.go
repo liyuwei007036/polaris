@@ -18,6 +18,12 @@ type ProtocolSpec struct {
 	TLS       TLSOptions       `json:"tls"`
 	Reality   RealityOptions   `json:"reality"`
 	Transport TransportOptions `json:"transport"`
+	Obfs      ObfsOptions      `json:"obfs"`
+}
+
+type ObfsOptions struct {
+	Type     string `json:"type,omitempty"`
+	Password string `json:"password,omitempty"`
 }
 
 type TLSOptions struct {
@@ -74,6 +80,17 @@ func ValidateProtocolSpec(spec ProtocolSpec) error {
 		}
 		if spec.Reality.Enabled || spec.Transport.Type != "" {
 			return errors.New("Hysteria2 does not support Reality or VLESS transports")
+		}
+	}
+	if spec.Obfs.Type != "" {
+		if spec.Protocol != "hysteria2" {
+			return errors.New("混淆仅适用于 Hysteria2 协议")
+		}
+		if spec.Obfs.Type != "salamander" {
+			return errors.New("不支持的混淆类型，仅支持 salamander")
+		}
+		if spec.Obfs.Password == "" {
+			return errors.New("salamander 混淆必须指定密码")
 		}
 	}
 	if spec.Protocol == "vless" {

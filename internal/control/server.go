@@ -76,6 +76,8 @@ type Server struct {
 	taskWaitMu             sync.Mutex
 	taskWaiters            map[string]chan wire.TaskResult
 	subscriptionLimiter    *rateLimiter
+	alertEngine            *AlertEngine
+	prober                 *Prober
 	// now is the clock the subscription access window and expiry are read
 	// against; tests replace it to reach a specific moment.
 	now func() time.Time
@@ -123,9 +125,11 @@ func NewServer(store *Store, secureCookies bool) (*Server, error) {
 		liveHub:                newLiveHub(), ipLocator: ipLocator,
 		connectionsInterval:    DefaultConnectionsInterval,
 		subscriptionLimiter:    newRateLimiter(subscriptionRateWindow, subscriptionRateLimit, subscriptionRateMaxKeys),
+		alertEngine:            NewAlertEngine(store),
 		now:                    time.Now,
 	}
 	server.connHub.onWatchers = server.setFleetStreaming
+	server.prober = newProber(server)
 	return server, nil
 }
 
@@ -241,6 +245,13 @@ func (s *Server) StartTrafficAggregation(ctx context.Context) {
 	}()
 }
 
+// StartProber runs the periodic GFW and speedtest probes until ctx is canceled.
+func (s *Server) StartProber(ctx context.Context) {
+	if s.prober != nil {
+		s.prober.Start(ctx)
+	}
+}
+
 // untilNextRound waits for the next instant on the reporting grid plus a short
 // grace period, so the pushes every node sent on that instant have arrived
 // before they are added together. The grace scales with the cadence, because a
@@ -313,6 +324,7 @@ func (s *Server) registerBrowserRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/v1/firewall/rules", s.listFirewall)
 	mux.HandleFunc("GET /api/v1/nodes/{id}/firewall/rules", s.listFirewall)
 	mux.HandleFunc("POST /api/v1/nodes/{id}/firewall/rules", s.changeFirewallRule)
+	mux.HandleFunc("POST /api/v1/nodes/{id}/firewall/scanners", s.toggleScannerProtection)
 	mux.HandleFunc("GET /api/v1/fail2ban/jails", s.listFail2Ban)
 	mux.HandleFunc("GET /api/v1/nodes/{id}/fail2ban/jails", s.listFail2Ban)
 	mux.HandleFunc("POST /api/v1/nodes/{id}/fail2ban/jails", s.changeFail2BanJail)
@@ -373,6 +385,14 @@ func (s *Server) registerBrowserRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/v1/protocols", s.listProtocols)
 	mux.HandleFunc("GET /api/v1/listeners", s.listListeners)
 	mux.HandleFunc("POST /api/v1/listeners", s.createListener)
+	mux.HandleFunc("GET /api/v1/alerts/settings", s.getAlertSettings)
+	mux.HandleFunc("PUT /api/v1/alerts/settings", s.updateAlertSettings)
+	mux.HandleFunc("POST /api/v1/alerts/test", s.testAlert)
+	mux.HandleFunc("POST /api/v1/probes/run-gfw-check", s.handleRunGFWCheck)
+	mux.HandleFunc("POST /api/v1/nodes/{id}/speedtest", s.handleRunNodeSpeedtest)
+	mux.HandleFunc("GET /api/v1/nodes/{id}/speedtest/latest", s.handleGetNodeSpeedtestLatest)
+	mux.HandleFunc("GET /api/v1/nodes/speedtests/latest", s.handleListNodeSpeedtestsLatest)
+	mux.HandleFunc("POST /api/v1/tools/reality-check", s.handleCheckRealityCandidate)
 	mux.HandleFunc("POST /api/v1/listeners/quick", s.createListenerWithDefaultAccount)
 	mux.HandleFunc("PUT /api/v1/listeners/{id}", s.updateListener)
 	mux.HandleFunc("POST /api/v1/listeners/{id}/enabled", s.setListenerEnabled)

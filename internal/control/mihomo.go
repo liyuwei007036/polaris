@@ -232,6 +232,10 @@ func (s *Store) mihomoProxy(ctx context.Context, endpointID, fallbackServer stri
 		if listener.Domain != "" {
 			proxy["sni"] = listener.Domain
 		}
+		if listener.Spec.Obfs.Type == "salamander" && listener.Spec.Obfs.Password != "" {
+			proxy["obfs"] = "salamander"
+			proxy["obfs-password"] = listener.Spec.Obfs.Password
+		}
 	}
 	if listener.Spec.Reality.Enabled {
 		publicKey, err := s.realityPublicKey(ctx, listener.Spec.Reality.KeyID)

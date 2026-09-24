@@ -180,6 +180,7 @@ func serveMaster(ctx context.Context, configuration masterConfig) error {
 	server.EnableConnectionRecording(ctx)
 	server.StartMaintenance(ctx)
 	server.StartTrafficAggregation(ctx)
+	server.StartProber(ctx)
 	agentAddress := portAddress(configuration.AgentPort)
 	agentListener, err := net.Listen("tcp", agentAddress)
 	if err != nil {

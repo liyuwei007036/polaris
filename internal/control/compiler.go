@@ -305,6 +305,12 @@ func (s *Store) compileInbound(ctx context.Context, listener Listener, endpoints
 	if transport := compileTransport(listener.Spec.Transport); transport != nil {
 		inbound["transport"] = transport
 	}
+	if listener.Spec.Protocol == "hysteria2" && listener.Spec.Obfs.Type == "salamander" && listener.Spec.Obfs.Password != "" {
+		inbound["obfs"] = map[string]any{
+			"type":     "salamander",
+			"password": listener.Spec.Obfs.Password,
+		}
+	}
 	users := make([]map[string]any, 0, len(endpoints))
 	for _, endpoint := range endpoints {
 		if err := ValidateEndpointCredentials(listener.Spec.Protocol, endpoint.Credentials); err != nil {

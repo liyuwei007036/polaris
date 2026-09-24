@@ -45,14 +45,15 @@ type PortRule struct {
 // port list cannot be read: under an accepting default every port is open,
 // listed or not.
 type nodeFirewall struct {
-	NodeID          string     `json:"node_id"`
-	Available       bool       `json:"available"`
-	Tool            string     `json:"tool,omitempty"`
-	Manager         string     `json:"manager,omitempty"`
-	DefaultIncoming string     `json:"default_incoming,omitempty"`
-	PortRules       []PortRule `json:"port_rules"`
-	Truncated       bool       `json:"truncated,omitempty"`
-	Error           string     `json:"error,omitempty"`
+	NodeID            string     `json:"node_id"`
+	Available         bool       `json:"available"`
+	Tool              string     `json:"tool,omitempty"`
+	Manager           string     `json:"manager,omitempty"`
+	DefaultIncoming   string     `json:"default_incoming,omitempty"`
+	PortRules         []PortRule `json:"port_rules"`
+	Truncated         bool       `json:"truncated,omitempty"`
+	Error             string     `json:"error,omitempty"`
+	ScannerProtection bool       `json:"scanner_protection"`
 }
 
 // LiveFail2BanJail is one automatic-banning rule a node reports as configured,
@@ -88,13 +89,14 @@ type nodeFail2Ban struct {
 // port rules omits it, and an empty list from one of those would read as a
 // server with nothing restricted — the one thing this page must never say.
 type agentFirewall struct {
-	Available       bool        `json:"available"`
-	Tool            string      `json:"tool"`
-	Manager         string      `json:"manager"`
-	DefaultIncoming string      `json:"default_incoming"`
-	PortRules       *[]PortRule `json:"port_rules"`
-	Truncated       bool        `json:"truncated"`
-	Error           string      `json:"error"`
+	Available         bool        `json:"available"`
+	Tool              string      `json:"tool"`
+	Manager           string      `json:"manager"`
+	DefaultIncoming   string      `json:"default_incoming"`
+	PortRules         *[]PortRule `json:"port_rules"`
+	Truncated         bool        `json:"truncated"`
+	Error             string      `json:"error"`
+	ScannerProtection bool        `json:"scanner_protection"`
 }
 
 type agentFail2Ban struct {
@@ -206,6 +208,41 @@ func (s *Server) changeFirewallRule(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := s.store.AppendAudit(r.Context(), operator.ID, "firewall.rule_"+input.Operation, "node", nodeID, "server firewall rule changed"); err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, s.decodeNodeFirewall(nodeID, liveAnswer{data: data}))
+}
+
+// toggleScannerProtection enables or disables blocking of known scanner CIDRs (Shodan, Censys) on a node.
+func (s *Server) toggleScannerProtection(w http.ResponseWriter, r *http.Request) {
+	operator, err := s.admin(r)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	var input struct {
+		Enabled bool `json:"enabled"`
+	}
+	if !decodeJSON(w, r, &input) {
+		return
+	}
+	payload, err := json.Marshal(input)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	nodeID := r.PathValue("id")
+	data, err := s.AskNode(r.Context(), nodeID, "firewall.toggle_scanners", string(payload))
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	action := "firewall.scanners_disabled"
+	if input.Enabled {
+		action = "firewall.scanners_enabled"
+	}
+	if err := s.store.AppendAudit(r.Context(), operator.ID, action, "node", nodeID, "scanner protection toggled"); err != nil {
 		writeError(w, err)
 		return
 	}
@@ -395,6 +432,7 @@ func (s *Server) decodeNodeFirewall(nodeID string, answer liveAnswer) nodeFirewa
 	}
 	node.Available, node.Tool, node.Truncated, node.Error = reported.Available, reported.Tool, reported.Truncated, reported.Error
 	node.Manager, node.DefaultIncoming = reported.Manager, reported.DefaultIncoming
+	node.ScannerProtection = reported.ScannerProtection
 	if reported.PortRules == nil {
 		node.Available = false
 		node.Error = "服务器上的探针版本太旧，读不出端口规则，请先升级探针"

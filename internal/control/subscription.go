@@ -380,6 +380,10 @@ func (s *Store) clientSubscriptionLine(ctx context.Context, endpointID string) (
 		if listener.Domain != "" {
 			query.Set("sni", listener.Domain)
 		}
+		if listener.Spec.Obfs.Type == "salamander" && listener.Spec.Obfs.Password != "" {
+			query.Set("obfs", "salamander")
+			query.Set("obfs-password", listener.Spec.Obfs.Password)
+		}
 	}
 	suffix := ""
 	if len(query) > 0 {

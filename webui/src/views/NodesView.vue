@@ -1,7 +1,7 @@
 <script setup>
-import { computed, inject, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, inject, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { CopyDocument, Edit, Plus, Refresh, RemoveFilled, Search, Top } from '@element-plus/icons-vue'
+import { CopyDocument, Edit, Odometer, Plus, Refresh, RemoveFilled, Search, Top } from '@element-plus/icons-vue'
 import { api, post, put } from '../api'
 import { formatBytes, formatDateTime, includesText } from '../format'
 import { subscribeLive } from '../live'
@@ -17,6 +17,8 @@ const loadNodes = inject('loadNodes')
 const loading = ref(false)
 const pending = ref([])
 const metrics = ref({})
+const speedtests = ref({})
+const speedtesting = reactive({})
 const tokenDialog = ref(false)
 const token = ref('')
 const expiresAt = ref('')
@@ -52,17 +54,39 @@ async function load(silent = false) {
   if (!silent) loading.value = true
   try {
     await loadNodes()
-    const [registrations, metricResult] = await Promise.all([
+    const [registrations, metricResult, speedtestResult] = await Promise.all([
       isAdmin.value ? api('/registrations').catch(() => ({ registrations: [] })) : Promise.resolve({ registrations: [] }),
       api('/nodes/metrics').catch(() => ({ nodes: [] })),
+      api('/nodes/speedtests/latest').catch(() => ({ speedtests: [] })),
     ])
     pending.value = registrations.registrations || []
     metrics.value = Object.fromEntries((metricResult.nodes || []).map((entry) => [entry.node_id, entry.report]))
+    speedtests.value = Object.fromEntries((speedtestResult.speedtests || []).map((s) => [s.node_id, s]))
     await loadSingBoxLatest()
   } finally {
     loading.value = false
     refreshing.value = false
   }
+}
+
+async function runSpeedtest(node) {
+  speedtesting[node.id] = true
+  try {
+    const res = await post(`/nodes/${node.id}/speedtest`, {})
+    if (res?.result) {
+      speedtests.value = { ...speedtests.value, [node.id]: res.result }
+    }
+    ElMessage.success(`“${node.name}”三网测速完成`)
+  } catch (error) {
+    ElMessage.error(error instanceof Error ? error.message : '测速执行失败')
+  } finally {
+    speedtesting[node.id] = false
+  }
+}
+
+function getPingStr(val) {
+  if (val == null || val <= 0) return '超时'
+  return `${val}ms`
 }
 
 // The console host is only a guess at the address agents should dial: the
@@ -251,6 +275,46 @@ onBeforeUnmount(() => {
           <el-table-column label="客户端连接地址" min-width="170" show-overflow-tooltip>
             <template #default="{ row }"><span v-if="row.client_address" class="mono">{{ row.client_address }}</span><el-tag v-else type="warning">未配置</el-tag></template>
           </el-table-column>
+          <el-table-column label="三网延迟 / 线路 / 测速" min-width="260">
+            <template #default="{ row }">
+              <template v-if="speedtests[row.id]">
+                <div class="cell-main speedtest-badges">
+                  <el-tooltip :content="'中国移动: ' + (speedtests[row.id].mobile_route || '标准直连')">
+                    <span class="ping-badge ping-mobile">移 {{ getPingStr(speedtests[row.id].mobile_latency_ms ?? speedtests[row.id].mobile_ping_ms) }}</span>
+                  </el-tooltip>
+                  <el-tooltip :content="'中国联通: ' + (speedtests[row.id].unicom_route || '标准直连')">
+                    <span class="ping-badge ping-unicom">联 {{ getPingStr(speedtests[row.id].unicom_latency_ms ?? speedtests[row.id].unicom_ping_ms) }}</span>
+                  </el-tooltip>
+                  <el-tooltip :content="'中国电信: ' + (speedtests[row.id].telecom_route || '标准直连')">
+                    <span class="ping-badge ping-telecom">电 {{ getPingStr(speedtests[row.id].telecom_latency_ms ?? speedtests[row.id].telecom_ping_ms) }}</span>
+                  </el-tooltip>
+                </div>
+                <div v-if="speedtests[row.id].telecom_route || speedtests[row.id].unicom_route || speedtests[row.id].mobile_route" class="route-tags">
+                  <span v-if="speedtests[row.id].telecom_route" :class="['route-tag', speedtests[row.id].telecom_route.includes('CN2') ? 'route-premium' : 'route-normal']">
+                    {{ speedtests[row.id].telecom_route }}
+                  </span>
+                  <span v-if="speedtests[row.id].unicom_route && speedtests[row.id].unicom_route.includes('9929')" class="route-tag route-premium">
+                    {{ speedtests[row.id].unicom_route }}
+                  </span>
+                  <span v-if="speedtests[row.id].mobile_route && speedtests[row.id].mobile_route.includes('CMIN2')" class="route-tag route-premium">
+                    {{ speedtests[row.id].mobile_route }}
+                  </span>
+                </div>
+                <div class="cell-sub mono">
+                  <template v-if="speedtests[row.id].telecom_speed_mbps != null && speedtests[row.id].telecom_speed_mbps > 0">
+                    电 {{ speedtests[row.id].telecom_speed_mbps }}M · 联 {{ speedtests[row.id].unicom_speed_mbps }}M · 移 {{ speedtests[row.id].mobile_speed_mbps }}M
+                  </template>
+                  <template v-else-if="speedtests[row.id].download_speed_bps">
+                    ↓ {{ formatBytes(speedtests[row.id].download_speed_bps, '/s') }}
+                  </template>
+                  <template v-else>
+                    测试完成
+                  </template>
+                </div>
+              </template>
+              <span v-else class="subtle">未测速</span>
+            </template>
+          </el-table-column>
           <el-table-column label="实时 / 累计流量" min-width="196" show-overflow-tooltip>
             <template #default="{ row }">
               <div class="cell-main mono">
@@ -267,8 +331,9 @@ onBeforeUnmount(() => {
             <template #default="{ row }">{{ live.get(row.id)?.connection_count ?? '—' }}</template>
           </el-table-column>
           <el-table-column label="最后在线" width="152"><template #default="{ row }">{{ formatDateTime(row.last_seen_at, '从未') }}</template></el-table-column>
-          <el-table-column label="操作" width="200" fixed="right" class-name="action-column">
+          <el-table-column label="操作" width="240" fixed="right" class-name="action-column">
             <template #default="{ row }">
+              <el-button v-if="canWrite && row.online" link :icon="Odometer" :loading="Boolean(speedtesting[row.id])" @click="runSpeedtest(row)">测速</el-button>
               <el-button v-if="canWrite" link :icon="Edit" @click="openEdit(row)">编辑</el-button>
               <el-button v-if="isAdmin && agentUpdateAvailable(row)" link type="primary" :icon="Top" @click="upgradeAgent(row)">升级</el-button>
               <el-button v-if="isAdmin" link type="danger" :icon="RemoveFilled" @click="revoke(row)">移除</el-button>
@@ -315,3 +380,59 @@ onBeforeUnmount(() => {
     </el-dialog>
   </div>
 </template>
+
+<style scoped>
+.speedtest-badges {
+  display: flex;
+  gap: 5px;
+  font-size: 11px;
+  margin-bottom: 2px;
+}
+.ping-badge {
+  padding: 1px 5px;
+  border-radius: 4px;
+  font-family: var(--sb-font-mono, monospace);
+  font-weight: 500;
+  white-space: nowrap;
+}
+.ping-mobile {
+  background: rgba(16, 185, 129, 0.12);
+  color: #059669;
+  border: 1px solid rgba(16, 185, 129, 0.25);
+}
+.ping-unicom {
+  background: rgba(245, 158, 11, 0.12);
+  color: #d97706;
+  border: 1px solid rgba(245, 158, 11, 0.25);
+}
+.ping-telecom {
+  background: rgba(59, 130, 246, 0.12);
+  color: #2563eb;
+  border: 1px solid rgba(59, 130, 246, 0.25);
+}
+.route-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin: 3px 0 2px;
+}
+.route-tag {
+  font-size: 10px;
+  padding: 1px 5px;
+  border-radius: 3px;
+  line-height: 14px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+.route-premium {
+  background: rgba(234, 88, 12, 0.12);
+  color: #ea580c;
+  border: 1px solid rgba(234, 88, 12, 0.3);
+}
+.route-normal {
+  background: rgba(100, 116, 139, 0.12);
+  color: #475569;
+  border: 1px solid rgba(100, 116, 139, 0.25);
+}
+</style>
+
