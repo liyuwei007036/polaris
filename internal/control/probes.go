@@ -1,6 +1,7 @@
 package control
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -9,7 +10,6 @@ import (
 	"log"
 	"net"
 	"net/http"
-	"net/url"
 	"strconv"
 	"strings"
 	"sync"
@@ -137,6 +137,243 @@ func (p *Prober) runScheduledSpeedtests(ctx context.Context) {
 	}
 }
 
+var (
+	masterLocationCached string
+	masterLocationMu     sync.RWMutex
+	masterLocationTime   time.Time
+)
+
+// isMasterOverseas checks whether the Master control plane is running outside Mainland China.
+// If it can reach Google directly within 2 seconds, it is overseas.
+func isMasterOverseas() bool {
+	masterLocationMu.RLock()
+	if time.Since(masterLocationTime) < 30*time.Minute && masterLocationCached != "" {
+		isOverseas := masterLocationCached == "overseas"
+		masterLocationMu.RUnlock()
+		return isOverseas
+	}
+	masterLocationMu.RUnlock()
+
+	masterLocationMu.Lock()
+	defer masterLocationMu.Unlock()
+
+	client := &http.Client{Timeout: 2 * time.Second}
+	resp, err := client.Get("http://connectivitycheck.gstatic.com/generate_204")
+	if err == nil && resp.StatusCode == http.StatusNoContent {
+		masterLocationCached = "overseas"
+		masterLocationTime = time.Now()
+		return true
+	}
+	if resp != nil {
+		_ = resp.Body.Close()
+	}
+
+	masterLocationCached = "domestic"
+	masterLocationTime = time.Now()
+	return false
+}
+
+type ChinaProbeResult struct {
+	OK         bool
+	LatencyMs  int
+	PacketLoss int
+	Source     string
+	Error      string
+}
+
+// probeFromChinaReal uses distributed public probe nodes in Mainland China (Beijing, Shenzhen, Shanghai, etc.)
+// to perform real inbound TCP handshakes across the GFW to verify port accessibility.
+func probeFromChinaReal(ctx context.Context, host string, port uint16) ChinaProbeResult {
+	probeCtx, cancel := context.WithTimeout(ctx, 12*time.Second)
+	defer cancel()
+
+	payload := map[string]any{
+		"target": host,
+		"type":   "ping",
+		"measurementOptions": map[string]any{
+			"protocol": "TCP",
+			"port":     int(port),
+		},
+		"locations": []map[string]string{
+			{"country": "CN"},
+		},
+		"limit": 2,
+	}
+
+	bodyBytes, err := json.Marshal(payload)
+	if err != nil {
+		return ChinaProbeResult{OK: false, Error: "构造探测请求失败: " + err.Error()}
+	}
+
+	req, err := http.NewRequestWithContext(probeCtx, http.MethodPost, "https://api.globalping.io/v1/measurements", bytes.NewReader(bodyBytes))
+	if err != nil {
+		return ChinaProbeResult{OK: false, Error: "创建探测请求失败: " + err.Error()}
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("User-Agent", "Polaris-Probe/1.0")
+
+	client := &http.Client{Timeout: 6 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return ChinaProbeResult{OK: false, Error: "连接国内探测平台失败: " + err.Error()}
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusAccepted && resp.StatusCode != http.StatusOK {
+		respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
+		return ChinaProbeResult{OK: false, Error: fmt.Sprintf("探测平台响应错误 (%d): %s", resp.StatusCode, string(respBody))}
+	}
+
+	var initResp struct {
+		ID          string `json:"id"`
+		ProbesCount int    `json:"probesCount"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&initResp); err != nil || initResp.ID == "" {
+		return ChinaProbeResult{OK: false, Error: "解析探测任务 ID 失败"}
+	}
+
+	resultURL := fmt.Sprintf("https://api.globalping.io/v1/measurements/%s", initResp.ID)
+
+	type probeItem struct {
+		Probe struct {
+			City    string `json:"city"`
+			Network string `json:"network"`
+			Country string `json:"country"`
+		} `json:"probe"`
+		Result struct {
+			Status string `json:"status"`
+			Stats  struct {
+				Loss  float64 `json:"loss"`
+				Avg   float64 `json:"avg"`
+				Rcv   int     `json:"rcv"`
+				Total int     `json:"total"`
+				Drop  int     `json:"drop"`
+			} `json:"stats"`
+		} `json:"result"`
+	}
+
+	type resultRespType struct {
+		ID      string      `json:"id"`
+		Status  string      `json:"status"`
+		Results []probeItem `json:"results"`
+	}
+
+	var lastRes resultRespType
+	pollStart := time.Now()
+	for {
+		select {
+		case <-probeCtx.Done():
+			return ChinaProbeResult{OK: false, Error: "等待国内探针结果超时"}
+		default:
+		}
+
+		time.Sleep(1200 * time.Millisecond)
+
+		pollReq, err := http.NewRequestWithContext(probeCtx, http.MethodGet, resultURL, nil)
+		if err != nil {
+			break
+		}
+		pollReq.Header.Set("User-Agent", "Polaris-Probe/1.0")
+		pollResp, err := client.Do(pollReq)
+		if err != nil {
+			continue
+		}
+
+		err = json.NewDecoder(pollResp.Body).Decode(&lastRes)
+		_ = pollResp.Body.Close()
+		if err != nil {
+			continue
+		}
+
+		if lastRes.Status == "finished" || len(lastRes.Results) > 0 {
+			allDone := true
+			for _, r := range lastRes.Results {
+				if r.Result.Status == "in-progress" {
+					allDone = false
+					break
+				}
+			}
+			if allDone || time.Since(pollStart) >= 6*time.Second {
+				break
+			}
+		}
+
+		if time.Since(pollStart) >= 8*time.Second {
+			break
+		}
+	}
+
+	if len(lastRes.Results) == 0 {
+		return ChinaProbeResult{OK: false, Error: "未获取到国内探针返回数据"}
+	}
+
+	var successCount, failCount int
+	var sources []string
+	var totalRTT float64
+	var validRTTCount int
+
+	for _, item := range lastRes.Results {
+		loc := item.Probe.City
+		if loc == "" {
+			loc = "中国"
+		}
+		if item.Probe.Network != "" {
+			netName := item.Probe.Network
+			if strings.Contains(netName, "Tencent") {
+				netName = "腾讯云"
+			} else if strings.Contains(netName, "Alibaba") {
+				netName = "阿里云"
+			} else if strings.Contains(netName, "UNICOM") {
+				netName = "中国联通"
+			} else if strings.Contains(netName, "Chinanet") || strings.Contains(netName, "Telecom") {
+				netName = "中国电信"
+			} else if strings.Contains(netName, "Mobile") {
+				netName = "中国移动"
+			}
+			loc = fmt.Sprintf("%s (%s)", loc, netName)
+		}
+		sources = append(sources, loc)
+
+		if item.Result.Stats.Rcv > 0 && item.Result.Stats.Loss < 100 {
+			successCount++
+			if item.Result.Stats.Avg > 0 {
+				totalRTT += item.Result.Stats.Avg
+				validRTTCount++
+			}
+		} else {
+			failCount++
+		}
+	}
+
+	sourceStr := strings.Join(sources, ", ")
+	if sourceStr != "" {
+		sourceStr = "国内探针: " + sourceStr
+	} else {
+		sourceStr = "国内探针"
+	}
+
+	if successCount > 0 {
+		avgRTT := 0
+		if validRTTCount > 0 {
+			avgRTT = int(totalRTT / float64(validRTTCount))
+		}
+		return ChinaProbeResult{
+			OK:         true,
+			LatencyMs:  avgRTT,
+			PacketLoss: 0,
+			Source:     sourceStr,
+		}
+	}
+
+	return ChinaProbeResult{
+		OK:         false,
+		LatencyMs:  0,
+		PacketLoss: 100,
+		Source:     sourceStr,
+		Error:      "国内所有探针 TCP 握手均超时或被重置 (疑似被 GFW 阻断)",
+	}
+}
+
 // runGFWCheckAll probes connectivity for all active nodes from overseas and domestic perspectives.
 func (s *Server) runGFWCheckAll(ctx context.Context) ([]ProbeResultItem, error) {
 	nodes, err := s.store.ListNodes(ctx)
@@ -177,131 +414,71 @@ func (s *Server) runGFWCheckAll(ctx context.Context) ([]ProbeResultItem, error) 
 func (s *Server) probeSingleNode(ctx context.Context, node Node, host string, port uint16) ProbeResultItem {
 	address := net.JoinHostPort(host, strconv.Itoa(int(port)))
 	item := ProbeResultItem{
-		NodeID:   node.ID,
-		NodeName: node.Name,
+		NodeID:     node.ID,
+		NodeName:   node.Name,
+		TargetHost: host,
+		TargetPort: port,
 	}
 
-	// 1. Overseas check (Direct TCP dial from master)
-	dialer := net.Dialer{Timeout: 3 * time.Second}
-	started := time.Now()
-	conn, err := dialer.DialContext(ctx, "tcp", address)
-	if err == nil {
-		_ = conn.Close()
-		item.OverseasOK = true
-		item.LatencyMs = int(time.Since(started).Milliseconds())
-	} else {
-		item.OverseasOK = false
-		item.Error = err.Error()
-	}
+	masterOverseas := isMasterOverseas()
 
-	// 2. Domestic check
-	// If overseas failed, domestic check is not GFW blocked, just offline.
-	if !item.OverseasOK {
-		item.DomesticOK = false
-		return item
-	}
+	if masterOverseas {
+		// 1. Overseas check (Direct TCP dial from master outside GFW)
+		dialer := net.Dialer{Timeout: 3 * time.Second}
+		conn, err := dialer.DialContext(ctx, "tcp", address)
+		if err == nil {
+			_ = conn.Close()
+			item.OverseasOK = true
+		} else {
+			item.OverseasOK = false
+			item.Error = "境外公网连接失败: " + err.Error()
+			item.StatusDesc = "服务离线/端口未开放"
+			return item
+		}
 
-	// Probe from domestic perspective
-	domesticOK := probeFromChina(ctx, host, port)
-	item.DomesticOK = domesticOK
-	return item
-}
+		// 2. Domestic check (Initiated genuinely from inside Mainland China)
+		domResult := probeFromChinaReal(ctx, host, port)
+		item.DomesticOK = domResult.OK
+		item.ProbeSource = domResult.Source
+		item.LatencyMs = domResult.LatencyMs
+		item.PacketLoss = domResult.PacketLoss
 
-// probeFromChina uses public lightweight TCP/HTTP reachability checks from domestic points.
-func probeFromChina(ctx context.Context, host string, port uint16) bool {
-	// Attempt check-host.net TCP check API
-	probeCtx, cancel := context.WithTimeout(ctx, 8*time.Second)
-	defer cancel()
-
-	apiURL := fmt.Sprintf("https://check-host.net/check-tcp?host=%s&max_nodes=3", url.QueryEscape(net.JoinHostPort(host, strconv.Itoa(int(port)))))
-	req, err := http.NewRequestWithContext(probeCtx, http.MethodGet, apiURL, nil)
-	if err != nil {
-		return true // Fallback to healthy if prober API fails
-	}
-	req.Header.Set("Accept", "application/json")
-
-	client := &http.Client{Timeout: 6 * time.Second}
-	resp, err := client.Do(req)
-	if err != nil {
-		return true // Fallback to assuming reachable if third-party is unreachable
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return true
-	}
-
-	var initResp struct {
-		OK        int               `json:"ok"`
-		RequestID string            `json:"request_id"`
-		Nodes     map[string]any    `json:"nodes"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&initResp); err != nil || initResp.RequestID == "" {
-		return true
-	}
-
-	// Wait 2 seconds for node probes to collect results
-	select {
-	case <-time.After(2 * time.Second):
-	case <-probeCtx.Done():
-		return true
-	}
-
-	resultURL := fmt.Sprintf("https://check-host.net/check-result/%s", initResp.RequestID)
-	resultReq, err := http.NewRequestWithContext(probeCtx, http.MethodGet, resultURL, nil)
-	if err != nil {
-		return true
-	}
-	resultReq.Header.Set("Accept", "application/json")
-
-	resultResp, err := client.Do(resultReq)
-	if err != nil {
-		return true
-	}
-	defer resultResp.Body.Close()
-
-	if resultResp.StatusCode != http.StatusOK {
-		return true
-	}
-
-	bodyBytes, err := io.ReadAll(io.LimitReader(resultResp.Body, 10240))
-	if err != nil {
-		return true
-	}
-
-	// Parse check result: looking for China nodes e.g. "cn" or overall verdicts
-	var rawMap map[string]any
-	if err := json.Unmarshal(bodyBytes, &rawMap); err != nil {
-		return true
-	}
-
-	hasCNNode := false
-	cnFailed := false
-	for nodeKey, nodeResult := range rawMap {
-		if strings.Contains(strings.ToLower(nodeKey), ".cn") || strings.Contains(strings.ToLower(nodeKey), "china") {
-			hasCNNode = true
-			// If result is null or contains error, consider failed
-			if nodeResult == nil {
-				cnFailed = true
-				continue
+		if !item.DomesticOK {
+			item.StatusDesc = "疑似被 GFW 阻断 (国内探针全超时)"
+			if domResult.Error != "" {
+				item.Error = domResult.Error
 			}
-			resArr, ok := nodeResult.([]any)
-			if ok && len(resArr) > 0 {
-				first, isMap := resArr[0].(map[string]any)
-				if isMap {
-					if _, hasErr := first["error"]; hasErr {
-						cnFailed = true
-					}
-				}
+		} else {
+			item.StatusDesc = "正常通行"
+		}
+	} else {
+		// Master is inside Mainland China:
+		// 1. Master direct dial verifies DomesticOK
+		dialer := net.Dialer{Timeout: 3 * time.Second}
+		started := time.Now()
+		conn, err := dialer.DialContext(ctx, "tcp", address)
+		if err == nil {
+			_ = conn.Close()
+			item.DomesticOK = true
+			item.LatencyMs = int(time.Since(started).Milliseconds())
+			item.ProbeSource = "控制中心本地 (国内网络)"
+			item.OverseasOK = true
+			item.StatusDesc = "正常通行"
+		} else {
+			item.DomesticOK = false
+			item.ProbeSource = "控制中心本地 (国内网络)"
+			item.Error = err.Error()
+			if node.Online {
+				item.OverseasOK = true
+				item.StatusDesc = "疑似被 GFW 阻断 (国内直连超时)"
+			} else {
+				item.OverseasOK = false
+				item.StatusDesc = "服务器离线"
 			}
 		}
 	}
 
-	if hasCNNode && cnFailed {
-		return false // China node explicitly failed to connect
-	}
-
-	return true
+	return item
 }
 
 // ExecuteNodeSpeedtest runs a three-network speedtest task on an agent and records the result.

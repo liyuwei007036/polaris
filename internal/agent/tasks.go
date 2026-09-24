@@ -129,11 +129,34 @@ func executeTask(ctx context.Context, task Task, options TaskOptions) TaskResult
 		return testOutbound(ctx, task)
 	case "speedtest.run":
 		return runSpeedtest(ctx, task)
+	case "probe.tcp":
+		return runTCPProbe(ctx, task)
 	case "firewall.toggle_scanners":
 		return toggleScannerProtection(ctx, task)
 	default:
 		return TaskResult{Status: "failed", Summary: "task kind is not implemented by this agent build"}
 	}
+}
+
+func runTCPProbe(ctx context.Context, task Task) TaskResult {
+	var payload struct {
+		Host string `json:"host"`
+		Port uint16 `json:"port"`
+	}
+	if err := json.Unmarshal([]byte(task.Payload), &payload); err != nil || payload.Host == "" || payload.Port == 0 {
+		return TaskResult{Status: "failed", Summary: "探针参数无效"}
+	}
+	address := net.JoinHostPort(payload.Host, strconv.Itoa(int(payload.Port)))
+	dialer := net.Dialer{Timeout: 4 * time.Second}
+	started := time.Now()
+	conn, err := dialer.DialContext(ctx, "tcp", address)
+	if err != nil {
+		return TaskResult{Status: "failed", Summary: err.Error()}
+	}
+	_ = conn.Close()
+	latencyMs := int(time.Since(started).Milliseconds())
+	resJSON, _ := json.Marshal(map[string]any{"ok": true, "latency_ms": latencyMs})
+	return TaskResult{Status: "succeeded", Summary: "探测连通", Data: string(resJSON)}
 }
 
 func testOutbound(ctx context.Context, task Task) TaskResult {

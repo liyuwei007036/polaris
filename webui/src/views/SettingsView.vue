@@ -45,6 +45,8 @@ const alertSettings = reactive({
 const alertSaving = ref(false)
 const testSending = ref(false)
 const gfwProbing = ref(false)
+const gfwResultDialogVisible = ref(false)
+const gfwResults = ref([])
 const realityForm = reactive({ target: 'gateway.icloud.com', port: 443 })
 const realityChecking = ref(false)
 const realityResult = ref(null)
@@ -110,8 +112,10 @@ async function triggerGFWCheck() {
   gfwProbing.value = true
   try {
     const res = await post('/probes/run-gfw-check', {})
-    const count = (res.nodes || []).length
-    ElMessage.success(`探测已完成（共检测 ${count} 个节点），详细报告已推送至 Bark`)
+    const items = res.nodes || res.results || []
+    gfwResults.value = items
+    gfwResultDialogVisible.value = true
+    ElMessage.success(`国内真机探测已完成（共检测 ${items.length} 个节点）`)
   } catch (error) {
     ElMessage.error(error instanceof Error ? error.message : '触发 GFW 探测失败')
   } finally {
@@ -505,6 +509,41 @@ onMounted(load)
       <template #footer><el-button @click="totpSetup.open = false">取消</el-button><el-button type="primary" :loading="totpSetup.loading" @click="enableTOTP">启用</el-button></template>
     </el-dialog>
     <el-dialog :model-value="dialog === 'operator'" title="新建管理账户" width="540px" @close="dialog = ''"><el-form label-position="top"><el-form-item label="用户名"><el-input v-model="operator.username" placeholder="3 至 64 位，可使用字母、数字、点、下划线和短横线" /></el-form-item><el-form-item label="初始密码"><el-input v-model="operator.password" type="password" show-password /><div class="form-tip">用户首次登录时必须修改此密码。</div></el-form-item><el-form-item label="权限"><el-select v-model="operator.role" style="width: 100%"><el-option label="管理员" value="admin" /><el-option label="运维人员" value="operator" /><el-option label="只读用户" value="viewer" /></el-select></el-form-item></el-form><template #footer><el-button @click="dialog = ''">取消</el-button><el-button type="primary" :disabled="!operator.username || operator.password.length < 12" @click="saveOperator">创建</el-button></template></el-dialog>
+
+    <!-- GFW 真实国内探针检测结果对话框 -->
+    <el-dialog v-model="gfwResultDialogVisible" title="GFW 阻断探测详细报告 (国内真机视角)" width="780px">
+      <div style="margin-bottom: 16px">
+        <el-alert
+          type="info"
+          :closable="false"
+          show-icon
+          title="真机国内视角跨墙探测"
+          description="探测请求由国内真实探针（北京/深圳/上海等国内核心 BGP 机房）向境外目标端口发起 TCP 握手，跨越 GFW 防火墙检测连通性与时延，杜绝境外控制机误判。"
+        />
+      </div>
+      <el-table :data="gfwResults" style="width: 100%" stripe empty-text="未获取到探测数据">
+        <el-table-column prop="node_name" label="节点名称" min-width="120" />
+        <el-table-column prop="target_port" label="端口" width="75" align="center" />
+        <el-table-column label="境外公网" width="95" align="center">
+          <template #default="{ row }">
+            <el-tag v-if="row.overseas_ok" type="success" size="small">正常</el-tag>
+            <el-tag v-else type="danger" size="small">离线</el-tag>
+          </template>
+        </el-table-column>
+        <el-table-column label="国内真机连通" width="145" align="center">
+          <template #default="{ row }">
+            <el-tag v-if="row.domestic_ok" type="success" size="small">🟢 通畅 ({{ row.latency_ms }}ms)</el-tag>
+            <el-tag v-else-if="row.overseas_ok" type="danger" size="small">🚨 疑似被墙</el-tag>
+            <el-tag v-else type="info" size="small">⚪ 未监听</el-tag>
+          </template>
+        </el-table-column>
+        <el-table-column prop="probe_source" label="国内探针来源" min-width="170" show-overflow-tooltip />
+        <el-table-column prop="status_desc" label="判定结论" min-width="150" />
+      </el-table>
+      <template #footer>
+        <el-button type="primary" @click="gfwResultDialogVisible = false">确定</el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 

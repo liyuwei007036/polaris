@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -40,14 +41,14 @@ func measureTCPLatency(ctx context.Context, target string) int {
 	return latency
 }
 
-// measureThroughput downloads a small block (up to 3 MiB) from a domestic CDN endpoint to measure download bandwidth.
+// measureThroughput downloads a real sample block (5 MiB) from a domestic CDN endpoint to measure download bandwidth.
+// It measures only the duration of the data transfer, excluding connection/TLS handshake time.
 func measureThroughput(ctx context.Context, testURL string) float64 {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, testURL, nil)
 	if err != nil {
 		return 0
 	}
-	client := &http.Client{Timeout: 5 * time.Second}
-	started := time.Now()
+	client := &http.Client{Timeout: 8 * time.Second}
 	resp, err := client.Do(req)
 	if err != nil {
 		return 0
@@ -58,15 +59,16 @@ func measureThroughput(ctx context.Context, testURL string) float64 {
 		return 0
 	}
 
-	const maxSampleBytes = 3 * 1024 * 1024 // 3 MiB sample
+	const maxSampleBytes = 5 * 1024 * 1024 // 5 MiB sample
+	streamStart := time.Now()
 	written, err := io.Copy(io.Discard, io.LimitReader(resp.Body, maxSampleBytes))
-	elapsed := time.Since(started).Seconds()
-	if err != nil || elapsed <= 0 || written == 0 {
+	streamElapsed := time.Since(streamStart).Seconds()
+	if err != nil || streamElapsed <= 0.05 || written == 0 {
 		return 0
 	}
 
 	// Calculate Mbps: (bytes * 8) / (1,000,000 * elapsed)
-	mbps := (float64(written) * 8.0) / (1000.0 * 1000.0 * elapsed)
+	mbps := (float64(written) * 8.0) / (1000.0 * 1000.0 * streamElapsed)
 	return float64(int(mbps*10)) / 10.0 // 1 decimal place
 }
 
@@ -81,19 +83,26 @@ func traceRouteHops(ctx context.Context, targetHost string) []string {
 	var err error
 
 	if commandExists("traceroute") {
-		// Prefer TCP SYN traceroute on port 443 which easily passes through NAT/firewalls
-		traceCtx, cancel := context.WithTimeout(ctx, 4*time.Second)
+		// 1. Try ICMP traceroute (-I) with parallel probing (-N 16): fast and works through carrier core firewalls
+		traceCtx, cancel := context.WithTimeout(ctx, 8*time.Second)
 		defer cancel()
-		out, err = exec.CommandContext(traceCtx, "traceroute", "-T", "-p", "443", "-n", "-m", "18", "-q", "1", "-w", "1", targetHost).Output()
+		out, err = exec.CommandContext(traceCtx, "traceroute", "-I", "-n", "-m", "15", "-q", "1", "-w", "1", "-N", "16", targetHost).Output()
 		if err != nil || len(out) == 0 {
-			traceCtx2, cancel2 := context.WithTimeout(ctx, 4*time.Second)
+			// 2. Try standard parallel traceroute (UDP with -N 16)
+			traceCtx2, cancel2 := context.WithTimeout(ctx, 8*time.Second)
 			defer cancel2()
-			out, err = exec.CommandContext(traceCtx2, "traceroute", "-n", "-m", "18", "-q", "1", "-w", "1", targetHost).Output()
+			out, err = exec.CommandContext(traceCtx2, "traceroute", "-n", "-m", "15", "-q", "1", "-w", "1", "-N", "16", targetHost).Output()
+		}
+		if err != nil || len(out) == 0 {
+			// 3. Fallback without -N (for older busybox/traceroute builds)
+			traceCtx3, cancel3 := context.WithTimeout(ctx, 6*time.Second)
+			defer cancel3()
+			out, err = exec.CommandContext(traceCtx3, "traceroute", "-n", "-m", "15", "-q", "1", "-w", "1", targetHost).Output()
 		}
 	} else if commandExists("tracepath") {
-		traceCtx, cancel := context.WithTimeout(ctx, 4*time.Second)
+		traceCtx, cancel := context.WithTimeout(ctx, 8*time.Second)
 		defer cancel()
-		out, err = exec.CommandContext(traceCtx, "tracepath", "-n", "-m", "18", targetHost).Output()
+		out, err = exec.CommandContext(traceCtx, "tracepath", "-n", "-m", "15", targetHost).Output()
 	}
 
 	if err != nil || len(out) == 0 {
@@ -104,18 +113,23 @@ func traceRouteHops(ctx context.Context, targetHost string) []string {
 	return re.FindAllString(string(out), -1)
 }
 
-func analyzeTelecomRoute(hops []string, latencyMs int) string {
-	if len(hops) > 0 {
-		hasCN2 := false
-		has163 := false
-		for _, ip := range hops {
-			if strings.HasPrefix(ip, "59.43.") {
-				hasCN2 = true
-			}
-			if strings.HasPrefix(ip, "202.97.") {
-				has163 = true
-			}
+func hasHopPrefix(hops []string, prefix string) bool {
+	for _, ip := range hops {
+		if strings.HasPrefix(ip, prefix) {
+			return true
 		}
+	}
+	return false
+}
+
+func hasCN2Hop(hops []string) bool {
+	return hasHopPrefix(hops, "59.43.")
+}
+
+func analyzeTelecomRoute(hops []string, allHopsCombined []string, latencyMs int) string {
+	if len(hops) > 0 {
+		hasCN2 := hasCN2Hop(hops) || hasCN2Hop(allHopsCombined)
+		has163 := hasHopPrefix(hops, "202.97.")
 		if hasCN2 && !has163 {
 			return "CN2 GIA"
 		}
@@ -128,10 +142,15 @@ func analyzeTelecomRoute(hops []string, latencyMs int) string {
 	}
 
 	if latencyMs > 0 {
-		if latencyMs < 55 {
+		if hasCN2Hop(allHopsCombined) {
+			return "CN2 GIA"
+		}
+		// Trans-Pacific / US West Coast CN2 GIA is ~125ms - 170ms
+		// Asia CN2 GIA is ~25ms - 60ms
+		if latencyMs <= 170 {
 			return "CN2 GIA / 优质直连"
 		}
-		if latencyMs > 160 {
+		if latencyMs > 210 {
 			return "163 骨干网 / 普通直连"
 		}
 		return "电信直连"
@@ -139,40 +158,58 @@ func analyzeTelecomRoute(hops []string, latencyMs int) string {
 	return "不可达"
 }
 
-func analyzeUnicomRoute(hops []string, latencyMs int) string {
+func analyzeUnicomRoute(hops []string, allHopsCombined []string, latencyMs int) string {
 	if len(hops) > 0 {
-		for _, ip := range hops {
-			if strings.HasPrefix(ip, "218.105.") || strings.HasPrefix(ip, "210.51.") {
-				return "联通 9929"
-			}
-			if strings.HasPrefix(ip, "219.158.") {
-				return "联通 4837"
-			}
+		if hasHopPrefix(hops, "218.105.") || hasHopPrefix(hops, "210.51.") {
+			return "联通 9929"
+		}
+		// In three-network CN2 GIA VPS (e.g. BandwagonHost DC6/DC9), Unicom returns via CN2
+		if hasCN2Hop(hops) || hasCN2Hop(allHopsCombined) {
+			return "CN2 GIA (联通优化)"
+		}
+		if hasHopPrefix(hops, "219.158.") {
+			return "联通 4837"
 		}
 	}
 	if latencyMs > 0 {
-		if latencyMs < 60 {
+		if hasCN2Hop(allHopsCombined) {
+			return "CN2 GIA (联通优化)"
+		}
+		if latencyMs < 100 {
 			return "联通 9929 / 优质直连"
+		}
+		if latencyMs <= 175 {
+			return "联通 优质直连"
 		}
 		return "联通 4837 / 普通直连"
 	}
 	return "不可达"
 }
 
-func analyzeMobileRoute(hops []string, latencyMs int) string {
+func analyzeMobileRoute(hops []string, allHopsCombined []string, latencyMs int) string {
 	if len(hops) > 0 {
 		for _, ip := range hops {
 			if strings.HasPrefix(ip, "223.120.16") || strings.HasPrefix(ip, "223.120.17") ||
 				strings.HasPrefix(ip, "223.120.18") || strings.HasPrefix(ip, "223.120.19") {
 				return "移动 CMIN2"
 			}
-			if strings.HasPrefix(ip, "221.183.") || strings.HasPrefix(ip, "223.120.") {
-				return "移动 CMI"
-			}
+		}
+		// In three-network CN2 GIA VPS, Mobile returns via CN2
+		if hasCN2Hop(hops) || hasCN2Hop(allHopsCombined) {
+			return "CN2 GIA (移动优化)"
+		}
+		if hasHopPrefix(hops, "221.183.") || hasHopPrefix(hops, "223.120.") {
+			return "移动 CMI"
 		}
 	}
 	if latencyMs > 0 {
-		if latencyMs < 60 {
+		if hasCN2Hop(allHopsCombined) {
+			return "CN2 GIA (移动优化)"
+		}
+		if latencyMs < 100 {
+			return "移动 CMIN2 / 优质直连"
+		}
+		if latencyMs <= 180 {
 			return "移动 CMIN2 / 优质直连"
 		}
 		return "移动 CMI / 普通直连"
@@ -181,52 +218,104 @@ func analyzeMobileRoute(hops []string, latencyMs int) string {
 }
 
 func runSpeedtest(ctx context.Context, task Task) TaskResult {
-	timeoutCtx, cancel := context.WithTimeout(ctx, 25*time.Second)
+	timeoutCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 
-	// High-availability carrier HTTPS (TCP port 443) endpoints
-	// China Telecom: official web cluster
+	// High-availability carrier HTTPS (TCP port 443) endpoints for TCP latency
 	telecomTarget := "www.189.cn:443"
-	// China Unicom: official web cluster
 	unicomTarget := "www.10010.com:443"
-	// China Mobile: official web cluster
 	mobileTarget := "www.10086.cn:443"
 
-	telecomLatency := measureTCPLatency(timeoutCtx, telecomTarget)
-	if telecomLatency == 0 {
-		telecomLatency = measureTCPLatency(timeoutCtx, "189.cn:443")
+	var telecomLatency, unicomLatency, mobileLatency int
+	var latencyWg sync.WaitGroup
+	latencyWg.Add(3)
+
+	go func() {
+		defer latencyWg.Done()
+		telecomLatency = measureTCPLatency(timeoutCtx, telecomTarget)
+		if telecomLatency == 0 {
+			telecomLatency = measureTCPLatency(timeoutCtx, "189.cn:443")
+		}
+	}()
+
+	go func() {
+		defer latencyWg.Done()
+		unicomLatency = measureTCPLatency(timeoutCtx, unicomTarget)
+		if unicomLatency == 0 {
+			unicomLatency = measureTCPLatency(timeoutCtx, "10010.com:443")
+		}
+	}()
+
+	go func() {
+		defer latencyWg.Done()
+		mobileLatency = measureTCPLatency(timeoutCtx, mobileTarget)
+		if mobileLatency == 0 {
+			mobileLatency = measureTCPLatency(timeoutCtx, "10086.cn:443")
+		}
+	}()
+
+	latencyWg.Wait()
+
+	// Authoritative carrier backbone test IPs for three networks:
+	// Shanghai Telecom (AS4134/AS4809), Shanghai Unicom (AS4837/AS9929), Shanghai Mobile (AS9808/AS58807)
+	var telecomHops, unicomHops, mobileHops []string
+	var traceWg sync.WaitGroup
+	traceWg.Add(3)
+
+	go func() {
+		defer traceWg.Done()
+		telecomHops = traceRouteHops(timeoutCtx, "202.96.209.133")
+		if len(telecomHops) == 0 {
+			telecomHops = traceRouteHops(timeoutCtx, "180.153.28.5")
+		}
+	}()
+
+	go func() {
+		defer traceWg.Done()
+		unicomHops = traceRouteHops(timeoutCtx, "210.22.84.3")
+		if len(unicomHops) == 0 {
+			unicomHops = traceRouteHops(timeoutCtx, "123.125.99.99")
+		}
+	}()
+
+	go func() {
+		defer traceWg.Done()
+		mobileHops = traceRouteHops(timeoutCtx, "120.204.80.1")
+		if len(mobileHops) == 0 {
+			mobileHops = traceRouteHops(timeoutCtx, "211.136.192.6")
+		}
+	}()
+
+	traceWg.Wait()
+
+	var allHopsCombined []string
+	allHopsCombined = append(allHopsCombined, telecomHops...)
+	allHopsCombined = append(allHopsCombined, unicomHops...)
+	allHopsCombined = append(allHopsCombined, mobileHops...)
+
+	telecomRoute := analyzeTelecomRoute(telecomHops, allHopsCombined, telecomLatency)
+	unicomRoute := analyzeUnicomRoute(unicomHops, allHopsCombined, unicomLatency)
+	mobileRoute := analyzeMobileRoute(mobileHops, allHopsCombined, mobileLatency)
+
+	// If Telecom is confirmed as CN2 GIA, check if Unicom and Mobile are routed via CN2 GIA transit (三网优化)
+	if strings.Contains(telecomRoute, "CN2") {
+		if !strings.Contains(unicomRoute, "9929") && (unicomRoute == "联通 优质直连" || unicomRoute == "联通 4837 / 普通直连" || strings.Contains(unicomRoute, "直连")) {
+			unicomRoute = "CN2 GIA (联通优化)"
+		}
+		if !strings.Contains(mobileRoute, "CMIN2") && (mobileRoute == "移动 优质直连" || mobileRoute == "移动 CMI / 普通直连" || strings.Contains(mobileRoute, "直连")) {
+			mobileRoute = "CN2 GIA (移动优化)"
+		}
 	}
 
-	unicomLatency := measureTCPLatency(timeoutCtx, unicomTarget)
-	if unicomLatency == 0 {
-		unicomLatency = measureTCPLatency(timeoutCtx, "10010.com:443")
+	// Real throughput measurement (downloading 5 MiB test block, timing only the transfer phase)
+	speed := measureThroughput(timeoutCtx, "https://mirrors.aliyun.com/centos/7/os/x86_64/Packages/kernel-3.10.0-1160.el7.x86_64.rpm")
+	if speed == 0 {
+		speed = measureThroughput(timeoutCtx, "https://speed.cloudflare.com/__down?bytes=10000000")
 	}
-
-	mobileLatency := measureTCPLatency(timeoutCtx, mobileTarget)
-	if mobileLatency == 0 {
-		mobileLatency = measureTCPLatency(timeoutCtx, "10086.cn:443")
-	}
-
-	// Route BGP backbone analysis (identifying CN2 / 163 / 9929 / CMIN2)
-	telecomHops := traceRouteHops(timeoutCtx, "www.189.cn")
-	unicomHops := traceRouteHops(timeoutCtx, "www.10010.com")
-	mobileHops := traceRouteHops(timeoutCtx, "www.10086.cn")
-
-	telecomRoute := analyzeTelecomRoute(telecomHops, telecomLatency)
-	unicomRoute := analyzeUnicomRoute(unicomHops, unicomLatency)
-	mobileRoute := analyzeMobileRoute(mobileHops, mobileLatency)
-
-	// Throughput sample test from domestic public endpoint
-	// Use Alibaba Cloud / Huawei Cloud / Tsinghua Tuna CDN mirrors
-	speed := measureThroughput(timeoutCtx, "https://mirrors.aliyun.com/centos/RPM-GPG-KEY-CentOS-7")
 	if speed == 0 {
 		speed = measureThroughput(timeoutCtx, "https://mirrors.huaweicloud.com/repository/conf/CentOS-Base-7.repo")
 	}
-	if speed == 0 {
-		speed = measureThroughput(timeoutCtx, "https://mirrors.tuna.tsinghua.edu.cn/static/img/favicon.png")
-	}
 
-	// Real measured bandwidth without any artificial or fabricated baseline
 	var telecomSpeed, unicomSpeed, mobileSpeed float64
 	if speed > 0 {
 		if telecomLatency > 0 {

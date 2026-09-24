@@ -243,12 +243,17 @@ func (e *AlertEngine) NotifyConsoleBruteForce(clientIP string, attempts int) {
 
 // ProbeResultItem holds one node's probe outcome.
 type ProbeResultItem struct {
-	NodeID     string `json:"node_id"`
-	NodeName   string `json:"node_name"`
-	OverseasOK bool   `json:"overseas_ok"`
-	DomesticOK bool   `json:"domestic_ok"`
-	LatencyMs  int    `json:"latency_ms"`
-	Error      string `json:"error,omitempty"`
+	NodeID      string `json:"node_id"`
+	NodeName    string `json:"node_name"`
+	TargetHost  string `json:"target_host,omitempty"`
+	TargetPort  uint16 `json:"target_port,omitempty"`
+	OverseasOK  bool   `json:"overseas_ok"`
+	DomesticOK  bool   `json:"domestic_ok"`
+	ProbeSource string `json:"probe_source,omitempty"`
+	PacketLoss  int    `json:"packet_loss"`
+	LatencyMs   int    `json:"latency_ms"`
+	StatusDesc  string `json:"status_desc,omitempty"`
+	Error       string `json:"error,omitempty"`
 }
 
 // NotifyProbeSummary dispatches a Bark report after a scheduled GFW/connectivity probe.
@@ -262,13 +267,25 @@ func (e *AlertEngine) NotifyProbeSummary(items []ProbeResultItem) {
 	var normalList []string
 
 	for _, item := range items {
+		port := item.TargetPort
+		if port == 0 {
+			port = 443
+		}
 		// Overseas reachable but Domestic unreachable -> GFW Blocked!
 		if item.OverseasOK && !item.DomesticOK {
-			blockedList = append(blockedList, fmt.Sprintf("• [%s] 国内探测全超时 (疑似被 GFW 阻断)", item.NodeName))
+			src := item.ProbeSource
+			if src == "" {
+				src = "国内真实探针"
+			}
+			blockedList = append(blockedList, fmt.Sprintf("• [%s] 端口 %d 国内全超时 (疑似被 GFW 阻断, 来源: %s)", item.NodeName, port, src))
 		} else if item.DomesticOK {
-			normalList = append(normalList, fmt.Sprintf("• [%s] 443 正常 (%d ms)", item.NodeName, item.LatencyMs))
+			src := item.ProbeSource
+			if src == "" {
+				src = "国内真实探针"
+			}
+			normalList = append(normalList, fmt.Sprintf("• [%s] 端口 %d 正常 (国内时延: %d ms, 来源: %s)", item.NodeName, port, item.LatencyMs, src))
 		} else {
-			normalList = append(normalList, fmt.Sprintf("• [%s] 离线/无法连通", item.NodeName))
+			normalList = append(normalList, fmt.Sprintf("• [%s] 离线/境外未监听", item.NodeName))
 		}
 	}
 

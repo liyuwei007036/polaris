@@ -304,16 +304,21 @@ onBeforeUnmount(() => {
                   <span v-if="isValidRoute(speedtests[row.id].telecom_route)" :class="['route-tag', speedtests[row.id].telecom_route.includes('CN2') ? 'route-premium' : 'route-normal']">
                     {{ speedtests[row.id].telecom_route }}
                   </span>
-                  <span v-if="isValidRoute(speedtests[row.id].unicom_route)" :class="['route-tag', speedtests[row.id].unicom_route.includes('9929') ? 'route-premium' : 'route-normal']">
+                  <span v-if="isValidRoute(speedtests[row.id].unicom_route)" :class="['route-tag', speedtests[row.id].unicom_route.includes('9929') || speedtests[row.id].unicom_route.includes('CN2') ? 'route-premium' : 'route-normal']">
                     {{ speedtests[row.id].unicom_route }}
                   </span>
-                  <span v-if="isValidRoute(speedtests[row.id].mobile_route)" :class="['route-tag', speedtests[row.id].mobile_route.includes('CMIN2') ? 'route-premium' : 'route-normal']">
+                  <span v-if="isValidRoute(speedtests[row.id].mobile_route)" :class="['route-tag', speedtests[row.id].mobile_route.includes('CMIN2') || speedtests[row.id].mobile_route.includes('CN2') ? 'route-premium' : 'route-normal']">
                     {{ speedtests[row.id].mobile_route }}
                   </span>
                 </div>
                 <div class="cell-sub mono">
                   <template v-if="speedtests[row.id].telecom_speed_mbps != null && (speedtests[row.id].telecom_speed_mbps > 0 || speedtests[row.id].unicom_speed_mbps > 0 || speedtests[row.id].mobile_speed_mbps > 0)">
-                    电 {{ speedtests[row.id].telecom_speed_mbps }}M · 联 {{ speedtests[row.id].unicom_speed_mbps }}M · 移 {{ speedtests[row.id].mobile_speed_mbps }}M
+                    <span v-if="speedtests[row.id].telecom_speed_mbps === speedtests[row.id].unicom_speed_mbps && speedtests[row.id].unicom_speed_mbps === speedtests[row.id].mobile_speed_mbps">
+                      国内实测下行 {{ speedtests[row.id].telecom_speed_mbps }} Mbps
+                    </span>
+                    <span v-else>
+                      电 {{ speedtests[row.id].telecom_speed_mbps }}M · 联 {{ speedtests[row.id].unicom_speed_mbps }}M · 移 {{ speedtests[row.id].mobile_speed_mbps }}M
+                    </span>
                   </template>
                   <template v-else-if="speedtests[row.id].download_speed_bps">
                     ↓ {{ formatBytes(speedtests[row.id].download_speed_bps, '/s') }}
@@ -436,14 +441,14 @@ onBeforeUnmount(() => {
   white-space: nowrap;
 }
 .route-premium {
-  background: rgba(234, 88, 12, 0.12);
-  color: #ea580c;
-  border: 1px solid rgba(234, 88, 12, 0.3);
+  background: rgba(245, 158, 11, 0.15);
+  color: #fbbf24;
+  border: 1px solid rgba(245, 158, 11, 0.35);
 }
 .route-normal {
-  background: rgba(100, 116, 139, 0.12);
-  color: #475569;
-  border: 1px solid rgba(100, 116, 139, 0.25);
+  background: rgba(148, 163, 184, 0.12);
+  color: #94a3b8;
+  border: 1px solid rgba(148, 163, 184, 0.25);
 }
 </style>
 
