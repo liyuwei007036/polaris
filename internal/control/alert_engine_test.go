@@ -113,34 +113,37 @@ func TestBarkClientAndAlertEngine(t *testing.T) {
 	mu.Lock()
 	var gfwAlertFound, subOkFound, subFailFound, loginFailFound, scanFound bool
 	for _, m := range receivedMessages {
-		if m.Level == "critical" && m.Title == "🚨 [Polaris] 发现节点被阻断" {
+		if m.Level == "passive" {
+			t.Errorf("found alert with passive level which causes iOS to silence the sound: %s", m.Title)
+		}
+		if m.Title == "🚨 [Polaris] 发现节点被阻断" {
 			gfwAlertFound = true
-			if m.Sound != "alarm" {
-				t.Errorf("expected GFW alert sound to be 'alarm', got '%s'", m.Sound)
+			if m.Sound != "alarm.caf" {
+				t.Errorf("expected GFW alert sound to be 'alarm.caf', got '%s'", m.Sound)
 			}
 		}
 		if m.Title == "📥 [Polaris] 订阅下载成功" {
 			subOkFound = true
-			if m.Sound != "glass" {
-				t.Errorf("expected sub success sound to be 'glass', got '%s'", m.Sound)
+			if m.Sound != "glass.caf" {
+				t.Errorf("expected sub success sound to be 'glass.caf', got '%s'", m.Sound)
 			}
 		}
 		if m.Title == "❌ [Polaris] 订阅下载失败" {
 			subFailFound = true
-			if m.Sound != "horn" {
-				t.Errorf("expected sub fail sound to be 'horn', got '%s'", m.Sound)
+			if m.Sound != "horn.caf" {
+				t.Errorf("expected sub fail sound to be 'horn.caf', got '%s'", m.Sound)
 			}
 		}
 		if m.Title == "⚠️ [Polaris] 控制台登录失败" {
 			loginFailFound = true
-			if m.Sound != "horn" {
-				t.Errorf("expected login fail sound to be 'horn', got '%s'", m.Sound)
+			if m.Sound != "horn.caf" {
+				t.Errorf("expected login fail sound to be 'horn.caf', got '%s'", m.Sound)
 			}
 		}
 		if m.Title == "🚨 [Polaris] 检测到异常网络扫描" {
 			scanFound = true
-			if m.Sound != "alarm" {
-				t.Errorf("expected abnormal scan sound to be 'alarm', got '%s'", m.Sound)
+			if m.Sound != "alarm.caf" {
+				t.Errorf("expected abnormal scan sound to be 'alarm.caf', got '%s'", m.Sound)
 			}
 		}
 	}

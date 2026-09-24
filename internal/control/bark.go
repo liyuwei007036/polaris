@@ -13,13 +13,14 @@ import (
 )
 
 type BarkMessage struct {
-	Title string `json:"title"`
-	Body  string `json:"body"`
-	Group string `json:"group,omitempty"`
-	Sound string `json:"sound,omitempty"`
-	Level string `json:"level,omitempty"` // active, critical, passive, timeSensitive
-	Icon  string `json:"icon,omitempty"`
-	URL   string `json:"url,omitempty"`
+	DeviceKey string `json:"device_key,omitempty"`
+	Title     string `json:"title"`
+	Body      string `json:"body"`
+	Group     string `json:"group,omitempty"`
+	Sound     string `json:"sound,omitempty"`
+	Level     string `json:"level,omitempty"` // active, timeSensitive
+	Icon      string `json:"icon,omitempty"`
+	URL       string `json:"url,omitempty"`
 }
 
 type BarkClient struct {
@@ -47,13 +48,36 @@ func (c *BarkClient) Send(ctx context.Context, server, deviceKey string, msg Bar
 		return errors.New("bark device key is not configured")
 	}
 
+	// Always populate device_key in payload for Bark V2 JSON specification
+	msg.DeviceKey = deviceKey
+
+	// Ensure sound has .caf suffix for direct iOS APNs audio bundle lookup.
+	// Without .caf, iOS APNs cannot locate the sound file and defaults to Tri-tone.
+	sound := strings.TrimSpace(msg.Sound)
+	if sound == "" {
+		sound = "minuet.caf"
+	} else if !strings.HasSuffix(sound, ".caf") {
+		sound = sound + ".caf"
+	}
+	msg.Sound = sound
+
+	// Interruption level in iOS:
+	// - "passive" deliberately silences notification (no sound, no screen wake).
+	// - "critical" requires special Apple Critical Alerts entitlement and user manual switch in iOS Settings.
+	// Standardize to "active" or "timeSensitive" so notifications ALWAYS play their custom sound!
+	if msg.Level == "" || msg.Level == "passive" || msg.Level == "critical" {
+		msg.Level = "active"
+	}
+
 	// Normalize target URL.
-	// If server already contains deviceKey (e.g. https://api.day.app/abc/ or https://bark.com/push), handle both.
+	// Bark V2 API standard endpoint is POST /push with device_key in JSON body.
 	var targetURL string
-	if strings.Contains(server, deviceKey) {
+	if strings.HasSuffix(server, "/push") {
+		targetURL = server
+	} else if strings.Contains(server, deviceKey) {
 		targetURL = server
 	} else {
-		targetURL = server + "/" + deviceKey
+		targetURL = server + "/push"
 	}
 
 	payload, err := json.Marshal(msg)
@@ -72,6 +96,19 @@ func (c *BarkClient) Send(ctx context.Context, server, deviceKey string, msg Bar
 		return fmt.Errorf("send bark request: %w", err)
 	}
 	defer resp.Body.Close()
+
+	// If /push returned 404 (e.g. legacy/minimalist bark server), fallback to /:device_key
+	if resp.StatusCode == http.StatusNotFound && targetURL == server+"/push" {
+		fallbackURL := server + "/" + deviceKey
+		req2, err2 := http.NewRequestWithContext(ctx, http.MethodPost, fallbackURL, bytes.NewReader(payload))
+		if err2 == nil {
+			req2.Header.Set("Content-Type", "application/json; charset=utf-8")
+			if resp2, err3 := c.httpClient.Do(req2); err3 == nil {
+				defer resp2.Body.Close()
+				resp = resp2
+			}
+		}
+	}
 
 	if resp.StatusCode != http.StatusOK {
 		respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))

@@ -139,7 +139,7 @@ func (s *Server) testAlert(w http.ResponseWriter, r *http.Request) {
 		server = "https://api.day.app"
 	}
 	if sound == "" {
-		sound = "minuet"
+		sound = "minuet.caf"
 	}
 	if group == "" {
 		group = "Polaris"

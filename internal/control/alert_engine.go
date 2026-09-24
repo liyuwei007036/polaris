@@ -143,19 +143,26 @@ func (e *AlertEngine) sendAlert(ctx context.Context, title, body, group, level, 
 			if settings.BarkSound != "" {
 				sound = settings.BarkSound
 			} else {
-				sound = "minuet"
+				sound = "minuet.caf"
 			}
+		}
+		if !strings.HasSuffix(sound, ".caf") {
+			sound = sound + ".caf"
 		}
 		if group == "" {
 			group = settings.BarkGroup
 		}
+		if level == "" || level == "passive" || level == "critical" {
+			level = "active"
+		}
 		msg := BarkMessage{
-			Title: title,
-			Body:  body,
-			Group: group,
-			Sound: sound,
-			Level: level,
-			URL:   url,
+			DeviceKey: settings.BarkDeviceKey,
+			Title:     title,
+			Body:      body,
+			Group:     group,
+			Sound:     sound,
+			Level:     level,
+			URL:       url,
 		}
 		pushCtx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
 		defer cancel()
@@ -212,7 +219,7 @@ func (e *AlertEngine) CheckConnectionsTelemetry(nodeID, nodeName string, downloa
 					}
 					body := fmt.Sprintf("• 服务器: %s\n• 触发速率: %.1f Mbps (阈值: %.1f Mbps)\n• 持续时长: 超过 %d 秒\n• 主要来源: %s\n• 目标主机: %s\n🕒 记录时间: %s",
 						nodeName, maxRateMbps, settings.TrafficThresholdMbps, settings.TrafficDurationSec, e.formatIP(mainIP), mainDest, timeStr)
-					e.sendAlert(context.Background(), "📈 [Polaris] 瞬时流量突发预警", body, "Polaris-流量监控", "active", "bell", "")
+					e.sendAlert(context.Background(), "📈 [Polaris] 瞬时流量突发预警", body, "Polaris-流量监控", "active", "bell.caf", "")
 				}
 			}
 		} else {
@@ -229,7 +236,7 @@ func (e *AlertEngine) CheckConnectionsTelemetry(nodeID, nodeName string, downloa
 		if e.canAlert(alertKey, settings.CooldownMinutes) {
 			body := fmt.Sprintf("• 服务器: %s\n• 当前连接: %d 条 (设定上限: %d 条)\n• 状态提示: 活跃连接数异常飙升，请排查多线程并发或外部探测\n🕒 记录时间: %s",
 				nodeName, connCount, settings.ConnThresholdCount, timeStr)
-			e.sendAlert(context.Background(), "⚡ [Polaris] 活跃连接数激增预警", body, "Polaris-连接监控", "active", "anticipate", "")
+			e.sendAlert(context.Background(), "⚡ [Polaris] 活跃连接数激增预警", body, "Polaris-连接监控", "active", "anticipate.caf", "")
 		}
 	}
 
@@ -252,7 +259,7 @@ func (e *AlertEngine) CheckConnectionsTelemetry(nodeID, nodeName string, downloa
 				if e.canAlert(alertKey, settings.CooldownMinutes) {
 					body := fmt.Sprintf("• 服务器: %s\n• 来源 IP: %s\n• 活跃连接: %d 条 (设定上限: %d 条)\n• 安全提示: 发现单 IP 突发高并发，请核实是否为本人设备或凭据泄露\n🕒 记录时间: %s",
 						nodeName, e.formatIP(ip), count, settings.SingleIPThresholdCount, timeStr)
-					e.sendAlert(context.Background(), "🚨 [Polaris] 单 IP 异常高并发预警", body, "Polaris-安全警报", "active", "horn", "")
+					e.sendAlert(context.Background(), "🚨 [Polaris] 单 IP 异常高并发预警", body, "Polaris-安全警报", "timeSensitive", "horn.caf", "")
 				}
 			}
 		}
@@ -291,13 +298,10 @@ func (e *AlertEngine) CheckConnectionsTelemetry(nodeID, nodeName string, downloa
 				var samples []string
 				for d := range dests {
 					samples = append(samples, d)
-					if len(samples) >= 3 {
-						break
-					}
 				}
 				body := fmt.Sprintf("• 服务器: %s\n• 扫描来源: %s\n• 并发目标: %d 个不同端点/端口\n• 探测样例: %s\n• 防御建议: 疑似端口扫描或探测爬虫，可前往安全防护添加阻断规则\n🕒 发现时间: %s",
 					nodeName, e.formatIP(ip), len(dests), strings.Join(samples, ", "), timeStr)
-				e.sendAlert(context.Background(), "🚨 [Polaris] 检测到异常网络扫描", body, "Polaris-安全警报", "critical", "alarm", "")
+				e.sendAlert(context.Background(), "🚨 [Polaris] 检测到异常网络扫描", body, "Polaris-安全警报", "timeSensitive", "alarm.caf", "")
 			}
 		}
 	}
@@ -313,7 +317,7 @@ func (e *AlertEngine) NotifyNodeOffline(nodeID, nodeName string) {
 	if e.canAlert(alertKey, settings.CooldownMinutes) {
 		body := fmt.Sprintf("• 服务器: %s\n• 节点状态: 已失去心跳连接 (离线)\n• 影响说明: 节点代理服务暂停，可能由于网络中断、机房维护或宕机\n🕒 离线时间: %s",
 			nodeName, NowAlertTime())
-		e.sendAlert(context.Background(), "⚠️ [Polaris] 节点已离线", body, "Polaris-节点状态", "critical", "alarm", "")
+		e.sendAlert(context.Background(), "⚠️ [Polaris] 节点已离线", body, "Polaris-节点状态", "timeSensitive", "alarm.caf", "")
 	}
 }
 
@@ -327,7 +331,7 @@ func (e *AlertEngine) NotifyNodeOnline(nodeID, nodeName string) {
 	if e.canAlert(alertKey, settings.CooldownMinutes) {
 		body := fmt.Sprintf("• 服务器: %s\n• 节点状态: 重新建立加密控制通道 (在线)\n• 服务说明: 代理与监控服务已全部恢复就绪\n🕒 恢复时间: %s",
 			nodeName, NowAlertTime())
-		e.sendAlert(context.Background(), "✅ [Polaris] 节点已恢复正常", body, "Polaris-节点状态", "active", "calypso", "")
+		e.sendAlert(context.Background(), "✅ [Polaris] 节点已恢复正常", body, "Polaris-节点状态", "active", "calypso.caf", "")
 	}
 }
 
@@ -345,7 +349,7 @@ func (e *AlertEngine) NotifyFail2BanBlock(nodeID, nodeName, ip, jail string) {
 	if e.canAlert(alertKey, cooldown) {
 		body := fmt.Sprintf("• 服务器: %s\n• 拦截目标: %s\n• 触发规则: %s\n• 防护状态: 已自动加入节点防火墙阻断列表\n🕒 拦截时间: %s",
 			nodeName, e.formatIP(ip), jail, NowAlertTime())
-		e.sendAlert(context.Background(), "🛡️ [Polaris] 拦截恶意扫描源", body, "Polaris-防御日志", "passive", "chime", "")
+		e.sendAlert(context.Background(), "🛡️ [Polaris] 拦截恶意扫描源", body, "Polaris-防御日志", "active", "chime.caf", "")
 	}
 }
 
@@ -355,7 +359,7 @@ func (e *AlertEngine) NotifyConsoleBruteForce(clientIP string, attempts int) {
 	if e.canAlert(alertKey, 15) {
 		body := fmt.Sprintf("• 攻击来源: %s\n• 失败次数: 连续密码错误 %d 次\n• 安全策略: 已触发控制台防爆破拦截，该 IP 已被限制登录\n🕒 触发时间: %s",
 			e.formatIP(clientIP), attempts, NowAlertTime())
-		e.sendAlert(context.Background(), "🔒 [Polaris] 控制台防爆破触发", body, "Polaris-系统安全", "critical", "alarm", "")
+		e.sendAlert(context.Background(), "🔒 [Polaris] 控制台防爆破触发", body, "Polaris-系统安全", "timeSensitive", "alarm.caf", "")
 	}
 }
 
@@ -405,7 +409,7 @@ func (e *AlertEngine) NotifyLoginFailed(username, ip, reason, userAgent string) 
 		}
 		body := fmt.Sprintf("• 尝试账号: %s\n• 登录来源: %s\n• 客户端: %s\n• 失败原因: %s\n• 风险提示: 若非本人操作，请确认登录凭据是否泄露\n🕒 尝试时间: %s",
 			username, e.formatIP(clean), ua, reason, NowAlertTime())
-		e.sendAlert(context.Background(), "⚠️ [Polaris] 控制台登录失败", body, "Polaris-系统安全", "active", "horn", "")
+		e.sendAlert(context.Background(), "⚠️ [Polaris] 控制台登录失败", body, "Polaris-系统安全", "timeSensitive", "horn.caf", "")
 	}
 }
 
@@ -434,7 +438,7 @@ func (e *AlertEngine) NotifySubscriptionPullSuccess(configName, ip, userAgent st
 		}
 		body := fmt.Sprintf("• 订阅配置: %s\n• 请求来源: %s\n• 客户端: %s\n• 获取状态: 正常获取配置 (200 OK)\n🕒 下载时间: %s",
 			configName, e.formatIP(clean), ua, NowAlertTime())
-		e.sendAlert(context.Background(), "📥 [Polaris] 订阅下载成功", body, "Polaris-订阅分发", "passive", "glass", "")
+		e.sendAlert(context.Background(), "📥 [Polaris] 订阅下载成功", body, "Polaris-订阅分发", "active", "glass.caf", "")
 	}
 }
 
@@ -462,7 +466,7 @@ func (e *AlertEngine) NotifySubscriptionPullFailed(tokenHint, reason, ip, userAg
 		}
 		body := fmt.Sprintf("• 请求凭据: %s\n• 请求来源: %s\n• 客户端: %s\n• 失败原因: %s\n• 安全提示: 订阅请求未通过验证，可能为过期配置或外部扫描\n🕒 尝试时间: %s",
 			tokenHint, e.formatIP(clean), ua, reason, NowAlertTime())
-		e.sendAlert(context.Background(), "❌ [Polaris] 订阅下载失败", body, "Polaris-订阅分发", "active", "horn", "")
+		e.sendAlert(context.Background(), "❌ [Polaris] 订阅下载失败", body, "Polaris-订阅分发", "timeSensitive", "horn.caf", "")
 	}
 }
 
@@ -523,7 +527,7 @@ func (e *AlertEngine) NotifyProbeSummary(items []ProbeResultItem) {
 				body += "\n" + strings.Join(normalList, "\n")
 			}
 			body += fmt.Sprintf("\n🕒 探测时间: %s", nowStr)
-			e.sendAlert(context.Background(), "🚨 [Polaris] 发现节点被阻断", body, "Polaris-巡检报告", "critical", "alarm", "")
+			e.sendAlert(context.Background(), "🚨 [Polaris] 发现节点被阻断", body, "Polaris-巡检报告", "timeSensitive", "alarm.caf", "")
 			return
 		}
 	}
@@ -531,7 +535,7 @@ func (e *AlertEngine) NotifyProbeSummary(items []ProbeResultItem) {
 	// If no block and user requested always notify on probe
 	if settings.ProbeNotifyAlways && len(items) > 0 {
 		body := strings.Join(normalList, "\n") + fmt.Sprintf("\n🕒 巡检时间: %s (国内探针核验)", nowStr)
-		e.sendAlert(context.Background(), "✅ [Polaris 巡检] 全部节点连接通畅", body, "Polaris-巡检报告", "active", "telegraph", "")
+		e.sendAlert(context.Background(), "✅ [Polaris 巡检] 全部节点连接通畅", body, "Polaris-巡检报告", "active", "telegraph.caf", "")
 	}
 }
 
@@ -562,5 +566,5 @@ func (e *AlertEngine) NotifySpeedtestReport(nodeName string, st NodeSpeedtest) {
 	lines = append(lines, fmt.Sprintf("🕒 检测时间: %s", NowAlertTime()))
 
 	body := strings.Join(lines, "\n")
-	e.sendAlert(context.Background(), title, body, "Polaris-巡检报告", "active", "telegraph", "")
+	e.sendAlert(context.Background(), title, body, "Polaris-巡检报告", "active", "telegraph.caf", "")
 }

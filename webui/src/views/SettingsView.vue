@@ -22,11 +22,11 @@ const operatorStatus = ref('')
 const alertSettings = reactive({
   bark_server: 'https://api.day.app',
   bark_device_key: '',
-  bark_sound: 'minuet',
+  bark_sound: 'minuet.caf',
   bark_group: 'Polaris',
   bark_url: '',
   traffic_alert_enabled: true,
-  traffic_threshold_mbps: 50,
+  traffic_threshold_mbps: 150,
   traffic_duration_sec: 10,
   conn_alert_enabled: true,
   conn_threshold_count: 200,
@@ -66,6 +66,9 @@ async function load() {
     operators.value = operatorResult.operators || []
     if (alertsResult?.settings) {
       Object.assign(alertSettings, alertsResult.settings)
+      if (alertSettings.bark_sound && !alertSettings.bark_sound.endsWith('.caf')) {
+        alertSettings.bark_sound = alertSettings.bark_sound + '.caf'
+      }
     }
   } finally { loading.value = false }
 }
@@ -298,13 +301,14 @@ onMounted(load)
                     <el-col :span="8">
                       <el-form-item label="默认提示铃声">
                         <el-select v-model="alertSettings.bark_sound" style="width: 100%">
-                          <el-option label="minuet (清脆小步舞曲 - 推荐)" value="minuet" />
-                          <el-option label="anticipate (轻快期待)" value="anticipate" />
-                          <el-option label="bell (经典铃声)" value="bell" />
-                          <el-option label="glass (清澈水滴)" value="glass" />
-                          <el-option label="horn (警示号角)" value="horn" />
-                          <el-option label="telegraph (电报码)" value="telegraph" />
-                          <el-option label="silence (静音仅震动)" value="silence" />
+                          <el-option label="minuet (清脆小步舞曲 - 推荐)" value="minuet.caf" />
+                          <el-option label="anticipate (轻快期待)" value="anticipate.caf" />
+                          <el-option label="bell (经典铃声)" value="bell.caf" />
+                          <el-option label="glass (清澈水滴)" value="glass.caf" />
+                          <el-option label="horn (警示号角)" value="horn.caf" />
+                          <el-option label="calypso (欢快击鼓)" value="calypso.caf" />
+                          <el-option label="telegraph (电报码)" value="telegraph.caf" />
+                          <el-option label="silence (静音仅震动)" value="silence.caf" />
                         </el-select>
                         <div class="form-tip">离线/阻断/防爆破等不同类型事件会自动使用专属音效（alarm、horn 等）加以区分。</div>
                       </el-form-item>
