@@ -81,8 +81,10 @@ func (e *AlertEngine) sendAlert(ctx context.Context, title, body, group, level, 
 		if err != nil || settings.BarkDeviceKey == "" {
 			return
 		}
-		if sound == "" {
+		if settings.BarkSound != "" {
 			sound = settings.BarkSound
+		} else if sound == "" {
+			sound = "minuet"
 		}
 		if group == "" {
 			group = settings.BarkGroup

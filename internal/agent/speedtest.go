@@ -182,25 +182,28 @@ func analyzeUnicomRoute(hops []string, allHopsCombined []string, latencyMs int) 
 
 func analyzeMobileRoute(hops []string, allHopsCombined []string, latencyMs int) string {
 	if len(hops) > 0 {
-		// 1. CMIN2 (China Mobile International Next-generation Network, AS58807) uses 223.120.*
-		if hasHopPrefix(hops, "223.120.") {
-			return "移动 CMIN2"
+		// 1. CMIN2 (China Mobile International Next-generation Network, AS58807) uses 223.120.16.* ~ 223.120.19.*
+		for _, ip := range hops {
+			if strings.HasPrefix(ip, "223.120.16.") || strings.HasPrefix(ip, "223.120.17.") ||
+				strings.HasPrefix(ip, "223.120.18.") || strings.HasPrefix(ip, "223.120.19.") {
+				return "移动 CMIN2"
+			}
 		}
 		// 2. Mobile routed via CN2 GIA (59.43.* in Mobile's own path)
 		if hasCN2Hop(hops) {
 			return "CN2 GIA (移动优化)"
 		}
-		// 3. Regular CMI / CMNET (221.183.*)
-		if hasHopPrefix(hops, "221.183.") {
+		// 3. Regular CMI / CMNET (221.183.* or general 223.120.*)
+		if hasHopPrefix(hops, "221.183.") || hasHopPrefix(hops, "223.120.") {
 			return "移动 CMI"
 		}
 	}
 	if latencyMs > 0 {
-		// Low latency from US West Coast (<=170ms) indicates boutique routing (CMIN2)
-		if latencyMs <= 170 {
+		// Low latency from US West Coast (<=160ms) indicates premium routing (CMIN2)
+		if latencyMs <= 160 {
 			return "移动 CMIN2"
 		}
-		return "移动 CMI / 普通直连"
+		return "移动 CMI"
 	}
 	return "不可达"
 }
@@ -285,12 +288,12 @@ func runSpeedtest(ctx context.Context, task Task) TaskResult {
 	unicomRoute := analyzeUnicomRoute(unicomHops, allHopsCombined, unicomLatency)
 	mobileRoute := analyzeMobileRoute(mobileHops, allHopsCombined, mobileLatency)
 
-	// If Telecom is confirmed as CN2 GIA, check if Unicom and Mobile are routed via CN2 GIA transit (三网优化)
+	// In three-network servers, only mark cross-carrier CN2 GIA if the carrier's own hops genuinely transit CN2 (59.43.*)
 	if strings.Contains(telecomRoute, "CN2") {
-		if !strings.Contains(unicomRoute, "9929") && (unicomRoute == "联通 优质直连" || unicomRoute == "联通 4837 / 普通直连" || strings.Contains(unicomRoute, "直连")) {
+		if hasCN2Hop(unicomHops) {
 			unicomRoute = "CN2 GIA (联通优化)"
 		}
-		if !strings.Contains(mobileRoute, "CMIN2") && (mobileRoute == "移动 优质直连" || mobileRoute == "移动 CMI / 普通直连" || strings.Contains(mobileRoute, "直连")) {
+		if hasCN2Hop(mobileHops) {
 			mobileRoute = "CN2 GIA (移动优化)"
 		}
 	}

@@ -48,13 +48,15 @@ const filteredPending = computed(() => pending.value.filter((row) => includesTex
 // they update in place instead of being recomputed on every page visit.
 const live = computed(() => connectionSnapshots.value)
 
+let lastSingBoxCheckTime = 0
+
 async function load(silent = false) {
   if (refreshing.value) return
   refreshing.value = true
   if (!silent) loading.value = true
   try {
-    await loadNodes()
-    const [registrations, metricResult, speedtestResult] = await Promise.all([
+    const [, registrations, metricResult, speedtestResult] = await Promise.all([
+      loadNodes(),
       isAdmin.value ? api('/registrations').catch(() => ({ registrations: [] })) : Promise.resolve({ registrations: [] }),
       api('/nodes/metrics').catch(() => ({ nodes: [] })),
       api('/nodes/speedtests/latest').catch(() => ({ speedtests: [] })),
@@ -62,11 +64,12 @@ async function load(silent = false) {
     pending.value = registrations.registrations || []
     metrics.value = Object.fromEntries((metricResult.nodes || []).map((entry) => [entry.node_id, entry.report]))
     speedtests.value = Object.fromEntries((speedtestResult.speedtests || []).map((s) => [s.node_id, s]))
-    await loadSingBoxLatest()
   } finally {
     loading.value = false
     refreshing.value = false
   }
+  // sing-box 官方版本属于可选更新提示，后台静默请求，不阻塞页面表格渲染
+  loadSingBoxLatest().catch(() => {})
 }
 
 async function runSpeedtest(node) {
@@ -156,9 +159,15 @@ async function upgradeAgent(node) {
   ElMessage.success('升级任务已下发，agent 更新完成后会自动重新上线')
 }
 
-// 同一架构的服务器共用一个官方版本号，按架构查一次即可；已经拿到的不再重复请求。
+// 同一架构的服务器共用一个官方版本号，按架构查一次即可；10分钟内不重复请求。
 async function loadSingBoxLatest() {
+  const now = Date.now()
+  if (now - lastSingBoxCheckTime < 10 * 60 * 1000 && Object.keys(singBoxLatest.value).length > 0) {
+    return
+  }
   const architectures = [...new Set(appState.nodes.map((node) => node.architecture).filter(Boolean))]
+  if (!architectures.length) return
+  lastSingBoxCheckTime = now
   await Promise.all(architectures.map(async (architecture) => {
     if (singBoxLatest.value[architecture]) return
     const release = await api(`/sing-box/latest?architecture=${architecture}`).catch(() => null)

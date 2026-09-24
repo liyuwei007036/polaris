@@ -1429,14 +1429,22 @@ func (s *Server) createSingBoxRelease(w http.ResponseWriter, r *http.Request) {
 // singBoxReleaseCacheTTL keeps the GitHub lookup off the request path: the
 // server list asks for the newest sing-box version on every visit and refresh,
 // and GitHub rate-limits anonymous callers per IP.
-const singBoxReleaseCacheTTL = time.Hour
+const (
+	singBoxReleaseCacheTTL = time.Hour
+	singBoxReleaseErrorTTL = 5 * time.Minute
+)
 
 func (s *Server) latestSingBoxReleaseCached(ctx context.Context, architecture string) (SingBoxRelease, error) {
 	s.selfUpdateMu.Lock()
 	entry, cached := s.singBoxLatest[architecture]
 	s.selfUpdateMu.Unlock()
-	if cached && time.Since(entry.fetchedAt) < singBoxReleaseCacheTTL {
-		return entry.release, nil
+	if cached {
+		if entry.release.Version != "" && time.Since(entry.fetchedAt) < singBoxReleaseCacheTTL {
+			return entry.release, nil
+		}
+		if entry.release.Version == "" && time.Since(entry.fetchedAt) < singBoxReleaseErrorTTL {
+			return SingBoxRelease{}, errors.New("official sing-box release check recently failed, retry later")
+		}
 	}
 	resolver := s.latestSingBoxReleaseFn
 	if resolver == nil {
@@ -1444,6 +1452,12 @@ func (s *Server) latestSingBoxReleaseCached(ctx context.Context, architecture st
 	}
 	release, err := resolver(ctx, architecture)
 	if err != nil {
+		s.selfUpdateMu.Lock()
+		if s.singBoxLatest == nil {
+			s.singBoxLatest = make(map[string]polarisReleaseCacheEntry)
+		}
+		s.singBoxLatest[architecture] = polarisReleaseCacheEntry{release: SingBoxRelease{}, fetchedAt: time.Now()}
+		s.selfUpdateMu.Unlock()
 		return SingBoxRelease{}, err
 	}
 	s.selfUpdateMu.Lock()
