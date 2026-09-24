@@ -296,7 +296,7 @@ onMounted(load)
                   </el-row>
                   <el-row :gutter="16">
                     <el-col :span="8">
-                      <el-form-item label="提示铃声">
+                      <el-form-item label="默认提示铃声">
                         <el-select v-model="alertSettings.bark_sound" style="width: 100%">
                           <el-option label="minuet (清脆小步舞曲 - 推荐)" value="minuet" />
                           <el-option label="anticipate (轻快期待)" value="anticipate" />
@@ -306,6 +306,7 @@ onMounted(load)
                           <el-option label="telegraph (电报码)" value="telegraph" />
                           <el-option label="silence (静音仅震动)" value="silence" />
                         </el-select>
+                        <div class="form-tip">离线/阻断/防爆破等不同类型事件会自动使用专属音效（alarm、horn 等）加以区分。</div>
                       </el-form-item>
                     </el-col>
                     <el-col :span="8">
