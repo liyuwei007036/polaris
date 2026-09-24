@@ -2577,7 +2577,7 @@ INSERT OR IGNORE INTO alert_settings (id, updated_at) VALUES (1, unixepoch());
 	if err := s.migrateEmbeddedMihomoRuleProviders(ctx); err != nil {
 		return err
 	}
-	if _, err := s.db.ExecContext(ctx, `UPDATE node_speedtests SET mobile_route = '移动 CMI' WHERE mobile_route = 'CN2 GIA (移动优化)'`); err != nil {
+	if _, err := s.db.ExecContext(ctx, `UPDATE node_speedtests SET mobile_route = '移动 CMI' WHERE mobile_route LIKE '%移动优化%' OR mobile_route LIKE '%CN2%移动%' OR mobile_route = 'CN2 GIA (移动优化)'`); err != nil {
 		return fmt.Errorf("cleanup legacy forced mobile route: %w", err)
 	}
 	return nil

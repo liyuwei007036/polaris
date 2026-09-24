@@ -214,6 +214,9 @@ func (s *Store) SaveNodeSpeedtest(ctx context.Context, st NodeSpeedtest) error {
 		}
 		st.ID = id
 	}
+	if strings.Contains(st.MobileRoute, "移动优化") || st.MobileRoute == "CN2 GIA (移动优化)" {
+		st.MobileRoute = "移动 CMI"
+	}
 	now := nowUnix()
 	_, err := s.db.ExecContext(ctx, `INSERT INTO node_speedtests (
 		id, node_id, telecom_latency_ms, telecom_speed_mbps, telecom_route,
@@ -244,6 +247,9 @@ func (s *Store) GetLatestNodeSpeedtest(ctx context.Context, nodeID string) (*Nod
 	if err != nil {
 		return nil, fmt.Errorf("load latest speedtest: %w", err)
 	}
+	if strings.Contains(st.MobileRoute, "移动优化") || st.MobileRoute == "CN2 GIA (移动优化)" {
+		st.MobileRoute = "移动 CMI"
+	}
 	st.TestedAt = time.Unix(testedAt, 0).UTC().Format(time.RFC3339)
 	return &st, nil
 }
@@ -269,6 +275,9 @@ func (s *Store) ListLatestNodeSpeedtests(ctx context.Context) (map[string]NodeSp
 			&st.UnicomLatencyMs, &st.UnicomSpeedMbps, &st.UnicomRoute,
 			&st.MobileLatencyMs, &st.MobileSpeedMbps, &st.MobileRoute, &testedAt); err != nil {
 			return nil, err
+		}
+		if strings.Contains(st.MobileRoute, "移动优化") || st.MobileRoute == "CN2 GIA (移动优化)" {
+			st.MobileRoute = "移动 CMI"
 		}
 		st.TestedAt = time.Unix(testedAt, 0).UTC().Format(time.RFC3339)
 		out[st.NodeID] = st

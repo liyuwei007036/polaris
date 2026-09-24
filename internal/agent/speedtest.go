@@ -151,12 +151,8 @@ func analyzeMobileRoute(hops []string, allHopsCombined []string, latencyMs int) 
 				return "移动 CMIN2"
 			}
 		}
-		// 2. Mobile routed via CN2 GIA (59.43.* in Mobile's own path)
-		if hasCN2Hop(hops) {
-			return "CN2 GIA (移动优化)"
-		}
-		// 3. Regular CMI / CMNET (221.183.* or general 223.120.*)
-		if hasHopPrefix(hops, "221.183.") || hasHopPrefix(hops, "223.120.") {
+		// 2. Regular CMI / CMNET (221.183.*, general 223.120.*, or transit hops)
+		if hasHopPrefix(hops, "221.183.") || hasHopPrefix(hops, "223.120.") || hasCN2Hop(hops) {
 			return "移动 CMI"
 		}
 	}
@@ -251,8 +247,8 @@ func runSpeedtest(ctx context.Context, task Task) TaskResult {
 		if hasCN2Hop(unicomHops) {
 			unicomRoute = "CN2 GIA (联通优化)"
 		}
-		if hasCN2Hop(mobileHops) {
-			mobileRoute = "CN2 GIA (移动优化)"
+		if hasCN2Hop(mobileHops) && mobileRoute != "移动 CMIN2" {
+			mobileRoute = "移动 CMI"
 		}
 	}
 

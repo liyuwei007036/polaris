@@ -65,7 +65,12 @@ async function load(silent = false) {
     ])
     pending.value = registrations.registrations || []
     metrics.value = Object.fromEntries((metricResult.nodes || []).map((entry) => [entry.node_id, entry.report]))
-    speedtests.value = Object.fromEntries((speedtestResult.speedtests || []).map((s) => [s.node_id, s]))
+    speedtests.value = Object.fromEntries((speedtestResult.speedtests || []).map((s) => {
+      if (s.mobile_route && (s.mobile_route.includes('移动优化') || s.mobile_route.includes('CN2'))) {
+        s.mobile_route = '移动 CMI'
+      }
+      return [s.node_id, s]
+    }))
   } finally {
     loading.value = false
     refreshing.value = false
@@ -110,6 +115,9 @@ async function runSpeedtest(node) {
   try {
     const res = await post(`/nodes/${node.id}/speedtest`, {})
     if (res?.result) {
+      if (res.result.mobile_route && (res.result.mobile_route.includes('移动优化') || res.result.mobile_route.includes('CN2'))) {
+        res.result.mobile_route = '移动 CMI'
+      }
       speedtests.value = { ...speedtests.value, [node.id]: res.result }
     }
     ElMessage.success(`“${node.name}”三网延迟与线路检测完成`)
@@ -269,6 +277,14 @@ function isValidRoute(route) {
   return trimmed !== '' && trimmed !== '未知' && trimmed !== '不可达'
 }
 
+function cleanMobileRoute(route) {
+  if (!route) return ''
+  if (route.includes('移动优化') || route.includes('CN2')) {
+    return '移动 CMI'
+  }
+  return route
+}
+
 function hasRecognizedRoutes(st) {
   if (!st) return false
   return isValidRoute(st.telecom_route) || isValidRoute(st.unicom_route) || isValidRoute(st.mobile_route)
@@ -364,7 +380,7 @@ onBeforeUnmount(() => {
             <template #default="{ row }">
               <template v-if="speedtests[row.id]">
                 <div class="cell-main speedtest-badges">
-                  <el-tooltip :content="'中国移动: ' + (speedtests[row.id].mobile_route || '标准直连')">
+                  <el-tooltip :content="'中国移动: ' + (cleanMobileRoute(speedtests[row.id].mobile_route) || '标准直连')">
                     <span class="ping-badge ping-mobile">移 {{ getPingStr(speedtests[row.id].mobile_latency_ms ?? speedtests[row.id].mobile_ping_ms) }}</span>
                   </el-tooltip>
                   <el-tooltip :content="'中国联通: ' + (speedtests[row.id].unicom_route || '标准直连')">
@@ -381,8 +397,8 @@ onBeforeUnmount(() => {
                   <span v-if="isValidRoute(speedtests[row.id].unicom_route)" :class="['route-tag', speedtests[row.id].unicom_route.includes('9929') || speedtests[row.id].unicom_route.includes('CN2') ? 'route-premium' : 'route-normal']">
                     {{ speedtests[row.id].unicom_route }}
                   </span>
-                  <span v-if="isValidRoute(speedtests[row.id].mobile_route)" :class="['route-tag', speedtests[row.id].mobile_route.includes('CMIN2') || speedtests[row.id].mobile_route.includes('CN2') ? 'route-premium' : 'route-normal']">
-                    {{ speedtests[row.id].mobile_route }}
+                  <span v-if="isValidRoute(speedtests[row.id].mobile_route)" :class="['route-tag', speedtests[row.id].mobile_route.includes('CMIN2') ? 'route-premium' : 'route-normal']">
+                    {{ cleanMobileRoute(speedtests[row.id].mobile_route) }}
                   </span>
                 </div>
               </template>
