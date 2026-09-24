@@ -206,6 +206,13 @@ func (s *Store) UpdateAlertSettings(ctx context.Context, in AlertSettings) (Aler
 	return s.GetAlertSettings(ctx)
 }
 
+func cleanLegacyRoute(r string) string {
+	if strings.Contains(r, "优化") {
+		return "CN2 GIA"
+	}
+	return r
+}
+
 func (s *Store) SaveNodeSpeedtest(ctx context.Context, st NodeSpeedtest) error {
 	if st.ID == "" {
 		id, err := newID()
@@ -214,12 +221,9 @@ func (s *Store) SaveNodeSpeedtest(ctx context.Context, st NodeSpeedtest) error {
 		}
 		st.ID = id
 	}
-	if strings.Contains(st.MobileRoute, "移动优化") || st.MobileRoute == "CN2 GIA (移动优化)" {
-		st.MobileRoute = "CN2 GIA"
-	}
-	if strings.Contains(st.UnicomRoute, "联通优化") || st.UnicomRoute == "CN2 GIA (联通优化)" {
-		st.UnicomRoute = "CN2 GIA"
-	}
+	st.TelecomRoute = cleanLegacyRoute(st.TelecomRoute)
+	st.UnicomRoute = cleanLegacyRoute(st.UnicomRoute)
+	st.MobileRoute = cleanLegacyRoute(st.MobileRoute)
 	now := nowUnix()
 	_, err := s.db.ExecContext(ctx, `INSERT INTO node_speedtests (
 		id, node_id, telecom_latency_ms, telecom_speed_mbps, telecom_route,
@@ -250,12 +254,6 @@ func (s *Store) GetLatestNodeSpeedtest(ctx context.Context, nodeID string) (*Nod
 	if err != nil {
 		return nil, fmt.Errorf("load latest speedtest: %w", err)
 	}
-	if strings.Contains(st.MobileRoute, "移动优化") || st.MobileRoute == "CN2 GIA (移动优化)" {
-		st.MobileRoute = "CN2 GIA"
-	}
-	if strings.Contains(st.UnicomRoute, "联通优化") || st.UnicomRoute == "CN2 GIA (联通优化)" {
-		st.UnicomRoute = "CN2 GIA"
-	}
 	st.TestedAt = time.Unix(testedAt, 0).UTC().Format(time.RFC3339)
 	return &st, nil
 }
@@ -281,12 +279,6 @@ func (s *Store) ListLatestNodeSpeedtests(ctx context.Context) (map[string]NodeSp
 			&st.UnicomLatencyMs, &st.UnicomSpeedMbps, &st.UnicomRoute,
 			&st.MobileLatencyMs, &st.MobileSpeedMbps, &st.MobileRoute, &testedAt); err != nil {
 			return nil, err
-		}
-		if strings.Contains(st.MobileRoute, "移动优化") || st.MobileRoute == "CN2 GIA (移动优化)" {
-			st.MobileRoute = "CN2 GIA"
-		}
-		if strings.Contains(st.UnicomRoute, "联通优化") || st.UnicomRoute == "CN2 GIA (联通优化)" {
-			st.UnicomRoute = "CN2 GIA"
 		}
 		st.TestedAt = time.Unix(testedAt, 0).UTC().Format(time.RFC3339)
 		out[st.NodeID] = st
