@@ -77,7 +77,7 @@ async function saveAlertSettings() {
     if (res?.settings) {
       Object.assign(alertSettings, res.settings)
     }
-    ElMessage.success('告警与探测配置已保存')
+    ElMessage.success('配置已保存')
   } catch (error) {
     ElMessage.error(error instanceof Error ? error.message : '保存失败')
   } finally {
@@ -100,7 +100,7 @@ async function sendTestAlert() {
       group: alertSettings.bark_group,
       url: alertSettings.bark_url,
     })
-    ElMessage.success('配置已保存，测试通知已发出，请在 iOS 设备上查看 Bark 推送')
+    ElMessage.success('测试通知已发出')
   } catch (error) {
     ElMessage.error(error instanceof Error ? error.message : '发送测试通知失败')
   } finally {
@@ -115,7 +115,7 @@ async function triggerGFWCheck() {
     const items = res.nodes || res.results || []
     gfwResults.value = items
     gfwResultDialogVisible.value = true
-    ElMessage.success(`国内真机探测已完成（共检测 ${items.length} 个节点）`)
+    ElMessage.success('国内探测完成')
   } catch (error) {
     ElMessage.error(error instanceof Error ? error.message : '触发 GFW 探测失败')
   } finally {
@@ -379,14 +379,14 @@ onMounted(load)
                 </el-form>
               </div>
 
-              <!-- 定时探测与三网测速 -->
+              <!-- 定时探测与三网线路检测 -->
               <div class="settings-card">
                 <div class="card-header">
                   <div class="card-title">
                     <el-icon class="card-icon"><Check /></el-icon>
                     <div>
-                      <h3>定时 GFW 阻断探测与三网测速</h3>
-                      <p>定时从国内视角探测各节点连通性与三网延迟，每逢探测必推通知汇报状态。</p>
+                      <h3>定时 GFW 阻断探测与三网线路检测</h3>
+                      <p>定时从国内视角探测各节点连通性、三网延迟与回国路由线路，每逢探测必推通知汇报状态。</p>
                     </div>
                   </div>
                   <el-switch v-model="alertSettings.auto_probe_gfw_enabled" active-text="定时探测开启" inactive-text="定时探测关闭" />
@@ -400,9 +400,9 @@ onMounted(load)
                       </el-form-item>
                     </el-col>
                     <el-col :span="12">
-                      <el-form-item label="三网定时测速周期 (小时)">
+                      <el-form-item label="三网定时线路检测周期 (小时)">
                         <el-input-number v-model="alertSettings.probe_speedtest_interval_hours" :min="1" :max="168" :step="1" style="width: 100%" />
-                        <div class="form-tip">测试电信、联通、移动 TCP 延迟及测速。</div>
+                        <div class="form-tip">测试电信、联通、移动 TCP 延迟及回国路由线路。</div>
                       </el-form-item>
                     </el-col>
                   </el-row>
@@ -414,9 +414,9 @@ onMounted(load)
                       </el-form-item>
                     </el-col>
                     <el-col :span="12">
-                      <el-form-item label="业务繁忙时避让测速">
+                      <el-form-item label="业务繁忙时避让检测">
                         <el-switch v-model="alertSettings.probe_skip_when_busy" active-text="避让 (节点带宽 > 5MB/s 时跳过)" inactive-text="强制执行" />
-                        <div class="form-tip">避免在您观看高清视频或下载文件时测速造成卡顿。</div>
+                        <div class="form-tip">避免在节点流量过高时执行探测任务。</div>
                       </el-form-item>
                     </el-col>
                   </el-row>

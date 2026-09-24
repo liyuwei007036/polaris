@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"strings"
@@ -148,9 +149,11 @@ func (s *Server) testAlert(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 
 	client := NewBarkClient()
+	testBody := fmt.Sprintf("• 系统状态: 正常在线\n• 推送通道: Apple APNs (Bark)\n• 提示铃声: %s\n• 分组标识: %s\n🕒 发送时间: %s",
+		sound, group, time.Now().Format("2006-01-02 15:04:05"))
 	msg := BarkMessage{
 		Title: "🔔 [Polaris] 测试推送成功",
-		Body:  "这是一条来自 Polaris 代理管理平台的测试通知。你的 Bark 告警链路已正常连通！\n发送时间: " + time.Now().Format("15:04:05"),
+		Body:  testBody,
 		Group: group,
 		Sound: sound,
 		Level: "active",

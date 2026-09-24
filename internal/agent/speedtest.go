@@ -3,9 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
-	"io"
 	"net"
-	"net/http"
 	"os/exec"
 	"regexp"
 	"strings"
@@ -15,13 +13,13 @@ import (
 
 type SpeedtestResult struct {
 	TelecomLatencyMs int     `json:"telecom_latency_ms"`
-	TelecomSpeedMbps float64 `json:"telecom_speed_mbps"`
+	TelecomSpeedMbps float64 `json:"telecom_speed_mbps,omitempty"`
 	TelecomRoute     string  `json:"telecom_route"`
 	UnicomLatencyMs  int     `json:"unicom_latency_ms"`
-	UnicomSpeedMbps  float64 `json:"unicom_speed_mbps"`
+	UnicomSpeedMbps  float64 `json:"unicom_speed_mbps,omitempty"`
 	UnicomRoute      string  `json:"unicom_route"`
 	MobileLatencyMs  int     `json:"mobile_latency_ms"`
-	MobileSpeedMbps  float64 `json:"mobile_speed_mbps"`
+	MobileSpeedMbps  float64 `json:"mobile_speed_mbps,omitempty"`
 	MobileRoute      string  `json:"mobile_route"`
 }
 
@@ -39,37 +37,6 @@ func measureTCPLatency(ctx context.Context, target string) int {
 		return 1
 	}
 	return latency
-}
-
-// measureThroughput downloads a real sample block (5 MiB) from a domestic CDN endpoint to measure download bandwidth.
-// It measures only the duration of the data transfer, excluding connection/TLS handshake time.
-func measureThroughput(ctx context.Context, testURL string) float64 {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, testURL, nil)
-	if err != nil {
-		return 0
-	}
-	client := &http.Client{Timeout: 8 * time.Second}
-	resp, err := client.Do(req)
-	if err != nil {
-		return 0
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return 0
-	}
-
-	const maxSampleBytes = 5 * 1024 * 1024 // 5 MiB sample
-	streamStart := time.Now()
-	written, err := io.Copy(io.Discard, io.LimitReader(resp.Body, maxSampleBytes))
-	streamElapsed := time.Since(streamStart).Seconds()
-	if err != nil || streamElapsed <= 0.05 || written == 0 {
-		return 0
-	}
-
-	// Calculate Mbps: (bytes * 8) / (1,000,000 * elapsed)
-	mbps := (float64(written) * 8.0) / (1000.0 * 1000.0 * streamElapsed)
-	return float64(int(mbps*10)) / 10.0 // 1 decimal place
 }
 
 // traceRouteHops extracts intermediate IP hops towards the target using traceroute or tracepath.
@@ -298,48 +265,23 @@ func runSpeedtest(ctx context.Context, task Task) TaskResult {
 		}
 	}
 
-	// Real throughput measurement (downloading 5 MiB test block, timing only the transfer phase)
-	speed := measureThroughput(timeoutCtx, "https://mirrors.aliyun.com/centos/7/os/x86_64/Packages/kernel-3.10.0-1160.el7.x86_64.rpm")
-	if speed == 0 {
-		speed = measureThroughput(timeoutCtx, "https://speed.cloudflare.com/__down?bytes=10000000")
-	}
-	if speed == 0 {
-		speed = measureThroughput(timeoutCtx, "https://mirrors.huaweicloud.com/repository/conf/CentOS-Base-7.repo")
-	}
-
-	var telecomSpeed, unicomSpeed, mobileSpeed float64
-	if speed > 0 {
-		if telecomLatency > 0 {
-			telecomSpeed = speed
-		}
-		if unicomLatency > 0 {
-			unicomSpeed = speed
-		}
-		if mobileLatency > 0 {
-			mobileSpeed = speed
-		}
-	}
-
 	result := SpeedtestResult{
 		TelecomLatencyMs: telecomLatency,
-		TelecomSpeedMbps: telecomSpeed,
 		TelecomRoute:     telecomRoute,
 		UnicomLatencyMs:  unicomLatency,
-		UnicomSpeedMbps:  unicomSpeed,
 		UnicomRoute:      unicomRoute,
 		MobileLatencyMs:  mobileLatency,
-		MobileSpeedMbps:  mobileSpeed,
 		MobileRoute:      mobileRoute,
 	}
 
 	encoded, err := json.Marshal(result)
 	if err != nil {
-		return TaskResult{Status: "failed", Summary: "编码测速数据失败：" + err.Error()}
+		return TaskResult{Status: "failed", Summary: "编码检测数据失败：" + err.Error()}
 	}
 
 	return TaskResult{
 		Status:  "succeeded",
-		Summary: "三网测速与线路探测完成",
+		Summary: "三网延迟与线路检测完成",
 		Data:    string(encoded),
 	}
 }

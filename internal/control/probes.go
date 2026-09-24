@@ -481,19 +481,19 @@ func (s *Server) probeSingleNode(ctx context.Context, node Node, host string, po
 	return item
 }
 
-// ExecuteNodeSpeedtest runs a three-network speedtest task on an agent and records the result.
+// ExecuteNodeSpeedtest runs a three-network latency and route detection task on an agent and records the result.
 func (s *Server) ExecuteNodeSpeedtest(ctx context.Context, nodeID string) (*NodeSpeedtest, error) {
 	node, err := s.store.GetNode(ctx, nodeID)
 	if err != nil {
 		return nil, err
 	}
 	if !node.Online {
-		return nil, errors.New("服务器当前处于离线状态，无法进行测速")
+		return nil, errors.New("服务器当前处于离线状态，无法进行检测")
 	}
 
 	data, err := s.AskNode(ctx, nodeID, "speedtest.run", "{}")
 	if err != nil {
-		return nil, fmt.Errorf("执行测速任务失败: %w", err)
+		return nil, fmt.Errorf("执行三网检测任务失败: %w", err)
 	}
 
 	var res struct {
@@ -508,7 +508,7 @@ func (s *Server) ExecuteNodeSpeedtest(ctx context.Context, nodeID string) (*Node
 		MobileRoute      string  `json:"mobile_route"`
 	}
 	if err := json.Unmarshal([]byte(data), &res); err != nil {
-		return nil, fmt.Errorf("解析测速数据失败: %w", err)
+		return nil, fmt.Errorf("解析检测数据失败: %w", err)
 	}
 
 	st := NodeSpeedtest{

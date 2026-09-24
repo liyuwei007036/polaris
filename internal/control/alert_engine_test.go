@@ -58,7 +58,7 @@ func TestBarkClientAndAlertEngine(t *testing.T) {
 		t.Fatalf("update alert settings: %v", err)
 	}
 
-	engine := NewAlertEngine(store)
+	engine := NewAlertEngine(store, nil)
 
 	// 3. Test Connection Telemetry Checks:
 	// A. Traffic Spike Check
@@ -89,19 +89,61 @@ func TestBarkClientAndAlertEngine(t *testing.T) {
 		{NodeID: "node-2", NodeName: "HK-01", OverseasOK: true, DomesticOK: true, LatencyMs: 35},
 	})
 
-	time.Sleep(100 * time.Millisecond)
+	// 5. Test Subscription Pull Success & Failure
+	engine.NotifySubscriptionPullSuccess("常用主力节点", "120.24.56.78", "Clash-Verge/v1.7.7")
+	engine.NotifySubscriptionPullFailed("abcdef123456", "凭据无效", "222.186.42.11", "curl/7.88.1")
+
+	// 6. Test Login Failure
+	engine.NotifyLoginFailed("admin", "114.114.114.114", "密码错误", "Mozilla/5.0")
+
+	// 7. Test Abnormal Port/Host Scanning Detection
+	scanConns := make([]storedConnection, 20)
+	for i := 0; i < 20; i++ {
+		scanConns[i] = storedConnection{
+			ID:          "s",
+			SourceIP:    "198.51.100.22:5000",
+			Host:        "host-" + string(rune('a'+i)) + ".com",
+			Destination: "1.1.1.1:80",
+		}
+	}
+	engine.CheckConnectionsTelemetry("node-scan", "US-West", 100, 100, scanConns)
+
+	time.Sleep(200 * time.Millisecond)
 
 	mu.Lock()
-	var gfwAlertFound bool
+	var gfwAlertFound, subOkFound, subFailFound, loginFailFound, scanFound bool
 	for _, m := range receivedMessages {
 		if m.Level == "critical" && m.Title == "🚨 [Polaris] 发现节点被阻断" {
 			gfwAlertFound = true
-			break
+		}
+		if m.Title == "📥 [Polaris] 订阅下载成功" {
+			subOkFound = true
+		}
+		if m.Title == "❌ [Polaris] 订阅下载失败" {
+			subFailFound = true
+		}
+		if m.Title == "⚠️ [Polaris] 控制台登录失败" {
+			loginFailFound = true
+		}
+		if m.Title == "🚨 [Polaris] 检测到异常网络扫描" {
+			scanFound = true
 		}
 	}
 	mu.Unlock()
 
 	if !gfwAlertFound {
 		t.Errorf("expected critical GFW blocked alert to be sent")
+	}
+	if !subOkFound {
+		t.Errorf("expected subscription pull success alert")
+	}
+	if !subFailFound {
+		t.Errorf("expected subscription pull failed alert")
+	}
+	if !loginFailFound {
+		t.Errorf("expected login failed alert")
+	}
+	if !scanFound {
+		t.Errorf("expected abnormal scan alert")
 	}
 }

@@ -38,8 +38,9 @@ const agentPort = ref(19994)
 
 const editSheet = ref(false)
 const editNode = ref(null)
-const editForm = ref({ name: '', client_address: '' })
+const editForm = ref({ name: '', client_address: '', scanner_protection: false })
 const editSaving = ref(false)
+const scanners = ref({})
 
 const actionsOpen = ref(false)
 const actionTarget = ref(null)
@@ -73,10 +74,27 @@ async function load(silent = false) {
     pending.value = registrations.registrations || []
     metrics.value = Object.fromEntries((metricResult.nodes || []).map((entry) => [entry.node_id, entry.report]))
     await loadSingBoxLatest()
+    loadScanners().catch(() => {})
   } finally {
     loading.value = false
     refreshing.value = false
   }
+}
+
+async function loadScanners() {
+  if (!isAdmin.value) return
+  try {
+    const res = await api('/firewall/rules').catch(() => ({ nodes: [] }))
+    if (res?.nodes) {
+      const map = {}
+      for (const n of res.nodes) {
+        if (n && n.node_id) {
+          map[n.node_id] = Boolean(n.scanner_protection)
+        }
+      }
+      scanners.value = map
+    }
+  } catch (_) {}
 }
 
 // 控制台的域名只是 agent 拨号地址的一个猜测：控制台常在反向代理后面，
@@ -233,9 +251,21 @@ async function revoke(node) {
   await load()
 }
 
-function openEdit(node) {
+async function openEdit(node) {
   editNode.value = node
-  editForm.value = { name: node.name, client_address: node.client_address || '' }
+  let isProtected = Boolean(scanners.value[node.id])
+  if (scanners.value[node.id] === undefined && node.online && isAdmin.value) {
+    const res = await api(`/nodes/${node.id}/firewall/rules`).catch(() => null)
+    if (res?.scanner_protection !== undefined) {
+      isProtected = Boolean(res.scanner_protection)
+      scanners.value[node.id] = isProtected
+    }
+  }
+  editForm.value = {
+    name: node.name,
+    client_address: node.client_address || '',
+    scanner_protection: isProtected,
+  }
   editSheet.value = true
 }
 
@@ -246,6 +276,10 @@ async function saveNode() {
       name: editForm.value.name.trim(),
       client_address: editForm.value.client_address.trim(),
     })
+    if (isAdmin.value && editNode.value.online && editForm.value.scanner_protection !== Boolean(scanners.value[editNode.value.id])) {
+      const updated = await post(`/nodes/${editNode.value.id}/firewall/scanners`, { enabled: editForm.value.scanner_protection })
+      scanners.value[editNode.value.id] = Boolean(updated.scanner_protection)
+    }
     ElMessage.success('服务器信息已保存')
     editSheet.value = false
     await load()
@@ -307,6 +341,7 @@ onBeforeUnmount(() => {
           </span>
           <span v-if="!node.client_address" class="m-pill m-pill--warning">缺地址</span>
           <span v-if="agentUpdateAvailable(node)" class="m-pill m-pill--warning">可升级</span>
+          <span v-if="scanners[node.id]" class="m-pill" style="background: rgba(16, 185, 129, 0.12); color: #059669; border: 1px solid rgba(16, 185, 129, 0.25);">测绘防御</span>
         </div>
         <div class="m-item__stats">
           <span class="m-stat"><b :class="{ 'is-muted': !node.online }">↓ {{ statOf(node, 'down') }}</b><small>实时下行</small></span>
@@ -341,6 +376,19 @@ onBeforeUnmount(() => {
         <label class="m-field__label">客户端连接域名或 IP 地址</label>
         <el-input v-model="editForm.client_address" aria-label="客户端连接域名或 IP 地址" placeholder="例如：proxy.example.com" />
         <div class="m-field__hint">接入时会自动填入来源 IP。仅填域名或 IP，不含 http://、端口与路径。</div>
+      </div>
+      <div class="m-field">
+        <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px;">
+          <label class="m-field__label" style="margin: 0">主动网络测绘防御</label>
+          <el-switch
+            v-model="editForm.scanner_protection"
+            :disabled="!isAdmin || !editNode?.online"
+            active-text="已开启"
+            inactive-text="未开启"
+            inline-prompt
+          />
+        </div>
+        <div class="m-field__hint">自动阻断 Shodan、Censys 等公网扫描引擎探测，隐藏服务器服务特征。</div>
       </div>
       <template #footer>
         <el-button @click="editSheet = false">取消</el-button>

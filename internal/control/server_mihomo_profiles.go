@@ -383,13 +383,24 @@ func (s *Server) rotateMihomoClientSubscription(w http.ResponseWriter, r *http.R
 }
 
 func (s *Server) mihomoClientSubscription(w http.ResponseWriter, r *http.Request) {
+	ip := requestIP(r.RemoteAddr, map[string]string{
+		"CF-Connecting-IP": r.Header.Get("CF-Connecting-IP"),
+		"X-Real-IP":        r.Header.Get("X-Real-IP"),
+		"X-Forwarded-For":  r.Header.Get("X-Forwarded-For"),
+	})
 	token := strings.TrimSpace(r.PathValue("token"))
 	if token == "" || len(token) > 256 {
+		if s.alertEngine != nil {
+			s.alertEngine.NotifySubscriptionPullFailed(token, "凭据为空或超长", ip, r.UserAgent())
+		}
 		writeError(w, ErrNotFound)
 		return
 	}
 	access, err := s.store.mihomoSubscriptionAccessByToken(r.Context(), token)
 	if err != nil {
+		if s.alertEngine != nil {
+			s.alertEngine.NotifySubscriptionPullFailed(token, "订阅凭据不存在或已失效", ip, r.UserAgent())
+		}
 		writeError(w, err)
 		return
 	}
@@ -397,20 +408,21 @@ func (s *Server) mihomoClientSubscription(w http.ResponseWriter, r *http.Request
 	// did not exist, so a probe cannot tell a wrong secret from a closed
 	// window or a subscription that has run out.
 	if !access.permits(r.UserAgent(), s.now()) {
+		if s.alertEngine != nil {
+			s.alertEngine.NotifySubscriptionPullFailed(access.ConfigID, "访问限制拦截 (User-Agent不匹配或授权已过期)", ip, r.UserAgent())
+		}
 		writeError(w, ErrNotFound)
 		return
 	}
 	configID := access.ConfigID
 	name, yaml, err := s.store.GenerateStoredMihomoYAML(r.Context(), configID)
 	if err != nil {
+		if s.alertEngine != nil {
+			s.alertEngine.NotifySubscriptionPullFailed(configID, "生成配置失败: "+err.Error(), ip, r.UserAgent())
+		}
 		writeError(w, err)
 		return
 	}
-	ip := requestIP(r.RemoteAddr, map[string]string{
-		"CF-Connecting-IP": r.Header.Get("CF-Connecting-IP"),
-		"X-Real-IP":        r.Header.Get("X-Real-IP"),
-		"X-Forwarded-For":  r.Header.Get("X-Forwarded-For"),
-	})
 	// The access trail is an audit aid, not a precondition: failing the pull
 	// because the log write failed would break clients that are entitled to
 	// the configuration.
@@ -436,6 +448,9 @@ func (s *Server) mihomoClientSubscription(w http.ResponseWriter, r *http.Request
 			w.WriteHeader(http.StatusNotModified)
 			return
 		}
+	}
+	if s.alertEngine != nil {
+		s.alertEngine.NotifySubscriptionPullSuccess(name, ip, r.UserAgent())
 	}
 	w.Header().Set("Content-Type", "application/yaml; charset=utf-8")
 	utf8Filename := url.PathEscape(name + ".yaml")

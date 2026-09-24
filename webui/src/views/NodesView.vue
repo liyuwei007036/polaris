@@ -1,7 +1,7 @@
 <script setup>
 import { computed, inject, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { CopyDocument, Edit, Odometer, Plus, Refresh, RemoveFilled, Search, Top } from '@element-plus/icons-vue'
+import { Connection, CopyDocument, Edit, Lock, Plus, Refresh, RemoveFilled, Search, Top } from '@element-plus/icons-vue'
 import { api, post, put } from '../api'
 import { formatBytes, formatDateTime, includesText } from '../format'
 import { subscribeLive } from '../live'
@@ -19,6 +19,8 @@ const pending = ref([])
 const metrics = ref({})
 const speedtests = ref({})
 const speedtesting = reactive({})
+const scanners = ref({})
+const togglingScanner = reactive({})
 const tokenDialog = ref(false)
 const token = ref('')
 const expiresAt = ref('')
@@ -28,7 +30,7 @@ const masterHost = ref('')
 const agentPort = ref(19994)
 const editDialog = ref(false)
 const editNode = ref(null)
-const editForm = ref({ name: '', client_address: '' })
+const editForm = ref({ name: '', client_address: '', scanner_protection: false })
 const editSaving = ref(false)
 const refreshing = ref(false)
 const keyword = ref('')
@@ -70,6 +72,37 @@ async function load(silent = false) {
   }
   // sing-box 官方版本属于可选更新提示，后台静默请求，不阻塞页面表格渲染
   loadSingBoxLatest().catch(() => {})
+  loadScanners().catch(() => {})
+}
+
+async function loadScanners() {
+  if (!isAdmin.value) return
+  try {
+    const res = await api('/firewall/rules').catch(() => ({ nodes: [] }))
+    if (res?.nodes) {
+      const map = {}
+      for (const n of res.nodes) {
+        if (n && n.node_id) {
+          map[n.node_id] = Boolean(n.scanner_protection)
+        }
+      }
+      scanners.value = map
+    }
+  } catch (_) {}
+}
+
+async function toggleScannerDirect(node) {
+  const current = Boolean(scanners.value[node.id])
+  togglingScanner[node.id] = true
+  try {
+    const updated = await post(`/nodes/${node.id}/firewall/scanners`, { enabled: !current })
+    scanners.value[node.id] = Boolean(updated.scanner_protection)
+    ElMessage.success(`“${node.name}”测绘防御已${!current ? '开启' : '关闭'}`)
+  } catch (error) {
+    ElMessage.error(error instanceof Error ? error.message : '切换失败')
+  } finally {
+    togglingScanner[node.id] = false
+  }
 }
 
 async function runSpeedtest(node) {
@@ -79,9 +112,9 @@ async function runSpeedtest(node) {
     if (res?.result) {
       speedtests.value = { ...speedtests.value, [node.id]: res.result }
     }
-    ElMessage.success(`“${node.name}”三网测速完成`)
+    ElMessage.success(`“${node.name}”三网延迟与线路检测完成`)
   } catch (error) {
-    ElMessage.error(error instanceof Error ? error.message : '测速执行失败')
+    ElMessage.error(error instanceof Error ? error.message : '线路检测执行失败')
   } finally {
     speedtesting[node.id] = false
   }
@@ -190,9 +223,21 @@ async function upgradeSingBox(node) {
   ElMessage.success('升级任务已下发，完成后服务器会上报新的 sing-box 版本')
 }
 
-function openEdit(node) {
+async function openEdit(node) {
   editNode.value = node
-  editForm.value = { name: node.name, client_address: node.client_address || '' }
+  let isProtected = Boolean(scanners.value[node.id])
+  if (scanners.value[node.id] === undefined && node.online && isAdmin.value) {
+    const res = await api(`/nodes/${node.id}/firewall/rules`).catch(() => null)
+    if (res?.scanner_protection !== undefined) {
+      isProtected = Boolean(res.scanner_protection)
+      scanners.value[node.id] = isProtected
+    }
+  }
+  editForm.value = {
+    name: node.name,
+    client_address: node.client_address || '',
+    scanner_protection: isProtected,
+  }
   editDialog.value = true
 }
 
@@ -203,6 +248,10 @@ async function saveNode() {
       name: editForm.value.name.trim(),
       client_address: editForm.value.client_address.trim(),
     })
+    if (isAdmin.value && editNode.value.online && editForm.value.scanner_protection !== Boolean(scanners.value[editNode.value.id])) {
+      const updated = await post(`/nodes/${editNode.value.id}/firewall/scanners`, { enabled: editForm.value.scanner_protection })
+      scanners.value[editNode.value.id] = Boolean(updated.scanner_protection)
+    }
     ElMessage.success('服务器信息已保存')
     editDialog.value = false
     await load()
@@ -212,6 +261,7 @@ async function saveNode() {
     editSaving.value = false
   }
 }
+
 
 function isValidRoute(route) {
   if (!route) return false
@@ -295,7 +345,22 @@ onBeforeUnmount(() => {
           <el-table-column label="客户端连接地址" min-width="170" show-overflow-tooltip>
             <template #default="{ row }"><span v-if="row.client_address" class="mono">{{ row.client_address }}</span><el-tag v-else type="warning">未配置</el-tag></template>
           </el-table-column>
-          <el-table-column label="三网延迟 / 线路 / 测速" min-width="260">
+          <el-table-column label="主动测绘防御" width="130" align="center">
+            <template #default="{ row }">
+              <el-tooltip :content="scanners[row.id] ? '已阻断 Shodan、Censys 等公网扫描引擎探测' : '未开启测绘防御，点击快速开启'">
+                <el-switch
+                  :model-value="Boolean(scanners[row.id])"
+                  :loading="Boolean(togglingScanner[row.id])"
+                  :disabled="!isAdmin || !row.online"
+                  active-text="已开启"
+                  inactive-text="未开启"
+                  inline-prompt
+                  @change="toggleScannerDirect(row)"
+                />
+              </el-tooltip>
+            </template>
+          </el-table-column>
+          <el-table-column label="三网延迟 / 线路" min-width="260">
             <template #default="{ row }">
               <template v-if="speedtests[row.id]">
                 <div class="cell-main speedtest-badges">
@@ -320,24 +385,8 @@ onBeforeUnmount(() => {
                     {{ speedtests[row.id].mobile_route }}
                   </span>
                 </div>
-                <div class="cell-sub mono">
-                  <template v-if="speedtests[row.id].telecom_speed_mbps != null && (speedtests[row.id].telecom_speed_mbps > 0 || speedtests[row.id].unicom_speed_mbps > 0 || speedtests[row.id].mobile_speed_mbps > 0)">
-                    <span v-if="speedtests[row.id].telecom_speed_mbps === speedtests[row.id].unicom_speed_mbps && speedtests[row.id].unicom_speed_mbps === speedtests[row.id].mobile_speed_mbps">
-                      国内实测下行 {{ speedtests[row.id].telecom_speed_mbps }} Mbps
-                    </span>
-                    <span v-else>
-                      电 {{ speedtests[row.id].telecom_speed_mbps }}M · 联 {{ speedtests[row.id].unicom_speed_mbps }}M · 移 {{ speedtests[row.id].mobile_speed_mbps }}M
-                    </span>
-                  </template>
-                  <template v-else-if="speedtests[row.id].download_speed_bps">
-                    ↓ {{ formatBytes(speedtests[row.id].download_speed_bps, '/s') }}
-                  </template>
-                  <template v-else>
-                    测速完成
-                  </template>
-                </div>
               </template>
-              <span v-else class="subtle">未测速</span>
+              <span v-else class="subtle">未检测</span>
             </template>
           </el-table-column>
           <el-table-column label="实时 / 累计流量" min-width="196" show-overflow-tooltip>
@@ -358,7 +407,7 @@ onBeforeUnmount(() => {
           <el-table-column label="最后在线" width="152"><template #default="{ row }">{{ formatDateTime(row.last_seen_at, '从未') }}</template></el-table-column>
           <el-table-column label="操作" width="240" fixed="right" class-name="action-column">
             <template #default="{ row }">
-              <el-button v-if="canWrite && row.online" link :icon="Odometer" :loading="Boolean(speedtesting[row.id])" @click="runSpeedtest(row)">测速</el-button>
+              <el-button v-if="canWrite && row.online" link :icon="Connection" :loading="Boolean(speedtesting[row.id])" @click="runSpeedtest(row)">线路检测</el-button>
               <el-button v-if="canWrite" link :icon="Edit" @click="openEdit(row)">编辑</el-button>
               <el-button v-if="isAdmin && agentUpdateAvailable(row)" link type="primary" :icon="Top" @click="upgradeAgent(row)">升级</el-button>
               <el-button v-if="isAdmin" link type="danger" :icon="RemoveFilled" @click="revoke(row)">移除</el-button>
@@ -388,13 +437,28 @@ onBeforeUnmount(() => {
       </template>
     </el-dialog>
 
-    <el-dialog v-model="editDialog" title="编辑服务器" width="520px">
+    <el-dialog v-model="editDialog" title="编辑服务器" width="540px">
       <el-form label-position="top">
         <el-form-item label="服务器名称" required>
           <el-input v-model="editForm.name" maxlength="128" placeholder="例如：香港节点 01" />
         </el-form-item>
         <el-form-item label="客户端连接域名或 IP 地址">
           <el-input v-model="editForm.client_address" placeholder="例如：proxy.example.com 或 203.0.113.10" @keyup.enter="saveNode" />
+        </el-form-item>
+        <el-form-item label="主动网络测绘防御">
+          <div class="scanner-edit-box">
+            <div class="scanner-edit-text">
+              <div class="scanner-edit-heading">阻断公网扫描与特征探测</div>
+              <div class="subtle">自动屏蔽 Shodan、Censys 等公网搜索引擎的测绘扫描，保护代理端口不被嗅探发现</div>
+            </div>
+            <el-switch
+              v-model="editForm.scanner_protection"
+              :disabled="!isAdmin || !editNode?.online"
+              active-text="已开启"
+              inactive-text="未开启"
+              inline-prompt
+            />
+          </div>
         </el-form-item>
         <el-alert title="接入时会自动填入来源 IP。仅填域名或 IP，不含 http://、端口与路径。" type="info" show-icon :closable="false" />
       </el-form>
@@ -407,6 +471,26 @@ onBeforeUnmount(() => {
 </template>
 
 <style scoped>
+.scanner-edit-box {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  padding: 10px 14px;
+  border: 1px solid var(--sb-line);
+  border-radius: var(--sb-radius-sm);
+  background: var(--sb-surface-muted, rgba(148, 163, 184, 0.05));
+  box-sizing: border-box;
+}
+.scanner-edit-text {
+  flex: 1;
+  margin-right: 16px;
+}
+.scanner-edit-heading {
+  font-weight: 600;
+  color: var(--sb-text-1);
+  margin-bottom: 2px;
+}
 .speedtest-badges {
   display: flex;
   gap: 5px;

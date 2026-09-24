@@ -21,6 +21,20 @@ for (const method of ['alert', 'confirm', 'prompt']) {
   }, appContext)
 }
 
+for (const method of ['success', 'warning', 'info', 'error']) {
+  const orig = ElMessage[method]
+  ElMessage[method] = (options, appContext) => {
+    if (typeof options === 'string') {
+      options = { message: options }
+    }
+    return orig({
+      grouping: true,
+      duration: 2500,
+      ...options,
+    }, appContext)
+  }
+}
+
 // Windows 和多数 Linux 桌面没有国旗字形，名称里写的 🇭🇰 会退化成 HK 这样的字母
 // 对。补一份只含国旗字形的子集字体（Twemoji，CC-BY 4.0，78 KB，随包发布不依赖
 // 外网），页面和图表画布就都能画出旗帜。polyfill 自己探测平台，macOS 与 iOS 上
@@ -33,7 +47,12 @@ if (polyfillCountryFlagEmojis(FLAG_FONT_FAMILY, flagFontURL)) {
 
 window.addEventListener('unhandledrejection', (event) => {
   if (event.reason instanceof Error) {
-    ElMessage.error(event.reason.message)
+    const msg = event.reason.message || ''
+    if (event.reason.name === 'AbortError' || msg.includes('cancel') || msg.includes('aborted')) {
+      event.preventDefault()
+      return
+    }
+    ElMessage.error(msg)
     event.preventDefault()
   }
 })
