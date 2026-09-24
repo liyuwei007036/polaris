@@ -18,7 +18,7 @@ type BarkMessage struct {
 	Body      string `json:"body"`
 	Group     string `json:"group,omitempty"`
 	Sound     string `json:"sound,omitempty"`
-	Level     string `json:"level,omitempty"` // active, timeSensitive
+	Level     string `json:"level,omitempty"` // active
 	Icon      string `json:"icon,omitempty"`
 	URL       string `json:"url,omitempty"`
 }
@@ -62,12 +62,11 @@ func (c *BarkClient) Send(ctx context.Context, server, deviceKey string, msg Bar
 	msg.Sound = sound
 
 	// Interruption level in iOS:
-	// - "passive" deliberately silences notification (no sound, no screen wake).
-	// - "critical" requires special Apple Critical Alerts entitlement and user manual switch in iOS Settings.
-	// Standardize to "active" or "timeSensitive" so notifications ALWAYS play their custom sound!
-	if msg.Level == "" || msg.Level == "passive" || msg.Level == "critical" {
-		msg.Level = "active"
-	}
+	// In iOS, "active" strictly obeys the hardware silent switch and volume:
+	// - When iPhone is in Silent mode (静音模式): stays silent, never makes sound.
+	// - When iPhone is in Normal mode (正常模式 / 非静音): plays custom sound.
+	// ("critical" ignores silent mode; "passive" silences even in normal mode).
+	msg.Level = "active"
 
 	// Normalize target URL.
 	// Bark V2 API standard endpoint is POST /push with device_key in JSON body.

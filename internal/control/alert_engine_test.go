@@ -113,8 +113,8 @@ func TestBarkClientAndAlertEngine(t *testing.T) {
 	mu.Lock()
 	var gfwAlertFound, subOkFound, subFailFound, loginFailFound, scanFound bool
 	for _, m := range receivedMessages {
-		if m.Level == "passive" {
-			t.Errorf("found alert with passive level which causes iOS to silence the sound: %s", m.Title)
+		if m.Level != "active" {
+			t.Errorf("expected alert level to be 'active' (strictly obeys iOS silent switch), got '%s' for: %s", m.Level, m.Title)
 		}
 		if m.Title == "🚨 [Polaris] 发现节点被阻断" {
 			gfwAlertFound = true
