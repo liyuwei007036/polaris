@@ -204,6 +204,17 @@ async function saveNode() {
   }
 }
 
+function isValidRoute(route) {
+  if (!route) return false
+  const trimmed = route.trim()
+  return trimmed !== '' && trimmed !== '未知' && trimmed !== '不可达'
+}
+
+function hasRecognizedRoutes(st) {
+  if (!st) return false
+  return isValidRoute(st.telecom_route) || isValidRoute(st.unicom_route) || isValidRoute(st.mobile_route)
+}
+
 onMounted(() => {
   load()
   stopConnections = subscribeConnections(() => {})
@@ -289,26 +300,26 @@ onBeforeUnmount(() => {
                     <span class="ping-badge ping-telecom">电 {{ getPingStr(speedtests[row.id].telecom_latency_ms ?? speedtests[row.id].telecom_ping_ms) }}</span>
                   </el-tooltip>
                 </div>
-                <div v-if="speedtests[row.id].telecom_route || speedtests[row.id].unicom_route || speedtests[row.id].mobile_route" class="route-tags">
-                  <span v-if="speedtests[row.id].telecom_route" :class="['route-tag', speedtests[row.id].telecom_route.includes('CN2') ? 'route-premium' : 'route-normal']">
+                <div v-if="hasRecognizedRoutes(speedtests[row.id])" class="route-tags">
+                  <span v-if="isValidRoute(speedtests[row.id].telecom_route)" :class="['route-tag', speedtests[row.id].telecom_route.includes('CN2') ? 'route-premium' : 'route-normal']">
                     {{ speedtests[row.id].telecom_route }}
                   </span>
-                  <span v-if="speedtests[row.id].unicom_route && speedtests[row.id].unicom_route.includes('9929')" class="route-tag route-premium">
+                  <span v-if="isValidRoute(speedtests[row.id].unicom_route)" :class="['route-tag', speedtests[row.id].unicom_route.includes('9929') ? 'route-premium' : 'route-normal']">
                     {{ speedtests[row.id].unicom_route }}
                   </span>
-                  <span v-if="speedtests[row.id].mobile_route && speedtests[row.id].mobile_route.includes('CMIN2')" class="route-tag route-premium">
+                  <span v-if="isValidRoute(speedtests[row.id].mobile_route)" :class="['route-tag', speedtests[row.id].mobile_route.includes('CMIN2') ? 'route-premium' : 'route-normal']">
                     {{ speedtests[row.id].mobile_route }}
                   </span>
                 </div>
                 <div class="cell-sub mono">
-                  <template v-if="speedtests[row.id].telecom_speed_mbps != null && speedtests[row.id].telecom_speed_mbps > 0">
+                  <template v-if="speedtests[row.id].telecom_speed_mbps != null && (speedtests[row.id].telecom_speed_mbps > 0 || speedtests[row.id].unicom_speed_mbps > 0 || speedtests[row.id].mobile_speed_mbps > 0)">
                     电 {{ speedtests[row.id].telecom_speed_mbps }}M · 联 {{ speedtests[row.id].unicom_speed_mbps }}M · 移 {{ speedtests[row.id].mobile_speed_mbps }}M
                   </template>
                   <template v-else-if="speedtests[row.id].download_speed_bps">
                     ↓ {{ formatBytes(speedtests[row.id].download_speed_bps, '/s') }}
                   </template>
                   <template v-else>
-                    测试完成
+                    测速完成
                   </template>
                 </div>
               </template>

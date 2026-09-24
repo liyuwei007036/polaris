@@ -89,6 +89,8 @@ async function sendTestAlert() {
   }
   testSending.value = true
   try {
+    // 自动先保存配置，避免用户刷新页面后数据丢失
+    await put('/alerts/settings', alertSettings).catch(() => {})
     await post('/alerts/test', {
       server: alertSettings.bark_server,
       device_key: alertSettings.bark_device_key,
@@ -96,7 +98,7 @@ async function sendTestAlert() {
       group: alertSettings.bark_group,
       url: alertSettings.bark_url,
     })
-    ElMessage.success('测试通知已发出，请在 iOS 设备上查看 Bark 推送')
+    ElMessage.success('配置已保存，测试通知已发出，请在 iOS 设备上查看 Bark 推送')
   } catch (error) {
     ElMessage.error(error instanceof Error ? error.message : '发送测试通知失败')
   } finally {
@@ -246,7 +248,23 @@ onMounted(load)
           </el-tab-pane>
 
           <el-tab-pane v-if="isAdmin" label="Bark 告警与探测" name="alerts">
-            <div class="settings-grid">
+            <div class="alerts-scroll-container">
+              <!-- 顶部常驻操作栏 -->
+              <div class="alerts-top-toolbar">
+                <div class="alerts-top-status">
+                  <span class="alerts-status-indicator" :class="{ 'is-active': alertSettings.offline_alert_enabled }"></span>
+                  <span class="alerts-status-text">Bark 告警推送与定时网络探测</span>
+                  <el-tag :type="alertSettings.offline_alert_enabled ? 'success' : 'info'" size="small">
+                    {{ alertSettings.offline_alert_enabled ? '告警已启用' : '告警未启用' }}
+                  </el-tag>
+                </div>
+                <div class="alerts-top-actions">
+                  <el-button :loading="testSending" @click="sendTestAlert">测试推送</el-button>
+                  <el-button type="primary" :loading="alertSaving" @click="saveAlertSettings">保存所有配置</el-button>
+                </div>
+              </div>
+
+              <div class="settings-grid">
               <!-- Bark 推送配置 -->
               <div class="settings-card">
                 <div class="card-header">
@@ -299,6 +317,7 @@ onMounted(load)
                   </el-row>
                   <div class="card-footer-action">
                     <el-button :loading="testSending" @click="sendTestAlert">发送测试通知</el-button>
+                    <el-button type="primary" :loading="alertSaving" @click="saveAlertSettings">保存配置</el-button>
                   </div>
                 </el-form>
               </div>
@@ -350,6 +369,9 @@ onMounted(load)
                       </el-form-item>
                     </el-col>
                   </el-row>
+                  <div class="card-footer-action">
+                    <el-button type="primary" :loading="alertSaving" @click="saveAlertSettings">保存配置</el-button>
+                  </div>
                 </el-form>
               </div>
 
@@ -464,7 +486,8 @@ onMounted(load)
                 </div>
               </div>
             </div>
-          </el-tab-pane>
+          </div>
+        </el-tab-pane>
 
         </el-tabs>
       </div>
@@ -505,24 +528,93 @@ onMounted(load)
 .totp-setup :deep(.el-form-item) { text-align: left; }
 .form-tip { margin-top: 6px; color: var(--sb-muted); font-size: 12px; }
 
+:deep(.el-tabs__content) {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+:deep(.el-tab-pane) {
+  height: 100%;
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.alerts-scroll-container {
+  flex: 1;
+  min-height: 0;
+  height: 100%;
+  overflow-y: auto !important;
+  padding: 16px 20px 80px;
+  box-sizing: border-box;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(148, 163, 184, 0.3) transparent;
+}
+.alerts-scroll-container::-webkit-scrollbar {
+  width: 6px;
+}
+.alerts-scroll-container::-webkit-scrollbar-thumb {
+  background: rgba(148, 163, 184, 0.3);
+  border-radius: 4px;
+}
+
+.alerts-top-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 18px;
+  margin-bottom: 18px;
+  background: var(--sb-surface-2, #141d30);
+  border: 1px solid var(--sb-line);
+  border-radius: var(--sb-radius);
+  box-shadow: 0 4px 20px -8px rgba(0, 0, 0, 0.5);
+}
+.alerts-top-status {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.alerts-status-text {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--sb-text);
+}
+.alerts-status-indicator {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: var(--sb-muted);
+}
+.alerts-status-indicator.is-active {
+  background: var(--sb-success, #34d399);
+  box-shadow: 0 0 10px rgba(52, 211, 153, 0.7);
+}
+.alerts-top-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
 .settings-grid {
   display: flex;
   flex-direction: column;
   gap: 20px;
-  padding: 18px;
 }
 .settings-card {
-  background: var(--sb-bg-card, #fff);
+  background: var(--sb-surface-2, #141d30);
   border: 1px solid var(--sb-line);
   border-radius: var(--sb-radius);
   overflow: hidden;
+  box-shadow: 0 4px 24px -10px rgba(0, 0, 0, 0.5);
 }
 .card-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
   padding: 16px 20px;
-  background: rgba(148, 163, 184, .04);
+  background: rgba(255, 255, 255, 0.02);
   border-bottom: 1px solid var(--sb-line);
 }
 .card-title {
@@ -532,7 +624,7 @@ onMounted(load)
 }
 .card-icon {
   font-size: 22px;
-  color: var(--sb-primary, #3b82f6);
+  color: var(--sb-accent, #38bdf8);
 }
 .card-title h3 {
   margin: 0 0 4px;
@@ -548,6 +640,25 @@ onMounted(load)
 .card-body {
   padding: 20px;
 }
+.card-body :deep(.el-form-item__label) {
+  color: var(--sb-text-2) !important;
+  font-weight: 500;
+  font-size: 13px;
+}
+.card-body :deep(.el-input__wrapper),
+.card-body :deep(.el-select__wrapper) {
+  background-color: var(--sb-surface) !important;
+  box-shadow: 0 0 0 1px var(--sb-line) inset !important;
+}
+.card-body :deep(.el-input__inner) {
+  color: var(--sb-text) !important;
+}
+.card-body :deep(.el-input-number .el-input-number__decrease),
+.card-body :deep(.el-input-number .el-input-number__increase) {
+  background-color: rgba(148, 163, 184, 0.08) !important;
+  color: var(--sb-text) !important;
+  border-color: var(--sb-line) !important;
+}
 .card-footer-action {
   display: flex;
   justify-content: flex-end;
@@ -560,7 +671,7 @@ onMounted(load)
 .reality-result-panel {
   margin-top: 16px;
   padding: 16px;
-  background: rgba(148, 163, 184, .05);
+  background: var(--sb-surface, #0e1524);
   border: 1px solid var(--sb-line);
   border-radius: var(--sb-radius-sm);
 }

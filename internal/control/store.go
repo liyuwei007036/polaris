@@ -2381,6 +2381,7 @@ CREATE TABLE IF NOT EXISTS alert_settings (
   bark_device_key TEXT NOT NULL DEFAULT '',
   bark_sound TEXT NOT NULL DEFAULT 'minuet',
   bark_group TEXT NOT NULL DEFAULT 'Polaris',
+  bark_url TEXT NOT NULL DEFAULT '',
   traffic_alert_enabled INTEGER NOT NULL DEFAULT 1,
   traffic_threshold_mbps REAL NOT NULL DEFAULT 50.0,
   traffic_duration_sec INTEGER NOT NULL DEFAULT 10,
@@ -2425,6 +2426,13 @@ INSERT OR IGNORE INTO alert_settings (id, updated_at) VALUES (1, unixepoch());
 		"mobile_route TEXT NOT NULL DEFAULT ''",
 	} {
 		if err := s.addSpeedtestColumn(ctx, column); err != nil {
+			return err
+		}
+	}
+	for _, column := range []string{
+		"bark_url TEXT NOT NULL DEFAULT ''",
+	} {
+		if err := s.addAlertSettingsColumn(ctx, column); err != nil {
 			return err
 		}
 	}
@@ -2622,6 +2630,14 @@ func (s *Store) addSpeedtestColumn(ctx context.Context, definition string) error
 		return nil
 	}
 	return fmt.Errorf("migrate node_speedtests table: %w", err)
+}
+
+func (s *Store) addAlertSettingsColumn(ctx context.Context, definition string) error {
+	_, err := s.db.ExecContext(ctx, "ALTER TABLE alert_settings ADD COLUMN "+definition)
+	if err == nil || strings.Contains(err.Error(), "duplicate column name") {
+		return nil
+	}
+	return fmt.Errorf("migrate alert_settings table: %w", err)
 }
 
 func (s *Store) addTaskColumn(ctx context.Context, definition string) error {

@@ -14,6 +14,7 @@ type AlertSettings struct {
 	BarkDeviceKey             string  `json:"bark_device_key"`
 	BarkSound                 string  `json:"bark_sound"`
 	BarkGroup                 string  `json:"bark_group"`
+	BarkURL                   string  `json:"bark_url"`
 	TrafficAlertEnabled       bool    `json:"traffic_alert_enabled"`
 	TrafficThresholdMbps      float64 `json:"traffic_threshold_mbps"`
 	TrafficDurationSec        int     `json:"traffic_duration_sec"`
@@ -57,7 +58,7 @@ func (s *Store) GetAlertSettings(ctx context.Context) (AlertSettings, error) {
 	)
 
 	row := s.db.QueryRowContext(ctx, `SELECT 
-		bark_server, bark_device_key, bark_sound, bark_group,
+		bark_server, bark_device_key, bark_sound, bark_group, bark_url,
 		traffic_alert_enabled, traffic_threshold_mbps, traffic_duration_sec,
 		conn_alert_enabled, conn_threshold_count,
 		single_ip_alert_enabled, single_ip_threshold_count,
@@ -68,7 +69,7 @@ func (s *Store) GetAlertSettings(ctx context.Context) (AlertSettings, error) {
 		FROM alert_settings WHERE id = 1`)
 
 	err := row.Scan(
-		&settings.BarkServer, &settings.BarkDeviceKey, &settings.BarkSound, &settings.BarkGroup,
+		&settings.BarkServer, &settings.BarkDeviceKey, &settings.BarkSound, &settings.BarkGroup, &settings.BarkURL,
 		&trafficAlert, &settings.TrafficThresholdMbps, &settings.TrafficDurationSec,
 		&connAlert, &settings.ConnThresholdCount,
 		&singleIPAlert, &settings.SingleIPThresholdCount,
@@ -83,6 +84,7 @@ func (s *Store) GetAlertSettings(ctx context.Context) (AlertSettings, error) {
 			BarkServer:                  "https://api.day.app",
 			BarkSound:                   "minuet",
 			BarkGroup:                   "Polaris",
+			BarkURL:                     "",
 			TrafficAlertEnabled:         true,
 			TrafficThresholdMbps:        50.0,
 			TrafficDurationSec:          10,
@@ -133,13 +135,14 @@ func (s *Store) UpdateAlertSettings(ctx context.Context, in AlertSettings) (Aler
 	if group == "" {
 		group = "Polaris"
 	}
+	url := strings.TrimSpace(in.BarkURL)
 	cooldown := in.CooldownMinutes
 	if cooldown < 1 {
 		cooldown = 1
 	}
 	gfwInterval := in.ProbeGFWIntervalMinutes
-	if gfwInterval < 5 {
-		gfwInterval = 5
+	if gfwInterval < 1 {
+		gfwInterval = 1
 	}
 	speedInterval := in.ProbeSpeedtestIntervalHours
 	if speedInterval < 1 {
@@ -148,7 +151,7 @@ func (s *Store) UpdateAlertSettings(ctx context.Context, in AlertSettings) (Aler
 
 	now := nowUnix()
 	_, err := s.db.ExecContext(ctx, `INSERT INTO alert_settings (
-		id, bark_server, bark_device_key, bark_sound, bark_group,
+		id, bark_server, bark_device_key, bark_sound, bark_group, bark_url,
 		traffic_alert_enabled, traffic_threshold_mbps, traffic_duration_sec,
 		conn_alert_enabled, conn_threshold_count,
 		single_ip_alert_enabled, single_ip_threshold_count,
@@ -157,7 +160,7 @@ func (s *Store) UpdateAlertSettings(ctx context.Context, in AlertSettings) (Aler
 		auto_probe_speedtest_enabled, probe_speedtest_interval_hours,
 		probe_skip_when_busy, probe_notify_always, updated_at
 	) VALUES (
-		1, ?, ?, ?, ?,
+		1, ?, ?, ?, ?, ?,
 		?, ?, ?,
 		?, ?,
 		?, ?,
@@ -170,6 +173,7 @@ func (s *Store) UpdateAlertSettings(ctx context.Context, in AlertSettings) (Aler
 		bark_device_key=excluded.bark_device_key,
 		bark_sound=excluded.bark_sound,
 		bark_group=excluded.bark_group,
+		bark_url=excluded.bark_url,
 		traffic_alert_enabled=excluded.traffic_alert_enabled,
 		traffic_threshold_mbps=excluded.traffic_threshold_mbps,
 		traffic_duration_sec=excluded.traffic_duration_sec,
@@ -187,7 +191,7 @@ func (s *Store) UpdateAlertSettings(ctx context.Context, in AlertSettings) (Aler
 		probe_skip_when_busy=excluded.probe_skip_when_busy,
 		probe_notify_always=excluded.probe_notify_always,
 		updated_at=excluded.updated_at`,
-		server, strings.TrimSpace(in.BarkDeviceKey), sound, group,
+		server, strings.TrimSpace(in.BarkDeviceKey), sound, group, url,
 		boolToInt(in.TrafficAlertEnabled), in.TrafficThresholdMbps, in.TrafficDurationSec,
 		boolToInt(in.ConnAlertEnabled), in.ConnThresholdCount,
 		boolToInt(in.SingleIPAlertEnabled), in.SingleIPThresholdCount,
