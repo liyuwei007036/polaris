@@ -15,6 +15,7 @@ type Route struct {
 	SNI            string
 	BackendAddress string
 	BackendPort    uint16
+	IsDefault      bool
 }
 
 type routeKey struct {
@@ -30,9 +31,22 @@ func Compile(routes []Route) (string, error) {
 	var output strings.Builder
 	for _, key := range keys {
 		name := GroupName(key.address, key.port)
+		defaultBackend := DefaultBackendPlaceholder
+		hasAutoDefault := false
+		for _, route := range groups[key] {
+			if route.IsDefault {
+				defaultBackend = net.JoinHostPort(route.BackendAddress, strconv.Itoa(int(route.BackendPort)))
+				hasAutoDefault = true
+				break
+			}
+		}
 		output.WriteString("map $ssl_preread_server_name $")
 		output.WriteString(name)
-		output.WriteString(" {\n    default \"" + DefaultBackendPlaceholder + "\";\n")
+		if hasAutoDefault {
+			output.WriteString(" {\n    default \"" + defaultBackend + "\"; # auto-fallback\n")
+		} else {
+			output.WriteString(" {\n    default \"" + defaultBackend + "\";\n")
+		}
 		output.WriteString(Marker(name))
 		for _, route := range groups[key] {
 			writeMapRoute(&output, route)
@@ -91,12 +105,23 @@ func SetDefaultBackend(configuration, listenAddress string, port uint16, backend
 		return "", fmt.Errorf("managed Nginx route group %s is missing", group)
 	}
 	start := index + len(header)
+	rest := configuration[start:]
 	placeholder := "    default \"" + DefaultBackendPlaceholder + "\";\n"
-	if !strings.HasPrefix(configuration[start:], placeholder) {
+	var oldLineLen int
+	if strings.HasPrefix(rest, placeholder) {
+		oldLineLen = len(placeholder)
+	} else if strings.HasPrefix(rest, "    default \"") {
+		newlineIdx := strings.Index(rest, "\n")
+		if newlineIdx > 0 && strings.Contains(rest[:newlineIdx], "# auto-fallback") {
+			oldLineLen = newlineIdx + 1
+		} else {
+			return "", fmt.Errorf("managed Nginx route group %s already has a default backend", group)
+		}
+	} else {
 		return "", fmt.Errorf("managed Nginx route group %s already has a default backend", group)
 	}
 	backend := net.JoinHostPort(backendAddress, strconv.Itoa(int(backendPort)))
-	return configuration[:start] + "    default \"" + backend + "\";\n" + configuration[start+len(placeholder):], nil
+	return configuration[:start] + "    default \"" + backend + "\";\n" + configuration[start+oldLineLen:], nil
 }
 
 func GroupName(address string, port uint16) string {

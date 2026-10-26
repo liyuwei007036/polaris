@@ -149,6 +149,7 @@ func planListenerPlacement(configuration string, names map[string]string, occupi
 			}
 			names[binding.sni] = true
 		}
+		defaultAssigned := false
 		for _, binding := range group {
 			backendPort, ok := allocate()
 			if !ok {
@@ -157,9 +158,17 @@ func planListenerPlacement(configuration string, names map[string]string, occupi
 			binding.inbound["listen"] = "127.0.0.1"
 			binding.inbound["listen_port"] = json.Number(strconv.Itoa(int(backendPort)))
 			binding.inbound["proxy_protocol"] = true
+
+			isDefault := false
+			if !defaultAssigned && isInboundReality(binding.inbound) {
+				isDefault = true
+				defaultAssigned = true
+			}
+
 			plan.routes = append(plan.routes, nginxroute.Route{
 				ListenAddress: binding.address, Port: port, SNI: binding.sni,
 				BackendAddress: "127.0.0.1", BackendPort: backendPort,
+				IsDefault:      isDefault,
 			})
 			plan.summaries = append(plan.summaries,
 				binding.sni+" 与该端口上的其他服务共用 "+strconv.Itoa(int(port))+"，已改为 127.0.0.1:"+strconv.Itoa(int(backendPort))+" 并由 Nginx 按域名分流")
@@ -244,4 +253,17 @@ func occupiedTCPPorts(sockets []listeningSocket) map[uint16]bool {
 		occupied[socket.port] = true
 	}
 	return occupied
+}
+
+func isInboundReality(inbound map[string]any) bool {
+	tls, ok := inbound["tls"].(map[string]any)
+	if !ok {
+		return false
+	}
+	reality, ok := tls["reality"].(map[string]any)
+	if !ok {
+		return false
+	}
+	enabled, _ := reality["enabled"].(bool)
+	return enabled
 }

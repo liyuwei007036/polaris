@@ -64,3 +64,34 @@ func TestMergePassthroughRejectsMissingGroupAndManagedSNIConflict(t *testing.T) 
 		t.Fatal("accepted passthrough route that conflicts with a managed SNI")
 	}
 }
+
+func TestCompileAutoFallbackRoute(t *testing.T) {
+	routes := []Route{
+		{ListenAddress: "0.0.0.0", Port: 443, SNI: "ws.example.com", BackendAddress: "127.0.0.1", BackendPort: 20000},
+		{ListenAddress: "0.0.0.0", Port: 443, SNI: "www.microsoft.com", BackendAddress: "127.0.0.1", BackendPort: 20001, IsDefault: true},
+	}
+	configuration, err := Compile(routes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(configuration, `default "127.0.0.1:20001"; # auto-fallback`) {
+		t.Fatalf("expected auto-fallback to Reality backend 127.0.0.1:20001, got:\n%s", configuration)
+	}
+
+	// Verify SetDefaultBackend can override it (e.g. host operator had an existing website)
+	overridden, err := SetDefaultBackend(configuration, "0.0.0.0", 443, "127.0.0.1", 40000)
+	if err != nil {
+		t.Fatalf("SetDefaultBackend failed to override auto-fallback: %v", err)
+	}
+	if !strings.Contains(overridden, `default "127.0.0.1:40000";`) {
+		t.Fatalf("expected overridden default, got:\n%s", overridden)
+	}
+	if strings.Contains(overridden, "# auto-fallback") {
+		t.Fatalf("overridden configuration still contains auto-fallback comment:\n%s", overridden)
+	}
+
+	// Verify second claim is rejected
+	if _, err := SetDefaultBackend(overridden, "0.0.0.0", 443, "127.0.0.1", 40001); err == nil {
+		t.Fatal("expected second claim to be rejected")
+	}
+}

@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+
+	"github.com/liyuwei007036/polaris/internal/nginxroute"
 )
 
 func testAllocator(start uint16) func() (uint16, bool) {
@@ -169,5 +171,40 @@ func TestOccupiedTCPPortsIgnoresSingBoxItself(t *testing.T) {
 	})
 	if !occupied[443] || occupied[8443] || occupied[5353] {
 		t.Fatalf("occupied TCP ports = %#v", occupied)
+	}
+}
+
+func TestPlanMarksRealityAsDefaultFallback(t *testing.T) {
+	config := `{
+	  "inbounds": [
+	    {"type": "vless", "tag": "ws-node", "listen": "0.0.0.0", "listen_port": 443, "tls": {"enabled": true}},
+	    {"type": "vless", "tag": "reality-node", "listen": "0.0.0.0", "listen_port": 443, "tls": {"enabled": true, "reality": {"enabled": true}}}
+	  ]
+	}`
+	names := map[string]string{
+		"ws-node":      "ws.example.com",
+		"reality-node": "www.microsoft.com",
+	}
+	plan, err := planListenerPlacement(config, names, map[uint16]bool{}, testAllocator(20000))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(plan.routes) != 2 {
+		t.Fatalf("expected 2 routes, got: %#v", plan.routes)
+	}
+	var realityRoute *nginxroute.Route
+	var wsRoute *nginxroute.Route
+	for i := range plan.routes {
+		if plan.routes[i].SNI == "www.microsoft.com" {
+			realityRoute = &plan.routes[i]
+		} else if plan.routes[i].SNI == "ws.example.com" {
+			wsRoute = &plan.routes[i]
+		}
+	}
+	if realityRoute == nil || !realityRoute.IsDefault {
+		t.Fatalf("expected Reality route to be default, got: %#v", realityRoute)
+	}
+	if wsRoute == nil || wsRoute.IsDefault {
+		t.Fatalf("expected WS route NOT to be default, got: %#v", wsRoute)
 	}
 }
