@@ -156,6 +156,7 @@ func planListenerPlacement(configuration string, names map[string]string, occupi
 			}
 			binding.inbound["listen"] = "127.0.0.1"
 			binding.inbound["listen_port"] = json.Number(strconv.Itoa(int(backendPort)))
+			binding.inbound["proxy_protocol"] = true
 			plan.routes = append(plan.routes, nginxroute.Route{
 				ListenAddress: binding.address, Port: port, SNI: binding.sni,
 				BackendAddress: "127.0.0.1", BackendPort: backendPort,

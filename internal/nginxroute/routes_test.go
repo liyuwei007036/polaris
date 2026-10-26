@@ -41,6 +41,9 @@ func TestCompileAndMergePassthroughRoutes(t *testing.T) {
 	if !strings.Contains(merged, "proxy_connect_timeout 10s;") || !strings.Contains(merged, "proxy_timeout 10m;") {
 		t.Fatalf("merged configuration omitted proxy timeouts:\n%s", merged)
 	}
+	if !strings.Contains(merged, "proxy_protocol on;") {
+		t.Fatalf("merged configuration omitted proxy_protocol:\n%s", merged)
+	}
 }
 
 func TestMergePassthroughRejectsMissingGroupAndManagedSNIConflict(t *testing.T) {

@@ -199,11 +199,25 @@ func (s *Store) SignedSingBoxReleasePayload(release SingBoxRelease) (string, err
 	return string(payload), nil
 }
 
+var singBoxReleaseRepos = []string{"liyuwei007036/sing-box", "SagerNet/sing-box"}
+
 func LatestOfficialSingBoxRelease(ctx context.Context, architecture string) (SingBoxRelease, error) {
 	if architecture != "amd64" && architecture != "arm64" {
 		return SingBoxRelease{}, errors.New("sing-box release architecture must be amd64 or arm64")
 	}
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://api.github.com/repos/SagerNet/sing-box/releases/latest", nil)
+	var lastErr error
+	for _, repo := range singBoxReleaseRepos {
+		release, err := fetchSingBoxReleaseFromRepo(ctx, repo, architecture)
+		if err == nil {
+			return release, nil
+		}
+		lastErr = err
+	}
+	return SingBoxRelease{}, lastErr
+}
+
+func fetchSingBoxReleaseFromRepo(ctx context.Context, repo, architecture string) (SingBoxRelease, error) {
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://api.github.com/repos/"+repo+"/releases/latest", nil)
 	if err != nil {
 		return SingBoxRelease{}, err
 	}
@@ -211,11 +225,11 @@ func LatestOfficialSingBoxRelease(ctx context.Context, architecture string) (Sin
 	request.Header.Set("User-Agent", "polaris")
 	response, err := (&http.Client{Timeout: 5 * time.Second}).Do(request)
 	if err != nil {
-		return SingBoxRelease{}, fmt.Errorf("fetch official sing-box release: %w", err)
+		return SingBoxRelease{}, fmt.Errorf("fetch sing-box release from %s: %w", repo, err)
 	}
 	defer response.Body.Close()
 	if response.StatusCode != http.StatusOK {
-		return SingBoxRelease{}, fmt.Errorf("official sing-box release API returned HTTP %d", response.StatusCode)
+		return SingBoxRelease{}, fmt.Errorf("sing-box release API for %s returned HTTP %d", repo, response.StatusCode)
 	}
 	var document struct {
 		TagName    string `json:"tag_name"`
@@ -229,10 +243,10 @@ func LatestOfficialSingBoxRelease(ctx context.Context, architecture string) (Sin
 	}
 	decoder := json.NewDecoder(io.LimitReader(response.Body, 4*1024*1024))
 	if err := decoder.Decode(&document); err != nil {
-		return SingBoxRelease{}, fmt.Errorf("decode official sing-box release: %w", err)
+		return SingBoxRelease{}, fmt.Errorf("decode sing-box release from %s: %w", repo, err)
 	}
 	if document.Draft || document.Prerelease || document.TagName == "" {
-		return SingBoxRelease{}, errors.New("official latest sing-box release is not stable")
+		return SingBoxRelease{}, errors.New("latest sing-box release is not stable")
 	}
 	version := strings.TrimPrefix(document.TagName, "v")
 	name := fmt.Sprintf("sing-box-%s-linux-%s.tar.gz", version, architecture)
@@ -246,7 +260,7 @@ func LatestOfficialSingBoxRelease(ctx context.Context, architecture string) (Sin
 		}
 		return release, nil
 	}
-	return SingBoxRelease{}, fmt.Errorf("official release %s has no verified %s Linux archive", version, architecture)
+	return SingBoxRelease{}, fmt.Errorf("release %s in %s has no verified %s Linux archive", version, repo, architecture)
 }
 
 func (s *Store) ReleaseSigningPublicKeyPEM() ([]byte, error) {
