@@ -20,7 +20,7 @@ func TestUnavailableGroupMemberKeepsItsClientConfigUsable(t *testing.T) {
 	}
 	listener, err := store.CreateListener(t.Context(), control.Listener{
 		NodeID: nodeID, Name: "接入服务", Domain: "avail.example.com", ListenAddr: "0.0.0.0", Port: 8443, Enabled: true,
-		Spec: control.ProtocolSpec{Protocol: "vless", Network: "tcp", Transport: control.TransportOptions{Type: "ws"}},
+		Spec: control.ProtocolSpec{Protocol: "vless", Network: "tcp", Transport: control.TransportOptions{Type: "xhttp"}},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -130,7 +130,7 @@ func TestRevokedNodeKeepsItsClientConfigUsable(t *testing.T) {
 	for index, nodeID := range []string{keptNode, goneNode} {
 		listener, err := store.CreateListener(t.Context(), control.Listener{
 			NodeID: nodeID, Name: "接入服务", Domain: nodeID + ".example.com", ListenAddr: "0.0.0.0", Port: 8443, Enabled: true,
-			Spec: control.ProtocolSpec{Protocol: "vless", Network: "tcp", Transport: control.TransportOptions{Type: "ws"}},
+			Spec: control.ProtocolSpec{Protocol: "vless", Network: "tcp", Transport: control.TransportOptions{Type: "xhttp"}},
 		})
 		if err != nil {
 			t.Fatal(err)

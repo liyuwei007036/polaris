@@ -38,7 +38,7 @@ func TestSubscriptionReflectsProxyGroupModifications(t *testing.T) {
 		listener, err := store.CreateListener(t.Context(), control.Listener{
 			NodeID: nodeID, Name: "VLESS " + name, Domain: "listen-" + string(rune('a'+index)) + ".example.com",
 			ListenAddr: "0.0.0.0", Port: uint16(2000 + index), Enabled: true,
-			Spec: control.ProtocolSpec{Protocol: "vless", Network: "tcp", Transport: control.TransportOptions{Type: "ws"}},
+			Spec: control.ProtocolSpec{Protocol: "vless", Network: "tcp", Transport: control.TransportOptions{Type: "xhttp"}},
 		})
 		if err != nil {
 			t.Fatal(err)
@@ -250,7 +250,7 @@ func TestClientSubscriptionETagAndConditionalRequests(t *testing.T) {
 	listener, err := store.CreateListener(t.Context(), control.Listener{
 		NodeID: nodeID, Name: "VLESS", Domain: "sub.example.com",
 		ListenAddr: "0.0.0.0", Port: 8443, Enabled: true,
-		Spec: control.ProtocolSpec{Protocol: "vless", Network: "tcp", Transport: control.TransportOptions{Type: "ws"}},
+		Spec: control.ProtocolSpec{Protocol: "vless", Network: "tcp", Transport: control.TransportOptions{Type: "xhttp"}},
 	})
 	if err != nil {
 		t.Fatal(err)

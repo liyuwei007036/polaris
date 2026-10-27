@@ -136,9 +136,9 @@ test('浏览器页面回归：真实登录，核心工作区 API 使用路由替
   await page.keyboard.press('Escape')
   await expect(dialog).toBeVisible()
   await dialog.locator('.protocol-select .el-select').click()
-  await page.locator('.el-select-dropdown__item').filter({ hasText: 'VLESS + WebSocket' }).click()
+  await page.locator('.el-select-dropdown__item').filter({ hasText: 'VLESS + xhttp' }).click()
   await expect(dialog.getByRole('textbox', { name: '请求路径' })).toHaveValue(/^\/[0-9a-f]{24}$/)
-  // The WebSocket Host header is never an operator choice: it only ever equals
+  // The xhttp Host header is never an operator choice: it only ever equals
   // the connection domain, so the form does not offer a field for it.
   await expect(dialog.getByText('请求域名')).toHaveCount(0)
   await expect(dialog.getByText('TLS 加密（自动证书）', { exact: true })).toBeVisible()
@@ -162,10 +162,10 @@ test('浏览器页面回归：真实登录，核心工作区 API 使用路由替
   // plane, never declared on this page.
   const zoneDNSRecords = [
     {
-      id: 'record-1', name: 'ws.example.com', type: 'A', content: '203.0.113.10', ttl: 1, proxied: false,
-      bindings: [{ node_name: '测试服务器', listener_name: 'WebSocket 接入', listener_port: 18444 }],
+      id: 'record-1', name: 'xhttp.example.com', type: 'A', content: '203.0.113.10', ttl: 1, proxied: false,
+      bindings: [{ node_name: '测试服务器', listener_name: 'xhttp 接入', listener_port: 18444 }],
     },
-    { id: 'remote-1', name: 'cdn.example.com', type: 'CNAME', content: 'ws.example.com', ttl: 1, proxied: true, bindings: [] },
+    { id: 'remote-1', name: 'cdn.example.com', type: 'CNAME', content: 'xhttp.example.com', ttl: 1, proxied: true, bindings: [] },
     { id: 'remote-2', name: 'other.example.com', type: 'A', content: '198.51.100.7', ttl: 300, proxied: false, bindings: [] },
   ]
   let proxyGroupSequence = 0
@@ -173,14 +173,14 @@ test('浏览器页面回归：真实登录，核心工作区 API 使用路由替
   const savedProxyGroups = []
   const savedRuleProviders = []
   const listener = {
-    id: 'listener-1', node_id: 'node-1', name: 'WebSocket 接入', connection_domain: 'ws.example.com', listen_address: '0.0.0.0',
+    id: 'listener-1', node_id: 'node-1', name: 'xhttp 接入', connection_domain: 'xhttp.example.com', listen_address: '0.0.0.0',
     port: 18444, backend_port: 18444, enabled: true, outbound_id: '',
     spec: {
-      protocol: 'vless', network: 'tcp', tls: { enabled: true, alpn: ['http/1.1'] }, reality: { enabled: false },
-      transport: { type: 'ws', path: '', host: '', service_name: '' },
+      protocol: 'vless', network: 'tcp', tls: { enabled: true, alpn: ['h2', 'http/1.1'] }, reality: { enabled: false },
+      transport: { type: 'xhttp', path: '', host: '', service_name: '' },
     },
   }
-  const shareLink = 'vless://11111111-2222-3333-4444-555555555555@ws.example.com:18444?encryption=none&security=tls&type=ws#%E6%B5%8B%E8%AF%95%E8%8A%82%E7%82%B9+01'
+  const shareLink = 'vless://11111111-2222-3333-4444-555555555555@xhttp.example.com:18444?encryption=none&security=tls&type=xhttp#%E6%B5%8B%E8%AF%95%E8%8A%82%E7%82%B9+01'
   // This section verifies browser interaction contracts, not a live Agent.
   await page.route('**/api/v1/**', async (route) => {
     const request = route.request()
@@ -312,7 +312,7 @@ test('浏览器页面回归：真实登录，核心工作区 API 使用路由替
   // The node link is what a phone scans, so it has to reach the screen as both
   // a code and the text behind it.
   await page.getByRole('button', { name: '二维码', exact: true }).click()
-  const shareDialog = page.getByRole('dialog', { name: 'WebSocket 接入 · 节点链接', exact: true })
+  const shareDialog = page.getByRole('dialog', { name: 'xhttp 接入 · 节点链接', exact: true })
   await expect(shareDialog.getByTestId('qr-image')).toBeVisible()
   await expect(shareDialog.getByTestId('qr-value')).toHaveText(shareLink)
   await shareDialog.getByRole('button', { name: '复制地址', exact: true }).click()
@@ -327,7 +327,7 @@ test('浏览器页面回归：真实登录，核心工作区 API 使用路由替
   const accountAliases = editDialog.getByRole('textbox', { name: '客户端节点别名' })
   await expect(accountNames).toHaveValue('默认账号')
   await expect(accountAliases).toHaveValue('测试节点 01')
-  await expect(editDialog.getByRole('textbox', { name: '连接域名' })).toHaveValue('ws.example.com')
+  await expect(editDialog.getByRole('textbox', { name: '连接域名' })).toHaveValue('xhttp.example.com')
   // The service port stays editable: changing it re-runs the automatic port
   // placement and re-applies sing-box and Nginx.
   await expect(editDialog.getByRole('spinbutton', { name: '服务端口' })).toBeEnabled()
@@ -340,8 +340,8 @@ test('浏览器页面回归：真实登录，核心工作区 API 使用路由替
   await expect(editDialog.getByRole('textbox', { name: '请求路径' })).toHaveValue('')
   await editDialog.getByRole('button', { name: '保存', exact: true }).click()
   await expect(editDialog).toBeHidden()
-  expect(savedListener.spec.transport).toEqual({ type: 'ws', path: '', host: '', service_name: '' })
-  expect(savedListener.spec.tls).toMatchObject({ enabled: true, alpn: ['http/1.1'] })
+  expect(savedListener.spec.transport).toEqual({ type: 'xhttp', path: '', host: '', service_name: '' })
+  expect(savedListener.spec.tls).toMatchObject({ enabled: true, alpn: ['h2', 'http/1.1'] })
   expect(updatedAccount).toMatchObject({ name: '修改后的用户', alias: '测试节点 01', enabled: true, outbound_id: 'direct' })
   expect(createdAccount).toEqual({ name: '新增用户', alias: '测试节点 02', outbound_id: 'direct' })
 
@@ -350,11 +350,11 @@ test('浏览器页面回归：真实登录，核心工作区 API 使用路由替
   await page.getByRole('button', { name: '复制', exact: true }).click()
   const copyDialog = page.getByRole('dialog', { name: '复制接入服务', exact: true })
   // A copy carries the source's values verbatim; nothing is renamed for it.
-  await expect(copyDialog.getByRole('textbox', { name: '服务名称' })).toHaveValue('WebSocket 接入')
-  await expect(copyDialog.getByRole('textbox', { name: '连接域名' })).toHaveValue('ws.example.com')
+  await expect(copyDialog.getByRole('textbox', { name: '服务名称' })).toHaveValue('xhttp 接入')
+  await expect(copyDialog.getByRole('textbox', { name: '连接域名' })).toHaveValue('xhttp.example.com')
   await expect(copyDialog.getByRole('textbox', { name: '用户名称' })).toHaveValue('默认账号')
   await expect(copyDialog.getByRole('textbox', { name: '客户端节点别名' })).toHaveValue('测试节点 01')
-  // The WebSocket path is never carried over: a copy gets its own random one.
+  // The xhttp path is never carried over: a copy gets its own random one.
   await expect(copyDialog.getByRole('textbox', { name: '请求路径' })).toHaveValue(/^\/[0-9a-f]{24}$/)
   // Copying is the way to move a service to another port, so here it stays open.
   await expect(copyDialog.getByRole('spinbutton', { name: '服务端口' })).toBeEnabled()
@@ -363,8 +363,8 @@ test('浏览器页面回归：真实登录，核心工作区 API 使用路由替
   await expect(page.getByText('测试校验错误：请检查接入服务参数', { exact: true })).toHaveCount(0)
   await copyDialog.getByRole('button', { name: '创建', exact: true }).click()
   await expect(page.getByText('测试校验错误：请检查接入服务参数', { exact: true })).toBeVisible()
-  expect(quickListenerPayload.listener).toMatchObject({ name: 'WebSocket 接入', connection_domain: 'ws.example.com', port: 18444 })
-  expect(quickListenerPayload.listener.spec.transport).toMatchObject({ type: 'ws' })
+  expect(quickListenerPayload.listener).toMatchObject({ name: 'xhttp 接入', connection_domain: 'xhttp.example.com', port: 18444 })
+  expect(quickListenerPayload.listener.spec.transport).toMatchObject({ type: 'xhttp' })
   expect(quickListenerPayload.accounts[0]).toMatchObject({ name: '默认账号', alias: '测试节点 01' })
   await copyDialog.getByRole('button', { name: '取消', exact: true }).click()
 
@@ -573,17 +573,17 @@ test('浏览器页面回归：真实登录，核心工作区 API 使用路由替
   await expect(page.getByText('已连接 example.com', { exact: true })).toBeVisible()
   // Every record in the zone is editable the same way, and the server and
   // access service behind a name are shown without anyone declaring them.
-  const managedRow = page.getByRole('row', { name: /^A ws\.example\.com/ })
-  await expect(managedRow).toContainText('测试服务器 · WebSocket 接入')
+  const managedRow = page.getByRole('row', { name: /^A xhttp\.example\.com/ })
+  await expect(managedRow).toContainText('测试服务器 · xhttp 接入')
   await managedRow.getByRole('button', { name: '修改' }).click()
   const dnsDialog = page.getByRole('dialog', { name: '修改域名记录', exact: true })
   await expect(dnsDialog).toBeVisible()
   expect(await dnsDialog.locator('input').evaluateAll((inputs) => inputs.map((input) => input.value)))
-    .toEqual(expect.arrayContaining(['ws.example.com', '203.0.113.10']))
+    .toEqual(expect.arrayContaining(['xhttp.example.com', '203.0.113.10']))
   await dnsDialog.locator('.el-form-item', { hasText: '指向地址或内容' }).getByRole('textbox').fill('203.0.113.20')
   await dnsDialog.getByRole('button', { name: '保存', exact: true }).click()
   await expect(page.getByText('域名记录已写入 Cloudflare', { exact: true })).toBeVisible()
-  expect(savedDNSRecord).toMatchObject({ name: 'ws.example.com', type: 'A', content: '203.0.113.20' })
+  expect(savedDNSRecord).toMatchObject({ name: 'xhttp.example.com', type: 'A', content: '203.0.113.20' })
 
   // A record created in the Cloudflare console is not a special case: the same
   // dialog edits it, and no binding fields are asked for.
@@ -618,11 +618,11 @@ test('浏览器页面回归：真实登录，核心工作区 API 使用路由替
   const domainInput = domainDialog.getByRole('textbox', { name: '连接域名' })
   await domainInput.click()
   const suggestions = page.locator('.el-autocomplete-suggestion__list li')
-  // ws.example.com carries the server's address and cdn.example.com is a CNAME
+  // xhttp.example.com carries the server's address and cdn.example.com is a CNAME
   // leading to it, so both are offered with their CDN state.
   // other.example.com points elsewhere and must not show up at all.
   await expect(suggestions).toHaveText([
-    'ws.example.com未开启橙云加速',
+    'xhttp.example.com未开启橙云加速',
     'cdn.example.com已开启橙云加速',
   ])
   await suggestions.filter({ hasText: 'cdn.example.com' }).click()

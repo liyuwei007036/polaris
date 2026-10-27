@@ -67,7 +67,7 @@ func TestMergePassthroughRejectsMissingGroupAndManagedSNIConflict(t *testing.T) 
 
 func TestCompileAutoFallbackRoute(t *testing.T) {
 	routes := []Route{
-		{ListenAddress: "0.0.0.0", Port: 443, SNI: "ws.example.com", BackendAddress: "127.0.0.1", BackendPort: 20000},
+		{ListenAddress: "0.0.0.0", Port: 443, SNI: "xhttp.example.com", BackendAddress: "127.0.0.1", BackendPort: 20000},
 		{ListenAddress: "0.0.0.0", Port: 443, SNI: "www.microsoft.com", BackendAddress: "127.0.0.1", BackendPort: 20001, IsDefault: true},
 	}
 	configuration, err := Compile(routes)

@@ -75,12 +75,12 @@ func TestOriginCertificateSaveDispatchesAffectedNodes(t *testing.T) {
 	store, server, baseURL, session, csrfToken := newFeatureServer(t)
 	nodeID := approveTestNode(t, server, baseURL, session, csrfToken, "origin-node")
 	listenerResponse := request(t, http.MethodPost, baseURL+"/api/v1/listeners", map[string]any{
-		"node_id": nodeID, "name": "vless-ws", "connection_domain": "proxy.example.com",
+		"node_id": nodeID, "name": "vless-xhttp", "connection_domain": "proxy.example.com",
 		"listen_address": "0.0.0.0", "port": 443, "enabled": true,
 		"spec": map[string]any{
 			"protocol": "vless", "network": "tcp",
 			"tls":       map[string]any{"enabled": true},
-			"transport": map[string]any{"type": "ws", "path": "/proxy"},
+			"transport": map[string]any{"type": "xhttp", "path": "/proxy"},
 		},
 	}, session, csrfToken)
 	if listenerResponse.StatusCode != http.StatusCreated {

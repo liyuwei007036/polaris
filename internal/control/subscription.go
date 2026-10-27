@@ -350,8 +350,8 @@ func (s *Store) clientSubscriptionLine(ctx context.Context, endpointID string) (
 			query.Set("alpn", strings.Join(listener.Spec.TLS.ALPN, ","))
 		}
 		switch listener.Spec.Transport.Type {
-		case "ws":
-			query.Set("type", "ws")
+		case "xhttp":
+			query.Set("type", "xhttp")
 			query.Set("path", listener.Spec.Transport.Path)
 			if listener.Spec.Transport.Host != "" {
 				query.Set("host", listener.Spec.Transport.Host)

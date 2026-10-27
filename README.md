@@ -64,7 +64,7 @@ Polaris 是自建代理服务的集中管理平台。一台控制机管理任意
 | 服务器访问规则 | route rule | 按域名、CIDR、端口、协议把流量导向某个出口 |
 | 客户端配置 | mihomo client config | 生成给客户端的 Mihomo 订阅（代理分组 + 规则供应商 + DNS） |
 
-支持的接入服务形态：VLESS + Reality、VLESS + WebSocket、VLESS + gRPC、Hysteria2。
+支持的接入服务形态：VLESS + Reality、VLESS + xhttp、VLESS + gRPC、Hysteria2。
 
 ---
 

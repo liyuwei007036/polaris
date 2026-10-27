@@ -144,7 +144,7 @@ function randomAccountName() {
   return `user_${randomHex(4)}`
 }
 
-// A guessable WebSocket path is what makes an access service findable by
+// A guessable xhttp path is what makes an access service findable by
 // probing, so the path is always generated rather than typed.
 function randomPath() {
   return `/${randomHex(12)}`
@@ -154,7 +154,7 @@ function setProfile(value) {
   model.value.profile = value
   model.value.tls_alpn = defaultALPNFor(value)
   normalizeProfile()
-  if (listenerProfileMap[value]?.transport === 'ws' && !model.value.transport_path) {
+  if (listenerProfileMap[value]?.transport === 'xhttp' && !model.value.transport_path) {
     model.value.transport_path = randomPath()
   }
 }
@@ -321,7 +321,7 @@ async function save() {
                   </template>
                 </el-autocomplete>
                 <div class="form-hint">
-                  客户端连接的域名；经 Cloudflare 的 WS/gRPC 同时作为回源 SNI。
+                  客户端连接的域名；经 Cloudflare 的 xhttp/gRPC 同时作为回源 SNI。
                   <template v-if="!nodeAddress">请先选择服务器，再挑选解析到它的域名，也可直接输入。</template>
                   <template v-else-if="matchedDomains.length">点击输入框可选择解析到 {{ nodeAddress }} 的域名，也可直接输入其它域名。</template>
                   <template v-else>没有找到解析到 {{ nodeAddress }} 的域名，可直接输入，或先到「域名解析」中添加记录。</template>
@@ -348,10 +348,10 @@ async function save() {
           <el-alert v-if="showReality" title="Reality 密钥和 Short ID 会在创建接入服务时自动生成，无需手动配置。" type="success" :closable="false" />
         </div>
 
-        <div v-if="['ws', 'grpc'].includes(model.transport_type)" class="form-section">
+        <div v-if="['xhttp', 'grpc'].includes(model.transport_type)" class="form-section">
           <div class="form-section__head">传输配置</div>
           <el-row :gutter="16">
-            <el-col v-if="model.transport_type === 'ws'" :span="14">
+            <el-col v-if="model.transport_type === 'xhttp'" :span="14">
               <el-form-item label="请求路径">
                 <el-input v-model="model.transport_path" readonly>
                   <template #append>

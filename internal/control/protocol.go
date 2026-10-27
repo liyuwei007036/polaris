@@ -102,11 +102,11 @@ func ValidateProtocolSpec(spec ProtocolSpec) error {
 				return errors.New("VLESS Reality requires a managed Reality key")
 			}
 			if spec.Transport.Type != "" {
-				return errors.New("VLESS Reality cannot be combined with WebSocket or gRPC")
+				return errors.New("VLESS Reality cannot be combined with xhttp or gRPC")
 			}
 		} else {
-			if spec.Transport.Type != "ws" && spec.Transport.Type != "grpc" {
-				return errors.New("VLESS requires Reality, WebSocket, or gRPC")
+			if spec.Transport.Type != "xhttp" && spec.Transport.Type != "grpc" {
+				return errors.New("VLESS requires Reality, xhttp, or gRPC")
 			}
 		}
 	}
@@ -115,7 +115,7 @@ func ValidateProtocolSpec(spec ProtocolSpec) error {
 			return errors.New("TLS version must be 1.0, 1.1, 1.2, or 1.3")
 		}
 	}
-	if spec.Transport.Type != "" && spec.Transport.Type != "ws" && spec.Transport.Type != "grpc" {
+	if spec.Transport.Type != "" && spec.Transport.Type != "xhttp" && spec.Transport.Type != "grpc" {
 		return errors.New("unsupported listener transport")
 	}
 	if spec.Transport.Type == "grpc" && spec.Transport.ServiceName == "" {
@@ -138,8 +138,8 @@ func ValidateListenerAddress(address string, port uint16) error {
 }
 
 func ValidateListenerTLS(spec ProtocolSpec, port uint16) error {
-	if port == 443 && spec.Protocol == "vless" && !spec.Reality.Enabled && !spec.TLS.Enabled && (spec.Transport.Type == "ws" || spec.Transport.Type == "grpc") {
-		return errors.New("VLESS WebSocket and gRPC on TCP/443 require origin TLS")
+	if port == 443 && spec.Protocol == "vless" && !spec.Reality.Enabled && !spec.TLS.Enabled && (spec.Transport.Type == "xhttp" || spec.Transport.Type == "grpc") {
+		return errors.New("VLESS xhttp and gRPC on TCP/443 require origin TLS")
 	}
 	return nil
 }

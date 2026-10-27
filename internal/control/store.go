@@ -2292,7 +2292,7 @@ CREATE TABLE IF NOT EXISTS listener_certificates (
   created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL
 );
 -- Operator-supplied origin certificates, matched to a listener by its
--- connection domain so Cloudflare can pull from VLESS WebSocket and gRPC
+-- connection domain so Cloudflare can pull from VLESS xhttp and gRPC
 -- origins with full (strict) TLS.
 CREATE TABLE IF NOT EXISTS origin_certificates (
   id TEXT PRIMARY KEY, domain TEXT NOT NULL UNIQUE, material BLOB NOT NULL,
@@ -2490,6 +2490,9 @@ INSERT OR IGNORE INTO alert_settings (id, updated_at) VALUES (1, unixepoch());
 		return err
 	}
 	if err := s.addListenerColumn(ctx, "connection_domain TEXT NOT NULL DEFAULT ''"); err != nil {
+		return err
+	}
+	if err := s.migrateLegacyVLESSWebSocketToXHTTP(ctx); err != nil {
 		return err
 	}
 	if err := s.migrateLegacyVLESSStreamTLS(ctx); err != nil {

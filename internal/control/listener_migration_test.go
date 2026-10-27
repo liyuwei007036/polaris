@@ -19,9 +19,9 @@ func TestMigrationEnablesTLSForLegacyVLESSStreamListener(t *testing.T) {
 	}
 	if _, err := store.CreateListener(t.Context(), Listener{
 		NodeID: nodeID, Name: "invalid-vless", ListenAddr: "127.0.0.1", Port: 443, Enabled: true,
-		Spec: ProtocolSpec{Protocol: "vless", Network: "tcp", Transport: TransportOptions{Type: "ws", Path: "/invalid"}},
+		Spec: ProtocolSpec{Protocol: "vless", Network: "tcp", Transport: TransportOptions{Type: "xhttp", Path: "/invalid"}},
 	}); err == nil {
-		t.Fatal("accepted a VLESS WebSocket listener on TCP/443 without origin TLS")
+		t.Fatal("accepted a VLESS xhttp listener on TCP/443 without origin TLS")
 	}
 	spec, err := json.Marshal(ProtocolSpec{Protocol: "vless", Network: "tcp", Transport: TransportOptions{Type: "ws", Path: "/legacy"}})
 	if err != nil {
@@ -43,7 +43,7 @@ func TestMigrationEnablesTLSForLegacyVLESSStreamListener(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(listeners) != 1 || !listeners[0].Spec.TLS.Enabled || len(listeners[0].Spec.TLS.ALPN) != 1 || listeners[0].Spec.TLS.ALPN[0] != "http/1.1" {
+	if len(listeners) != 1 || !listeners[0].Spec.TLS.Enabled || len(listeners[0].Spec.TLS.ALPN) != 2 || listeners[0].Spec.TLS.ALPN[0] != "h2" || listeners[0].Spec.Transport.Type != "xhttp" {
 		t.Fatalf("legacy VLESS listener was not migrated: %#v", listeners)
 	}
 }
@@ -58,10 +58,13 @@ func TestMigrationFillsHysteria2ALPN(t *testing.T) {
 	if _, err := store.db.Exec(`INSERT INTO nodes (id, name, public_key, created_at) VALUES (?, ?, ?, ?)`, nodeID, "hysteria2-node", []byte(strings.Repeat("h", 32)), nowUnix()); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.CreateListener(t.Context(), Listener{
-		NodeID: nodeID, Name: "hysteria2-legacy", ListenAddr: "0.0.0.0", Port: 8443, Enabled: true,
-		Spec: ProtocolSpec{Protocol: "hysteria2", Network: "udp", TLS: TLSOptions{Enabled: true}},
-	}); err != nil {
+	listenerID := strings.Repeat("e", 32)
+	spec, err := json.Marshal(ProtocolSpec{Protocol: "hysteria2", Network: "udp", TLS: TLSOptions{Enabled: true}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.db.Exec(`INSERT INTO listeners (id,node_id,name,protocol,network,connection_domain,listen_address,port,backend_port,enabled,spec,outbound_id,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		listenerID, nodeID, "hysteria2", "hysteria2", "udp", "", "0.0.0.0", 443, 443, 1, string(spec), "", nowUnix(), nowUnix()); err != nil {
 		t.Fatal(err)
 	}
 	if err := store.Close(); err != nil {
@@ -77,33 +80,33 @@ func TestMigrationFillsHysteria2ALPN(t *testing.T) {
 		t.Fatal(err)
 	}
 	if len(listeners) != 1 || len(listeners[0].Spec.TLS.ALPN) != 1 || listeners[0].Spec.TLS.ALPN[0] != "h3" {
-		t.Fatalf("Hysteria2 listener ALPN was not migrated: %#v", listeners)
+		t.Fatalf("Hysteria2 listener was not migrated: %#v", listeners)
 	}
 }
 
-// Startup puts every TCP listener on the side of the router its port calls
-// for: contended ports get SNI routing, ports with a single listener are bound
-// directly so sing-box keeps seeing client addresses. A node routed under the
-// old unconditional rule has to be taken back out, or it stays on loopback
-// forever and every connection through it reports 127.0.0.1.
-func TestStartupReconcilesListenerPortRouting(t *testing.T) {
+// TestReconcileListenerPortRoutingCleansUpCentralizedRouting simulates an
+// upgrade from a version that resolved TCP/443 cohabitation inside the control
+// plane: it seeds a database with two shared-port listeners on internal loopback
+// ports and their ingress routes, lets Store.Open run the reconcile, and asserts
+// that every listener now binds 0.0.0.0 on its own port and the ingress table
+// is empty.
+func TestReconcileListenerPortRoutingCleansUpCentralizedRouting(t *testing.T) {
 	directory := t.TempDir()
 	store, err := Open(directory)
 	if err != nil {
 		t.Fatal(err)
 	}
-	nodeID := strings.Repeat("e", 32)
-	sole := strings.Repeat("f", 32)
-	unroutable := strings.Repeat("a", 32)
-	sharedFirst := strings.Repeat("b", 32)
-	sharedSecond := strings.Repeat("c", 32)
-	stranded := strings.Repeat("1", 32)
+	nodeID := strings.Repeat("a", 32)
 	if _, err := store.db.Exec(`INSERT INTO nodes (id, name, public_key, created_at) VALUES (?, ?, ?, ?)`,
-		nodeID, "direct-node", []byte(strings.Repeat("d", 32)), nowUnix()); err != nil {
+		nodeID, "routed-node", []byte(strings.Repeat("k", 32)), nowUnix()); err != nil {
 		t.Fatal(err)
 	}
+	sole := strings.Repeat("1", 32)
+	sharedFirst := strings.Repeat("2", 32)
+	sharedSecond := strings.Repeat("3", 32)
+	unroutable := strings.Repeat("4", 32)
+	stranded := strings.Repeat("5", 32)
 	insert := func(id, name, domain, listenAddr string, port, backendPort uint16, spec ProtocolSpec) {
-		t.Helper()
 		encoded, err := json.Marshal(spec)
 		if err != nil {
 			t.Fatal(err)
@@ -114,22 +117,22 @@ func TestStartupReconcilesListenerPortRouting(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	tlsWebSocket := func(path string) ProtocolSpec {
+	tlsXHTTP := func(path string) ProtocolSpec {
 		return ProtocolSpec{
 			Protocol: "vless", Network: "tcp",
-			TLS:       TLSOptions{Enabled: true, ALPN: []string{"http/1.1"}},
-			Transport: TransportOptions{Type: "ws", Path: path},
+			TLS:       TLSOptions{Enabled: true, ALPN: []string{"h2", "http/1.1"}},
+			Transport: TransportOptions{Type: "xhttp", Path: path},
 		}
 	}
-	insert(sole, "唯一接入", "sole.example.com", "0.0.0.0", 443, 443, tlsWebSocket("/sole"))
+	insert(sole, "唯一接入", "sole.example.com", "0.0.0.0", 443, 443, tlsXHTTP("/sole"))
 	// No TLS means no ClientHello to route by, so this one has to be left alone.
 	insert(unroutable, "明文接入", "plain.example.com", "0.0.0.0", 8080, 8080, ProtocolSpec{
-		Protocol: "vless", Network: "tcp", Transport: TransportOptions{Type: "ws", Path: "/plain"},
+		Protocol: "vless", Network: "tcp", Transport: TransportOptions{Type: "xhttp", Path: "/plain"},
 	})
-	insert(sharedFirst, "共用甲", "first.example.com", "0.0.0.0", 8443, 8443, tlsWebSocket("/first"))
-	insert(sharedSecond, "共用乙", "second.example.com", "0.0.0.0", 8443, 8443, tlsWebSocket("/second"))
+	insert(sharedFirst, "共用甲", "first.example.com", "0.0.0.0", 8443, 8443, tlsXHTTP("/first"))
+	insert(sharedSecond, "共用乙", "second.example.com", "0.0.0.0", 8443, 8443, tlsXHTTP("/second"))
 	// Routed under the old rule despite owning its port outright.
-	insert(stranded, "历史遗留", "stranded.example.com", "127.0.0.1", 9443, 20000, tlsWebSocket("/stranded"))
+	insert(stranded, "历史遗留", "stranded.example.com", "127.0.0.1", 9443, 20000, tlsXHTTP("/stranded"))
 	if _, err := store.db.Exec(`INSERT INTO ingress_routes (id, node_id, listener_id, listen_address, port, sni, enabled, created_at, updated_at)
 		VALUES (?,?,?,?,?,?,1,?,?)`,
 		strings.Repeat("2", 32), nodeID, stranded, "0.0.0.0", 9443, "stranded.example.com", nowUnix(), nowUnix()); err != nil {

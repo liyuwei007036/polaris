@@ -82,7 +82,7 @@ func TestPlanRoutesOnlyTheContendedTCPPort(t *testing.T) {
 const soleOn443 = `{"inbounds": [{"type": "vless", "tag": "sole", "listen": "0.0.0.0", "listen_port": 443,
 	"tls": {"enabled": true}}]}`
 
-var soleNames = map[string]string{"sole": "ws.example.com"}
+var soleNames = map[string]string{"sole": "xhttp.example.com"}
 
 // A port another process already holds — an Nginx installed before polaris is
 // the common case — is exactly the situation the control plane cannot see. The
@@ -95,7 +95,7 @@ func TestPlanRoutesASoleServiceOffAnOccupiedPort(t *testing.T) {
 	if address, port := inboundListen(t, plan.configuration, "sole"); address != "127.0.0.1" || port != 20000 {
 		t.Fatalf("service on an occupied port = %s:%d", address, port)
 	}
-	if len(plan.routes) != 1 || plan.routes[0].Port != 443 || plan.routes[0].SNI != "ws.example.com" || plan.routes[0].BackendPort != 20000 {
+	if len(plan.routes) != 1 || plan.routes[0].Port != 443 || plan.routes[0].SNI != "xhttp.example.com" || plan.routes[0].BackendPort != 20000 {
 		t.Fatalf("routes = %#v", plan.routes)
 	}
 	if plan.directPorts[443] {
@@ -177,12 +177,12 @@ func TestOccupiedTCPPortsIgnoresSingBoxItself(t *testing.T) {
 func TestPlanMarksRealityAsDefaultFallback(t *testing.T) {
 	config := `{
 	  "inbounds": [
-	    {"type": "vless", "tag": "ws-node", "listen": "0.0.0.0", "listen_port": 443, "tls": {"enabled": true}},
+	    {"type": "vless", "tag": "xhttp-node", "listen": "0.0.0.0", "listen_port": 443, "tls": {"enabled": true}},
 	    {"type": "vless", "tag": "reality-node", "listen": "0.0.0.0", "listen_port": 443, "tls": {"enabled": true, "reality": {"enabled": true}}}
 	  ]
 	}`
 	names := map[string]string{
-		"ws-node":      "ws.example.com",
+		"xhttp-node":      "xhttp.example.com",
 		"reality-node": "www.microsoft.com",
 	}
 	plan, err := planListenerPlacement(config, names, map[uint16]bool{}, testAllocator(20000))
@@ -193,18 +193,18 @@ func TestPlanMarksRealityAsDefaultFallback(t *testing.T) {
 		t.Fatalf("expected 2 routes, got: %#v", plan.routes)
 	}
 	var realityRoute *nginxroute.Route
-	var wsRoute *nginxroute.Route
+	var xhttpRoute *nginxroute.Route
 	for i := range plan.routes {
 		if plan.routes[i].SNI == "www.microsoft.com" {
 			realityRoute = &plan.routes[i]
-		} else if plan.routes[i].SNI == "ws.example.com" {
-			wsRoute = &plan.routes[i]
+		} else if plan.routes[i].SNI == "xhttp.example.com" {
+			xhttpRoute = &plan.routes[i]
 		}
 	}
 	if realityRoute == nil || !realityRoute.IsDefault {
 		t.Fatalf("expected Reality route to be default, got: %#v", realityRoute)
 	}
-	if wsRoute == nil || wsRoute.IsDefault {
-		t.Fatalf("expected WS route NOT to be default, got: %#v", wsRoute)
+	if xhttpRoute == nil || xhttpRoute.IsDefault {
+		t.Fatalf("expected xhttp route NOT to be default, got: %#v", xhttpRoute)
 	}
 }

@@ -189,8 +189,8 @@ func TestControlPlaneProcessJourneyWithRealAgent(t *testing.T) {
 	var quickListener quickListenerResponse
 	header := api.mustJSON(t, http.MethodPost, "/api/v1/listeners/quick", map[string]any{
 		"listener": map[string]any{
-			"node_id": approval.NodeID, "name": "E2E VLESS", "connection_domain": "ws.e2e.test", "listen_address": "0.0.0.0", "port": 24443, "enabled": true,
-			"spec": map[string]any{"protocol": "vless", "network": "tcp", "transport": map[string]any{"type": "ws"}},
+			"node_id": approval.NodeID, "name": "E2E VLESS", "connection_domain": "xhttp.e2e.test", "listen_address": "0.0.0.0", "port": 24443, "enabled": true,
+			"spec": map[string]any{"protocol": "vless", "network": "tcp", "transport": map[string]any{"type": "xhttp"}},
 		},
 		"accounts": []map[string]any{
 			{"name": "E2E 用户 A", "outbound_id": "direct"},
@@ -407,7 +407,7 @@ func TestControlPlaneProcessJourneyWithRealAgent(t *testing.T) {
 	if disposition := responseHeader.Get("Content-Disposition"); !strings.Contains(disposition, `filename*=UTF-8''E2E%20%E5%AE%A2%E6%88%B7%E7%AB%AF.yaml`) {
 		t.Fatalf("Mihomo subscription filename is not UTF-8 encoded: %q", disposition)
 	}
-	for _, expected := range []string{"store-selected: true", "tun:", "strict-route: true", "proxies:", "server: ws.e2e.test", "server: hy2.e2e.test", "sni: hy2.e2e.test", "proxy-groups:", "name: 全部节点", "rule-providers:", "url: https://rules.example.test/proxy.mrs", "rules:", "RULE-SET,远程代理规则,全部节点", "GEOSITE,CN,DIRECT", "enhanced-mode: fake-ip", "direct-nameserver:", "https://223.5.5.5/dns-query"} {
+	for _, expected := range []string{"store-selected: true", "tun:", "strict-route: true", "proxies:", "server: xhttp.e2e.test", "server: hy2.e2e.test", "sni: hy2.e2e.test", "proxy-groups:", "name: 全部节点", "rule-providers:", "url: https://rules.example.test/proxy.mrs", "rules:", "RULE-SET,远程代理规则,全部节点", "GEOSITE,CN,DIRECT", "enhanced-mode: fake-ip", "direct-nameserver:", "https://223.5.5.5/dns-query"} {
 		if !strings.Contains(string(yaml), expected) {
 			t.Fatalf("Mihomo subscription is missing %q:\n%s", expected, yaml)
 		}

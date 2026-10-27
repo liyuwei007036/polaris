@@ -253,13 +253,14 @@ func (s *Store) mihomoProxy(ctx context.Context, endpointID, fallbackServer stri
 	}
 	switch listener.Spec.Transport.Type {
 	case "":
-	case "ws":
-		proxy["network"] = "ws"
+	case "xhttp":
+		proxy["network"] = "xhttp"
 		options := map[string]any{"path": listener.Spec.Transport.Path}
 		if listener.Spec.Transport.Host != "" {
+			options["host"] = listener.Spec.Transport.Host
 			options["headers"] = map[string]string{"Host": listener.Spec.Transport.Host}
 		}
-		proxy["ws-opts"] = options
+		proxy["xhttp-opts"] = options
 	case "grpc":
 		proxy["network"] = "grpc"
 		proxy["grpc-opts"] = map[string]any{"grpc-service-name": listener.Spec.Transport.ServiceName}

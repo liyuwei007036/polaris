@@ -117,7 +117,7 @@ function randomAccountName() {
   return `user_${randomHex(4)}`
 }
 
-// 能猜到的 WebSocket 路径就是被探测出来的入口，所以路径一律生成而不是手填。
+// 能猜到的 xhttp 路径就是被探测出来的入口，所以路径一律生成而不是手填。
 function randomPath() {
   return `/${randomHex(12)}`
 }
@@ -126,7 +126,7 @@ function setProfile(value) {
   model.value.profile = value
   model.value.tls_alpn = defaultALPNFor(value)
   normalizeProfile()
-  if (listenerProfileMap[value]?.transport === 'ws' && !model.value.transport_path) {
+  if (listenerProfileMap[value]?.transport === 'xhttp' && !model.value.transport_path) {
     model.value.transport_path = randomPath()
   }
 }
@@ -260,7 +260,7 @@ function save() {
         >{{ item.value }}<small v-if="item.note">{{ item.note }}</small></button>
       </div>
       <div class="m-field__hint">
-        客户端连接的域名；经 Cloudflare 的 WS/gRPC 同时作为回源 SNI。
+        客户端连接的域名；经 Cloudflare 的 xhttp/gRPC 同时作为回源 SNI。
         <template v-if="!nodeAddress">请先选择服务器再挑域名，也可直接输入。</template>
         <template v-else-if="matchedDomains.length">上面是解析到 {{ nodeAddress }} 的域名，点一下即可填入。</template>
         <template v-else>没有找到解析到 {{ nodeAddress }} 的域名，可直接输入，或先到「域名解析」添加记录。</template>
@@ -280,11 +280,11 @@ function save() {
       <div class="m-notice m-notice--info">Reality 密钥和 Short ID 会在创建时自动生成，无需手动配置。</div>
     </template>
 
-    <template v-if="model.transport_type === 'ws'">
+    <template v-if="model.transport_type === 'xhttp'">
       <div class="m-section">传输配置</div>
       <div class="m-field">
         <label class="m-field__label">请求路径</label>
-        <el-input v-model="model.transport_path" readonly aria-label="WebSocket 请求路径">
+        <el-input v-model="model.transport_path" readonly aria-label="xhttp 请求路径">
           <template #append><el-button @click="model.transport_path = randomPath()">重新生成</el-button></template>
         </el-input>
         <div class="m-field__hint">由系统随机生成，避免被探测。重新生成后客户端需要同步更新。</div>

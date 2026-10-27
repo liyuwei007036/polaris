@@ -20,7 +20,7 @@ func TestLegacyMihomoConfigMigratesOnceWithoutResurrection(t *testing.T) {
 	}
 	listener, err := store.CreateListener(t.Context(), Listener{
 		NodeID: nodeID, Name: "迁移接入", ListenAddr: "0.0.0.0", Port: 1080, Enabled: true,
-		Spec: ProtocolSpec{Protocol: "vless", Network: "tcp", Transport: TransportOptions{Type: "ws"}},
+		Spec: ProtocolSpec{Protocol: "vless", Network: "tcp", Transport: TransportOptions{Type: "xhttp"}},
 	})
 	if err != nil {
 		t.Fatal(err)

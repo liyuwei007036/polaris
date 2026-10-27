@@ -91,7 +91,7 @@ func TestChainProxyCompileVLESSReality(t *testing.T) {
 			Protocol:  "vless",
 			Network:   "tcp",
 			TLS:       TLSOptions{Enabled: true},
-			Transport: TransportOptions{Type: "ws", Path: "/vless-ws"},
+			Transport: TransportOptions{Type: "xhttp", Path: "/vless-xhttp"},
 		},
 	})
 	if err != nil {
@@ -235,7 +235,7 @@ func TestChainProxyCompileHysteria2(t *testing.T) {
 			Protocol:  "vless",
 			Network:   "tcp",
 			TLS:       TLSOptions{Enabled: true},
-			Transport: TransportOptions{Type: "ws", Path: "/node1-ws"},
+			Transport: TransportOptions{Type: "xhttp", Path: "/node1-xhttp"},
 		},
 	})
 	if err != nil {
@@ -304,7 +304,7 @@ func TestChainProxyValidation(t *testing.T) {
 			Protocol:  "vless",
 			Network:   "tcp",
 			TLS:       TLSOptions{Enabled: true},
-			Transport: TransportOptions{Type: "ws", Path: "/l1"},
+			Transport: TransportOptions{Type: "xhttp", Path: "/l1"},
 		},
 	})
 	if err != nil {
@@ -356,7 +356,7 @@ func TestChainProxyValidation(t *testing.T) {
 			Protocol:  "vless",
 			Network:   "tcp",
 			TLS:       TLSOptions{Enabled: true},
-			Transport: TransportOptions{Type: "ws", Path: "/l2"},
+			Transport: TransportOptions{Type: "xhttp", Path: "/l2"},
 		},
 	})
 	if err != nil {
@@ -399,7 +399,7 @@ func TestChainProxyCascadeDeletion(t *testing.T) {
 			Protocol:  "vless",
 			Network:   "tcp",
 			TLS:       TLSOptions{Enabled: true},
-			Transport: TransportOptions{Type: "ws", Path: "/l2"},
+			Transport: TransportOptions{Type: "xhttp", Path: "/l2"},
 		},
 	})
 	if err != nil {
@@ -416,7 +416,7 @@ func TestChainProxyCascadeDeletion(t *testing.T) {
 			Protocol:  "vless",
 			Network:   "tcp",
 			TLS:       TLSOptions{Enabled: true},
-			Transport: TransportOptions{Type: "ws", Path: "/l1"},
+			Transport: TransportOptions{Type: "xhttp", Path: "/l1"},
 		},
 	})
 	if err != nil {
@@ -457,7 +457,7 @@ func TestChainProxyCascadeDeletion(t *testing.T) {
 	_ = u1
 }
 
-func TestChainProxyCompileVLESSWebSocketAndGRPC(t *testing.T) {
+func TestChainProxyCompileVLESSXHTTPAndGRPC(t *testing.T) {
 	ctx := t.Context()
 	store := createTestStore(t)
 
@@ -465,22 +465,22 @@ func TestChainProxyCompileVLESSWebSocketAndGRPC(t *testing.T) {
 	node2ID := createTestNode(t, store, "node2", "203.0.113.2")
 	node3ID := createTestNode(t, store, "node3", "192.0.2.3")
 
-	// Target 1 on Node 2: VLESS WS
-	lWS, err := store.CreateListener(ctx, Listener{
-		NodeID: node2ID, Name: "node2-ws", Port: 8443, ListenAddr: "0.0.0.0", Enabled: true,
+	// Target 1 on Node 2: VLESS XHTTP
+	lXHTTP, err := store.CreateListener(ctx, Listener{
+		NodeID: node2ID, Name: "node2-xhttp", Port: 8443, ListenAddr: "0.0.0.0", Enabled: true,
 		Spec: ProtocolSpec{
 			Protocol:  "vless",
 			Network:   "tcp",
-			TLS:       TLSOptions{Enabled: true, ALPN: []string{"http/1.1"}},
-			Transport: TransportOptions{Type: "ws", Path: "/my-ws", Host: "ws.example.com"},
+			TLS:       TLSOptions{Enabled: true, ALPN: []string{"h2", "http/1.1"}},
+			Transport: TransportOptions{Type: "xhttp", Path: "/my-xhttp", Host: "xhttp.example.com"},
 		},
 	})
 	if err != nil {
-		t.Fatalf("create lWS: %v", err)
+		t.Fatalf("create lXHTTP: %v", err)
 	}
-	uWS, err := store.CreateEndpoint(ctx, Endpoint{ListenerID: lWS.ID, Name: "uWS", Enabled: true}, EndpointCredentials{UUID: "22222222-2222-2222-2222-222222222222"})
+	uXHTTP, err := store.CreateEndpoint(ctx, Endpoint{ListenerID: lXHTTP.ID, Name: "uXHTTP", Enabled: true}, EndpointCredentials{UUID: "22222222-2222-2222-2222-222222222222"})
 	if err != nil {
-		t.Fatalf("create uWS: %v", err)
+		t.Fatalf("create uXHTTP: %v", err)
 	}
 
 	// Target 2 on Node 3: VLESS gRPC
@@ -501,22 +501,22 @@ func TestChainProxyCompileVLESSWebSocketAndGRPC(t *testing.T) {
 		t.Fatalf("create uGRPC: %v", err)
 	}
 
-	// Inbound on Node 1 with two users chaining to uWS and uGRPC
+	// Inbound on Node 1 with two users chaining to uXHTTP and uGRPC
 	l1, err := store.CreateListener(ctx, Listener{
 		NodeID: node1ID, Name: "node1-in", Port: 443, ListenAddr: "0.0.0.0", Enabled: true,
 		Spec: ProtocolSpec{
 			Protocol:  "vless",
 			Network:   "tcp",
 			TLS:       TLSOptions{Enabled: true},
-			Transport: TransportOptions{Type: "ws", Path: "/in"},
+			Transport: TransportOptions{Type: "xhttp", Path: "/in"},
 		},
 	})
 	if err != nil {
 		t.Fatalf("create l1: %v", err)
 	}
-	_, err = store.CreateEndpoint(ctx, Endpoint{ListenerID: l1.ID, Name: "clientWS", Enabled: true, OutboundID: "chain:" + uWS.ID}, EndpointCredentials{UUID: "aaaaaaaa-1111-1111-1111-111111111111"})
+	_, err = store.CreateEndpoint(ctx, Endpoint{ListenerID: l1.ID, Name: "clientXHTTP", Enabled: true, OutboundID: "chain:" + uXHTTP.ID}, EndpointCredentials{UUID: "aaaaaaaa-1111-1111-1111-111111111111"})
 	if err != nil {
-		t.Fatalf("create clientWS: %v", err)
+		t.Fatalf("create clientXHTTP: %v", err)
 	}
 	_, err = store.CreateEndpoint(ctx, Endpoint{ListenerID: l1.ID, Name: "clientGRPC", Enabled: true, OutboundID: "chain:" + uGRPC.ID}, EndpointCredentials{UUID: "bbbbbbbb-1111-1111-1111-111111111111"})
 	if err != nil {
@@ -535,17 +535,17 @@ func TestChainProxyCompileVLESSWebSocketAndGRPC(t *testing.T) {
 		t.Fatalf("unmarshal config: %v", err)
 	}
 
-	var foundWS, foundGRPC bool
+	var foundXHTTP, foundGRPC bool
 	for _, ob := range parsed.Outbounds {
-		if ob["tag"] == "chain-"+uWS.ID {
-			foundWS = true
+		if ob["tag"] == "chain-"+uXHTTP.ID {
+			foundXHTTP = true
 			trans, _ := ob["transport"].(map[string]any)
-			if trans["type"] != "ws" || trans["path"] != "/my-ws" {
-				t.Errorf("expected ws transport, got %#v", trans)
+			if trans["type"] != "xhttp" || trans["path"] != "/my-xhttp" {
+				t.Errorf("expected xhttp transport, got %#v", trans)
 			}
 			headers, _ := trans["headers"].(map[string]any)
-			if headers["Host"] != "ws.example.com" {
-				t.Errorf("expected Host header ws.example.com, got %#v", headers)
+			if headers["Host"] != "xhttp.example.com" {
+				t.Errorf("expected Host header xhttp.example.com, got %#v", headers)
 			}
 		}
 		if ob["tag"] == "chain-"+uGRPC.ID {
@@ -556,8 +556,8 @@ func TestChainProxyCompileVLESSWebSocketAndGRPC(t *testing.T) {
 			}
 		}
 	}
-	if !foundWS || !foundGRPC {
-		t.Fatalf("expected both WS and GRPC chain outbounds, foundWS=%v foundGRPC=%v", foundWS, foundGRPC)
+	if !foundXHTTP || !foundGRPC {
+		t.Fatalf("expected both XHTTP and GRPC chain outbounds, foundXHTTP=%v foundGRPC=%v", foundXHTTP, foundGRPC)
 	}
 }
 

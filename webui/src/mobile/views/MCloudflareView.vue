@@ -42,14 +42,14 @@ const filteredRecords = computed(() => records.value.filter((row) => {
 }))
 const filteredCertificates = computed(() => certificates.value.filter((row) =>
   includesText([row.domain, row.subject, row.issuer, (row.dns_names || []).join(' ')], keyword.value)))
-// 只有 VLESS 的 WebSocket 和 gRPC 经 Cloudflare 回源，所以要覆盖的
+// 只有 VLESS 的 xhttp 和 gRPC 经 Cloudflare 回源，所以要覆盖的
 // 就是这些接入服务的连接域名。
 const certificateUsedBy = computed(() => Object.fromEntries(certificates.value.map((row) => [
   row.id,
   listeners.value.filter((listener) => listener.spec?.protocol === 'vless'
     && listener.spec?.tls?.enabled
     && !listener.spec?.reality?.enabled
-    && ['ws', 'grpc'].includes(listener.spec?.transport?.type)
+    && ['xhttp', 'grpc'].includes(listener.spec?.transport?.type)
     && domainCovered(row.domain, listener.connection_domain)),
 ])))
 
@@ -279,7 +279,7 @@ onMounted(load)
 
     <template v-else>
       <div class="m-notice m-notice--info">
-        源证书用于 VLESS + WebSocket / gRPC 经 Cloudflare 加速时的回源：接入服务的连接域名命中下面的域名后，会改用对应源证书对外提供 TLS，Cloudflare 的 SSL 模式即可使用「完全（严格）」。未配置时仍使用平台自签证书。
+        源证书用于 VLESS + xhttp / gRPC 经 Cloudflare 加速时的回源：接入服务的连接域名命中下面的域名后，会改用对应源证书对外提供 TLS，Cloudflare 的 SSL 模式即可使用「完全（严格）」。未配置时仍使用平台自签证书。
       </div>
       <article v-for="row in filteredCertificates" :key="row.id" class="m-item">
         <button

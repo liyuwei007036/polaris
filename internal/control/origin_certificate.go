@@ -17,7 +17,7 @@ import (
 )
 
 // OriginCertificate is an operator-supplied origin certificate, normally the
-// one Cloudflare issues in the Origin Server tab. A VLESS WebSocket or gRPC
+// one Cloudflare issues in the Origin Server tab. A VLESS xhttp or gRPC
 // listener whose connection domain the certificate covers presents it to
 // Cloudflare, so the zone can pull from the origin with full (strict) TLS
 // instead of the self-signed certificate this platform generates by default.
@@ -323,7 +323,7 @@ func (s *Store) loadOriginCertificateFor(ctx context.Context, domain string) (st
 	return material.Certificate, material.PrivateKey, true, nil
 }
 
-// OriginCertificateNodeIDs lists the nodes carrying an enabled VLESS WebSocket
+// OriginCertificateNodeIDs lists the nodes carrying an enabled VLESS xhttp
 // or gRPC listener whose connection domain the pattern covers. Storing or
 // removing a certificate changes exactly those listeners' compiled TLS
 // material, so those nodes are the ones that need the new configuration.
@@ -376,5 +376,5 @@ func listenerUsesOriginCertificate(spec ProtocolSpec) bool {
 	if spec.Protocol != "vless" || spec.Reality.Enabled || !spec.TLS.Enabled {
 		return false
 	}
-	return spec.Transport.Type == "ws" || spec.Transport.Type == "grpc"
+	return spec.Transport.Type == "xhttp" || spec.Transport.Type == "grpc"
 }

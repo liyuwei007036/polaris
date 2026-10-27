@@ -248,9 +248,10 @@ func compileOutbound(ob Outbound, tag string) map[string]any {
 // compileTransport renders the supported VLESS transports.
 func compileTransport(t TransportOptions) map[string]any {
 	switch t.Type {
-	case "ws":
-		transport := map[string]any{"type": "ws", "path": t.Path}
+	case "xhttp":
+		transport := map[string]any{"type": "xhttp", "path": t.Path}
 		if t.Host != "" {
+			transport["host"] = t.Host
 			transport["headers"] = map[string]any{"Host": t.Host}
 		}
 		return transport
@@ -495,9 +496,9 @@ func (s *Store) compileChainOutbound(ctx context.Context, targetEndpointID, tag 
 			outbound["tls"] = tlsConfig
 		}
 		switch spec.Transport.Type {
-		case "ws":
-			wsConfig := map[string]any{
-				"type": "ws",
+		case "xhttp":
+			xhttpConfig := map[string]any{
+				"type": "xhttp",
 				"path": spec.Transport.Path,
 			}
 			host := strings.TrimSpace(spec.Transport.Host)
@@ -505,9 +506,10 @@ func (s *Store) compileChainOutbound(ctx context.Context, targetEndpointID, tag 
 				host = strings.TrimSpace(domain)
 			}
 			if host != "" {
-				wsConfig["headers"] = map[string]any{"Host": host}
+				xhttpConfig["host"] = host
+				xhttpConfig["headers"] = map[string]any{"Host": host}
 			}
-			outbound["transport"] = wsConfig
+			outbound["transport"] = xhttpConfig
 		case "grpc":
 			outbound["transport"] = map[string]any{
 				"type":         "grpc",
