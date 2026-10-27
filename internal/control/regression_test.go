@@ -426,8 +426,8 @@ func TestPortEditKeepsCompiledConfigAndSubscriptionInSync(t *testing.T) {
 	for _, inbound := range compiled.Inbounds {
 		listenByPort[inbound.ListenPort] = inbound.Listen
 	}
-	if listenByPort[8443] != "0.0.0.0" {
-		t.Fatalf("compiled inbounds = %#v, want 8443 bound on 0.0.0.0", compiled.Inbounds)
+	if listenByPort[8443] != "::" && listenByPort[8443] != "0.0.0.0" {
+		t.Fatalf("compiled inbounds = %#v, want 8443 bound on wildcard (:: or 0.0.0.0)", compiled.Inbounds)
 	}
 	// Both services keep publishing their names; which of them the node ends up
 	// routing follows from the ports, and 8443 is now free of company.

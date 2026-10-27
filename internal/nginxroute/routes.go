@@ -53,7 +53,13 @@ func Compile(routes []Route) (string, error) {
 		}
 		output.WriteString("}\nserver {\n    listen ")
 		output.WriteString(net.JoinHostPort(key.address, strconv.Itoa(int(key.port))))
-		output.WriteString(";\n    ssl_preread on;\n    proxy_protocol on;\n    proxy_pass $")
+		output.WriteString(";\n")
+		if key.address == "0.0.0.0" || key.address == "" {
+			output.WriteString("    listen [::]:")
+			output.WriteString(strconv.Itoa(int(key.port)))
+			output.WriteString(";\n")
+		}
+		output.WriteString("    ssl_preread on;\n    proxy_protocol on;\n    proxy_pass $")
 		output.WriteString(name)
 		output.WriteString(";\n    proxy_connect_timeout 10s;\n    proxy_timeout 10m;\n}\n\n")
 	}
@@ -134,7 +140,7 @@ func GroupName(address string, port uint16) string {
 // port, "*" and "0.0.0.0" all bind the IPv4 wildcard.
 func NormalizeListenAddress(address string) string {
 	address = strings.Trim(strings.TrimSpace(address), "[]")
-	if address == "" || address == "*" {
+	if address == "" || address == "*" || address == "::" {
 		return "0.0.0.0"
 	}
 	return address

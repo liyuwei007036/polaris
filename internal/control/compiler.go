@@ -295,7 +295,11 @@ func (s *Store) compileInbound(ctx context.Context, listener Listener, endpoints
 	if err := ValidateProtocolSpec(listener.Spec); err != nil {
 		return nil, err
 	}
-	inbound := map[string]any{"type": listener.Spec.Protocol, "tag": "listener-" + listener.ID, "listen": listener.ListenAddr, "listen_port": listener.BackendPort}
+	listenAddr := listener.ListenAddr
+	if listenAddr == "" || listenAddr == "0.0.0.0" {
+		listenAddr = "::"
+	}
+	inbound := map[string]any{"type": listener.Spec.Protocol, "tag": "listener-" + listener.ID, "listen": listenAddr, "listen_port": listener.BackendPort}
 	if listener.Spec.TLS.Enabled {
 		tls, err := s.compileTLS(ctx, listener)
 		if err != nil {
