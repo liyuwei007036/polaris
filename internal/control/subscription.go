@@ -375,6 +375,7 @@ func (s *Store) clientSubscriptionLine(ctx context.Context, endpointID string) (
 		if len(listener.Spec.Reality.ShortIDs) > 0 {
 			query.Set("sid", listener.Spec.Reality.ShortIDs[0])
 		}
+		query.Del("alpn")
 		flow := endpoint.Credentials.Flow
 		if flow == "" {
 			flow = "xtls-rprx-vision"

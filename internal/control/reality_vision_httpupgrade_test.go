@@ -164,17 +164,25 @@ func TestVLESSRealityVisionAndHTTPUpgrade(t *testing.T) {
 		t.Fatalf("upgrade share link is missing httpupgrade parameters: %s", upgradeShareLink)
 	}
 
-	// Verify Mihomo proxy has network: httpupgrade
+	// Verify Mihomo proxy has network: ws and v2ray-http-upgrade: true
 	upgradeMihomo, err := store.mihomoProxy(ctx, upgradeEndpoint.ID, "198.51.100.1")
 	if err != nil {
 		t.Fatalf("build mihomo proxy for upgrade: %v", err)
 	}
-	if upgradeMihomo["network"] != "httpupgrade" {
-		t.Fatalf("expected mihomo network httpupgrade, got %v", upgradeMihomo["network"])
+	if upgradeMihomo["network"] != "ws" {
+		t.Fatalf("expected mihomo network ws, got %v", upgradeMihomo["network"])
 	}
-	opts, ok := upgradeMihomo["httpupgrade-opts"].(map[string]any)
-	if !ok || opts["path"] != "/ray" {
-		t.Fatalf("expected httpupgrade-opts path /ray, got %#v", opts)
+	opts, ok := upgradeMihomo["ws-opts"].(map[string]any)
+	if !ok || opts["path"] != "/ray" || opts["v2ray-http-upgrade"] != true {
+		t.Fatalf("expected ws-opts with v2ray-http-upgrade, got %#v", opts)
+	}
+	// Verify Reality proxy does not export alpn
+	realityMihomo, err := store.mihomoProxy(ctx, realityEndpoint.ID, "198.51.100.1")
+	if err != nil {
+		t.Fatalf("build mihomo proxy for reality: %v", err)
+	}
+	if _, hasALPN := realityMihomo["alpn"]; hasALPN {
+		t.Fatalf("expected reality proxy not to have alpn, got %v", realityMihomo["alpn"])
 	}
 }
 

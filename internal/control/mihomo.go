@@ -254,17 +254,20 @@ func (s *Store) mihomoProxy(ctx context.Context, endpointID, fallbackServer stri
 		proxy["servername"] = listener.Spec.Reality.HandshakeServer
 		proxy["client-fingerprint"] = "chrome"
 		proxy["reality-opts"] = reality
+		delete(proxy, "alpn")
 	}
 	switch listener.Spec.Transport.Type {
 	case "":
 	case "httpupgrade":
-		proxy["network"] = "httpupgrade"
-		options := map[string]any{"path": listener.Spec.Transport.Path}
+		proxy["network"] = "ws"
+		options := map[string]any{
+			"path":               listener.Spec.Transport.Path,
+			"v2ray-http-upgrade": true,
+		}
 		if listener.Spec.Transport.Host != "" {
-			options["host"] = listener.Spec.Transport.Host
 			options["headers"] = map[string]string{"Host": listener.Spec.Transport.Host}
 		}
-		proxy["httpupgrade-opts"] = options
+		proxy["ws-opts"] = options
 	case "grpc":
 		proxy["network"] = "grpc"
 		proxy["grpc-opts"] = map[string]any{"grpc-service-name": listener.Spec.Transport.ServiceName}
