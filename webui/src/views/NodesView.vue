@@ -30,7 +30,10 @@ const masterHost = ref('')
 const agentPort = ref(19994)
 const editDialog = ref(false)
 const editNode = ref(null)
-const editForm = ref({ name: '', client_address: '', scanner_protection: false })
+const editForm = ref({ name: '', client_address: '', scanner_protection: false, ddns_enabled: false, ddns_record_id: '', ddns_domain: '' })
+const cfRecords = ref([])
+const cfLoading = ref(false)
+const syncingDDNS = ref(false)
 const editSaving = ref(false)
 const refreshing = ref(false)
 const keyword = ref('')
@@ -223,6 +226,39 @@ async function upgradeSingBox(node) {
   ElMessage.success('升级任务已下发，完成后服务器会上报新的 sing-box 版本')
 }
 
+async function loadCloudflareRecords() {
+  cfLoading.value = true
+  try {
+    const res = await api('/cloudflare/records').catch(() => ({ records: [] }))
+    cfRecords.value = (res.records || []).filter(r => r.type === 'A' || r.type === 'AAAA')
+  } finally {
+    cfLoading.value = false
+  }
+}
+
+function onRecordSelected(recordId) {
+  const rec = cfRecords.value.find(r => r.id === recordId)
+  if (rec) {
+    editForm.value.ddns_domain = rec.name
+    if (!editForm.value.client_address || /^[0-9.:]+$/.test(editForm.value.client_address)) {
+      editForm.value.client_address = rec.name
+    }
+  }
+}
+
+async function syncDDNS(node) {
+  syncingDDNS.value = true
+  try {
+    const res = await post(`/nodes/${node.id}/ddns/sync`, {})
+    ElMessage.success(`DDNS 解析已成功同步，当前解析 IP: ${res.ip}`)
+    await load(true)
+  } catch (error) {
+    ElMessage.error(error instanceof Error ? error.message : 'DDNS 同步失败')
+  } finally {
+    syncingDDNS.value = false
+  }
+}
+
 async function openEdit(node) {
   editNode.value = node
   let isProtected = Boolean(scanners.value[node.id])
@@ -237,7 +273,11 @@ async function openEdit(node) {
     name: node.name,
     client_address: node.client_address || '',
     scanner_protection: isProtected,
+    ddns_enabled: Boolean(node.ddns_enabled),
+    ddns_record_id: node.ddns_record_id || '',
+    ddns_domain: node.ddns_domain || '',
   }
+  loadCloudflareRecords()
   editDialog.value = true
 }
 
@@ -247,6 +287,9 @@ async function saveNode() {
     await put(`/nodes/${editNode.value.id}`, {
       name: editForm.value.name.trim(),
       client_address: editForm.value.client_address.trim(),
+      ddns_enabled: editForm.value.ddns_enabled,
+      ddns_record_id: editForm.value.ddns_record_id,
+      ddns_domain: editForm.value.ddns_domain,
     })
     if (isAdmin.value && editNode.value.online && editForm.value.scanner_protection !== Boolean(scanners.value[editNode.value.id])) {
       const updated = await post(`/nodes/${editNode.value.id}/firewall/scanners`, { enabled: editForm.value.scanner_protection })
@@ -347,8 +390,16 @@ onBeforeUnmount(() => {
               </div>
             </template>
           </el-table-column>
-          <el-table-column label="客户端连接地址" min-width="170" show-overflow-tooltip>
-            <template #default="{ row }"><span v-if="row.client_address" class="mono">{{ row.client_address }}</span><el-tag v-else type="warning">未配置</el-tag></template>
+          <el-table-column label="客户端连接地址" min-width="180" show-overflow-tooltip>
+            <template #default="{ row }">
+              <div class="cell-main">
+                <span v-if="row.client_address" class="mono">{{ row.client_address }}</span>
+                <el-tag v-else type="warning">未配置</el-tag>
+                <el-tooltip v-if="row.ddns_enabled" :content="`Cloudflare DDNS 自动同步 (${row.ddns_domain || row.client_address})，最新IP: ${row.last_observed_ip || '等待检测'}`">
+                  <el-tag size="small" type="success" style="margin-left: 6px">DDNS</el-tag>
+                </el-tooltip>
+              </div>
+            </template>
           </el-table-column>
           <el-table-column label="主动测绘防御" width="130" align="center">
             <template #default="{ row }">
@@ -463,6 +514,55 @@ onBeforeUnmount(() => {
               inactive-text="未开启"
               inline-prompt
             />
+          </div>
+        </el-form-item>
+        <el-form-item label="动态域名解析 (Cloudflare DDNS)">
+          <div class="scanner-edit-box" style="margin-bottom: 8px;">
+            <div class="scanner-edit-text">
+              <div class="scanner-edit-heading">NAT 机器出口 IP 变动自动同步</div>
+              <div class="subtle">当此服务器 IP 发生变动并重新连接 Master 时，自动更新 Cloudflare 上的域名解析记录</div>
+            </div>
+            <div style="display: flex; align-items: center; gap: 8px;">
+              <el-button
+                v-if="editForm.ddns_enabled && editNode?.ddns_enabled && editNode?.online"
+                size="small"
+                type="primary"
+                link
+                :loading="syncingDDNS"
+                @click="syncDDNS(editNode)"
+              >
+                立即同步
+              </el-button>
+              <el-switch
+                v-model="editForm.ddns_enabled"
+                active-text="已开启"
+                inactive-text="未开启"
+                inline-prompt
+              />
+            </div>
+          </div>
+          <div v-if="editForm.ddns_enabled" style="width: 100%; margin-top: 6px;">
+            <el-select
+              v-model="editForm.ddns_record_id"
+              placeholder="选择绑定的 Cloudflare A / AAAA 记录"
+              style="width: 100%;"
+              :loading="cfLoading"
+              no-data-text="未找到可用记录（请先在「域名解析」中添加 A 记录）"
+              @change="onRecordSelected"
+            >
+              <el-option
+                v-if="editForm.ddns_record_id && !cfRecords.some(r => r.id === editForm.ddns_record_id)"
+                :key="editForm.ddns_record_id"
+                :label="`${editForm.ddns_domain || '已绑定记录'} (当前绑定)`"
+                :value="editForm.ddns_record_id"
+              />
+              <el-option
+                v-for="item in cfRecords"
+                :key="item.id"
+                :label="`${item.name} (${item.type} ➔ ${item.content})`"
+                :value="item.id"
+              />
+            </el-select>
           </div>
         </el-form-item>
         <el-alert title="接入时会自动填入来源 IP。仅填域名或 IP，不含 http://、端口与路径。" type="info" show-icon :closable="false" />

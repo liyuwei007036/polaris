@@ -46,6 +46,7 @@ type Server struct {
 	secureCookies          bool
 	controlMu              sync.Mutex
 	controls               map[string]*controlSession
+	ddnsMu                 sync.Mutex
 	autoInstallMu          sync.Mutex
 	autoInstallChecked     map[string]bool
 	latestSingBoxReleaseFn func(context.Context, string) (SingBoxRelease, error)
@@ -103,7 +104,8 @@ type controlSession struct {
 	// questions carries the request-response tasks a screen asks on demand.
 	// They are never stored, so they travel on their own channel rather than
 	// through the task table. See AskNode.
-	questions chan wire.Task
+	questions  chan wire.Task
+	remoteAddr string
 }
 
 func NewServer(store *Store, secureCookies bool) (*Server, error) {
@@ -315,6 +317,7 @@ func (s *Server) registerBrowserRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/v1/nodes/registration-tokens", s.createRegistrationToken)
 	mux.HandleFunc("GET /api/v1/nodes", s.listNodes)
 	mux.HandleFunc("PUT /api/v1/nodes/{id}", s.updateNode)
+	mux.HandleFunc("POST /api/v1/nodes/{id}/ddns/sync", s.syncNodeDDNS)
 	mux.HandleFunc("PUT /api/v1/nodes/{id}/name", s.setNodeName)
 	mux.HandleFunc("PUT /api/v1/nodes/{id}/client-address", s.setNodeClientAddress)
 	mux.HandleFunc("GET /api/v1/nodes/metrics", s.allNodeMetrics)
@@ -1279,7 +1282,7 @@ func (s *Server) setNodeClientAddress(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, node)
 }
 
-// updateNode saves a node's name and client address in one request.
+// updateNode saves a node's name, client address, and DDNS settings in one request.
 func (s *Server) updateNode(w http.ResponseWriter, r *http.Request) {
 	operator, err := s.writer(r)
 	if err != nil {
@@ -1287,18 +1290,21 @@ func (s *Server) updateNode(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var input struct {
-		Name    string `json:"name"`
-		Address string `json:"client_address"`
+		Name         string  `json:"name"`
+		Address      string  `json:"client_address"`
+		DDNSEnabled  *bool   `json:"ddns_enabled"`
+		DDNSRecordID *string `json:"ddns_record_id"`
+		DDNSDomain   *string `json:"ddns_domain"`
 	}
 	if !decodeJSON(w, r, &input) {
 		return
 	}
 	nodeID := r.PathValue("id")
-	if err := s.store.UpdateNode(r.Context(), nodeID, input.Name, input.Address); err != nil {
+	if err := s.store.UpdateNodeWithDDNS(r.Context(), nodeID, input.Name, input.Address, input.DDNSEnabled, input.DDNSRecordID, input.DDNSDomain); err != nil {
 		writeError(w, err)
 		return
 	}
-	if err := s.store.AppendAudit(r.Context(), operator.ID, "node.updated", "node", nodeID, "node name and client address updated"); err != nil {
+	if err := s.store.AppendAudit(r.Context(), operator.ID, "node.updated", "node", nodeID, "node name, client address, and DDNS settings updated"); err != nil {
 		writeError(w, err)
 		return
 	}
@@ -1307,7 +1313,25 @@ func (s *Server) updateNode(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
+	if node.DDNSEnabled && node.DDNSRecordID != "" {
+		currentIP := s.nodeActiveAddress(node.ID)
+		if currentIP == "" {
+			currentIP = node.LastObservedIP
+		}
+		if currentIP != "" {
+			go s.triggerNodeDDNS(context.Background(), node.ID, currentIP)
+		}
+	}
 	writeJSON(w, http.StatusOK, node)
+}
+
+func (s *Server) nodeActiveAddress(nodeID string) string {
+	s.controlMu.Lock()
+	defer s.controlMu.Unlock()
+	if session := s.controls[nodeID]; session != nil {
+		return session.remoteAddr
+	}
+	return ""
 }
 
 func (s *Server) setNodeName(w http.ResponseWriter, r *http.Request) {

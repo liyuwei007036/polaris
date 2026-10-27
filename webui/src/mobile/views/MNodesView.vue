@@ -38,7 +38,9 @@ const agentPort = ref(19994)
 
 const editSheet = ref(false)
 const editNode = ref(null)
-const editForm = ref({ name: '', client_address: '', scanner_protection: false })
+const editForm = ref({ name: '', client_address: '', scanner_protection: false, ddns_enabled: false, ddns_record_id: '', ddns_domain: '' })
+const cfRecords = ref([])
+const cfLoading = ref(false)
 const editSaving = ref(false)
 const scanners = ref({})
 
@@ -251,6 +253,26 @@ async function revoke(node) {
   await load()
 }
 
+async function loadCloudflareRecords() {
+  cfLoading.value = true
+  try {
+    const res = await api('/cloudflare/records').catch(() => ({ records: [] }))
+    cfRecords.value = (res.records || []).filter(r => r.type === 'A' || r.type === 'AAAA')
+  } finally {
+    cfLoading.value = false
+  }
+}
+
+function onRecordSelected(recordId) {
+  const rec = cfRecords.value.find(r => r.id === recordId)
+  if (rec) {
+    editForm.value.ddns_domain = rec.name
+    if (!editForm.value.client_address || /^[0-9.:]+$/.test(editForm.value.client_address)) {
+      editForm.value.client_address = rec.name
+    }
+  }
+}
+
 async function openEdit(node) {
   editNode.value = node
   let isProtected = Boolean(scanners.value[node.id])
@@ -265,7 +287,11 @@ async function openEdit(node) {
     name: node.name,
     client_address: node.client_address || '',
     scanner_protection: isProtected,
+    ddns_enabled: Boolean(node.ddns_enabled),
+    ddns_record_id: node.ddns_record_id || '',
+    ddns_domain: node.ddns_domain || '',
   }
+  loadCloudflareRecords()
   editSheet.value = true
 }
 
@@ -275,6 +301,9 @@ async function saveNode() {
     await put(`/nodes/${editNode.value.id}`, {
       name: editForm.value.name.trim(),
       client_address: editForm.value.client_address.trim(),
+      ddns_enabled: editForm.value.ddns_enabled,
+      ddns_record_id: editForm.value.ddns_record_id,
+      ddns_domain: editForm.value.ddns_domain,
     })
     if (isAdmin.value && editNode.value.online && editForm.value.scanner_protection !== Boolean(scanners.value[editNode.value.id])) {
       const updated = await post(`/nodes/${editNode.value.id}/firewall/scanners`, { enabled: editForm.value.scanner_protection })
@@ -389,6 +418,41 @@ onBeforeUnmount(() => {
           />
         </div>
         <div class="m-field__hint">自动阻断 Shodan、Censys 等公网扫描引擎探测，隐藏服务器服务特征。</div>
+      </div>
+      <div class="m-field">
+        <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px;">
+          <label class="m-field__label" style="margin: 0">动态域名解析 (DDNS)</label>
+          <el-switch
+            v-model="editForm.ddns_enabled"
+            active-text="已开启"
+            inactive-text="未开启"
+            inline-prompt
+          />
+        </div>
+        <div class="m-field__hint">NAT 机器公网出口 IP 变动时自动更新绑定的 Cloudflare A 记录。</div>
+        <div v-if="editForm.ddns_enabled" style="margin-top: 8px;">
+          <el-select
+            v-model="editForm.ddns_record_id"
+            placeholder="选择关联的 Cloudflare A 记录"
+            style="width: 100%;"
+            :loading="cfLoading"
+            no-data-text="未找到可用记录（请先在域名解析中添加）"
+            @change="onRecordSelected"
+          >
+            <el-option
+              v-if="editForm.ddns_record_id && !cfRecords.some(r => r.id === editForm.ddns_record_id)"
+              :key="editForm.ddns_record_id"
+              :label="`${editForm.ddns_domain || '已绑定记录'} (当前绑定)`"
+              :value="editForm.ddns_record_id"
+            />
+            <el-option
+              v-for="item in cfRecords"
+              :key="item.id"
+              :label="`${item.name} (${item.type} ➔ ${item.content})`"
+              :value="item.id"
+            />
+          </el-select>
+        </div>
       </div>
       <template #footer>
         <el-button @click="editSheet = false">取消</el-button>

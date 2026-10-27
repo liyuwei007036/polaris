@@ -357,6 +357,17 @@ func (s *Store) cloudflareBindingIndex(ctx context.Context) (map[string][]Cloudf
 	if err := rows.Err(); err != nil {
 		return nil, nil, err
 	}
+	ddnsRows, err := s.db.QueryContext(ctx, `SELECT LOWER(ddns_domain), name FROM nodes
+		WHERE ddns_enabled = 1 AND ddns_domain <> '' AND revoked_at IS NULL ORDER BY name, id`)
+	if err == nil {
+		defer ddnsRows.Close()
+		for ddnsRows.Next() {
+			var domain, nodeName string
+			if err := ddnsRows.Scan(&domain, &nodeName); err == nil {
+				byDomain[domain] = append(byDomain[domain], CloudflareBinding{NodeName: nodeName + " (DDNS)"})
+			}
+		}
+	}
 	byAddress := map[string][]string{}
 	addressRows, err := s.db.QueryContext(ctx, `SELECT LOWER(client_address), name FROM nodes
 		WHERE client_address <> '' AND revoked_at IS NULL ORDER BY name, id`)

@@ -105,17 +105,21 @@ type RegistrationInput struct {
 }
 
 type Node struct {
-	ID            string `json:"id"`
-	Name          string `json:"name"`
-	ClientAddress string `json:"client_address"`
-	AgentVersion  string `json:"agent_version"`
-	OS            string `json:"os"`
-	Architecture  string `json:"architecture"`
-	SingBox       string `json:"sing_box_version"`
-	Capabilities  string `json:"capabilities"`
-	Online        bool   `json:"online"`
-	LastSeenAt    string `json:"last_seen_at,omitempty"`
-	PublicKey     []byte `json:"-"`
+	ID             string `json:"id"`
+	Name           string `json:"name"`
+	ClientAddress  string `json:"client_address"`
+	AgentVersion   string `json:"agent_version"`
+	OS             string `json:"os"`
+	Architecture   string `json:"architecture"`
+	SingBox        string `json:"sing_box_version"`
+	Capabilities   string `json:"capabilities"`
+	Online         bool   `json:"online"`
+	LastSeenAt     string `json:"last_seen_at,omitempty"`
+	PublicKey      []byte `json:"-"`
+	DDNSEnabled    bool   `json:"ddns_enabled"`
+	DDNSRecordID   string `json:"ddns_record_id"`
+	DDNSDomain     string `json:"ddns_domain"`
+	LastObservedIP string `json:"last_observed_ip"`
 }
 
 type AgentStatus struct {
@@ -993,16 +997,19 @@ func (s *Store) RevokeNode(ctx context.Context, nodeID string) error {
 // old mTLS "which client certificate is this" lookup.
 func (s *Store) NodeForPublicKey(ctx context.Context, publicKey []byte) (Node, error) {
 	var node Node
-	err := s.db.QueryRowContext(ctx, `SELECT id, name, agent_version, os, architecture, sing_box_version,
-		COALESCE(capabilities, ''), last_seen_at
+	var ddnsEnabled int
+	err := s.db.QueryRowContext(ctx, `SELECT id, name, client_address, agent_version, os, architecture, sing_box_version,
+		COALESCE(capabilities, ''), last_seen_at, COALESCE(ddns_enabled, 0), COALESCE(ddns_record_id, ''), COALESCE(ddns_domain, ''), COALESCE(last_observed_ip, '')
 		FROM nodes WHERE public_key = ? AND revoked_at IS NULL`, publicKey).
-		Scan(&node.ID, &node.Name, &node.AgentVersion, &node.OS, &node.Architecture, &node.SingBox, &node.Capabilities, new(sql.NullInt64))
+		Scan(&node.ID, &node.Name, &node.ClientAddress, &node.AgentVersion, &node.OS, &node.Architecture, &node.SingBox, &node.Capabilities, new(sql.NullInt64),
+			&ddnsEnabled, &node.DDNSRecordID, &node.DDNSDomain, &node.LastObservedIP)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Node{}, ErrUnauthorized
 	}
 	if err != nil {
 		return Node{}, fmt.Errorf("load node by public key: %w", err)
 	}
+	node.DDNSEnabled = ddnsEnabled == 1
 	node.PublicKey = publicKey
 	return node, nil
 }
@@ -1100,7 +1107,8 @@ func (s *Store) AllNodeMetrics(ctx context.Context) (map[string]json.RawMessage,
 
 func (s *Store) ListNodes(ctx context.Context) ([]Node, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT id, name, client_address, agent_version, os, architecture, sing_box_version,
-		COALESCE(capabilities, ''), last_seen_at FROM nodes WHERE revoked_at IS NULL ORDER BY name, id`)
+		COALESCE(capabilities, ''), last_seen_at, COALESCE(ddns_enabled, 0), COALESCE(ddns_record_id, ''), COALESCE(ddns_domain, ''), COALESCE(last_observed_ip, '')
+		FROM nodes WHERE revoked_at IS NULL ORDER BY name, id`)
 	if err != nil {
 		return nil, fmt.Errorf("list nodes: %w", err)
 	}
@@ -1110,9 +1118,12 @@ func (s *Store) ListNodes(ctx context.Context) ([]Node, error) {
 	for rows.Next() {
 		var node Node
 		var lastSeen sql.NullInt64
-		if err := rows.Scan(&node.ID, &node.Name, &node.ClientAddress, &node.AgentVersion, &node.OS, &node.Architecture, &node.SingBox, &node.Capabilities, &lastSeen); err != nil {
+		var ddnsEnabled int
+		if err := rows.Scan(&node.ID, &node.Name, &node.ClientAddress, &node.AgentVersion, &node.OS, &node.Architecture, &node.SingBox, &node.Capabilities, &lastSeen,
+			&ddnsEnabled, &node.DDNSRecordID, &node.DDNSDomain, &node.LastObservedIP); err != nil {
 			return nil, fmt.Errorf("read node: %w", err)
 		}
+		node.DDNSEnabled = ddnsEnabled == 1
 		if lastSeen.Valid {
 			node.Online = lastSeen.Int64 >= threshold
 			node.LastSeenAt = time.Unix(lastSeen.Int64, 0).UTC().Format(time.RFC3339)
@@ -1128,14 +1139,18 @@ func (s *Store) ListNodes(ctx context.Context) ([]Node, error) {
 func (s *Store) NodeByID(ctx context.Context, nodeID string) (Node, error) {
 	var node Node
 	var lastSeen sql.NullInt64
+	var ddnsEnabled int
 	row := s.db.QueryRowContext(ctx, `SELECT id, name, client_address, agent_version, os, architecture, sing_box_version,
-		COALESCE(capabilities, ''), last_seen_at FROM nodes WHERE id = ? AND revoked_at IS NULL`, nodeID)
-	if err := row.Scan(&node.ID, &node.Name, &node.ClientAddress, &node.AgentVersion, &node.OS, &node.Architecture, &node.SingBox, &node.Capabilities, &lastSeen); err != nil {
+		COALESCE(capabilities, ''), last_seen_at, COALESCE(ddns_enabled, 0), COALESCE(ddns_record_id, ''), COALESCE(ddns_domain, ''), COALESCE(last_observed_ip, '')
+		FROM nodes WHERE id = ? AND revoked_at IS NULL`, nodeID)
+	if err := row.Scan(&node.ID, &node.Name, &node.ClientAddress, &node.AgentVersion, &node.OS, &node.Architecture, &node.SingBox, &node.Capabilities, &lastSeen,
+		&ddnsEnabled, &node.DDNSRecordID, &node.DDNSDomain, &node.LastObservedIP); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return Node{}, ErrNotFound
 		}
 		return Node{}, fmt.Errorf("read node by id: %w", err)
 	}
+	node.DDNSEnabled = ddnsEnabled == 1
 	if lastSeen.Valid {
 		node.Online = lastSeen.Int64 >= time.Now().UTC().Add(-90*time.Second).Unix()
 		node.LastSeenAt = time.Unix(lastSeen.Int64, 0).UTC().Format(time.RFC3339)
@@ -1169,15 +1184,19 @@ func (s *Store) SetNodeName(ctx context.Context, nodeID, name string) error {
 func (s *Store) GetNode(ctx context.Context, nodeID string) (Node, error) {
 	var node Node
 	var lastSeen sql.NullInt64
+	var ddnsEnabled int
 	err := s.db.QueryRowContext(ctx, `SELECT id, name, client_address, agent_version, os, architecture, sing_box_version,
-		COALESCE(capabilities, ''), last_seen_at FROM nodes WHERE id = ? AND revoked_at IS NULL`, nodeID).
-		Scan(&node.ID, &node.Name, &node.ClientAddress, &node.AgentVersion, &node.OS, &node.Architecture, &node.SingBox, &node.Capabilities, &lastSeen)
+		COALESCE(capabilities, ''), last_seen_at, COALESCE(ddns_enabled, 0), COALESCE(ddns_record_id, ''), COALESCE(ddns_domain, ''), COALESCE(last_observed_ip, '')
+		FROM nodes WHERE id = ? AND revoked_at IS NULL`, nodeID).
+		Scan(&node.ID, &node.Name, &node.ClientAddress, &node.AgentVersion, &node.OS, &node.Architecture, &node.SingBox, &node.Capabilities, &lastSeen,
+			&ddnsEnabled, &node.DDNSRecordID, &node.DDNSDomain, &node.LastObservedIP)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Node{}, ErrNotFound
 	}
 	if err != nil {
 		return Node{}, fmt.Errorf("load node: %w", err)
 	}
+	node.DDNSEnabled = ddnsEnabled == 1
 	if lastSeen.Valid {
 		node.Online = lastSeen.Int64 >= time.Now().UTC().Add(-90*time.Second).Unix()
 		node.LastSeenAt = time.Unix(lastSeen.Int64, 0).UTC().Format(time.RFC3339)
@@ -1208,6 +1227,10 @@ func (s *Store) SetNodeClientAddress(ctx context.Context, nodeID, address string
 // an operator edits them: they describe the same server and splitting them
 // across two dialogs meant two round trips to change one thing.
 func (s *Store) UpdateNode(ctx context.Context, nodeID, name, address string) error {
+	return s.UpdateNodeWithDDNS(ctx, nodeID, name, address, nil, nil, nil)
+}
+
+func (s *Store) UpdateNodeWithDDNS(ctx context.Context, nodeID, name, address string, ddnsEnabled *bool, ddnsRecordID, ddnsDomain *string) error {
 	name = strings.TrimSpace(name)
 	if name == "" || len(name) > 128 || strings.ContainsAny(name, "\r\n") {
 		return errors.New("node name is required and must be at most 128 characters")
@@ -1216,7 +1239,39 @@ func (s *Store) UpdateNode(ctx context.Context, nodeID, name, address string) er
 	if address != "" && (len(address) > 253 || strings.ContainsAny(address, "\r\n,:")) {
 		return errors.New("client address must be a hostname or IP address without scheme or port")
 	}
-	result, err := s.db.ExecContext(ctx, `UPDATE nodes SET name = ?, client_address = ? WHERE id = ? AND revoked_at IS NULL`, name, address, nodeID)
+	existing, err := s.GetNode(ctx, nodeID)
+	if err != nil {
+		return err
+	}
+	enabledVal := existing.DDNSEnabled
+	if ddnsEnabled != nil {
+		enabledVal = *ddnsEnabled
+	}
+	recordIDVal := existing.DDNSRecordID
+	if ddnsRecordID != nil {
+		recordIDVal = strings.TrimSpace(*ddnsRecordID)
+	}
+	domainVal := existing.DDNSDomain
+	if ddnsDomain != nil {
+		domainVal = strings.TrimSpace(*ddnsDomain)
+	}
+
+	if enabledVal && address == "" && domainVal != "" {
+		address = domainVal
+	}
+
+	enabledInt := 0
+	if enabledVal {
+		enabledInt = 1
+	}
+
+	lastObservedIP := existing.LastObservedIP
+	if (enabledVal && !existing.DDNSEnabled) || (existing.DDNSRecordID != recordIDVal) {
+		lastObservedIP = ""
+	}
+
+	result, err := s.db.ExecContext(ctx, `UPDATE nodes SET name = ?, client_address = ?, ddns_enabled = ?, ddns_record_id = ?, ddns_domain = ?, last_observed_ip = ? WHERE id = ? AND revoked_at IS NULL`,
+		name, address, enabledInt, recordIDVal, domainVal, lastObservedIP, nodeID)
 	if err != nil {
 		return fmt.Errorf("update node: %w", err)
 	}
@@ -1230,6 +1285,20 @@ func (s *Store) UpdateNode(ctx context.Context, nodeID, name, address string) er
 	return nil
 }
 
+func (s *Store) SetNodeLastObservedIP(ctx context.Context, nodeID, ip string) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE nodes SET last_observed_ip = ? WHERE id = ? AND revoked_at IS NULL`, strings.TrimSpace(ip), nodeID)
+	if err != nil {
+		return fmt.Errorf("set node last observed ip: %w", err)
+	}
+	return nil
+}
+
+func (s *Store) SystemOperatorID(ctx context.Context) string {
+	var id string
+	_ = s.db.QueryRowContext(ctx, `SELECT id FROM operators WHERE role = 'admin' AND enabled = 1 ORDER BY created_at LIMIT 1`).Scan(&id)
+	return id
+}
+
 // SetNodeObservedAddress records the address an agent connected from, but
 // only fills the client address when an operator has not chosen one. Agents
 // know their own reachable address better than a human filling in a form, so
@@ -1241,7 +1310,8 @@ func (s *Store) SetNodeObservedAddress(ctx context.Context, nodeID, address stri
 		return nil
 	}
 	_, err := s.db.ExecContext(ctx,
-		`UPDATE nodes SET client_address = ? WHERE id = ? AND revoked_at IS NULL AND TRIM(COALESCE(client_address, '')) = ''`,
+		`UPDATE nodes SET client_address = CASE WHEN ddns_enabled = 1 AND ddns_domain <> '' THEN ddns_domain ELSE ? END
+		WHERE id = ? AND revoked_at IS NULL AND TRIM(COALESCE(client_address, '')) = ''`,
 		address, nodeID)
 	if err != nil {
 		return fmt.Errorf("record observed node address: %w", err)
@@ -2247,6 +2317,8 @@ CREATE TABLE IF NOT EXISTS nodes (
   client_address TEXT NOT NULL DEFAULT '',
   agent_version TEXT NOT NULL DEFAULT '', os TEXT NOT NULL DEFAULT '', architecture TEXT NOT NULL DEFAULT '',
   sing_box_version TEXT NOT NULL DEFAULT '', capabilities TEXT, last_seen_at INTEGER,
+  ddns_enabled INTEGER NOT NULL DEFAULT 0, ddns_record_id TEXT NOT NULL DEFAULT '',
+  ddns_domain TEXT NOT NULL DEFAULT '', last_observed_ip TEXT NOT NULL DEFAULT '',
   revoked_at INTEGER, created_at INTEGER NOT NULL
 );
 CREATE TABLE IF NOT EXISTS audit_events (
@@ -2469,6 +2541,8 @@ INSERT OR IGNORE INTO alert_settings (id, updated_at) VALUES (1, unixepoch());
 		"client_address TEXT NOT NULL DEFAULT ''",
 		"agent_version TEXT NOT NULL DEFAULT ''", "os TEXT NOT NULL DEFAULT ''", "architecture TEXT NOT NULL DEFAULT ''",
 		"sing_box_version TEXT NOT NULL DEFAULT ''", "capabilities TEXT", "last_seen_at INTEGER",
+		"ddns_enabled INTEGER NOT NULL DEFAULT 0", "ddns_record_id TEXT NOT NULL DEFAULT ''",
+		"ddns_domain TEXT NOT NULL DEFAULT ''", "last_observed_ip TEXT NOT NULL DEFAULT ''",
 	} {
 		if err := s.addNodeColumn(ctx, column); err != nil {
 			return err

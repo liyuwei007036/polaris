@@ -79,13 +79,14 @@ func (s *Server) handleAgentConn(ctx context.Context, raw net.Conn) {
 	// The address the agent dialled in from is the one clients can reach it
 	// on, so a node is usable as soon as it is approved. It is only used when
 	// nobody has entered an address by hand.
-	if address := connectingAddress(raw); address != "" {
+	address := connectingAddress(raw)
+	if address != "" {
 		if err := s.store.SetNodeObservedAddress(ctx, node.ID, address); err != nil {
 			log.Printf("record observed address for node %s: %v", node.ID, err)
 		}
 	}
 	_ = raw.SetDeadline(time.Time{})
-	s.runAgentSession(ctx, conn, node)
+	s.runAgentSession(ctx, conn, node, address)
 }
 
 // connectingAddress reports the agent's source IP, skipping loopback and
@@ -140,14 +141,23 @@ type agentInboundMessage struct {
 // outgoing Task dispatches and periodic keepalives, all over the one Noise
 // connection. This replaces the old controlSession NDJSON stream plus the
 // three separate HTTP endpoints (heartbeat, connections push, task result).
-func (s *Server) runAgentSession(ctx context.Context, conn *wire.Conn, node Node) {
-	session := &controlSession{done: make(chan struct{}), tasks: make(chan Task, 16), questions: make(chan wire.Task, 16), watch: make(chan struct{}, 1)}
+func (s *Server) runAgentSession(ctx context.Context, conn *wire.Conn, node Node, remoteAddr string) {
+	session := &controlSession{
+		done: make(chan struct{}),
+		tasks: make(chan Task, 16),
+		questions: make(chan wire.Task, 16),
+		watch: make(chan struct{}, 1),
+		remoteAddr: remoteAddr,
+	}
 	s.controlMu.Lock()
 	if previous := s.controls[node.ID]; previous != nil {
 		close(previous.done)
 	}
 	s.controls[node.ID] = session
 	s.controlMu.Unlock()
+	if remoteAddr != "" {
+		go s.triggerNodeDDNS(context.Background(), node.ID, remoteAddr)
+	}
 	if s.alertEngine != nil && ctx.Err() == nil {
 		s.alertEngine.NotifyNodeOnline(node.ID, node.Name)
 	}
