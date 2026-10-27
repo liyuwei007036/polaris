@@ -1682,6 +1682,15 @@ func (s *Store) CreateEndpoint(ctx context.Context, endpoint Endpoint, credentia
 	if err := ValidateEndpointCredentials(listenerSpec.Protocol, credentials); err != nil {
 		return Endpoint{}, err
 	}
+	if listenerSpec.Protocol == "vless" {
+		if listenerSpec.Reality.Enabled {
+			if credentials.Flow == "" {
+				credentials.Flow = "xtls-rprx-vision"
+			}
+		} else {
+			credentials.Flow = ""
+		}
+	}
 	if err := s.validateEndpointOutbound(ctx, endpoint.OutboundID, endpoint.ListenerID, ""); err != nil {
 		return Endpoint{}, err
 	}
@@ -2292,7 +2301,7 @@ CREATE TABLE IF NOT EXISTS listener_certificates (
   created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL
 );
 -- Operator-supplied origin certificates, matched to a listener by its
--- connection domain so Cloudflare can pull from VLESS xhttp and gRPC
+-- connection domain so Cloudflare can pull from VLESS httpupgrade and gRPC
 -- origins with full (strict) TLS.
 CREATE TABLE IF NOT EXISTS origin_certificates (
   id TEXT PRIMARY KEY, domain TEXT NOT NULL UNIQUE, material BLOB NOT NULL,
@@ -2492,7 +2501,11 @@ INSERT OR IGNORE INTO alert_settings (id, updated_at) VALUES (1, unixepoch());
 	if err := s.addListenerColumn(ctx, "connection_domain TEXT NOT NULL DEFAULT ''"); err != nil {
 		return err
 	}
-	if err := s.migrateLegacyVLESSWebSocketToXHTTP(ctx); err != nil {
+	if err := s.migrateLegacyVLESSToHTTPUpgrade(ctx);
+	err != nil {
+		return err
+	}
+	if err := s.migrateLegacyVLESSRealityFlow(ctx); err != nil {
 		return err
 	}
 	if err := s.migrateLegacyVLESSStreamTLS(ctx); err != nil {

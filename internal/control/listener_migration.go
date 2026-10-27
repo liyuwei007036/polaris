@@ -4,10 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+
+	"github.com/liyuwei007036/polaris/internal/security"
 )
 
-// migrateLegacyVLESSWebSocketToXHTTP converts any legacy VLESS WebSocket listeners to xhttp.
-func (s *Store) migrateLegacyVLESSWebSocketToXHTTP(ctx context.Context) error {
+// migrateLegacyVLESSToHTTPUpgrade converts any legacy VLESS WebSocket listeners to httpupgrade.
+func (s *Store) migrateLegacyVLESSToHTTPUpgrade(ctx context.Context) error {
 	rows, err := s.db.QueryContext(ctx, `SELECT id, spec FROM listeners WHERE protocol = 'vless'`)
 	if err != nil {
 		return fmt.Errorf("list legacy VLESS listeners: %w", err)
@@ -28,12 +30,12 @@ func (s *Store) migrateLegacyVLESSWebSocketToXHTTP(ctx context.Context) error {
 			rows.Close()
 			return fmt.Errorf("decode legacy VLESS listener %s: %w", id, err)
 		}
-		if spec.Transport.Type != "ws" {
+		if spec.Transport.Type != "ws" && spec.Transport.Type != "xhttp" {
 			continue
 		}
-		spec.Transport.Type = "xhttp"
-		if len(spec.TLS.ALPN) == 1 && spec.TLS.ALPN[0] == "http/1.1" {
-			spec.TLS.ALPN = []string{"h2", "http/1.1"}
+		spec.Transport.Type = "httpupgrade"
+		if spec.TLS.Enabled && (len(spec.TLS.ALPN) == 0 || (len(spec.TLS.ALPN) >= 1 && spec.TLS.ALPN[0] == "h2")) {
+			spec.TLS.ALPN = []string{"http/1.1"}
 		}
 		migrated, err := json.Marshal(spec)
 		if err != nil {
@@ -79,7 +81,7 @@ func (s *Store) migrateLegacyVLESSStreamTLS(ctx context.Context) error {
 			rows.Close()
 			return fmt.Errorf("decode legacy VLESS listener %s: %w", id, err)
 		}
-		if port != 443 || spec.Reality.Enabled || spec.TLS.Enabled || (spec.Transport.Type != "xhttp" && spec.Transport.Type != "grpc") {
+		if port != 443 || spec.Reality.Enabled || spec.TLS.Enabled || (spec.Transport.Type != "httpupgrade" && spec.Transport.Type != "grpc") {
 			continue
 		}
 		spec.TLS.Enabled = true
@@ -87,7 +89,7 @@ func (s *Store) migrateLegacyVLESSStreamTLS(ctx context.Context) error {
 			if spec.Transport.Type == "grpc" {
 				spec.TLS.ALPN = []string{"h2"}
 			} else {
-				spec.TLS.ALPN = []string{"h2", "http/1.1"}
+				spec.TLS.ALPN = []string{"http/1.1"}
 			}
 		}
 		migrated, err := json.Marshal(spec)
@@ -187,4 +189,54 @@ func (s *Store) reconcileListenerPortRouting(ctx context.Context) error {
 		return fmt.Errorf("drop automatic SNI routes: %w", err)
 	}
 	return tx.Commit()
+}
+
+
+func (s *Store) migrateLegacyVLESSRealityFlow(ctx context.Context) error {
+	rows, err := s.db.QueryContext(ctx, `SELECT e.id, e.credentials FROM endpoints e JOIN listeners l ON e.listener_id = l.id WHERE l.protocol = 'vless' AND json_extract(l.spec, '$.reality.enabled') = true`)
+	if err != nil {
+		return fmt.Errorf("list legacy Reality endpoints: %w", err)
+	}
+	defer rows.Close()
+	type update struct {
+		id    string
+		creds []byte
+	}
+	var updates []update
+	for rows.Next() {
+		var id string
+		var credsEncrypted []byte
+		if err := rows.Scan(&id, &credsEncrypted); err != nil {
+			return fmt.Errorf("read Reality endpoint %s: %w", id, err)
+		}
+		plain, err := security.Decrypt(s.masterKey, credsEncrypted)
+		if err != nil {
+			return fmt.Errorf("decrypt Reality endpoint %s: %w", id, err)
+		}
+		var c EndpointCredentials
+		if err := json.Unmarshal(plain, &c); err != nil {
+			return fmt.Errorf("unmarshal Reality endpoint %s: %w", id, err)
+		}
+		if c.Flow == "" {
+			c.Flow = "xtls-rprx-vision"
+			newPlain, err := json.Marshal(c)
+			if err != nil {
+				return err
+			}
+			newEnc, err := security.Encrypt(s.masterKey, newPlain)
+			if err != nil {
+				return err
+			}
+			updates = append(updates, update{id: id, creds: newEnc})
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	for _, item := range updates {
+		if _, err := s.db.ExecContext(ctx, `UPDATE endpoints SET credentials = ?, updated_at = ? WHERE id = ?`, item.creds, nowUnix(), item.id); err != nil {
+			return fmt.Errorf("update Reality endpoint flow %s: %w", item.id, err)
+		}
+	}
+	return nil
 }

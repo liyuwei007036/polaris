@@ -127,9 +127,9 @@ func compiledCertificate(t *testing.T, tlsBlock map[string]any) string {
 	return certificate
 }
 
-func TestVLESSXHTTPAndGRPCUseMatchingOriginCertificate(t *testing.T) {
+func TestVLESSHTTPUpgradeAndGRPCUseMatchingOriginCertificate(t *testing.T) {
 	for _, transport := range []TransportOptions{
-		{Type: "xhttp", Path: "/proxy"},
+		{Type: "httpupgrade", Path: "/proxy"},
 		{Type: "grpc", ServiceName: "grpc-service"},
 	} {
 		t.Run(transport.Type, func(t *testing.T) {
@@ -167,7 +167,7 @@ func TestVLESSListenerWithoutMatchingOriginCertificateKeepsSelfSigned(t *testing
 		t.Fatal(err)
 	}
 	tlsBlock := vlessOriginListenerConfig(t, store, ProtocolSpec{
-		Protocol: "vless", Network: "tcp", TLS: TLSOptions{Enabled: true}, Transport: TransportOptions{Type: "xhttp", Path: "/proxy"},
+		Protocol: "vless", Network: "tcp", TLS: TLSOptions{Enabled: true}, Transport: TransportOptions{Type: "httpupgrade", Path: "/proxy"},
 	}, "proxy.example.com")
 	if compiledCertificate(t, tlsBlock) == certificatePEM {
 		t.Fatal("a listener outside the certificate's domain used the origin certificate")

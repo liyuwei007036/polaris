@@ -25,7 +25,7 @@ func TestGeneratedYAMLLeadsWithSelectedProxyGroups(t *testing.T) {
 	}
 	listener, err := store.CreateListener(t.Context(), Listener{
 		NodeID: nodeID, Name: "入站", ListenAddr: "0.0.0.0", Port: 1080, Enabled: true,
-		Spec: ProtocolSpec{Protocol: "vless", Network: "tcp", Transport: TransportOptions{Type: "xhttp"}},
+		Spec: ProtocolSpec{Protocol: "vless", Network: "tcp", Transport: TransportOptions{Type: "httpupgrade"}},
 	})
 	if err != nil {
 		t.Fatal(err)

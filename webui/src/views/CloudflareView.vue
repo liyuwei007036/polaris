@@ -40,14 +40,14 @@ const filteredRecords = computed(() => records.value.filter((row) => {
 }))
 const filteredCertificates = computed(() => certificates.value.filter((row) =>
   includesText([row.domain, row.subject, row.issuer, (row.dns_names || []).join(' ')], keyword.value)))
-// Only VLESS xhttp and gRPC access services pull through Cloudflare, so
+// Only VLESS httpupgrade and gRPC access services pull through Cloudflare, so
 // those are the ones whose connection domain a certificate has to cover.
 const certificateUsedBy = computed(() => Object.fromEntries(certificates.value.map((row) => [
   row.id,
   listeners.value.filter((listener) => listener.spec?.protocol === 'vless'
     && listener.spec?.tls?.enabled
     && !listener.spec?.reality?.enabled
-    && ['xhttp', 'grpc'].includes(listener.spec?.transport?.type)
+    && ['httpupgrade', 'grpc'].includes(listener.spec?.transport?.type)
     && domainCovered(row.domain, listener.connection_domain)),
 ])))
 
@@ -240,7 +240,7 @@ onMounted(load)
           </el-tab-pane>
           <el-tab-pane :label="`源证书（${certificates.length}）`" name="certificates">
             <el-alert
-              title="源证书用于 VLESS + xhttp / gRPC 经 Cloudflare 加速时的回源：接入服务的连接域名命中下表中的域名后，会改用对应源证书对外提供 TLS，Cloudflare 的 SSL 模式即可使用“完全（严格）”。未配置时仍使用平台自签证书。"
+              title="源证书用于 VLESS + httpupgrade / gRPC 经 Cloudflare 加速时的回源：接入服务的连接域名命中下表中的域名后，会改用对应源证书对外提供 TLS，Cloudflare 的 SSL 模式即可使用“完全（严格）”。未配置时仍使用平台自签证书。"
               type="info" show-icon :closable="false" style="margin-bottom: 12px" />
             <PagedTable :rows="filteredCertificates" :loading="loading" empty-text="还没有源证书">
               <el-table-column label="域名" prop="domain" min-width="170" show-overflow-tooltip />

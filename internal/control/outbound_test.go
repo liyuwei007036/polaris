@@ -72,9 +72,9 @@ func TestManagedOutboundCompilation(t *testing.T) {
 	// A listener selecting the outbound compiles into an outbound object plus a
 	// fallback route rule tying its inbound to that outbound tag.
 	listener, err := store.CreateListener(t.Context(), control.Listener{
-		NodeID: nodeID, Name: "vless-xhttp-in", ListenAddr: "0.0.0.0", Port: 1081, Enabled: true,
+		NodeID: nodeID, Name: "vless-httpupgrade-in", ListenAddr: "0.0.0.0", Port: 1081, Enabled: true,
 		OutboundID: outbound.ID,
-		Spec:       control.ProtocolSpec{Protocol: "vless", Network: "tcp", Transport: control.TransportOptions{Type: "xhttp"}},
+		Spec:       control.ProtocolSpec{Protocol: "vless", Network: "tcp", Transport: control.TransportOptions{Type: "httpupgrade"}},
 	})
 	if err != nil {
 		t.Fatalf("create listener with outbound: %v", err)
@@ -127,7 +127,7 @@ func TestManagedOutboundCompilation(t *testing.T) {
 	if _, err := store.CreateListener(t.Context(), control.Listener{
 		NodeID: nodeID, Name: "bad-out", ListenAddr: "0.0.0.0", Port: 1082, Enabled: true,
 		OutboundID: "nonexistent-outbound",
-		Spec:       control.ProtocolSpec{Protocol: "vless", Network: "tcp", Transport: control.TransportOptions{Type: "xhttp"}},
+		Spec:       control.ProtocolSpec{Protocol: "vless", Network: "tcp", Transport: control.TransportOptions{Type: "httpupgrade"}},
 	}); err == nil {
 		t.Fatal("accepted listener referencing a dangling outbound")
 	}

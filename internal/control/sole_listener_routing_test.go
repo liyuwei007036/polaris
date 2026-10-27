@@ -29,7 +29,7 @@ func TestSoleTCPListenerBindsThePublicPortItself(t *testing.T) {
 		Spec: ProtocolSpec{
 			Protocol: "vless", Network: "tcp",
 			TLS:       TLSOptions{Enabled: true, ALPN: []string{"http/1.1"}},
-			Transport: TransportOptions{Type: "xhttp", Path: "/sole"},
+			Transport: TransportOptions{Type: "httpupgrade", Path: "/sole"},
 		},
 	})
 	if err != nil {

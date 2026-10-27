@@ -35,7 +35,7 @@ func newMihomoDNSFixture(t *testing.T) (*control.Store, string) {
 	}
 	listener, err := store.CreateListener(t.Context(), control.Listener{
 		NodeID: nodeID, Name: "入站", Domain: "dns-listener.example.com", ListenAddr: "0.0.0.0", Port: 8443, Enabled: true,
-		Spec: control.ProtocolSpec{Protocol: "vless", Network: "tcp", Transport: control.TransportOptions{Type: "xhttp"}},
+		Spec: control.ProtocolSpec{Protocol: "vless", Network: "tcp", Transport: control.TransportOptions{Type: "httpupgrade"}},
 	})
 	if err != nil {
 		t.Fatal(err)

@@ -350,8 +350,8 @@ func (s *Store) clientSubscriptionLine(ctx context.Context, endpointID string) (
 			query.Set("alpn", strings.Join(listener.Spec.TLS.ALPN, ","))
 		}
 		switch listener.Spec.Transport.Type {
-		case "xhttp":
-			query.Set("type", "xhttp")
+		case "httpupgrade":
+			query.Set("type", "httpupgrade")
 			query.Set("path", listener.Spec.Transport.Path)
 			if listener.Spec.Transport.Host != "" {
 				query.Set("host", listener.Spec.Transport.Host)
@@ -371,9 +371,17 @@ func (s *Store) clientSubscriptionLine(ctx context.Context, endpointID string) (
 		query.Set("security", "reality")
 		query.Set("sni", listener.Spec.Reality.HandshakeServer)
 		query.Set("pbk", public)
+		query.Set("fp", "chrome")
 		if len(listener.Spec.Reality.ShortIDs) > 0 {
 			query.Set("sid", listener.Spec.Reality.ShortIDs[0])
 		}
+		flow := endpoint.Credentials.Flow
+		if flow == "" {
+			flow = "xtls-rprx-vision"
+		}
+		query.Set("flow", flow)
+	} else if endpoint.Credentials.Flow != "" {
+		query.Set("flow", endpoint.Credentials.Flow)
 	}
 	if listener.Spec.Protocol == "hysteria2" {
 		query.Set("insecure", "1")

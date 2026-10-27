@@ -248,8 +248,8 @@ func compileOutbound(ob Outbound, tag string) map[string]any {
 // compileTransport renders the supported VLESS transports.
 func compileTransport(t TransportOptions) map[string]any {
 	switch t.Type {
-	case "xhttp":
-		transport := map[string]any{"type": "xhttp", "path": t.Path}
+	case "httpupgrade":
+		transport := map[string]any{"type": "httpupgrade", "path": t.Path}
 		if t.Host != "" {
 			transport["host"] = t.Host
 			transport["headers"] = map[string]any{"Host": t.Host}
@@ -317,7 +317,7 @@ func (s *Store) compileInbound(ctx context.Context, listener Listener, endpoints
 		if err := ValidateEndpointCredentials(listener.Spec.Protocol, endpoint.Credentials); err != nil {
 			return nil, err
 		}
-		user, err := compileUser(listener.Spec.Protocol, endpoint)
+		user, err := compileUser(listener.Spec, endpoint)
 		if err != nil {
 			return nil, err
 		}
@@ -379,19 +379,23 @@ func (s *Store) compileTLS(ctx context.Context, listener Listener) (map[string]a
 	return configuration, nil
 }
 
-func compileUser(protocol string, endpoint endpointWithCredentials) (map[string]any, error) {
+func compileUser(spec ProtocolSpec, endpoint endpointWithCredentials) (map[string]any, error) {
 	c := endpoint.Credentials
 	user := map[string]any{"name": endpoint.Name}
-	switch protocol {
+	switch spec.Protocol {
 	case "vless":
 		user["uuid"] = c.UUID
-		if c.Flow != "" {
-			user["flow"] = c.Flow
+		flow := c.Flow
+		if flow == "" && spec.Reality.Enabled {
+			flow = "xtls-rprx-vision"
+		}
+		if flow != "" {
+			user["flow"] = flow
 		}
 	case "hysteria2":
 		user["password"] = c.Password
 	default:
-		return nil, fmt.Errorf("unsupported inbound protocol %q", protocol)
+		return nil, fmt.Errorf("unsupported inbound protocol %q", spec.Protocol)
 	}
 	return user, nil
 }
@@ -458,10 +462,12 @@ func (s *Store) compileChainOutbound(ctx context.Context, targetEndpointID, tag 
 			"uuid":            creds.UUID,
 			"packet_encoding": "xudp",
 		}
-		if creds.Flow != "" {
-			outbound["flow"] = creds.Flow
-		}
 		if spec.Reality.Enabled {
+			flow := creds.Flow
+			if flow == "" {
+				flow = "xtls-rprx-vision"
+			}
+			outbound["flow"] = flow
 			publicKey, err := s.realityPublicKey(ctx, spec.Reality.KeyID)
 			if err != nil {
 				return nil, fmt.Errorf("load Reality public key: %w", err)
@@ -496,9 +502,9 @@ func (s *Store) compileChainOutbound(ctx context.Context, targetEndpointID, tag 
 			outbound["tls"] = tlsConfig
 		}
 		switch spec.Transport.Type {
-		case "xhttp":
-			xhttpConfig := map[string]any{
-				"type": "xhttp",
+		case "httpupgrade":
+			upgradeConfig := map[string]any{
+				"type": "httpupgrade",
 				"path": spec.Transport.Path,
 			}
 			host := strings.TrimSpace(spec.Transport.Host)
@@ -506,10 +512,10 @@ func (s *Store) compileChainOutbound(ctx context.Context, targetEndpointID, tag 
 				host = strings.TrimSpace(domain)
 			}
 			if host != "" {
-				xhttpConfig["host"] = host
-				xhttpConfig["headers"] = map[string]any{"Host": host}
+				upgradeConfig["host"] = host
+				upgradeConfig["headers"] = map[string]any{"Host": host}
 			}
-			outbound["transport"] = xhttpConfig
+			outbound["transport"] = upgradeConfig
 		case "grpc":
 			outbound["transport"] = map[string]any{
 				"type":         "grpc",

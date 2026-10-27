@@ -91,7 +91,7 @@ func TestChainProxyCompileVLESSReality(t *testing.T) {
 			Protocol:  "vless",
 			Network:   "tcp",
 			TLS:       TLSOptions{Enabled: true},
-			Transport: TransportOptions{Type: "xhttp", Path: "/vless-xhttp"},
+			Transport: TransportOptions{Type: "httpupgrade", Path: "/vless-httpupgrade"},
 		},
 	})
 	if err != nil {
@@ -235,7 +235,7 @@ func TestChainProxyCompileHysteria2(t *testing.T) {
 			Protocol:  "vless",
 			Network:   "tcp",
 			TLS:       TLSOptions{Enabled: true},
-			Transport: TransportOptions{Type: "xhttp", Path: "/node1-xhttp"},
+			Transport: TransportOptions{Type: "httpupgrade", Path: "/node1-httpupgrade"},
 		},
 	})
 	if err != nil {
@@ -304,7 +304,7 @@ func TestChainProxyValidation(t *testing.T) {
 			Protocol:  "vless",
 			Network:   "tcp",
 			TLS:       TLSOptions{Enabled: true},
-			Transport: TransportOptions{Type: "xhttp", Path: "/l1"},
+			Transport: TransportOptions{Type: "httpupgrade", Path: "/l1"},
 		},
 	})
 	if err != nil {
@@ -356,7 +356,7 @@ func TestChainProxyValidation(t *testing.T) {
 			Protocol:  "vless",
 			Network:   "tcp",
 			TLS:       TLSOptions{Enabled: true},
-			Transport: TransportOptions{Type: "xhttp", Path: "/l2"},
+			Transport: TransportOptions{Type: "httpupgrade", Path: "/l2"},
 		},
 	})
 	if err != nil {
@@ -399,7 +399,7 @@ func TestChainProxyCascadeDeletion(t *testing.T) {
 			Protocol:  "vless",
 			Network:   "tcp",
 			TLS:       TLSOptions{Enabled: true},
-			Transport: TransportOptions{Type: "xhttp", Path: "/l2"},
+			Transport: TransportOptions{Type: "httpupgrade", Path: "/l2"},
 		},
 	})
 	if err != nil {
@@ -416,7 +416,7 @@ func TestChainProxyCascadeDeletion(t *testing.T) {
 			Protocol:  "vless",
 			Network:   "tcp",
 			TLS:       TLSOptions{Enabled: true},
-			Transport: TransportOptions{Type: "xhttp", Path: "/l1"},
+			Transport: TransportOptions{Type: "httpupgrade", Path: "/l1"},
 		},
 	})
 	if err != nil {
@@ -457,7 +457,7 @@ func TestChainProxyCascadeDeletion(t *testing.T) {
 	_ = u1
 }
 
-func TestChainProxyCompileVLESSXHTTPAndGRPC(t *testing.T) {
+func TestChainProxyCompileVLESSHTTPUpgradeAndGRPC(t *testing.T) {
 	ctx := t.Context()
 	store := createTestStore(t)
 
@@ -465,22 +465,22 @@ func TestChainProxyCompileVLESSXHTTPAndGRPC(t *testing.T) {
 	node2ID := createTestNode(t, store, "node2", "203.0.113.2")
 	node3ID := createTestNode(t, store, "node3", "192.0.2.3")
 
-	// Target 1 on Node 2: VLESS XHTTP
-	lXHTTP, err := store.CreateListener(ctx, Listener{
-		NodeID: node2ID, Name: "node2-xhttp", Port: 8443, ListenAddr: "0.0.0.0", Enabled: true,
+	// Target 1 on Node 2: VLESS HTTPUpgrade
+	lHTTPUpgrade, err := store.CreateListener(ctx, Listener{
+		NodeID: node2ID, Name: "node2-httpupgrade", Port: 8443, ListenAddr: "0.0.0.0", Enabled: true,
 		Spec: ProtocolSpec{
 			Protocol:  "vless",
 			Network:   "tcp",
 			TLS:       TLSOptions{Enabled: true, ALPN: []string{"h2", "http/1.1"}},
-			Transport: TransportOptions{Type: "xhttp", Path: "/my-xhttp", Host: "xhttp.example.com"},
+			Transport: TransportOptions{Type: "httpupgrade", Path: "/my-httpupgrade", Host: "httpupgrade.example.com"},
 		},
 	})
 	if err != nil {
-		t.Fatalf("create lXHTTP: %v", err)
+		t.Fatalf("create lHTTPUpgrade: %v", err)
 	}
-	uXHTTP, err := store.CreateEndpoint(ctx, Endpoint{ListenerID: lXHTTP.ID, Name: "uXHTTP", Enabled: true}, EndpointCredentials{UUID: "22222222-2222-2222-2222-222222222222"})
+	uHTTPUpgrade, err := store.CreateEndpoint(ctx, Endpoint{ListenerID: lHTTPUpgrade.ID, Name: "uHTTPUpgrade", Enabled: true}, EndpointCredentials{UUID: "22222222-2222-2222-2222-222222222222"})
 	if err != nil {
-		t.Fatalf("create uXHTTP: %v", err)
+		t.Fatalf("create uHTTPUpgrade: %v", err)
 	}
 
 	// Target 2 on Node 3: VLESS gRPC
@@ -501,22 +501,22 @@ func TestChainProxyCompileVLESSXHTTPAndGRPC(t *testing.T) {
 		t.Fatalf("create uGRPC: %v", err)
 	}
 
-	// Inbound on Node 1 with two users chaining to uXHTTP and uGRPC
+	// Inbound on Node 1 with two users chaining to uHTTPUpgrade and uGRPC
 	l1, err := store.CreateListener(ctx, Listener{
 		NodeID: node1ID, Name: "node1-in", Port: 443, ListenAddr: "0.0.0.0", Enabled: true,
 		Spec: ProtocolSpec{
 			Protocol:  "vless",
 			Network:   "tcp",
 			TLS:       TLSOptions{Enabled: true},
-			Transport: TransportOptions{Type: "xhttp", Path: "/in"},
+			Transport: TransportOptions{Type: "httpupgrade", Path: "/in"},
 		},
 	})
 	if err != nil {
 		t.Fatalf("create l1: %v", err)
 	}
-	_, err = store.CreateEndpoint(ctx, Endpoint{ListenerID: l1.ID, Name: "clientXHTTP", Enabled: true, OutboundID: "chain:" + uXHTTP.ID}, EndpointCredentials{UUID: "aaaaaaaa-1111-1111-1111-111111111111"})
+	_, err = store.CreateEndpoint(ctx, Endpoint{ListenerID: l1.ID, Name: "clientHTTPUpgrade", Enabled: true, OutboundID: "chain:" + uHTTPUpgrade.ID}, EndpointCredentials{UUID: "aaaaaaaa-1111-1111-1111-111111111111"})
 	if err != nil {
-		t.Fatalf("create clientXHTTP: %v", err)
+		t.Fatalf("create clientHTTPUpgrade: %v", err)
 	}
 	_, err = store.CreateEndpoint(ctx, Endpoint{ListenerID: l1.ID, Name: "clientGRPC", Enabled: true, OutboundID: "chain:" + uGRPC.ID}, EndpointCredentials{UUID: "bbbbbbbb-1111-1111-1111-111111111111"})
 	if err != nil {
@@ -535,17 +535,17 @@ func TestChainProxyCompileVLESSXHTTPAndGRPC(t *testing.T) {
 		t.Fatalf("unmarshal config: %v", err)
 	}
 
-	var foundXHTTP, foundGRPC bool
+	var foundHTTPUpgrade, foundGRPC bool
 	for _, ob := range parsed.Outbounds {
-		if ob["tag"] == "chain-"+uXHTTP.ID {
-			foundXHTTP = true
+		if ob["tag"] == "chain-"+uHTTPUpgrade.ID {
+			foundHTTPUpgrade = true
 			trans, _ := ob["transport"].(map[string]any)
-			if trans["type"] != "xhttp" || trans["path"] != "/my-xhttp" {
-				t.Errorf("expected xhttp transport, got %#v", trans)
+			if trans["type"] != "httpupgrade" || trans["path"] != "/my-httpupgrade" {
+				t.Errorf("expected httpupgrade transport, got %#v", trans)
 			}
 			headers, _ := trans["headers"].(map[string]any)
-			if headers["Host"] != "xhttp.example.com" {
-				t.Errorf("expected Host header xhttp.example.com, got %#v", headers)
+			if headers["Host"] != "httpupgrade.example.com" {
+				t.Errorf("expected Host header httpupgrade.example.com, got %#v", headers)
 			}
 		}
 		if ob["tag"] == "chain-"+uGRPC.ID {
@@ -556,8 +556,8 @@ func TestChainProxyCompileVLESSXHTTPAndGRPC(t *testing.T) {
 			}
 		}
 	}
-	if !foundXHTTP || !foundGRPC {
-		t.Fatalf("expected both XHTTP and GRPC chain outbounds, foundXHTTP=%v foundGRPC=%v", foundXHTTP, foundGRPC)
+	if !foundHTTPUpgrade || !foundGRPC {
+		t.Fatalf("expected both HTTPUpgrade and GRPC chain outbounds, foundHTTPUpgrade=%v foundGRPC=%v", foundHTTPUpgrade, foundGRPC)
 	}
 }
 

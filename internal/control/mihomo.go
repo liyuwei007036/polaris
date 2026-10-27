@@ -213,8 +213,12 @@ func (s *Store) mihomoProxy(ctx context.Context, endpointID, fallbackServer stri
 	case "vless":
 		proxy["type"], proxy["uuid"] = "vless", endpoint.Credentials.UUID
 		proxy["udp"] = true
-		if endpoint.Credentials.Flow != "" {
-			proxy["flow"] = endpoint.Credentials.Flow
+		flow := endpoint.Credentials.Flow
+		if flow == "" && listener.Spec.Reality.Enabled {
+			flow = "xtls-rprx-vision"
+		}
+		if flow != "" {
+			proxy["flow"] = flow
 		}
 	case "hysteria2":
 		proxy["type"], proxy["password"] = "hysteria2", endpoint.Credentials.Password
@@ -253,14 +257,14 @@ func (s *Store) mihomoProxy(ctx context.Context, endpointID, fallbackServer stri
 	}
 	switch listener.Spec.Transport.Type {
 	case "":
-	case "xhttp":
-		proxy["network"] = "xhttp"
+	case "httpupgrade":
+		proxy["network"] = "httpupgrade"
 		options := map[string]any{"path": listener.Spec.Transport.Path}
 		if listener.Spec.Transport.Host != "" {
 			options["host"] = listener.Spec.Transport.Host
 			options["headers"] = map[string]string{"Host": listener.Spec.Transport.Host}
 		}
-		proxy["xhttp-opts"] = options
+		proxy["httpupgrade-opts"] = options
 	case "grpc":
 		proxy["network"] = "grpc"
 		proxy["grpc-opts"] = map[string]any{"grpc-service-name": listener.Spec.Transport.ServiceName}

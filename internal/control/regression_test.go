@@ -36,7 +36,7 @@ func tlsListener(nodeID, name, domain string, port uint16, enabled bool) Listene
 		NodeID: nodeID, Name: name, Domain: domain, ListenAddr: "0.0.0.0", Port: port, Enabled: enabled,
 		Spec: ProtocolSpec{
 			Protocol: "vless", Network: "tcp", TLS: TLSOptions{Enabled: true},
-			Transport: TransportOptions{Type: "xhttp", Path: "/xhttp"},
+			Transport: TransportOptions{Type: "httpupgrade", Path: "/httpupgrade"},
 		},
 	}
 }

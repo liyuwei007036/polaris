@@ -7,7 +7,7 @@ export const securityOptions = {
 
 export const listenerProfiles = [
   { value: 'vless-reality', label: 'VLESS + Reality', summary: '免证书加密连接', protocol: 'vless', security: 'reality', transport: '' },
-  { value: 'vless-xhttp', label: 'VLESS + xhttp', summary: 'TLS 回源，适合通过 Cloudflare 转发', protocol: 'vless', security: 'tls', transport: 'xhttp' },
+  { value: 'vless-httpupgrade', label: 'VLESS + HTTPUpgrade', summary: 'TLS 回源，适合通过 Cloudflare 转发', protocol: 'vless', security: 'tls', transport: 'httpupgrade' },
   { value: 'vless-grpc', label: 'VLESS + gRPC', summary: 'TLS 回源，使用 gRPC 传输', protocol: 'vless', security: 'tls', transport: 'grpc' },
   { value: 'hysteria2', label: 'Hysteria2', summary: '自动生成加密配置', protocol: 'hysteria2', security: 'auto', transport: '' },
 ]
@@ -15,14 +15,15 @@ export const listenerProfiles = [
 export const listenerProfileMap = Object.fromEntries(listenerProfiles.map((profile) => [profile.value, profile]))
 
 // Hysteria2 runs over QUIC, whose ALPN is h3. The VLESS transports run over
-// TCP, where h3 cannot be negotiated at all: xhttp negotiates HTTP/2 or HTTP/1.1
-// and gRPC needs HTTP/2.
+// TCP, where h3 cannot be negotiated at all: httpupgrade negotiates HTTP/1.1,
+// gRPC needs HTTP/2, and Reality mimics web targets with h2 and http/1.1.
 export function defaultALPNFor(profileValue) {
   const profile = listenerProfileMap[profileValue]
   if (!profile) return []
   if (profile.protocol === 'hysteria2') return ['h3']
   if (profile.transport === 'grpc') return ['h2']
-  if (profile.transport === 'xhttp') return ['h2', 'http/1.1']
+  if (profile.transport === 'httpupgrade') return ['http/1.1']
+  if (profile.security === 'reality') return ['h2', 'http/1.1']
   return []
 }
 
@@ -30,7 +31,7 @@ export const protocols = [
   {
     value: 'vless',
     label: 'VLESS',
-    summary: '支持 Reality、xhttp 和 gRPC',
+    summary: '支持 Reality、HTTPUpgrade 和 gRPC',
     network: 'tcp',
     security: ['reality', 'tls', 'none'],
     transports: true,
@@ -54,7 +55,7 @@ function profileValue(spec) {
   if (spec.protocol === 'hysteria2') return 'hysteria2'
   if (spec.protocol !== 'vless') return ''
   if (spec.reality?.enabled) return 'vless-reality'
-  if (spec.transport?.type === 'xhttp') return 'vless-xhttp'
+  if (spec.transport?.type === 'httpupgrade') return 'vless-httpupgrade'
   if (spec.transport?.type === 'grpc') return 'vless-grpc'
   return ''
 }
@@ -124,7 +125,7 @@ export function listenerPayload(model) {
       },
       transport: {
         type: profile.transport,
-        path: profile.transport === 'xhttp' ? model.transport_path || '' : '',
+        path: profile.transport === 'httpupgrade' ? model.transport_path || '' : '',
         host: '',
         service_name: profile.transport === 'grpc' ? model.transport_service_name || '' : '',
       },

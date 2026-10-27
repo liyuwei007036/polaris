@@ -309,7 +309,7 @@ func createRuleSetClientConfig(t *testing.T, store *control.Store, server *contr
 	}
 	listener, err := store.CreateListener(t.Context(), control.Listener{
 		NodeID: nodeID, Name: "规则接入", Domain: "rules.example.com", ListenAddr: "0.0.0.0", Port: 8443, Enabled: true,
-		Spec: control.ProtocolSpec{Protocol: "vless", Network: "tcp", Transport: control.TransportOptions{Type: "xhttp"}},
+		Spec: control.ProtocolSpec{Protocol: "vless", Network: "tcp", Transport: control.TransportOptions{Type: "httpupgrade"}},
 	})
 	if err != nil {
 		t.Fatal(err)

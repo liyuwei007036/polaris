@@ -121,7 +121,7 @@ func TestInboundMutationCreatesAutomaticApplyTask(t *testing.T) {
 	response := request(t, http.MethodPost, httpServer.URL+"/api/v1/listeners/quick", map[string]any{
 		"listener": map[string]any{
 			"node_id": nodeID, "name": "自动生效入站", "listen_address": "0.0.0.0", "port": 1080,
-			"enabled": true, "spec": map[string]any{"protocol": "vless", "network": "tcp", "transport": map[string]any{"type": "xhttp"}},
+			"enabled": true, "spec": map[string]any{"protocol": "vless", "network": "tcp", "transport": map[string]any{"type": "httpupgrade"}},
 		},
 		"default_outbound_id": "direct",
 	}, session, csrfToken)
@@ -147,17 +147,17 @@ func TestInboundMutationCreatesAutomaticApplyTask(t *testing.T) {
 
 	response = request(t, http.MethodPost, httpServer.URL+"/api/v1/listeners/quick", map[string]any{
 		"listener": map[string]any{
-			"node_id": nodeID, "name": "VLESS xhttp", "port": 18444, "enabled": true,
+			"node_id": nodeID, "name": "VLESS httpupgrade", "port": 18444, "enabled": true,
 			"spec": map[string]any{
 				"protocol": "vless", "network": "tcp",
-				"transport": map[string]any{"type": "xhttp", "path": ""},
+				"transport": map[string]any{"type": "httpupgrade", "path": ""},
 			},
 		},
 	}, session, csrfToken)
 	if response.StatusCode != http.StatusCreated {
 		var problem map[string]any
 		decodeBody(t, response, &problem)
-		t.Fatalf("create VLESS xhttp with default path: got %d, response %#v", response.StatusCode, problem)
+		t.Fatalf("create VLESS httpupgrade with default path: got %d, response %#v", response.StatusCode, problem)
 	}
 	var created struct {
 		Endpoints []control.Endpoint `json:"endpoints"`
@@ -320,7 +320,7 @@ func TestSharedPortInboundCreatesMultipleUsersAndNginxRoutes(t *testing.T) {
 	plainTCP := request(t, http.MethodPost, httpServer.URL+"/api/v1/listeners/quick", map[string]any{
 		"listener": map[string]any{
 			"node_id": nodeID, "name": "无加密 TCP", "port": 443, "enabled": true,
-			"spec": map[string]any{"protocol": "vless", "network": "tcp", "tls": map[string]any{"enabled": false}, "transport": map[string]any{"type": "xhttp", "path": "/plain"}},
+			"spec": map[string]any{"protocol": "vless", "network": "tcp", "tls": map[string]any{"enabled": false}, "transport": map[string]any{"type": "httpupgrade", "path": "/plain"}},
 		},
 		"accounts": []map[string]any{{"name": "用户 D", "outbound_id": "direct"}},
 	}, session, csrfToken)
@@ -436,7 +436,7 @@ func TestEmptyNginxConfigurationCanClearManagedRoutes(t *testing.T) {
 	}
 }
 
-func TestRealityXHTTPGRPCAndHysteria2SharePublicPort443(t *testing.T) {
+func TestRealityHTTPUpgradeGRPCAndHysteria2SharePublicPort443(t *testing.T) {
 	store, err := control.Open(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
@@ -486,9 +486,9 @@ func TestRealityXHTTPGRPCAndHysteria2SharePublicPort443(t *testing.T) {
 		"protocol": "vless", "network": "tcp", "tls": map[string]any{"enabled": true},
 		"reality": map[string]any{"enabled": true, "handshake_server": "reality-target.example.com", "handshake_port": 443},
 	})
-	xhttpListener := create("xhttp 443", "xhttp.example.com", map[string]any{
+	httpupgradeListener := create("httpupgrade 443", "httpupgrade.example.com", map[string]any{
 		"protocol": "vless", "network": "tcp", "tls": map[string]any{"enabled": true, "alpn": []string{"http/1.1"}},
-		"transport": map[string]any{"type": "xhttp", "path": "/xhttp", "host": "xhttp.example.com"},
+		"transport": map[string]any{"type": "httpupgrade", "path": "/httpupgrade", "host": "httpupgrade.example.com"},
 	})
 	grpc := create("gRPC 443", "grpc.example.com", map[string]any{
 		"protocol": "vless", "network": "tcp", "tls": map[string]any{"enabled": true, "alpn": []string{"h2"}},
@@ -509,7 +509,7 @@ func TestRealityXHTTPGRPCAndHysteria2SharePublicPort443(t *testing.T) {
 			t.Fatalf("listener %s public port = %d, want 443", listener.Name, listener.Port)
 		}
 	}
-	for _, id := range []string{reality.ID, xhttpListener.ID, grpc.ID} {
+	for _, id := range []string{reality.ID, httpupgradeListener.ID, grpc.ID} {
 		listener := byID[id]
 		if listener.ListenAddr != "0.0.0.0" || listener.BackendPort != 443 {
 			t.Fatalf("TCP service on the shared port was placed centrally: %#v", listener)
@@ -531,7 +531,7 @@ func TestRealityXHTTPGRPCAndHysteria2SharePublicPort443(t *testing.T) {
 	}
 	wantNames := map[string]string{
 		reality.ID:   "reality-target.example.com",
-		xhttpListener.ID: "xhttp.example.com",
+		httpupgradeListener.ID: "httpupgrade.example.com",
 		grpc.ID:      "grpc.example.com",
 	}
 	for id, want := range wantNames {
@@ -543,7 +543,7 @@ func TestRealityXHTTPGRPCAndHysteria2SharePublicPort443(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, expected := range []string{"\"type\": \"xhttp\"", "\"type\": \"grpc\"", "\"type\": \"hysteria2\"", "BEGIN CERTIFICATE"} {
+	for _, expected := range []string{"\"type\": \"httpupgrade\"", "\"type\": \"grpc\"", "\"type\": \"hysteria2\"", "BEGIN CERTIFICATE"} {
 		if !strings.Contains(configuration, expected) {
 			t.Fatalf("four-protocol sing-box configuration missing %q", expected)
 		}
@@ -557,7 +557,7 @@ func TestRealityXHTTPGRPCAndHysteria2SharePublicPort443(t *testing.T) {
 			t.Fatalf("official sing-box rejected four-protocol port 443 configuration: %v\n%s", err, output)
 		}
 	}
-	xhttpEndpoints, err := store.ListEndpoints(t.Context(), xhttpListener.ID)
+	httpupgradeEndpoints, err := store.ListEndpoints(t.Context(), httpupgradeListener.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -566,7 +566,7 @@ func TestRealityXHTTPGRPCAndHysteria2SharePublicPort443(t *testing.T) {
 		t.Fatal(err)
 	}
 	_, token, err := store.CreateSubscription(t.Context(), control.SubscriptionInput{
-		Kind: control.ClientSubscription, Name: "xhttp and gRPC 443", EndpointIDs: []string{xhttpEndpoints[0].ID, grpcEndpoints[0].ID}, Enabled: true,
+		Kind: control.ClientSubscription, Name: "httpupgrade and gRPC 443", EndpointIDs: []string{httpupgradeEndpoints[0].ID, grpcEndpoints[0].ID}, Enabled: true,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -581,7 +581,7 @@ func TestRealityXHTTPGRPCAndHysteria2SharePublicPort443(t *testing.T) {
 	}
 	links := string(decoded)
 	for _, expected := range []string{
-		"xhttp.example.com:443", "security=tls", "sni=xhttp.example.com", "type=xhttp", "path=%2Fxhttp", "host=xhttp.example.com",
+		"httpupgrade.example.com:443", "security=tls", "sni=httpupgrade.example.com", "type=httpupgrade", "path=%2Fhttpupgrade", "host=httpupgrade.example.com",
 		"grpc.example.com:443", "sni=grpc.example.com", "type=grpc", "serviceName=grpc-service",
 	} {
 		if !strings.Contains(links, expected) {
@@ -623,7 +623,7 @@ func TestOfficialSingBoxAcceptsPrimaryInboundVariants(t *testing.T) {
 		spec        control.ProtocolSpec
 		credentials control.EndpointCredentials
 	}{
-		{"VLESS xhttp", 10443, control.ProtocolSpec{Protocol: "vless", Network: "tcp", Transport: control.TransportOptions{Type: "xhttp", Path: "/xhttp", Host: "example.com"}}, control.EndpointCredentials{UUID: "bf000d23-0752-40b4-affe-68f7707a9661"}},
+		{"VLESS httpupgrade", 10443, control.ProtocolSpec{Protocol: "vless", Network: "tcp", Transport: control.TransportOptions{Type: "httpupgrade", Path: "/httpupgrade", Host: "example.com"}}, control.EndpointCredentials{UUID: "bf000d23-0752-40b4-affe-68f7707a9661"}},
 		{"VLESS gRPC", 10444, control.ProtocolSpec{Protocol: "vless", Network: "tcp", Transport: control.TransportOptions{Type: "grpc", ServiceName: "grpc-service"}}, control.EndpointCredentials{UUID: "4e05f165-94f3-4f54-aac7-0487dcb83011"}},
 		{"VLESS Reality", 10445, control.ProtocolSpec{Protocol: "vless", Network: "tcp", TLS: control.TLSOptions{Enabled: true}, Reality: control.RealityOptions{Enabled: true, KeyID: realityKey.ID, HandshakeServer: "www.microsoft.com", HandshakePort: 443, ShortIDs: []string{"0123456789abcdef"}}}, control.EndpointCredentials{UUID: "7d45d34f-09fc-43e6-b5cf-1ee1fbe3f2ca"}},
 		{"Hysteria2", 10443, control.ProtocolSpec{Protocol: "hysteria2", Network: "udp", TLS: tls}, control.EndpointCredentials{Password: "audit-password"}},
@@ -904,16 +904,16 @@ func TestCloudflareProxyValidationFollowsTheAccessServiceOnThatDomain(t *testing
 		t.Fatal(err)
 	}
 	for _, listener := range []control.Listener{
-		{NodeID: nodeID, Name: "vless-xhttp", Domain: "xhttp.example.com", ListenAddr: "0.0.0.0", Port: 8080, Enabled: true,
-			Spec: control.ProtocolSpec{Protocol: "vless", Network: "tcp", Transport: control.TransportOptions{Type: "xhttp", Path: "/xhttp"}}},
+		{NodeID: nodeID, Name: "vless-httpupgrade", Domain: "httpupgrade.example.com", ListenAddr: "0.0.0.0", Port: 8080, Enabled: true,
+			Spec: control.ProtocolSpec{Protocol: "vless", Network: "tcp", Transport: control.TransportOptions{Type: "httpupgrade", Path: "/httpupgrade"}}},
 		{NodeID: nodeID, Name: "vless-reality", Domain: "reality.example.com", ListenAddr: "0.0.0.0", Port: 9443, Enabled: true,
 			Spec: control.ProtocolSpec{Protocol: "vless", Network: "tcp", TLS: control.TLSOptions{Enabled: true}, Reality: control.RealityOptions{Enabled: true, KeyID: realityKey.ID, HandshakeServer: "www.example.com", HandshakePort: 443, ShortIDs: []string{"0123456789abcdef"}}}},
-		{NodeID: nodeID, Name: "vless-xhttp-tls", Domain: "xhttp-tls.example.com", ListenAddr: "127.0.0.1", Port: 443, BackendPort: 20443, Enabled: true,
-			Spec: control.ProtocolSpec{Protocol: "vless", Network: "tcp", TLS: control.TLSOptions{Enabled: true}, Transport: control.TransportOptions{Type: "xhttp", Path: "/xhttp-tls"}}},
+		{NodeID: nodeID, Name: "vless-httpupgrade-tls", Domain: "httpupgrade-tls.example.com", ListenAddr: "127.0.0.1", Port: 443, BackendPort: 20443, Enabled: true,
+			Spec: control.ProtocolSpec{Protocol: "vless", Network: "tcp", TLS: control.TLSOptions{Enabled: true}, Transport: control.TransportOptions{Type: "httpupgrade", Path: "/httpupgrade-tls"}}},
 		{NodeID: nodeID, Name: "vless-grpc-tls", Domain: "grpc.example.com", ListenAddr: "127.0.0.1", Port: 443, BackendPort: 20444, Enabled: true,
 			Spec: control.ProtocolSpec{Protocol: "vless", Network: "tcp", TLS: control.TLSOptions{Enabled: true}, Transport: control.TransportOptions{Type: "grpc", ServiceName: "grpc-service"}}},
-		{NodeID: nodeID, Name: "vless-xhttp-4444", Domain: "badport.example.com", ListenAddr: "0.0.0.0", Port: 4444, Enabled: true,
-			Spec: control.ProtocolSpec{Protocol: "vless", Network: "tcp", Transport: control.TransportOptions{Type: "xhttp", Path: "/xhttp"}}},
+		{NodeID: nodeID, Name: "vless-httpupgrade-4444", Domain: "badport.example.com", ListenAddr: "0.0.0.0", Port: 4444, Enabled: true,
+			Spec: control.ProtocolSpec{Protocol: "vless", Network: "tcp", Transport: control.TransportOptions{Type: "httpupgrade", Path: "/httpupgrade"}}},
 	} {
 		if _, err := store.CreateListener(t.Context(), listener); err != nil {
 			t.Fatalf("create listener %s: %v", listener.Name, err)
@@ -921,8 +921,8 @@ func TestCloudflareProxyValidationFollowsTheAccessServiceOnThatDomain(t *testing
 	}
 
 	for _, allowed := range []control.CloudflareRecord{
-		{Name: "xhttp.example.com", Type: "A", Content: "192.0.2.10", TTL: 1, Proxied: true},
-		{Name: "xhttp-tls.example.com", Type: "A", Content: "192.0.2.15", TTL: 1, Proxied: true},
+		{Name: "httpupgrade.example.com", Type: "A", Content: "192.0.2.10", TTL: 1, Proxied: true},
+		{Name: "httpupgrade-tls.example.com", Type: "A", Content: "192.0.2.15", TTL: 1, Proxied: true},
 		{Name: "grpc.example.com", Type: "A", Content: "192.0.2.16", TTL: 1, Proxied: true},
 		// No access service claims this name, so the record may well front
 		// something this platform does not host.
@@ -940,7 +940,7 @@ func TestCloudflareProxyValidationFollowsTheAccessServiceOnThatDomain(t *testing
 		record control.CloudflareRecord
 	}{
 		{"orange cloud on a Reality access service", control.CloudflareRecord{Name: "reality.example.com", Type: "AAAA", Content: "2001:db8::11", TTL: 1, Proxied: true}},
-		{"orange cloud on a TXT record", control.CloudflareRecord{Name: "xhttp.example.com", Type: "TXT", Content: "v=spf1", TTL: 1, Proxied: true}},
+		{"orange cloud on a TXT record", control.CloudflareRecord{Name: "httpupgrade.example.com", Type: "TXT", Content: "v=spf1", TTL: 1, Proxied: true}},
 		{"orange cloud on a port Cloudflare does not proxy", control.CloudflareRecord{Name: "badport.example.com", Type: "A", Content: "192.0.2.13", TTL: 1, Proxied: true}},
 	} {
 		if _, err := store.CreateCloudflareRecord(t.Context(), refused.record); err == nil {
@@ -969,8 +969,8 @@ func TestNodeConnectionsAndClashAPICompilation(t *testing.T) {
 	nodeID := approveTestNode(t, server, httpServer.URL, session, csrfToken, "metrics-node")
 
 	listener, err := store.CreateListener(t.Context(), control.Listener{
-		NodeID: nodeID, Name: "vless-xhttp", ListenAddr: "0.0.0.0", Port: 8443, Enabled: true,
-		Spec: control.ProtocolSpec{Protocol: "vless", Network: "tcp", Transport: control.TransportOptions{Type: "xhttp"}},
+		NodeID: nodeID, Name: "vless-httpupgrade", ListenAddr: "0.0.0.0", Port: 8443, Enabled: true,
+		Spec: control.ProtocolSpec{Protocol: "vless", Network: "tcp", Transport: control.TransportOptions{Type: "httpupgrade"}},
 	})
 	if err != nil {
 		t.Fatal(err)

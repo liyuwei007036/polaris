@@ -42,12 +42,12 @@ func TestSupportedInboundModes(t *testing.T) {
 			},
 		},
 		{
-			name: "VLESS xhttp",
+			name: "VLESS httpupgrade",
 			spec: control.ProtocolSpec{
 				Protocol:  "vless",
 				Network:   "tcp",
 				TLS:       control.TLSOptions{Enabled: true, ALPN: []string{"h2", "http/1.1"}},
-				Transport: control.TransportOptions{Type: "xhttp"},
+				Transport: control.TransportOptions{Type: "httpupgrade"},
 			},
 		},
 		{
@@ -99,11 +99,11 @@ func TestUnsupportedVLESSCombinationsAreRejected(t *testing.T) {
 			spec: control.ProtocolSpec{Protocol: "vless", Network: "tcp"},
 		},
 		{
-			name: "removed HTTPUpgrade transport",
+			name: "removed xhttp transport",
 			spec: control.ProtocolSpec{
 				Protocol:  "vless",
 				Network:   "tcp",
-				Transport: control.TransportOptions{Type: "httpupgrade"},
+				Transport: control.TransportOptions{Type: "xhttp"},
 			},
 		},
 		{
@@ -123,13 +123,13 @@ func TestUnsupportedVLESSCombinationsAreRejected(t *testing.T) {
 			},
 		},
 		{
-			name: "Reality with xhttp",
+			name: "Reality with httpupgrade",
 			spec: control.ProtocolSpec{
 				Protocol:  "vless",
 				Network:   "tcp",
 				TLS:       control.TLSOptions{Enabled: true},
 				Reality:   control.RealityOptions{Enabled: true, HandshakeServer: "www.example.com", HandshakePort: 443, KeyID: "reality-key-id"},
-				Transport: control.TransportOptions{Type: "xhttp"},
+				Transport: control.TransportOptions{Type: "httpupgrade"},
 			},
 		},
 		{

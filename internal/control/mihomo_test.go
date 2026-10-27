@@ -44,8 +44,8 @@ func TestStoredMihomoConfigReferencesNestedGroupsRulesAndAliases(t *testing.T) {
 			t.Fatal(err)
 		}
 		listener, err := store.CreateListener(t.Context(), control.Listener{
-			NodeID: nodeID, Name: "VLESS xhttp 入站", Domain: []string{"us-listener.example.com", "jp-listener.example.com"}[index], ListenAddr: "0.0.0.0", Port: uint16(1080 + index), Enabled: true,
-			Spec: control.ProtocolSpec{Protocol: "vless", Network: "tcp", Transport: control.TransportOptions{Type: "xhttp"}},
+			NodeID: nodeID, Name: "VLESS httpupgrade 入站", Domain: []string{"us-listener.example.com", "jp-listener.example.com"}[index], ListenAddr: "0.0.0.0", Port: uint16(1080 + index), Enabled: true,
+			Spec: control.ProtocolSpec{Protocol: "vless", Network: "tcp", Transport: control.TransportOptions{Type: "httpupgrade"}},
 		})
 		if err != nil {
 			t.Fatal(err)
@@ -355,11 +355,11 @@ func TestStoredMihomoConfigReferencesNestedGroupsRulesAndAliases(t *testing.T) {
 	}
 
 	_, err = store.CreateListener(t.Context(), control.Listener{
-		NodeID: nodeIDs[0], Name: "HTTPUpgrade 接入", ListenAddr: "0.0.0.0", Port: 2080, Enabled: true,
-		Spec: control.ProtocolSpec{Protocol: "vless", Network: "tcp", Transport: control.TransportOptions{Type: "httpupgrade", Path: "/proxy"}},
+		NodeID: nodeIDs[0], Name: "ws 接入", ListenAddr: "0.0.0.0", Port: 2080, Enabled: true,
+		Spec: control.ProtocolSpec{Protocol: "vless", Network: "tcp", Transport: control.TransportOptions{Type: "ws", Path: "/proxy"}},
 	})
-	if err == nil || !strings.Contains(err.Error(), "Reality, xhttp, or gRPC") {
-		t.Fatalf("accepted removed HTTPUpgrade transport: %v", err)
+	if err == nil || !strings.Contains(err.Error(), "Reality, httpupgrade, or gRPC") {
+		t.Fatalf("accepted removed ws transport: %v", err)
 	}
 	if _, err := store.CreateMihomoClientConfig(t.Context(), control.MihomoClientConfig{
 		Name: "旧式组合", Groups: []control.MihomoClientGroup{{ID: "legacy-group"}}, RoutingProfileID: "legacy-profile",
@@ -409,8 +409,8 @@ func TestEndpointOutboundCompilesAuthenticatedUserRoutes(t *testing.T) {
 		t.Fatal(err)
 	}
 	listener, err := store.CreateListener(t.Context(), control.Listener{
-		NodeID: nodeID, Name: "VLESS xhttp 入站", ListenAddr: "0.0.0.0", Port: 1080, Enabled: true,
-		Spec: control.ProtocolSpec{Protocol: "vless", Network: "tcp", Transport: control.TransportOptions{Type: "xhttp"}},
+		NodeID: nodeID, Name: "VLESS httpupgrade 入站", ListenAddr: "0.0.0.0", Port: 1080, Enabled: true,
+		Spec: control.ProtocolSpec{Protocol: "vless", Network: "tcp", Transport: control.TransportOptions{Type: "httpupgrade"}},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -473,8 +473,8 @@ func TestGenerateMihomoYAMLUsesClientServerAddressAndRuleOrder(t *testing.T) {
 	}
 
 	listener, err := store.CreateListener(t.Context(), control.Listener{
-		NodeID: nodeID, Name: "VLESS xhttp 入站", ListenAddr: "0.0.0.0", Port: 1080, Enabled: true,
-		Spec: control.ProtocolSpec{Protocol: "vless", Network: "tcp", Transport: control.TransportOptions{Type: "xhttp"}},
+		NodeID: nodeID, Name: "VLESS httpupgrade 入站", ListenAddr: "0.0.0.0", Port: 1080, Enabled: true,
+		Spec: control.ProtocolSpec{Protocol: "vless", Network: "tcp", Transport: control.TransportOptions{Type: "httpupgrade"}},
 	})
 	if err != nil {
 		t.Fatal(err)

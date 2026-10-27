@@ -19,9 +19,9 @@ func TestMigrationEnablesTLSForLegacyVLESSStreamListener(t *testing.T) {
 	}
 	if _, err := store.CreateListener(t.Context(), Listener{
 		NodeID: nodeID, Name: "invalid-vless", ListenAddr: "127.0.0.1", Port: 443, Enabled: true,
-		Spec: ProtocolSpec{Protocol: "vless", Network: "tcp", Transport: TransportOptions{Type: "xhttp", Path: "/invalid"}},
+		Spec: ProtocolSpec{Protocol: "vless", Network: "tcp", Transport: TransportOptions{Type: "httpupgrade", Path: "/invalid"}},
 	}); err == nil {
-		t.Fatal("accepted a VLESS xhttp listener on TCP/443 without origin TLS")
+		t.Fatal("accepted a VLESS httpupgrade listener on TCP/443 without origin TLS")
 	}
 	spec, err := json.Marshal(ProtocolSpec{Protocol: "vless", Network: "tcp", Transport: TransportOptions{Type: "ws", Path: "/legacy"}})
 	if err != nil {
@@ -43,7 +43,7 @@ func TestMigrationEnablesTLSForLegacyVLESSStreamListener(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(listeners) != 1 || !listeners[0].Spec.TLS.Enabled || len(listeners[0].Spec.TLS.ALPN) != 2 || listeners[0].Spec.TLS.ALPN[0] != "h2" || listeners[0].Spec.Transport.Type != "xhttp" {
+	if len(listeners) != 1 || !listeners[0].Spec.TLS.Enabled || len(listeners[0].Spec.TLS.ALPN) != 1 || listeners[0].Spec.TLS.ALPN[0] != "http/1.1" || listeners[0].Spec.Transport.Type != "httpupgrade" {
 		t.Fatalf("legacy VLESS listener was not migrated: %#v", listeners)
 	}
 }
@@ -117,22 +117,22 @@ func TestReconcileListenerPortRoutingCleansUpCentralizedRouting(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	tlsXHTTP := func(path string) ProtocolSpec {
+	tlsHTTPUpgrade := func(path string) ProtocolSpec {
 		return ProtocolSpec{
 			Protocol: "vless", Network: "tcp",
 			TLS:       TLSOptions{Enabled: true, ALPN: []string{"h2", "http/1.1"}},
-			Transport: TransportOptions{Type: "xhttp", Path: path},
+			Transport: TransportOptions{Type: "httpupgrade", Path: path},
 		}
 	}
-	insert(sole, "唯一接入", "sole.example.com", "0.0.0.0", 443, 443, tlsXHTTP("/sole"))
+	insert(sole, "唯一接入", "sole.example.com", "0.0.0.0", 443, 443, tlsHTTPUpgrade("/sole"))
 	// No TLS means no ClientHello to route by, so this one has to be left alone.
 	insert(unroutable, "明文接入", "plain.example.com", "0.0.0.0", 8080, 8080, ProtocolSpec{
-		Protocol: "vless", Network: "tcp", Transport: TransportOptions{Type: "xhttp", Path: "/plain"},
+		Protocol: "vless", Network: "tcp", Transport: TransportOptions{Type: "httpupgrade", Path: "/plain"},
 	})
-	insert(sharedFirst, "共用甲", "first.example.com", "0.0.0.0", 8443, 8443, tlsXHTTP("/first"))
-	insert(sharedSecond, "共用乙", "second.example.com", "0.0.0.0", 8443, 8443, tlsXHTTP("/second"))
+	insert(sharedFirst, "共用甲", "first.example.com", "0.0.0.0", 8443, 8443, tlsHTTPUpgrade("/first"))
+	insert(sharedSecond, "共用乙", "second.example.com", "0.0.0.0", 8443, 8443, tlsHTTPUpgrade("/second"))
 	// Routed under the old rule despite owning its port outright.
-	insert(stranded, "历史遗留", "stranded.example.com", "127.0.0.1", 9443, 20000, tlsXHTTP("/stranded"))
+	insert(stranded, "历史遗留", "stranded.example.com", "127.0.0.1", 9443, 20000, tlsHTTPUpgrade("/stranded"))
 	if _, err := store.db.Exec(`INSERT INTO ingress_routes (id, node_id, listener_id, listen_address, port, sni, enabled, created_at, updated_at)
 		VALUES (?,?,?,?,?,?,1,?,?)`,
 		strings.Repeat("2", 32), nodeID, stranded, "0.0.0.0", 9443, "stranded.example.com", nowUnix(), nowUnix()); err != nil {
