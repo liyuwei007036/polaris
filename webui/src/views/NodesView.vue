@@ -250,6 +250,28 @@ function getPingClass(val) {
   return 'ping-status-slow'
 }
 
+function isNodeGFWBlocked(st) {
+  if (!st) return false
+  return (
+    Boolean(st.gfw_blocked) ||
+    st.gfw_status === 'blocked' ||
+    st.telecom_route === 'GFW 阻断' ||
+    st.unicom_route === 'GFW 阻断' ||
+    st.mobile_route === 'GFW 阻断'
+  )
+}
+
+function getLatencyTooltip(st, isp) {
+  if (!st) return ''
+  if (isNodeGFWBlocked(st)) {
+    return '国内所有探针 TCP 握手均超时或被丢弃 (疑似被 GFW 阻断，公网端口国内不可达)'
+  }
+  if (isp === 'mobile') return '中国移动: ' + (st.mobile_route || '标准直连')
+  if (isp === 'unicom') return '中国联通: ' + (st.unicom_route || '标准直连')
+  if (isp === 'telecom') return '中国电信: ' + (st.telecom_route || '标准直连')
+  return ''
+}
+
 function getResourcePercent(used, total) {
   if (!total || total <= 0) return 0
   const p = Math.round((Number(used) / Number(total)) * 100)
@@ -265,15 +287,14 @@ function formatResourceBytes(bytes) {
 }
 
 function getUsageStatusColor(percent) {
-  if (percent >= 85) return '#fb7185' // 红色警告
-  if (percent >= 65) return '#fbbf24' // 琥珀黄中载
-  return '#34d399' // 翠绿正常
+  if (percent >= 85) return '#f43f5e' // 红色警告
+  if (percent >= 65) return '#f59e0b' // 琥珀黄中载
+  return '#10b981' // 翠绿正常
 }
 
 // 智能国旗推导
 function getNodeFlag(name) {
   if (!name) return '🌐'
-  // 若名称开头已包含 Emoji
   if (/^(\p{Extended_Pictographic})/u.test(name)) return ''
   const upper = name.toUpperCase()
   if (upper.includes('TW') || upper.includes('台湾') || upper.includes('HINET')) return '🇹🇼'
@@ -281,7 +302,17 @@ function getNodeFlag(name) {
   if (upper.includes('SG') || upper.includes('新加坡') || upper.includes('狮城')) return '🇸🇬'
   if (upper.includes('JP') || upper.includes('日本') || upper.includes('东京') || upper.includes('大阪')) return '🇯🇵'
   if (upper.includes('KR') || upper.includes('韩国') || upper.includes('首尔')) return '🇰🇷'
-  if (upper.includes('US') || upper.includes('美国') || upper.includes('圣何塞') || upper.includes('洛杉矶') || upper.includes('纽约') || upper.includes('西雅图') || upper.includes('硅谷') || upper.includes('芝加哥')) return '🇺🇸'
+  if (
+    upper.includes('US') ||
+    upper.includes('美国') ||
+    upper.includes('圣何塞') ||
+    upper.includes('洛杉矶') ||
+    upper.includes('纽约') ||
+    upper.includes('西雅图') ||
+    upper.includes('硅谷') ||
+    upper.includes('芝加哥')
+  )
+    return '🇺🇸'
   if (upper.includes('UK') || upper.includes('英国') || upper.includes('伦敦')) return '🇬🇧'
   if (upper.includes('DE') || upper.includes('德国') || upper.includes('法兰克福')) return '🇩🇪'
   if (upper.includes('FR') || upper.includes('法国') || upper.includes('巴黎')) return '🇫🇷'
@@ -295,7 +326,7 @@ async function copyAddress(addr) {
   if (!addr) return
   try {
     await navigator.clipboard.writeText(addr)
-    ElMessage.success(`已复制地址: ${addr}`)
+    ElMessage.success(`已复制: ${addr}`)
   } catch (_) {
     ElMessage.error('复制失败，请手动选择复制')
   }
@@ -495,7 +526,7 @@ function handleCardCommand(node, command) {
 function isValidRoute(route) {
   if (!route) return false
   const trimmed = route.trim()
-  return trimmed !== '' && trimmed !== '未知' && trimmed !== '不可达'
+  return trimmed !== '' && trimmed !== '未知' && trimmed !== '不可达' && trimmed !== 'GFW 阻断'
 }
 
 function isPremiumRoute(route) {
@@ -663,48 +694,51 @@ onBeforeUnmount(() => {
             v-for="node in pagedNodes"
             :key="node.id"
             class="node-card"
-            :class="{ 'is-offline': !node.online }"
+            :class="{
+              'is-offline': !node.online,
+              'has-gfw-block': isNodeGFWBlocked(speedtests[node.id]),
+            }"
           >
-            <!-- 卡片状态顶边光条 -->
-            <div class="node-card-glow" :class="node.online ? 'glow-online' : 'glow-offline'" />
+            <!-- 卡片顶边流光 -->
+            <div
+              class="node-card-glow"
+              :class="node.online ? (isNodeGFWBlocked(speedtests[node.id]) ? 'glow-blocked' : 'glow-online') : 'glow-offline'"
+            />
 
-            <!-- 卡片头部：状态灯、名称、国旗、系统架构、版本 -->
+            <!-- 1. 卡片头部：状态、名称、国旗、系统、版本、操作 -->
             <div class="card-head">
               <div class="card-head-left">
                 <div class="title-row">
                   <span
                     class="status-indicator"
-                    :class="node.online ? 'online' : 'offline'"
-                    :title="node.online ? '在线运行中' : '节点已离线'"
+                    :class="node.online ? (isNodeGFWBlocked(speedtests[node.id]) ? 'blocked' : 'online') : 'offline'"
+                    :title="node.online ? (isNodeGFWBlocked(speedtests[node.id]) ? '国内探针全超时 (疑似被 GFW 阻断)' : '在线运行中') : '节点已离线'"
                   />
                   <span v-if="getNodeFlag(node.name)" class="flag-icon">{{ getNodeFlag(node.name) }}</span>
                   <span class="node-name" :title="node.name">{{ node.name }}</span>
+                  <span v-if="isNodeGFWBlocked(speedtests[node.id])" class="badge-gfw-alert">
+                    <span class="gfw-dot" /> 疑似被墙
+                  </span>
                 </div>
                 <div class="sub-badge-row">
-                  <span class="os-arch-tag">
-                    {{ node.os || 'linux' }} · {{ node.architecture || 'amd64' }}
-                  </span>
+                  <span class="os-arch-tag">{{ node.os || 'linux' }} · {{ node.architecture || 'amd64' }}</span>
                   <span class="version-tag">v{{ node.agent_version || '—' }}</span>
-                  <el-tag
+                  <button
                     v-if="agentUpdateAvailable(node)"
-                    type="warning"
-                    size="small"
-                    effect="dark"
-                    class="clickable-tag"
+                    class="upgrade-pill"
+                    title="点击立即升级 Agent"
                     @click="upgradeAgent(node)"
                   >
-                    Agent可升级
-                  </el-tag>
-                  <el-tag
+                    ↑ 升级 Agent
+                  </button>
+                  <button
                     v-if="singBoxUpdateAvailable(node)"
-                    type="warning"
-                    size="small"
-                    effect="plain"
-                    class="clickable-tag"
+                    class="upgrade-pill upgrade-pill-sub"
+                    title="点击立即升级 sing-box"
                     @click="upgradeSingBox(node)"
                   >
-                    sing-box可升级
-                  </el-tag>
+                    ↑ sing-box
+                  </button>
                 </div>
               </div>
 
@@ -736,287 +770,288 @@ onBeforeUnmount(() => {
               </div>
             </div>
 
-            <!-- 连接地址条 -->
-            <div class="card-address-bar">
-              <div class="address-content" :title="'点击复制: ' + (node.client_address || '未配置')">
-                <span class="addr-icon">🌐</span>
-                <span v-if="node.client_address" class="addr-text font-mono" @click="copyAddress(node.client_address)">
-                  {{ node.client_address }}
-                </span>
-                <span v-else class="addr-empty">未配置连接地址</span>
-                <el-tooltip
-                  v-if="node.ddns_enabled"
-                  :content="`Cloudflare DDNS 自动同步 (${node.ddns_domain || node.client_address})，最新IP: ${node.last_observed_ip || '等待检测'}`"
-                >
-                  <span class="ddns-badge">DDNS</span>
-                </el-tooltip>
-              </div>
-              <button
-                v-if="node.client_address"
-                class="copy-btn"
-                title="复制地址"
-                @click="copyAddress(node.client_address)"
-              >
+            <!-- 2. 连接地址终端微槽 -->
+            <div class="card-address-capsule" @click="copyAddress(node.client_address)">
+              <div class="address-prefix font-mono">&gt;</div>
+              <span v-if="node.client_address" class="address-text font-mono" :title="'点击复制: ' + node.client_address">
+                {{ node.client_address }}
+              </span>
+              <span v-else class="address-text address-empty">未配置连接地址</span>
+              <span v-if="node.ddns_enabled" class="ddns-chip" :title="`DDNS 解析至: ${node.last_observed_ip || '检测中'}`">
+                DDNS
+              </span>
+              <button v-if="node.client_address" class="address-copy-icon" title="复制连接地址">
                 <el-icon><CopyDocument /></el-icon>
               </button>
             </div>
 
-            <!-- 服务器硬件监控矩阵：CPU / 内存 / 磁盘 -->
-            <div class="hardware-metrics-box">
+            <!-- 3. 核心硬件资源三微舱 (CPU / 内存 / 磁盘) -->
+            <div class="hw-dash-container">
               <!-- CPU -->
-              <div class="hardware-item">
-                <div class="hw-head">
-                  <span class="hw-label">
-                    <svg class="hw-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor">
-                      <rect x="4" y="4" width="16" height="16" rx="2" stroke-width="2"/>
-                      <rect x="9" y="9" width="6" height="6" stroke-width="2"/>
-                      <path d="M9 1v3M15 1v3M9 20v3M15 20v3M20 9h3M20 14h3M1 9h3M1 14h3" stroke-width="2"/>
-                    </svg>
+              <div class="hw-mini-card">
+                <div class="hw-card-top">
+                  <span class="hw-card-title">
+                    <span class="hw-dot cpu" />
                     CPU
                   </span>
                   <span
-                    class="hw-val font-mono"
+                    class="hw-card-percent font-mono"
                     :style="{ color: getUsageStatusColor(metrics[node.id]?.host?.cpu_percent || 0) }"
                   >
                     {{ node.online && metrics[node.id]?.host ? `${metrics[node.id].host.cpu_percent.toFixed(1)}%` : (node.online ? '—' : '离线') }}
                   </span>
                 </div>
-                <div class="hw-progress-track">
+                <div class="hw-bar-track">
                   <div
-                    class="hw-progress-fill"
+                    class="hw-bar-thumb"
                     :style="{
                       width: `${node.online && metrics[node.id]?.host ? Math.min(100, metrics[node.id].host.cpu_percent) : 0}%`,
                       backgroundColor: getUsageStatusColor(metrics[node.id]?.host?.cpu_percent || 0),
                     }"
                   />
                 </div>
-                <div class="hw-foot">
-                  <span v-if="metrics[node.id]?.host?.uptime_seconds" class="hw-sub font-mono">
-                    运行 {{ Math.floor(metrics[node.id].host.uptime_seconds / 86400) }} 天
+                <div class="hw-card-bottom font-mono">
+                  <span v-if="metrics[node.id]?.host?.uptime_seconds">
+                    已运行 {{ Math.floor(metrics[node.id].host.uptime_seconds / 86400) }} 天
                   </span>
-                  <span v-else class="hw-sub font-mono">核数待报</span>
+                  <span v-else class="subtle">待上报</span>
                 </div>
               </div>
 
               <!-- 内存 -->
-              <div class="hardware-item">
-                <div class="hw-head">
-                  <span class="hw-label">
-                    <svg class="hw-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor">
-                      <rect x="2" y="6" width="20" height="12" rx="2" stroke-width="2"/>
-                      <path d="M6 10v4M10 10v4M14 10v4M18 10v4" stroke-width="2"/>
-                    </svg>
+              <div class="hw-mini-card">
+                <div class="hw-card-top">
+                  <span class="hw-card-title">
+                    <span class="hw-dot mem" />
                     内存
                   </span>
                   <span
-                    class="hw-val font-mono"
+                    class="hw-card-percent font-mono"
                     :style="{ color: getUsageStatusColor(getResourcePercent(metrics[node.id]?.host?.memory_used, metrics[node.id]?.host?.memory_total)) }"
                   >
                     {{ node.online && metrics[node.id]?.host?.memory_total ? `${getResourcePercent(metrics[node.id].host.memory_used, metrics[node.id].host.memory_total)}%` : (node.online ? '—' : '离线') }}
                   </span>
                 </div>
-                <div class="hw-progress-track">
+                <div class="hw-bar-track">
                   <div
-                    class="hw-progress-fill"
+                    class="hw-bar-thumb"
                     :style="{
                       width: `${node.online && metrics[node.id]?.host ? getResourcePercent(metrics[node.id].host.memory_used, metrics[node.id].host.memory_total) : 0}%`,
                       backgroundColor: getUsageStatusColor(getResourcePercent(metrics[node.id]?.host?.memory_used, metrics[node.id]?.host?.memory_total)),
                     }"
                   />
                 </div>
-                <div class="hw-foot">
-                  <span v-if="node.online && metrics[node.id]?.host?.memory_total" class="hw-sub font-mono">
+                <div class="hw-card-bottom font-mono">
+                  <span v-if="node.online && metrics[node.id]?.host?.memory_total">
                     {{ formatResourceBytes(metrics[node.id].host.memory_used) }} / {{ formatResourceBytes(metrics[node.id].host.memory_total) }}
                   </span>
-                  <span v-else class="hw-sub font-mono">待上报</span>
+                  <span v-else class="subtle">待上报</span>
                 </div>
               </div>
 
-              <!-- 硬盘 -->
-              <div class="hardware-item">
-                <div class="hw-head">
-                  <span class="hw-label">
-                    <svg class="hw-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor">
-                      <rect x="3" y="4" width="18" height="16" rx="2" stroke-width="2"/>
-                      <line x1="3" y1="12" x2="21" y2="12" stroke-width="2"/>
-                      <circle cx="7" cy="8" r="1" fill="currentColor"/>
-                      <circle cx="7" cy="16" r="1" fill="currentColor"/>
-                    </svg>
+              <!-- 磁盘 -->
+              <div class="hw-mini-card">
+                <div class="hw-card-top">
+                  <span class="hw-card-title">
+                    <span class="hw-dot disk" />
                     硬盘
                   </span>
                   <span
-                    class="hw-val font-mono"
+                    class="hw-card-percent font-mono"
                     :style="{ color: getUsageStatusColor(getResourcePercent(metrics[node.id]?.host?.disk_used, metrics[node.id]?.host?.disk_total)) }"
                   >
                     {{ node.online && metrics[node.id]?.host?.disk_total ? `${getResourcePercent(metrics[node.id].host.disk_used, metrics[node.id].host.disk_total)}%` : (node.online ? '—' : '离线') }}
                   </span>
                 </div>
-                <div class="hw-progress-track">
+                <div class="hw-bar-track">
                   <div
-                    class="hw-progress-fill"
+                    class="hw-bar-thumb"
                     :style="{
                       width: `${node.online && metrics[node.id]?.host ? getResourcePercent(metrics[node.id].host.disk_used, metrics[node.id].host.disk_total) : 0}%`,
                       backgroundColor: getUsageStatusColor(getResourcePercent(metrics[node.id]?.host?.disk_used, metrics[node.id]?.host?.disk_total)),
                     }"
                   />
                 </div>
-                <div class="hw-foot">
-                  <span v-if="node.online && metrics[node.id]?.host?.disk_total" class="hw-sub font-mono">
+                <div class="hw-card-bottom font-mono">
+                  <span v-if="node.online && metrics[node.id]?.host?.disk_total">
                     {{ formatResourceBytes(metrics[node.id].host.disk_used) }} / {{ formatResourceBytes(metrics[node.id].host.disk_total) }}
                   </span>
-                  <span v-else class="hw-sub font-mono">待上报</span>
+                  <span v-else class="subtle">待上报</span>
                 </div>
               </div>
             </div>
 
-            <!-- 网络监控区：实时速率与连接数、累计流量 -->
-            <div class="network-section">
-              <div class="net-row-top">
-                <div class="rates-cluster font-mono">
-                  <div class="rate-badge rate-down">
-                    <span class="arrow">↓</span>
-                    <span class="val">
-                      {{ live.get(node.id)?.has_rates ? formatBytes(live.get(node.id).received_rate, '/s') : (node.online ? '0 B/s' : '0 B/s') }}
+            <!-- 4. 实时网络吞吐与连接舱 -->
+            <div class="net-telemetry-bay">
+              <div class="net-left-stream">
+                <div class="stream-speeds font-mono">
+                  <div class="speed-unit down">
+                    <span class="speed-arrow">↓</span>
+                    <span class="speed-num">
+                      {{ live.get(node.id)?.has_rates ? formatBytes(live.get(node.id).received_rate, '/s') : '0 B/s' }}
                     </span>
                   </div>
-                  <div class="rate-badge rate-up">
-                    <span class="arrow">↑</span>
-                    <span class="val">
-                      {{ live.get(node.id)?.has_rates ? formatBytes(live.get(node.id).sent_rate, '/s') : (node.online ? '0 B/s' : '0 B/s') }}
+                  <div class="speed-unit up">
+                    <span class="speed-arrow">↑</span>
+                    <span class="speed-num">
+                      {{ live.get(node.id)?.has_rates ? formatBytes(live.get(node.id).sent_rate, '/s') : '0 B/s' }}
                     </span>
                   </div>
                 </div>
-
-                <div class="conn-badge" :class="{ 'has-connections': (live.get(node.id)?.connection_count || 0) > 0 }">
-                  <el-icon><Connection /></el-icon>
-                  <span class="conn-count font-mono">{{ live.get(node.id)?.connection_count ?? 0 }}</span>
-                  <span class="conn-txt">连接</span>
+                <div class="stream-total font-mono">
+                  <span class="total-lbl">累计:</span>
+                  <span v-if="metrics[node.id]?.proxy" class="total-val">
+                    ↓ {{ formatBytes(metrics[node.id].proxy.received_bytes) }} · ↑ {{ formatBytes(metrics[node.id].proxy.sent_bytes) }}
+                  </span>
+                  <span v-else class="total-val subtle">等待上报</span>
                 </div>
               </div>
 
-              <div class="net-row-bottom font-mono">
-                <span class="traffic-tag-label">累计流量:</span>
-                <span v-if="metrics[node.id]?.proxy" class="traffic-tag-val">
-                  ↓ {{ formatBytes(metrics[node.id].proxy.received_bytes) }} · ↑ {{ formatBytes(metrics[node.id].proxy.sent_bytes) }}
-                </span>
-                <span v-else class="traffic-tag-val subtle">等待上报</span>
+              <div class="net-right-pod">
+                <div class="conn-pod" :class="{ 'has-conn': (live.get(node.id)?.connection_count || 0) > 0 }">
+                  <div class="conn-pod-top">
+                    <el-icon><Connection /></el-icon>
+                    <span class="conn-digit font-mono">{{ live.get(node.id)?.connection_count ?? 0 }}</span>
+                  </div>
+                  <span class="conn-unit-lbl">活跃连接</span>
+                </div>
               </div>
             </div>
 
-            <!-- 三网延迟与线路质量 -->
-            <div class="latency-section">
-              <div v-if="speedtests[node.id]" class="speedtest-details">
-                <div class="latency-badges-row">
-                  <el-tooltip :content="'中国移动: ' + (speedtests[node.id].mobile_route || '标准直连')">
-                    <div class="ping-pill" :class="getPingClass(speedtests[node.id].mobile_latency_ms ?? speedtests[node.id].mobile_ping_ms)">
-                      <span class="isp-dot mobile" />
-                      <span class="isp-name">移动</span>
-                      <span class="isp-val font-mono">{{ getPingStr(speedtests[node.id].mobile_latency_ms ?? speedtests[node.id].mobile_ping_ms) }}</span>
+            <!-- 5. 三网延迟与线路质量 -->
+            <div class="latency-route-bay" :class="{ 'is-blocked': isNodeGFWBlocked(speedtests[node.id]) }">
+              <div v-if="speedtests[node.id]" class="speedtest-inner">
+                <!-- GFW 阻断醒目标幅 -->
+                <div v-if="isNodeGFWBlocked(speedtests[node.id])" class="gfw-banner">
+                  <span class="gfw-alert-flare" />
+                  <div class="gfw-banner-text">
+                    <span class="gfw-banner-main">长城防火墙阻断 (GFW Blocked)</span>
+                    <span class="gfw-banner-note">{{ speedtests[node.id].domestic_source || '国内所有探针 TCP 握手全超时' }}</span>
+                  </div>
+                </div>
+
+                <!-- 延迟药丸 -->
+                <div class="latency-grid">
+                  <el-tooltip :content="getLatencyTooltip(speedtests[node.id], 'mobile')">
+                    <div class="isp-pill" :class="isNodeGFWBlocked(speedtests[node.id]) ? 'is-timeout' : getPingClass(speedtests[node.id].mobile_latency_ms ?? speedtests[node.id].mobile_ping_ms)">
+                      <span class="isp-dot mobile-dot" />
+                      <span class="isp-title">移动</span>
+                      <span class="isp-ms font-mono">{{ isNodeGFWBlocked(speedtests[node.id]) ? '阻断' : getPingStr(speedtests[node.id].mobile_latency_ms ?? speedtests[node.id].mobile_ping_ms) }}</span>
                     </div>
                   </el-tooltip>
 
-                  <el-tooltip :content="'中国联通: ' + (speedtests[node.id].unicom_route || '标准直连')">
-                    <div class="ping-pill" :class="getPingClass(speedtests[node.id].unicom_latency_ms ?? speedtests[node.id].unicom_ping_ms)">
-                      <span class="isp-dot unicom" />
-                      <span class="isp-name">联通</span>
-                      <span class="isp-val font-mono">{{ getPingStr(speedtests[node.id].unicom_latency_ms ?? speedtests[node.id].unicom_ping_ms) }}</span>
+                  <el-tooltip :content="getLatencyTooltip(speedtests[node.id], 'unicom')">
+                    <div class="isp-pill" :class="isNodeGFWBlocked(speedtests[node.id]) ? 'is-timeout' : getPingClass(speedtests[node.id].unicom_latency_ms ?? speedtests[node.id].unicom_ping_ms)">
+                      <span class="isp-dot unicom-dot" />
+                      <span class="isp-title">联通</span>
+                      <span class="isp-ms font-mono">{{ isNodeGFWBlocked(speedtests[node.id]) ? '阻断' : getPingStr(speedtests[node.id].unicom_latency_ms ?? speedtests[node.id].unicom_ping_ms) }}</span>
                     </div>
                   </el-tooltip>
 
-                  <el-tooltip :content="'中国电信: ' + (speedtests[node.id].telecom_route || '标准直连')">
-                    <div class="ping-pill" :class="getPingClass(speedtests[node.id].telecom_latency_ms ?? speedtests[node.id].telecom_ping_ms)">
-                      <span class="isp-dot telecom" />
-                      <span class="isp-name">电信</span>
-                      <span class="isp-val font-mono">{{ getPingStr(speedtests[node.id].telecom_latency_ms ?? speedtests[node.id].telecom_ping_ms) }}</span>
+                  <el-tooltip :content="getLatencyTooltip(speedtests[node.id], 'telecom')">
+                    <div class="isp-pill" :class="isNodeGFWBlocked(speedtests[node.id]) ? 'is-timeout' : getPingClass(speedtests[node.id].telecom_latency_ms ?? speedtests[node.id].telecom_ping_ms)">
+                      <span class="isp-dot telecom-dot" />
+                      <span class="isp-title">电信</span>
+                      <span class="isp-ms font-mono">{{ isNodeGFWBlocked(speedtests[node.id]) ? '阻断' : getPingStr(speedtests[node.id].telecom_latency_ms ?? speedtests[node.id].telecom_ping_ms) }}</span>
                     </div>
                   </el-tooltip>
                 </div>
 
-                <!-- 优质线路识别 -->
-                <div v-if="hasRecognizedRoutes(speedtests[node.id])" class="routes-row">
+                <!-- 线路标签与国内验证 -->
+                <div v-if="isNodeGFWBlocked(speedtests[node.id])" class="routes-row">
+                  <span class="route-tag tag-danger">🚨 疑似被墙 · 国内客户端不可达</span>
+                </div>
+                <div v-else-if="hasRecognizedRoutes(speedtests[node.id]) || speedtests[node.id].domestic_latency_ms" class="routes-row">
                   <span
                     v-if="isValidRoute(speedtests[node.id].telecom_route)"
-                    :class="['route-badge', isPremiumRoute(speedtests[node.id].telecom_route) ? 'route-premium' : 'route-normal']"
+                    :class="['route-tag', isPremiumRoute(speedtests[node.id].telecom_route) ? 'tag-gold' : 'tag-muted']"
                   >
                     {{ speedtests[node.id].telecom_route }}
                   </span>
                   <span
                     v-if="isValidRoute(speedtests[node.id].unicom_route)"
-                    :class="['route-badge', isPremiumRoute(speedtests[node.id].unicom_route) ? 'route-premium' : 'route-normal']"
+                    :class="['route-tag', isPremiumRoute(speedtests[node.id].unicom_route) ? 'tag-gold' : 'tag-muted']"
                   >
                     {{ speedtests[node.id].unicom_route }}
                   </span>
                   <span
                     v-if="isValidRoute(speedtests[node.id].mobile_route)"
-                    :class="['route-badge', isPremiumRoute(speedtests[node.id].mobile_route) ? 'route-premium' : 'route-normal']"
+                    :class="['route-tag', isPremiumRoute(speedtests[node.id].mobile_route) ? 'tag-gold' : 'tag-muted']"
                   >
                     {{ speedtests[node.id].mobile_route }}
+                  </span>
+                  <span
+                    v-if="speedtests[node.id].domestic_latency_ms"
+                    class="route-tag tag-verified font-mono"
+                    :title="speedtests[node.id].domestic_source || '国内探针握手验证正常'"
+                  >
+                    ✓ 直连 {{ speedtests[node.id].domestic_latency_ms }}ms
                   </span>
                 </div>
               </div>
 
-              <div v-else class="latency-empty-row">
-                <span class="subtle">三网延迟与线路尚未检测</span>
-                <el-button
+              <div v-else class="speedtest-empty">
+                <span class="subtle font-mono">未进行三网与 GFW 线路检测</span>
+                <button
                   v-if="canWrite && node.online"
-                  link
-                  type="primary"
-                  size="small"
-                  :loading="Boolean(speedtesting[node.id])"
+                  class="btn-inline-probe"
+                  :disabled="Boolean(speedtesting[node.id])"
                   @click="runSpeedtest(node)"
                 >
-                  立即检测
-                </el-button>
+                  {{ speedtesting[node.id] ? '正在检测...' : '立即检测' }}
+                </button>
               </div>
             </div>
 
-            <!-- 防御控制与最后心跳 -->
-            <div class="card-defense-bar">
-              <div class="defense-label-box">
-                <span class="shield-dot" :class="{ active: Boolean(scanners[node.id]) }" />
-                <span class="defense-title">测绘防御</span>
-                <span class="defense-status-text">
-                  {{ scanners[node.id] ? '拦截引擎扫描' : '未开启' }}
-                </span>
+            <!-- 6. 主动测绘防御精工条 -->
+            <div class="defense-strip">
+              <div class="defense-meta">
+                <div class="shield-badge" :class="{ 'is-active': Boolean(scanners[node.id]) }">
+                  <svg class="shield-svg" viewBox="0 0 24 24" fill="none" stroke="currentColor">
+                    <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                  </svg>
+                </div>
+                <div class="defense-copy">
+                  <span class="defense-name">主动测绘防御</span>
+                  <span class="defense-subtext">{{ scanners[node.id] ? '拦截 Shodan / Censys 探测' : '未开启公网防护' }}</span>
+                </div>
               </div>
               <el-switch
                 :model-value="Boolean(scanners[node.id])"
                 :loading="Boolean(togglingScanner[node.id])"
                 :disabled="!isAdmin || !node.online"
-                active-text="已开"
-                inactive-text="关闭"
+                size="small"
+                active-text="开"
+                inactive-text="关"
                 inline-prompt
                 @change="toggleScannerDirect(node)"
               />
             </div>
 
-            <!-- 卡片底栏操作区 -->
-            <div class="card-footer">
-              <div class="last-seen-text">
-                <span class="time-label">活跃:</span>
-                <span class="font-mono">{{ formatDateTime(node.last_seen_at, '从未') }}</span>
+            <!-- 7. 卡片底栏 -->
+            <div class="card-bottom-bar">
+              <div class="bottom-last-seen font-mono">
+                <span class="seen-label">活跃:</span>
+                <span>{{ formatDateTime(node.last_seen_at, '从未') }}</span>
               </div>
-
-              <div class="card-footer-actions">
-                <el-button
+              <div class="bottom-actions">
+                <button
                   v-if="canWrite && node.online"
-                  size="small"
-                  class="card-act-btn"
-                  :loading="Boolean(speedtesting[node.id])"
+                  class="glass-act-btn"
+                  :disabled="Boolean(speedtesting[node.id])"
                   @click="runSpeedtest(node)"
                 >
                   <el-icon><Connection /></el-icon>
-                  检测
-                </el-button>
-                <el-button
+                  <span>{{ speedtesting[node.id] ? '检测中' : '测速' }}</span>
+                </button>
+                <button
                   v-if="canWrite"
-                  size="small"
-                  class="card-act-btn"
+                  class="glass-act-btn"
                   @click="openEdit(node)"
                 >
                   <el-icon><Edit /></el-icon>
-                  配置
-                </el-button>
+                  <span>配置</span>
+                </button>
               </div>
             </div>
           </div>
@@ -1042,7 +1077,7 @@ onBeforeUnmount(() => {
             <el-table-column label="服务器 / 系统" min-width="190" show-overflow-tooltip>
               <template #default="{ row }">
                 <div class="cell-main">
-                  <span class="status-indicator" :class="row.online ? 'online' : 'offline'" />
+                  <span class="status-indicator" :class="row.online ? (isNodeGFWBlocked(speedtests[row.id]) ? 'blocked' : 'online') : 'offline'" />
                   <strong style="margin-left: 6px">{{ row.name }}</strong>
                 </div>
                 <div class="cell-sub">{{ row.os || '—' }} · {{ row.architecture || '—' }}</div>
@@ -1120,34 +1155,43 @@ onBeforeUnmount(() => {
             <el-table-column label="三网延迟 / 线路" min-width="260">
               <template #default="{ row }">
                 <template v-if="speedtests[row.id]">
-                  <div class="cell-main speedtest-badges">
-                    <el-tooltip :content="'中国移动: ' + (speedtests[row.id].mobile_route || '标准直连')">
-                      <span class="ping-pill" :class="getPingClass(speedtests[row.id].mobile_latency_ms ?? speedtests[row.id].mobile_ping_ms)">
-                        移 {{ getPingStr(speedtests[row.id].mobile_latency_ms ?? speedtests[row.id].mobile_ping_ms) }}
-                      </span>
-                    </el-tooltip>
-                    <el-tooltip :content="'中国联通: ' + (speedtests[row.id].unicom_route || '标准直连')">
-                      <span class="ping-pill" :class="getPingClass(speedtests[row.id].unicom_latency_ms ?? speedtests[row.id].unicom_ping_ms)">
-                        联 {{ getPingStr(speedtests[row.id].unicom_latency_ms ?? speedtests[row.id].unicom_ping_ms) }}
-                      </span>
-                    </el-tooltip>
-                    <el-tooltip :content="'中国电信: ' + (speedtests[row.id].telecom_route || '标准直连')">
-                      <span class="ping-pill" :class="getPingClass(speedtests[row.id].telecom_latency_ms ?? speedtests[row.id].telecom_ping_ms)">
-                        电 {{ getPingStr(speedtests[row.id].telecom_latency_ms ?? speedtests[row.id].telecom_ping_ms) }}
-                      </span>
-                    </el-tooltip>
+                  <div v-if="isNodeGFWBlocked(speedtests[row.id])" class="cell-main">
+                    <el-tag type="danger" size="small" effect="dark" style="margin-bottom: 2px">🚨 疑似被 GFW 阻断 (国内探针全超时)</el-tag>
+                    <div class="cell-sub font-mono" style="color: #fb7185">国内入站不可达 · {{ speedtests[row.id].domestic_source || 'TCP握手超时' }}</div>
                   </div>
-                  <div v-if="hasRecognizedRoutes(speedtests[row.id])" class="routes-row">
-                    <span v-if="isValidRoute(speedtests[row.id].telecom_route)" :class="['route-badge', isPremiumRoute(speedtests[row.id].telecom_route) ? 'route-premium' : 'route-normal']">
-                      {{ speedtests[row.id].telecom_route }}
-                    </span>
-                    <span v-if="isValidRoute(speedtests[row.id].unicom_route)" :class="['route-badge', isPremiumRoute(speedtests[row.id].unicom_route) ? 'route-premium' : 'route-normal']">
-                      {{ speedtests[row.id].unicom_route }}
-                    </span>
-                    <span v-if="isValidRoute(speedtests[row.id].mobile_route)" :class="['route-badge', isPremiumRoute(speedtests[row.id].mobile_route) ? 'route-premium' : 'route-normal']">
-                      {{ speedtests[row.id].mobile_route }}
-                    </span>
-                  </div>
+                  <template v-else>
+                    <div class="cell-main speedtest-badges">
+                      <el-tooltip :content="'中国移动: ' + (speedtests[row.id].mobile_route || '标准直连')">
+                        <span class="ping-pill" :class="getPingClass(speedtests[row.id].mobile_latency_ms ?? speedtests[row.id].mobile_ping_ms)">
+                          移 {{ getPingStr(speedtests[row.id].mobile_latency_ms ?? speedtests[row.id].mobile_ping_ms) }}
+                        </span>
+                      </el-tooltip>
+                      <el-tooltip :content="'中国联通: ' + (speedtests[row.id].unicom_route || '标准直连')">
+                        <span class="ping-pill" :class="getPingClass(speedtests[row.id].unicom_latency_ms ?? speedtests[row.id].unicom_ping_ms)">
+                          联 {{ getPingStr(speedtests[row.id].unicom_latency_ms ?? speedtests[row.id].unicom_ping_ms) }}
+                        </span>
+                      </el-tooltip>
+                      <el-tooltip :content="'中国电信: ' + (speedtests[row.id].telecom_route || '标准直连')">
+                        <span class="ping-pill" :class="getPingClass(speedtests[row.id].telecom_latency_ms ?? speedtests[row.id].telecom_ping_ms)">
+                          电 {{ getPingStr(speedtests[row.id].telecom_latency_ms ?? speedtests[row.id].telecom_ping_ms) }}
+                        </span>
+                      </el-tooltip>
+                    </div>
+                    <div v-if="hasRecognizedRoutes(speedtests[row.id]) || speedtests[row.id].domestic_latency_ms" class="routes-row">
+                      <span v-if="isValidRoute(speedtests[row.id].telecom_route)" :class="['route-badge', isPremiumRoute(speedtests[row.id].telecom_route) ? 'route-premium' : 'route-normal']">
+                        {{ speedtests[row.id].telecom_route }}
+                      </span>
+                      <span v-if="isValidRoute(speedtests[row.id].unicom_route)" :class="['route-badge', isPremiumRoute(speedtests[row.id].unicom_route) ? 'route-premium' : 'route-normal']">
+                        {{ speedtests[row.id].unicom_route }}
+                      </span>
+                      <span v-if="isValidRoute(speedtests[row.id].mobile_route)" :class="['route-badge', isPremiumRoute(speedtests[row.id].mobile_route) ? 'route-premium' : 'route-normal']">
+                        {{ speedtests[row.id].mobile_route }}
+                      </span>
+                      <span v-if="speedtests[row.id].domestic_latency_ms" class="route-badge route-verified font-mono">
+                        ✓ 直连 {{ speedtests[row.id].domestic_latency_ms }}ms
+                      </span>
+                    </div>
+                  </template>
                 </template>
                 <span v-else class="subtle">未检测</span>
               </template>
@@ -1292,7 +1336,7 @@ onBeforeUnmount(() => {
 </template>
 
 <style scoped>
-/* ── 顶部统计指示栏 ─────────────────────────────────────── */
+/* ── 顶部统计横幅 ───────────────────────────────────────── */
 .server-overview-bar {
   display: flex;
   align-items: center;
@@ -1300,25 +1344,26 @@ onBeforeUnmount(() => {
   flex-wrap: wrap;
   gap: 12px;
   padding: 10px 16px;
-  background: linear-gradient(180deg, rgba(14, 21, 36, 0.75) 0%, rgba(9, 14, 25, 0.85) 100%);
-  border: 1px solid var(--sb-line);
+  background: linear-gradient(180deg, rgba(17, 24, 39, 0.7) 0%, rgba(11, 16, 27, 0.85) 100%);
+  border: 1px solid rgba(255, 255, 255, 0.08);
   border-radius: var(--sb-radius);
   margin-bottom: 14px;
-  backdrop-filter: blur(8px);
+  backdrop-filter: blur(12px);
+  box-shadow: 0 4px 16px -2px rgba(0, 0, 0, 0.4);
 }
 .overview-stat-group {
   display: flex;
   align-items: center;
   flex-wrap: wrap;
-  gap: 10px;
+  gap: 8px;
 }
 .overview-pill {
   display: inline-flex;
   align-items: center;
   gap: 6px;
   padding: 4px 10px;
-  background: rgba(148, 163, 184, 0.06);
-  border: 1px solid rgba(148, 163, 184, 0.12);
+  background: rgba(255, 255, 255, 0.035);
+  border: 1px solid rgba(255, 255, 255, 0.07);
   border-radius: 20px;
   font-size: 12px;
   color: var(--sb-text-2);
@@ -1344,8 +1389,8 @@ onBeforeUnmount(() => {
   gap: 6px;
   font-size: 12px;
   padding: 4px 10px;
-  background: rgba(15, 23, 42, 0.6);
-  border: 1px solid rgba(148, 163, 184, 0.15);
+  background: rgba(0, 0, 0, 0.35);
+  border: 1px solid rgba(255, 255, 255, 0.08);
   border-radius: 6px;
 }
 .rate-item.down { color: #34d399; font-weight: 600; }
@@ -1353,7 +1398,7 @@ onBeforeUnmount(() => {
 .rate-sep { color: var(--sb-muted); opacity: 0.5; }
 .rate-arrow { font-size: 11px; margin-right: 1px; }
 
-/* ── 现代工具栏 ─────────────────────────────────────────── */
+/* ── 工具栏 ─────────────────────────────────────────────── */
 .modern-toolbar {
   display: flex;
   align-items: center;
@@ -1369,15 +1414,15 @@ onBeforeUnmount(() => {
 }
 .view-mode-toggle {
   display: inline-flex;
-  background: rgba(15, 23, 42, 0.7);
+  background: rgba(0, 0, 0, 0.4);
   padding: 3px;
   border-radius: 8px;
-  border: 1px solid var(--sb-line);
+  border: 1px solid rgba(255, 255, 255, 0.08);
 }
 .toggle-btn {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
+  gap: 5px;
   padding: 4px 10px;
   border: none;
   background: transparent;
@@ -1456,18 +1501,18 @@ onBeforeUnmount(() => {
   margin-right: 6px;
 }
 
-/* ── 状态指示灯 ─────────────────────────────────────────── */
+/* ── 呼吸指示灯 ─────────────────────────────────────────── */
 .status-indicator {
   position: relative;
   display: inline-block;
-  width: 9px;
-  height: 9px;
+  width: 8px;
+  height: 8px;
   border-radius: 50%;
   flex-shrink: 0;
 }
 .status-indicator.online {
   background: #10b981;
-  box-shadow: 0 0 8px rgba(16, 185, 129, 0.8);
+  box-shadow: 0 0 8px rgba(16, 185, 129, 0.85);
 }
 .status-indicator.online::after {
   content: '';
@@ -1481,6 +1526,18 @@ onBeforeUnmount(() => {
   background: #64748b;
   box-shadow: 0 0 4px rgba(100, 116, 139, 0.4);
 }
+.status-indicator.blocked {
+  background: #f43f5e;
+  box-shadow: 0 0 8px rgba(244, 63, 94, 0.9);
+}
+.status-indicator.blocked::after {
+  content: '';
+  position: absolute;
+  inset: -3px;
+  border-radius: 50%;
+  border: 1.5px solid #f43f5e;
+  animation: pulseLight 1.5s cubic-bezier(0.24, 0, 0.38, 1) infinite;
+}
 .status-indicator.pending {
   background: #f59e0b;
   box-shadow: 0 0 6px rgba(245, 158, 11, 0.8);
@@ -1491,10 +1548,10 @@ onBeforeUnmount(() => {
   100% { transform: scale(0.9); opacity: 0; }
 }
 
-/* ── 卡片网格主体 (Grid) ────────────────────────────────── */
+/* ── 顶级暗黑工业美学卡片 (Server Cards Grid) ────────────── */
 .node-cards-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(360px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(350px, 1fr));
   gap: 16px;
   margin-bottom: 24px;
 }
@@ -1503,46 +1560,57 @@ onBeforeUnmount(() => {
   position: relative;
   display: flex;
   flex-direction: column;
-  background: linear-gradient(150deg, rgba(17, 26, 44, 0.88) 0%, rgba(10, 15, 27, 0.96) 100%);
-  border: 1px solid rgba(148, 163, 184, 0.14);
-  border-radius: var(--sb-radius);
-  padding: 14px 16px 12px;
-  box-shadow: 0 10px 30px -15px rgba(0, 0, 0, 0.7);
-  backdrop-filter: blur(12px);
+  background: linear-gradient(180deg, rgba(16, 24, 40, 0.82) 0%, rgba(9, 14, 25, 0.95) 100%);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 12px;
+  padding: 14px 15px 12px;
+  box-shadow: 0 6px 20px -4px rgba(0, 0, 0, 0.6), inset 0 1px 0 rgba(255, 255, 255, 0.08);
+  backdrop-filter: blur(14px);
   overflow: hidden;
-  transition: transform 0.22s ease, border-color 0.22s ease, box-shadow 0.22s ease;
+  transition: transform 0.22s cubic-bezier(0.4, 0, 0.2, 1),
+              border-color 0.22s cubic-bezier(0.4, 0, 0.2, 1),
+              box-shadow 0.22s cubic-bezier(0.4, 0, 0.2, 1);
 }
 .node-card:hover {
-  transform: translateY(-3px);
+  transform: translateY(-2px);
   border-color: rgba(56, 189, 248, 0.35);
-  box-shadow: 0 16px 36px -12px rgba(0, 0, 0, 0.8), 0 0 20px rgba(56, 189, 248, 0.12);
+  box-shadow: 0 14px 32px -4px rgba(0, 0, 0, 0.75), 0 0 18px rgba(56, 189, 248, 0.12), inset 0 1px 0 rgba(255, 255, 255, 0.15);
+}
+.node-card.has-gfw-block {
+  border-color: rgba(244, 63, 94, 0.28);
+}
+.node-card.has-gfw-block:hover {
+  border-color: rgba(244, 63, 94, 0.45);
+  box-shadow: 0 14px 32px -4px rgba(0, 0, 0, 0.75), 0 0 20px rgba(244, 63, 94, 0.16), inset 0 1px 0 rgba(255, 255, 255, 0.15);
 }
 .node-card.is-offline {
-  opacity: 0.76;
-  border-color: rgba(148, 163, 184, 0.08);
+  opacity: 0.72;
+  border-color: rgba(255, 255, 255, 0.05);
 }
 .node-card.is-offline:hover {
-  opacity: 0.95;
-  border-color: rgba(148, 163, 184, 0.25);
+  opacity: 0.92;
+  border-color: rgba(255, 255, 255, 0.15);
 }
 
-/* 顶部光晕线 */
+/* 顶部光晕高光线 */
 .node-card-glow {
   position: absolute;
   top: 0;
   left: 0;
   right: 0;
   height: 2px;
-  background: transparent;
 }
 .node-card-glow.glow-online {
-  background: linear-gradient(90deg, transparent, rgba(52, 211, 153, 0.8) 30%, rgba(56, 189, 248, 0.8) 70%, transparent);
+  background: linear-gradient(90deg, transparent, rgba(52, 211, 153, 0.7) 30%, rgba(56, 189, 248, 0.8) 70%, transparent);
 }
 .node-card-glow.glow-offline {
   background: linear-gradient(90deg, transparent, rgba(148, 163, 184, 0.3) 50%, transparent);
 }
+.node-card-glow.glow-blocked {
+  background: linear-gradient(90deg, transparent, rgba(244, 63, 94, 0.9) 30%, rgba(251, 113, 133, 0.9) 70%, transparent);
+}
 
-/* 头部 */
+/* 1. 头部排版 */
 .card-head {
   display: flex;
   align-items: flex-start;
@@ -1566,12 +1634,33 @@ onBeforeUnmount(() => {
 }
 .node-name {
   font-size: 15px;
-  font-weight: 700;
-  color: var(--sb-text);
+  font-weight: 600;
+  color: #f8fafc;
+  letter-spacing: -0.01em;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
+.badge-gfw-alert {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 1px 6px;
+  font-size: 10px;
+  font-weight: 700;
+  border-radius: 4px;
+  background: rgba(244, 63, 94, 0.16);
+  color: #fb7185;
+  border: 1px solid rgba(244, 63, 94, 0.35);
+  line-height: 14px;
+}
+.gfw-dot {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: #f43f5e;
+}
+
 .sub-badge-row {
   display: flex;
   align-items: center;
@@ -1581,418 +1670,541 @@ onBeforeUnmount(() => {
 }
 .os-arch-tag {
   color: var(--sb-muted);
-  background: rgba(148, 163, 184, 0.08);
+  background: rgba(255, 255, 255, 0.04);
   padding: 1px 6px;
   border-radius: 4px;
-  border: 1px solid rgba(148, 163, 184, 0.12);
+  border: 1px solid rgba(255, 255, 255, 0.06);
 }
 .version-tag {
   color: var(--sb-text-2);
-  background: rgba(148, 163, 184, 0.06);
+  background: rgba(255, 255, 255, 0.03);
   padding: 1px 6px;
   border-radius: 4px;
 }
-.clickable-tag {
+.upgrade-pill {
+  border: 1px solid rgba(245, 158, 11, 0.4);
+  background: rgba(245, 158, 11, 0.15);
+  color: #fbbf24;
+  font-size: 10px;
+  font-weight: 600;
+  padding: 1px 6px;
+  border-radius: 4px;
   cursor: pointer;
-  transition: transform 0.15s;
+  transition: all 0.15s;
 }
-.clickable-tag:hover {
-  transform: scale(1.05);
+.upgrade-pill:hover {
+  background: rgba(245, 158, 11, 0.25);
+  transform: scale(1.03);
 }
-.icon-more-btn {
-  background: transparent;
-  border: none;
-  color: var(--sb-muted);
-  padding: 4px 6px;
-  border-radius: 6px;
-  cursor: pointer;
-  transition: all 0.2s;
-}
-.icon-more-btn:hover {
-  color: var(--sb-text);
-  background: rgba(148, 163, 184, 0.1);
+.upgrade-pill-sub {
+  border-color: rgba(56, 189, 248, 0.35);
+  background: rgba(56, 189, 248, 0.12);
+  color: #38bdf8;
 }
 
-/* 地址条 */
-.card-address-bar {
+.icon-more-btn {
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  color: var(--sb-muted);
+  width: 26px;
+  height: 26px;
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  padding: 5px 10px;
-  background: rgba(8, 13, 23, 0.7);
-  border: 1px solid rgba(148, 163, 184, 0.1);
+  justify-content: center;
   border-radius: 6px;
-  margin-bottom: 12px;
+  cursor: pointer;
+  transition: all 0.15s;
 }
-.address-content {
+.icon-more-btn:hover {
+  color: #f8fafc;
+  background: rgba(255, 255, 255, 0.08);
+  border-color: rgba(255, 255, 255, 0.15);
+}
+
+/* 2. 终端风格地址胶囊 (Terminal Capsule) */
+.card-address-capsule {
   display: flex;
   align-items: center;
   gap: 6px;
+  padding: 5px 10px;
+  background: rgba(0, 0, 0, 0.42);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: 6px;
+  margin-bottom: 12px;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+.card-address-capsule:hover {
+  border-color: rgba(56, 189, 248, 0.3);
+  background: rgba(0, 0, 0, 0.55);
+}
+.address-prefix {
+  font-size: 11px;
+  color: var(--sb-muted);
+  opacity: 0.6;
+}
+.address-text {
+  font-size: 12px;
+  color: #7dd3fc;
   flex: 1;
   min-width: 0;
-  cursor: pointer;
-}
-.addr-icon {
-  font-size: 12px;
-  opacity: 0.7;
-}
-.addr-text {
-  font-size: 12px;
-  color: var(--sb-accent);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
-.addr-text:hover {
-  text-decoration: underline;
-}
-.addr-empty {
-  font-size: 12px;
+.address-empty {
   color: var(--sb-warning);
 }
-.ddns-badge {
-  font-size: 10px;
+.ddns-chip {
+  font-size: 9px;
   font-weight: 700;
-  padding: 0 4px;
-  line-height: 14px;
+  padding: 1px 5px;
   border-radius: 3px;
-  background: rgba(52, 211, 153, 0.18);
+  background: rgba(52, 211, 153, 0.15);
   color: #34d399;
   border: 1px solid rgba(52, 211, 153, 0.3);
-  margin-left: 4px;
 }
-.copy-btn {
-  border: none;
+.address-copy-icon {
   background: transparent;
+  border: none;
   color: var(--sb-muted);
-  padding: 2px 4px;
-  border-radius: 4px;
+  display: flex;
+  align-items: center;
+  padding: 0;
   cursor: pointer;
+  transition: color 0.15s;
 }
-.copy-btn:hover {
-  color: var(--sb-text);
+.card-address-capsule:hover .address-copy-icon {
+  color: #f8fafc;
 }
 
-/* ── 硬件监控仪表盒子 (CPU / 内存 / 磁盘) ─────────────────── */
-.hardware-metrics-box {
+/* 3. 核心硬件资源三微舱 (Hardware Micro Cards) ────────── */
+.hw-dash-container {
   display: grid;
   grid-template-columns: repeat(3, 1fr);
   gap: 8px;
-  padding: 10px;
-  background: rgba(11, 18, 32, 0.65);
-  border: 1px solid rgba(148, 163, 184, 0.1);
-  border-radius: 8px;
-  margin-bottom: 12px;
+  margin-bottom: 10px;
 }
-.hardware-item {
+.hw-mini-card {
   display: flex;
   flex-direction: column;
+  padding: 8px 9px 7px;
+  background: rgba(255, 255, 255, 0.025);
+  border: 1px solid rgba(255, 255, 255, 0.05);
+  border-radius: 8px;
+  transition: all 0.15s;
 }
-.hw-head {
+.hw-mini-card:hover {
+  background: rgba(255, 255, 255, 0.04);
+  border-color: rgba(255, 255, 255, 0.08);
+}
+.hw-card-top {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  margin-bottom: 4px;
+  margin-bottom: 5px;
 }
-.hw-label {
+.hw-card-title {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
+  gap: 5px;
   font-size: 11px;
   font-weight: 600;
   color: var(--sb-muted);
 }
-.hw-icon {
-  width: 12px;
-  height: 12px;
-  opacity: 0.7;
+.hw-dot {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
 }
-.hw-val {
-  font-size: 12px;
+.hw-dot.cpu { background: #38bdf8; }
+.hw-dot.mem { background: #a855f7; }
+.hw-dot.disk { background: #34d399; }
+
+.hw-card-percent {
+  font-size: 13px;
   font-weight: 700;
+  line-height: 1;
 }
-.hw-progress-track {
+.hw-bar-track {
   width: 100%;
   height: 4px;
-  background: rgba(148, 163, 184, 0.12);
-  border-radius: 3px;
+  background: rgba(255, 255, 255, 0.07);
+  border-radius: 2px;
   overflow: hidden;
-  margin-bottom: 3px;
+  margin-bottom: 4px;
 }
-.hw-progress-fill {
+.hw-bar-thumb {
   height: 100%;
-  border-radius: 3px;
-  transition: width 0.3s ease, background-color 0.3s ease;
+  border-radius: 2px;
+  transition: width 0.3s ease;
 }
-.hw-foot {
-  display: flex;
-  align-items: center;
-  justify-content: flex-end;
-}
-.hw-sub {
+.hw-card-bottom {
   font-size: 10px;
   color: var(--sb-muted);
-  transform: scale(0.92);
-  transform-origin: right center;
+  text-align: right;
   white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  opacity: 0.85;
 }
 
-/* ── 网络与流量区域 ─────────────────────────────────────── */
-.network-section {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  padding: 8px 10px;
-  background: rgba(14, 23, 40, 0.5);
-  border: 1px solid rgba(148, 163, 184, 0.08);
-  border-radius: 8px;
-  margin-bottom: 10px;
-}
-.net-row-top {
+/* 4. 网络遥测舱 (Network Telemetry Bay) ───────────────── */
+.net-telemetry-bay {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 8px;
+  gap: 10px;
+  padding: 8px 10px;
+  background: rgba(0, 0, 0, 0.28);
+  border: 1px solid rgba(255, 255, 255, 0.05);
+  border-radius: 8px;
+  margin-bottom: 10px;
 }
-.rates-cluster {
+.net-left-stream {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.stream-speeds {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 8px;
 }
-.rate-badge {
+.speed-unit {
   display: inline-flex;
   align-items: center;
   gap: 3px;
   font-size: 11px;
   padding: 2px 6px;
   border-radius: 4px;
-  line-height: 14px;
+  line-height: 1;
 }
-.rate-badge.rate-down {
-  background: rgba(52, 211, 153, 0.1);
+.speed-unit.down {
+  background: rgba(16, 185, 129, 0.12);
   color: #34d399;
-  border: 1px solid rgba(52, 211, 153, 0.2);
+  border: 1px solid rgba(16, 185, 129, 0.25);
 }
-.rate-badge.rate-up {
-  background: rgba(56, 189, 248, 0.1);
+.speed-unit.up {
+  background: rgba(56, 189, 248, 0.12);
   color: #38bdf8;
-  border: 1px solid rgba(56, 189, 248, 0.2);
+  border: 1px solid rgba(56, 189, 248, 0.25);
 }
-.rate-badge .arrow {
-  font-weight: 700;
+.speed-arrow { font-size: 10px; font-weight: 700; }
+.speed-num { font-weight: 600; }
+
+.stream-total {
   font-size: 10px;
+  color: var(--sb-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
-.rate-badge .val {
-  font-weight: 600;
+.total-lbl { margin-right: 4px; opacity: 0.7; }
+.total-val { color: var(--sb-text-2); }
+
+.net-right-pod {
+  flex-shrink: 0;
 }
-.conn-badge {
-  display: inline-flex;
+.conn-pod {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 4px 10px;
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  min-width: 62px;
+}
+.conn-pod.has-conn {
+  background: rgba(99, 102, 241, 0.15);
+  border-color: rgba(99, 102, 241, 0.3);
+  color: #c7d2fe;
+}
+.conn-pod-top {
+  display: flex;
   align-items: center;
   gap: 4px;
-  font-size: 11px;
-  color: var(--sb-muted);
-  padding: 2px 7px;
-  border-radius: 4px;
-  background: rgba(148, 163, 184, 0.08);
 }
-.conn-badge.has-connections {
-  background: rgba(99, 102, 241, 0.14);
-  color: #a5b4fc;
-  border: 1px solid rgba(99, 102, 241, 0.25);
-}
-.conn-count {
+.conn-digit {
+  font-size: 14px;
   font-weight: 700;
+  line-height: 1;
 }
-.net-row-bottom {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  font-size: 11px;
-}
-.traffic-tag-label {
+.conn-unit-lbl {
+  font-size: 9px;
   color: var(--sb-muted);
-}
-.traffic-tag-val {
-  color: var(--sb-text-2);
+  margin-top: 1px;
 }
 
-/* ── 三网延迟与线路质量 ─────────────────────────────────── */
-.latency-section {
+/* 5. 三网延迟与线路质量舱 (Latency & Route Bay) ────────── */
+.latency-route-bay {
   padding: 8px 10px;
-  background: rgba(14, 21, 37, 0.5);
-  border: 1px solid rgba(148, 163, 184, 0.08);
+  background: rgba(0, 0, 0, 0.25);
+  border: 1px solid rgba(255, 255, 255, 0.05);
   border-radius: 8px;
   margin-bottom: 10px;
+  transition: all 0.2s;
 }
-.latency-badges-row {
+.latency-route-bay.is-blocked {
+  border-color: rgba(244, 63, 94, 0.3);
+  background: rgba(244, 63, 94, 0.06);
+}
+
+/* GFW 阻断警示横幅 */
+.gfw-banner {
   display: flex;
   align-items: center;
-  gap: 6px;
-  margin-bottom: 4px;
+  gap: 8px;
+  padding: 5px 8px;
+  border-radius: 6px;
+  background: rgba(244, 63, 94, 0.18);
+  border: 1px solid rgba(244, 63, 94, 0.4);
+  margin-bottom: 8px;
 }
-.ping-pill {
-  flex: 1;
-  display: inline-flex;
+.gfw-alert-flare {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #f43f5e;
+  box-shadow: 0 0 6px #f43f5e;
+  animation: pulseGfw 1.5s infinite;
+  flex-shrink: 0;
+}
+@keyframes pulseGfw {
+  0% { transform: scale(0.9); opacity: 1; }
+  50% { transform: scale(1.6); opacity: 0.3; }
+  100% { transform: scale(0.9); opacity: 1; }
+}
+.gfw-banner-text {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  overflow: hidden;
+}
+.gfw-banner-main {
+  font-size: 11px;
+  font-weight: 700;
+  color: #fb7185;
+  white-space: nowrap;
+}
+.gfw-banner-note {
+  font-size: 10px;
+  color: var(--sb-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.latency-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 6px;
+  margin-bottom: 6px;
+}
+.isp-pill {
+  display: flex;
   align-items: center;
   justify-content: center;
   gap: 4px;
   padding: 3px 5px;
   border-radius: 5px;
   font-size: 11px;
+  background: rgba(255, 255, 255, 0.025);
+  border: 1px solid rgba(255, 255, 255, 0.06);
   white-space: nowrap;
-  background: rgba(15, 23, 42, 0.8);
-  border: 1px solid rgba(148, 163, 184, 0.15);
-  transition: all 0.2s;
+  transition: all 0.15s;
 }
 .isp-dot {
   width: 5px;
   height: 5px;
   border-radius: 50%;
+  flex-shrink: 0;
 }
-.isp-dot.mobile { background: #10b981; }
-.isp-dot.unicom { background: #f59e0b; }
-.isp-dot.telecom { background: #3b82f6; }
-.isp-name {
-  color: var(--sb-muted);
+.isp-dot.mobile-dot { background: #10b981; }
+.isp-dot.unicom-dot { background: #f59e0b; }
+.isp-dot.telecom-dot { background: #3b82f6; }
+.isp-title {
   font-size: 10px;
+  color: var(--sb-muted);
 }
-.isp-val {
+.isp-ms {
   font-weight: 600;
 }
 
-/* 延迟状态颜色阶梯 */
-.ping-status-fast {
-  border-color: rgba(16, 185, 129, 0.35);
-  color: #34d399;
-}
-.ping-status-medium {
-  border-color: rgba(245, 158, 11, 0.35);
-  color: #fbbf24;
-}
-.ping-status-slow {
-  border-color: rgba(148, 163, 184, 0.25);
-  color: #94a3b8;
-}
-.ping-status-timeout {
-  border-color: rgba(251, 113, 133, 0.35);
-  color: #fb7185;
-}
+.ping-status-fast { border-color: rgba(16, 185, 129, 0.35); color: #34d399; }
+.ping-status-medium { border-color: rgba(245, 158, 11, 0.35); color: #fbbf24; }
+.ping-status-slow { border-color: rgba(148, 163, 184, 0.25); color: #94a3b8; }
+.ping-status-timeout, .isp-pill.is-timeout { border-color: rgba(244, 63, 94, 0.4); color: #fb7185; }
 
 .routes-row {
   display: flex;
   flex-wrap: wrap;
   gap: 4px;
-  margin-top: 4px;
 }
-.route-badge {
+.route-tag {
   font-size: 10px;
-  padding: 1px 6px;
-  border-radius: 3px;
+  padding: 2px 6px;
+  border-radius: 4px;
   font-weight: 600;
-  line-height: 14px;
+  line-height: 1;
   white-space: nowrap;
 }
-.route-premium {
+.route-tag.tag-gold {
   background: rgba(245, 158, 11, 0.16);
   color: #fbbf24;
-  border: 1px solid rgba(245, 158, 11, 0.35);
-  box-shadow: 0 0 6px rgba(245, 158, 11, 0.2);
+  border: 1px solid rgba(245, 158, 11, 0.38);
+  box-shadow: 0 0 8px rgba(245, 158, 11, 0.2);
 }
-.route-normal {
-  background: rgba(148, 163, 184, 0.1);
+.route-tag.tag-muted {
+  background: rgba(255, 255, 255, 0.04);
   color: #94a3b8;
-  border: 1px solid rgba(148, 163, 184, 0.2);
+  border: 1px solid rgba(255, 255, 255, 0.08);
 }
-.latency-empty-row {
+.route-tag.tag-danger {
+  background: rgba(244, 63, 94, 0.18);
+  color: #fb7185;
+  border: 1px solid rgba(244, 63, 94, 0.4);
+  font-weight: 700;
+}
+.route-tag.tag-verified {
+  background: rgba(52, 211, 153, 0.12);
+  color: #34d399;
+  border: 1px solid rgba(52, 211, 153, 0.25);
+}
+
+.speedtest-empty {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  font-size: 12px;
+  font-size: 11px;
+  padding: 2px 0;
+}
+.btn-inline-probe {
+  background: rgba(56, 189, 248, 0.12);
+  border: 1px solid rgba(56, 189, 248, 0.3);
+  color: #38bdf8;
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-size: 11px;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+.btn-inline-probe:hover {
+  background: rgba(56, 189, 248, 0.22);
 }
 
-/* ── 测绘防御状态条 ─────────────────────────────────────── */
-.card-defense-bar {
+/* 6. 主动测绘防御精工条 (Defense Strip) ─────────────── */
+.defense-strip {
   display: flex;
   align-items: center;
   justify-content: space-between;
   padding: 6px 10px;
-  background: rgba(8, 13, 23, 0.5);
-  border: 1px solid rgba(148, 163, 184, 0.08);
+  background: rgba(0, 0, 0, 0.2);
+  border: 1px solid rgba(255, 255, 255, 0.04);
   border-radius: 6px;
   margin-bottom: 12px;
 }
-.defense-label-box {
+.defense-meta {
   display: flex;
   align-items: center;
+  gap: 7px;
+}
+.shield-badge {
+  width: 20px;
+  height: 20px;
+  border-radius: 4px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--sb-muted);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+}
+.shield-badge.is-active {
+  background: rgba(56, 189, 248, 0.15);
+  color: #38bdf8;
+  border-color: rgba(56, 189, 248, 0.35);
+  box-shadow: 0 0 6px rgba(56, 189, 248, 0.25);
+}
+.shield-svg {
+  width: 12px;
+  height: 12px;
+}
+.defense-copy {
+  display: flex;
+  align-items: baseline;
   gap: 6px;
-  font-size: 12px;
 }
-.shield-dot {
-  width: 7px;
-  height: 7px;
-  border-radius: 50%;
-  background: #64748b;
-}
-.shield-dot.active {
-  background: #38bdf8;
-  box-shadow: 0 0 6px rgba(56, 189, 248, 0.8);
-}
-.defense-title {
+.defense-name {
+  font-size: 11px;
   font-weight: 600;
   color: var(--sb-text-2);
 }
-.defense-status-text {
-  font-size: 11px;
+.defense-subtext {
+  font-size: 10px;
   color: var(--sb-muted);
 }
 
-/* ── 卡片底栏与动作 ─────────────────────────────────────── */
-.card-footer {
+/* 7. 卡片底栏 (Card Bottom Bar) ───────────────────────── */
+.card-bottom-bar {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 8px;
-  padding-top: 8px;
-  border-top: 1px solid rgba(148, 163, 184, 0.08);
+  padding-top: 9px;
+  border-top: 1px solid rgba(255, 255, 255, 0.05);
   margin-top: auto;
 }
-.last-seen-text {
+.bottom-last-seen {
   display: flex;
   align-items: center;
   gap: 4px;
   font-size: 11px;
   color: var(--sb-muted);
+  opacity: 0.8;
 }
-.card-footer-actions {
+.seen-label {
+  opacity: 0.7;
+}
+.bottom-actions {
   display: flex;
   align-items: center;
   gap: 6px;
 }
-.card-act-btn {
-  background: rgba(148, 163, 184, 0.08) !important;
-  border: 1px solid rgba(148, 163, 184, 0.16) !important;
-  color: var(--sb-text-2) !important;
-  border-radius: 6px !important;
-  padding: 4px 8px !important;
-  font-size: 11px !important;
-  height: 26px !important;
-  transition: all 0.2s !important;
+.glass-act-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 10px;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 6px;
+  color: var(--sb-text-2);
+  font-size: 11px;
+  cursor: pointer;
+  transition: all 0.15s cubic-bezier(0.4, 0, 0.2, 1);
 }
-.card-act-btn:hover {
-  background: var(--sb-accent-soft) !important;
-  border-color: rgba(56, 189, 248, 0.4) !important;
-  color: var(--sb-accent) !important;
+.glass-act-btn:hover {
+  background: rgba(56, 189, 248, 0.15);
+  border-color: rgba(56, 189, 248, 0.4);
+  color: #38bdf8;
+  transform: translateY(-1px);
+}
+.glass-act-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
 }
 
-/* ── 卡片分页条 ─────────────────────────────────────────── */
+/* ── 列表表格与辅助 ─────────────────────────────────────── */
 .cards-pagination-bar {
   display: flex;
   justify-content: center;
   margin-top: 16px;
   margin-bottom: 30px;
 }
-
-/* ── 列表表格模式补充样式 ───────────────────────────────── */
 .table-hw-stack {
   display: flex;
   flex-direction: column;

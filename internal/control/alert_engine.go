@@ -668,7 +668,13 @@ func (e *AlertEngine) NotifySpeedtestReport(nodeName string, st NodeSpeedtest) {
 	}
 
 	title := fmt.Sprintf("⚡ [三网延迟与线路] %s 巡检报告", nodeName)
+	sound := "telegraph.caf"
 	var lines []string
+	if st.GFWBlocked {
+		title = fmt.Sprintf("🚨 [GFW 阻断警报] %s 疑似被墙！", nodeName)
+		sound = "alarm.caf"
+		lines = append(lines, fmt.Sprintf("⚠️ 该节点公网端口国内探针全部超时 (疑似被 GFW 阻断, 来源: %s)", st.DomesticSource))
+	}
 	if st.TelecomRoute != "" {
 		lines = append(lines, fmt.Sprintf("• 电信线路: %d ms (%s)", st.TelecomLatencyMs, st.TelecomRoute))
 	} else if st.TelecomLatencyMs > 0 {
@@ -687,5 +693,5 @@ func (e *AlertEngine) NotifySpeedtestReport(nodeName string, st NodeSpeedtest) {
 	lines = append(lines, fmt.Sprintf("🕒 检测时间: %s", NowAlertTime()))
 
 	body := strings.Join(lines, "\n")
-	e.sendAlert(context.Background(), title, body, "Polaris-巡检报告", "active", "telegraph.caf", "")
+	e.sendAlert(context.Background(), title, body, "Polaris-巡检报告", "active", sound, "")
 }

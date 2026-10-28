@@ -491,9 +491,51 @@ func (s *Server) ExecuteNodeSpeedtest(ctx context.Context, nodeID string) (*Node
 		return nil, errors.New("服务器当前处于离线状态，无法进行检测")
 	}
 
-	data, err := s.AskNode(ctx, nodeID, "speedtest.run", "{}")
-	if err != nil {
-		return nil, fmt.Errorf("执行三网检测任务失败: %w", err)
+	targetHost := strings.TrimSpace(node.ClientAddress)
+	targetPort := uint16(443)
+	if targetHost != "" {
+		listeners, err := s.store.ListListeners(ctx, node.ID)
+		if err == nil && len(listeners) > 0 {
+			for _, l := range listeners {
+				if l.Enabled && l.Port > 0 {
+					targetPort = l.Port
+					break
+				}
+			}
+		}
+	}
+
+	type agentResult struct {
+		data string
+		err  error
+	}
+	type probeResult struct {
+		item ProbeResultItem
+		has  bool
+	}
+
+	agentCh := make(chan agentResult, 1)
+	probeCh := make(chan probeResult, 1)
+
+	// 并发执行 A：海外 Agent 测三大运营商出站回程与 BGP 路由
+	go func() {
+		data, err := s.AskNode(ctx, nodeID, "speedtest.run", "{}")
+		agentCh <- agentResult{data: data, err: err}
+	}()
+
+	// 并发执行 B：国内大陆真实探针针对目标公网地址及服务端口发起真实入站 TCP 握手测墙
+	go func() {
+		if targetHost != "" {
+			item := s.probeSingleNode(ctx, node, targetHost, targetPort)
+			probeCh <- probeResult{item: item, has: true}
+		} else {
+			probeCh <- probeResult{has: false}
+		}
+	}()
+
+	resA := <-agentCh
+	if resA.err != nil {
+		return nil, fmt.Errorf("执行三网检测任务失败: %w", resA.err)
 	}
 
 	var res struct {
@@ -507,9 +549,11 @@ func (s *Server) ExecuteNodeSpeedtest(ctx context.Context, nodeID string) (*Node
 		MobileSpeedMbps  float64 `json:"mobile_speed_mbps"`
 		MobileRoute      string  `json:"mobile_route"`
 	}
-	if err := json.Unmarshal([]byte(data), &res); err != nil {
+	if err := json.Unmarshal([]byte(resA.data), &res); err != nil {
 		return nil, fmt.Errorf("解析检测数据失败: %w", err)
 	}
+
+	resB := <-probeCh
 
 	st := NodeSpeedtest{
 		NodeID:           nodeID,
@@ -522,6 +566,27 @@ func (s *Server) ExecuteNodeSpeedtest(ctx context.Context, nodeID string) (*Node
 		MobileLatencyMs:  res.MobileLatencyMs,
 		MobileSpeedMbps:  res.MobileSpeedMbps,
 		MobileRoute:      res.MobileRoute,
+	}
+
+	if resB.has {
+		// 海外公网端口开放，但国内所有探针 TCP 握手均超时或被重置 -> 确系被 GFW 阻断封锁！
+		if !resB.item.DomesticOK {
+			st.GFWBlocked = true
+			st.GFWStatus = "blocked"
+			st.DomesticSource = resB.item.ProbeSource
+			// 既然国内到 VPS 已被 GFW 阻断，出站数据对国内客户端已无参考价值，置为 0（超时），线路标记为 GFW 阻断
+			st.TelecomLatencyMs = 0
+			st.UnicomLatencyMs = 0
+			st.MobileLatencyMs = 0
+			st.TelecomRoute = "GFW 阻断"
+			st.UnicomRoute = "GFW 阻断"
+			st.MobileRoute = "GFW 阻断"
+		} else {
+			st.GFWBlocked = false
+			st.GFWStatus = "normal"
+			st.DomesticLatency = resB.item.LatencyMs
+			st.DomesticSource = resB.item.ProbeSource
+		}
 	}
 
 	if err := s.store.SaveNodeSpeedtest(ctx, st); err != nil {

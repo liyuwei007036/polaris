@@ -47,6 +47,10 @@ type NodeSpeedtest struct {
 	MobileLatencyMs  int     `json:"mobile_latency_ms"`
 	MobileSpeedMbps  float64 `json:"mobile_speed_mbps"`
 	MobileRoute      string  `json:"mobile_route"`
+	GFWBlocked       bool    `json:"gfw_blocked"`
+	GFWStatus        string  `json:"gfw_status"`
+	DomesticLatency  int     `json:"domestic_latency_ms"`
+	DomesticSource   string  `json:"domestic_source"`
 	TestedAt         string  `json:"tested_at"`
 }
 
@@ -233,11 +237,15 @@ func (s *Store) SaveNodeSpeedtest(ctx context.Context, st NodeSpeedtest) error {
 	_, err := s.db.ExecContext(ctx, `INSERT INTO node_speedtests (
 		id, node_id, telecom_latency_ms, telecom_speed_mbps, telecom_route,
 		unicom_latency_ms, unicom_speed_mbps, unicom_route,
-		mobile_latency_ms, mobile_speed_mbps, mobile_route, tested_at
-	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		mobile_latency_ms, mobile_speed_mbps, mobile_route,
+		gfw_blocked, gfw_status, domestic_latency_ms, domestic_source,
+		tested_at
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		st.ID, st.NodeID, st.TelecomLatencyMs, st.TelecomSpeedMbps, st.TelecomRoute,
 		st.UnicomLatencyMs, st.UnicomSpeedMbps, st.UnicomRoute,
-		st.MobileLatencyMs, st.MobileSpeedMbps, st.MobileRoute, now)
+		st.MobileLatencyMs, st.MobileSpeedMbps, st.MobileRoute,
+		boolToInt(st.GFWBlocked), st.GFWStatus, st.DomesticLatency, st.DomesticSource,
+		now)
 	if err != nil {
 		return fmt.Errorf("save node speedtest: %w", err)
 	}
@@ -246,13 +254,19 @@ func (s *Store) SaveNodeSpeedtest(ctx context.Context, st NodeSpeedtest) error {
 
 func (s *Store) GetLatestNodeSpeedtest(ctx context.Context, nodeID string) (*NodeSpeedtest, error) {
 	row := s.db.QueryRowContext(ctx, `SELECT id, node_id, telecom_latency_ms, telecom_speed_mbps, telecom_route,
-		unicom_latency_ms, unicom_speed_mbps, unicom_route, mobile_latency_ms, mobile_speed_mbps, mobile_route, tested_at
+		unicom_latency_ms, unicom_speed_mbps, unicom_route, mobile_latency_ms, mobile_speed_mbps, mobile_route,
+		COALESCE(gfw_blocked, 0), COALESCE(gfw_status, ''), COALESCE(domestic_latency_ms, 0), COALESCE(domestic_source, ''),
+		tested_at
 		FROM node_speedtests WHERE node_id = ? ORDER BY tested_at DESC LIMIT 1`, nodeID)
 	var st NodeSpeedtest
 	var testedAt int64
+	var gfwBlockedInt int
 	err := row.Scan(&st.ID, &st.NodeID, &st.TelecomLatencyMs, &st.TelecomSpeedMbps, &st.TelecomRoute,
 		&st.UnicomLatencyMs, &st.UnicomSpeedMbps, &st.UnicomRoute,
-		&st.MobileLatencyMs, &st.MobileSpeedMbps, &st.MobileRoute, &testedAt)
+		&st.MobileLatencyMs, &st.MobileSpeedMbps, &st.MobileRoute,
+		&gfwBlockedInt, &st.GFWStatus, &st.DomesticLatency, &st.DomesticSource,
+		&testedAt)
+	st.GFWBlocked = gfwBlockedInt != 0
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
@@ -266,7 +280,9 @@ func (s *Store) GetLatestNodeSpeedtest(ctx context.Context, nodeID string) (*Nod
 func (s *Store) ListLatestNodeSpeedtests(ctx context.Context) (map[string]NodeSpeedtest, error) {
 	// Query the most recent test for each node using window function or group by
 	rows, err := s.db.QueryContext(ctx, `SELECT s1.id, s1.node_id, s1.telecom_latency_ms, s1.telecom_speed_mbps, s1.telecom_route,
-		s1.unicom_latency_ms, s1.unicom_speed_mbps, s1.unicom_route, s1.mobile_latency_ms, s1.mobile_speed_mbps, s1.mobile_route, s1.tested_at
+		s1.unicom_latency_ms, s1.unicom_speed_mbps, s1.unicom_route, s1.mobile_latency_ms, s1.mobile_speed_mbps, s1.mobile_route,
+		COALESCE(s1.gfw_blocked, 0), COALESCE(s1.gfw_status, ''), COALESCE(s1.domestic_latency_ms, 0), COALESCE(s1.domestic_source, ''),
+		s1.tested_at
 		FROM node_speedtests s1
 		JOIN (
 			SELECT node_id, MAX(tested_at) as max_tested FROM node_speedtests GROUP BY node_id
@@ -280,11 +296,15 @@ func (s *Store) ListLatestNodeSpeedtests(ctx context.Context) (map[string]NodeSp
 	for rows.Next() {
 		var st NodeSpeedtest
 		var testedAt int64
+		var gfwBlockedInt int
 		if err := rows.Scan(&st.ID, &st.NodeID, &st.TelecomLatencyMs, &st.TelecomSpeedMbps, &st.TelecomRoute,
 			&st.UnicomLatencyMs, &st.UnicomSpeedMbps, &st.UnicomRoute,
-			&st.MobileLatencyMs, &st.MobileSpeedMbps, &st.MobileRoute, &testedAt); err != nil {
+			&st.MobileLatencyMs, &st.MobileSpeedMbps, &st.MobileRoute,
+			&gfwBlockedInt, &st.GFWStatus, &st.DomesticLatency, &st.DomesticSource,
+			&testedAt); err != nil {
 			return nil, err
 		}
+		st.GFWBlocked = gfwBlockedInt != 0
 		st.TestedAt = time.Unix(testedAt, 0).UTC().Format(time.RFC3339)
 		out[st.NodeID] = st
 	}
