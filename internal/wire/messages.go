@@ -104,6 +104,16 @@ type Status struct {
 	SingBoxService    string
 	ClashAPIAvailable bool
 	TrafficAvailable  bool
+
+	// Host system resource monitoring
+	HasHostTotals bool
+	CPUPercent    float64
+	MemoryTotal   uint64
+	MemoryUsed    uint64
+	DiskTotal     uint64
+	DiskUsed      uint64
+	UptimeSeconds uint64
+
 	// Network protection is deliberately not part of the heartbeat: the console
 	// asks a node for its firewall and jails at the moment it shows them, so it
 	// can never present a rule that has since been changed on the server.

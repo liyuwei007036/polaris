@@ -30,6 +30,15 @@ type Status struct {
 // MetricReport deliberately separates host-interface counters from
 // protocol-level measurements. Unavailable fields remain absent instead of
 // being estimated from unrelated traffic.
+type HostResources struct {
+	CPUPercent    float64 `json:"cpu_percent"`
+	MemoryTotal   uint64  `json:"memory_total"`
+	MemoryUsed    uint64  `json:"memory_used"`
+	DiskTotal     uint64  `json:"disk_total"`
+	DiskUsed      uint64  `json:"disk_used"`
+	UptimeSeconds uint64  `json:"uptime_seconds,omitempty"`
+}
+
 type MetricReport struct {
 	CollectedAt string            `json:"collected_at"`
 	Node        map[string]uint64 `json:"node,omitempty"`
@@ -39,6 +48,7 @@ type MetricReport struct {
 	Capabilities map[string]MetricCapability `json:"capabilities"`
 	Connections  []ConnectionInfo            `json:"connections,omitempty"`
 	Health       NodeHealth                  `json:"health"`
+	Host         *HostResources              `json:"host,omitempty"`
 }
 
 type NodeHealth struct {
@@ -415,6 +425,15 @@ func toWireStatus(local Status) wire.Status {
 		st.HasProxyTotals = true
 		st.ProxyReceivedBytes = local.Metrics.Proxy["received_bytes"]
 		st.ProxySentBytes = local.Metrics.Proxy["sent_bytes"]
+	}
+	if local.Metrics.Host != nil {
+		st.HasHostTotals = true
+		st.CPUPercent = local.Metrics.Host.CPUPercent
+		st.MemoryTotal = local.Metrics.Host.MemoryTotal
+		st.MemoryUsed = local.Metrics.Host.MemoryUsed
+		st.DiskTotal = local.Metrics.Host.DiskTotal
+		st.DiskUsed = local.Metrics.Host.DiskUsed
+		st.UptimeSeconds = local.Metrics.Host.UptimeSeconds
 	}
 	return st
 }

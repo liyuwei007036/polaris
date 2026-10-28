@@ -54,6 +54,9 @@ func CollectMetrics() MetricReport {
 	// Network protection is deliberately absent from the heartbeat. It is read
 	// from the host on demand instead, so the console can never show a rule
 	// that was true a minute ago but is not in force now.
+	if hostRes, ok := CollectHostResources(); ok {
+		report.Host = &hostRes
+	}
 	received, sent, ok := NodeTrafficCounters()
 	if !ok {
 		return report

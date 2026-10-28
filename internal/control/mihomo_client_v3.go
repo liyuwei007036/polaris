@@ -8,6 +8,8 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
+	"regexp"
+	"strconv"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -1346,5 +1348,90 @@ func (s *Store) generateMihomoClientYAML(ctx context.Context, config MihomoClien
 	if err := encoder.Close(); err != nil {
 		return "", fmt.Errorf("encode Mihomo subscription: %w", err)
 	}
-	return builder.String(), nil
+	return sanitizeMihomoYAML(builder.String()), nil
+}
+
+var yamlUnicodeEscapePattern = regexp.MustCompile(`(\\+)(?:U([0-9a-fA-F]{8})|u([0-9a-fA-F]{4}))`)
+
+func unescapeYAMLUnicode(raw string) string {
+	return yamlUnicodeEscapePattern.ReplaceAllStringFunc(raw, func(match string) string {
+		sub := yamlUnicodeEscapePattern.FindStringSubmatch(match)
+		if len(sub) < 2 {
+			return match
+		}
+		slashes := sub[1]
+		if len(slashes)%2 == 0 {
+			return match
+		}
+		hexStr := sub[2]
+		if hexStr == "" {
+			hexStr = sub[3]
+		}
+		val, err := strconv.ParseInt(hexStr, 16, 32)
+		if err != nil {
+			return match
+		}
+		return strings.Repeat("\\", (len(slashes)-1)/2) + string(rune(val))
+	})
+}
+
+func canSafelyUnquoteYAMLString(s string) bool {
+	if s == "" {
+		return false
+	}
+	if s[0] == ' ' || s[len(s)-1] == ' ' {
+		return false
+	}
+	if strings.ContainsAny(s, "\r\n\"\\") {
+		return false
+	}
+	switch s[0] {
+	case '-', '?', ':', '[', ']', '{', '}', '#', '&', '*', '!', '|', '>', '\'', '"', '%', '@', '`':
+		return false
+	}
+	if strings.Contains(s, ": ") || strings.Contains(s, " #") {
+		return false
+	}
+	lower := strings.ToLower(s)
+	switch lower {
+	case "true", "false", "yes", "no", "on", "off", "null", "~":
+		return false
+	}
+	if _, err := strconv.ParseFloat(s, 64); err == nil {
+		return false
+	}
+	return true
+}
+
+func sanitizeMihomoYAML(raw string) string {
+	unescaped := unescapeYAMLUnicode(raw)
+	lines := strings.Split(unescaped, "\n")
+	for i, line := range lines {
+		hasCR := strings.HasSuffix(line, "\r")
+		trimmed := strings.TrimRight(line, "\r")
+		if strings.HasSuffix(trimmed, `"`) {
+			if idx := strings.Index(trimmed, `- "`); idx != -1 {
+				prefix := trimmed[:idx+2]
+				content := trimmed[idx+3 : len(trimmed)-1]
+				if canSafelyUnquoteYAMLString(content) {
+					if hasCR {
+						lines[i] = prefix + content + "\r"
+					} else {
+						lines[i] = prefix + content
+					}
+				}
+			} else if idx := strings.Index(trimmed, `: "`); idx != -1 {
+				prefix := trimmed[:idx+2]
+				content := trimmed[idx+3 : len(trimmed)-1]
+				if canSafelyUnquoteYAMLString(content) {
+					if hasCR {
+						lines[i] = prefix + content + "\r"
+					} else {
+						lines[i] = prefix + content
+					}
+				}
+			}
+		}
+	}
+	return strings.Join(lines, "\n")
 }

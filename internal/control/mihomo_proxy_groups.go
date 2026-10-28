@@ -286,7 +286,7 @@ func (s *Store) validateMihomoProxyGroupClients(ctx context.Context, candidate M
 				action = candidate.Name
 			}
 			if !actions[strings.ToUpper(action)] {
-				return fmt.Errorf("proxy group update would invalidate rule action %q in client config %q", rule.Action, item.name)
+				return userErrorf("修改该代理分组会导致客户端订阅“%s”中的规则动作“%s”失效，请先调整该订阅的访问规则", item.name, rule.Action)
 			}
 		}
 		for _, provider := range rules.RuleProviders {
@@ -295,7 +295,7 @@ func (s *Store) validateMihomoProxyGroupClients(ctx context.Context, candidate M
 				proxy = candidate.Name
 			}
 			if !actions[strings.ToUpper(proxy)] || strings.EqualFold(proxy, "REJECT") {
-				return fmt.Errorf("proxy group update would invalidate rule provider proxy %q in client config %q", provider.Proxy, item.name)
+				return userErrorf("修改该代理分组会导致客户端订阅“%s”中规则集使用的代理“%s”失效，请先调整相关配置", item.name, provider.Proxy)
 			}
 		}
 	}

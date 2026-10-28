@@ -2760,7 +2760,12 @@ func writeError(w http.ResponseWriter, err error) {
 	case errors.Is(err, ErrForbidden):
 		status, message = http.StatusForbidden, "permission denied"
 	case errors.Is(err, ErrNotFound):
-		status, message = http.StatusNotFound, "not found"
+		status = http.StatusNotFound
+		if errors.As(err, &visibleError) {
+			message = visibleError.Error()
+		} else {
+			message = "not found"
+		}
 	case errors.Is(err, ErrConflict):
 		status = http.StatusConflict
 		if errors.As(err, &visibleError) {
@@ -2770,6 +2775,10 @@ func writeError(w http.ResponseWriter, err error) {
 		}
 	case errors.As(err, &visibleError):
 		message = visibleError.Error()
+	default:
+		if containsChinese(err.Error()) {
+			message = err.Error()
+		}
 	}
 	writeJSON(w, status, map[string]string{"error": message})
 }
@@ -2797,3 +2806,12 @@ func deduplicateStrings(values []string) []string {
 	return result
 }
 
+
+func containsChinese(s string) bool {
+	for _, r := range s {
+		if r >= 0x4e00 && r <= 0x9fff {
+			return true
+		}
+	}
+	return false
+}

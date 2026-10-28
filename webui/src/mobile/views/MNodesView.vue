@@ -194,14 +194,25 @@ const details = computed(() => {
   const node = actionTarget.value
   if (!node) return []
   const proxy = metrics.value[node.id]?.proxy
-  return [
+  const host = metrics.value[node.id]?.host
+  const items = [
     { label: '运行状态', value: node.online ? '在线' : '离线' },
     { label: '连接地址', value: node.client_address || '未配置，客户端拿不到节点链接', mono: Boolean(node.client_address) },
     { label: '系统', value: [node.os, node.architecture].filter(Boolean).join(' · ') || '—' },
-    { label: '版本', value: `agent ${node.agent_version || '—'} · sing-box ${node.sing_box_version || '—'}` },
-    { label: '累计流量', value: proxy ? `↓ ${formatBytes(proxy.received_bytes)} · ↑ ${formatBytes(proxy.sent_bytes)}` : '等待上报' },
-    { label: '最后在线', value: formatDateTime(node.last_seen_at, '从未在线') },
+    { label: '版本', value: 'agent ' + (node.agent_version || '—') + ' · sing-box ' + (node.sing_box_version || '—') },
   ]
+  if (host) {
+    items.push(
+      { label: 'CPU 负载', value: (host.cpu_percent != null ? host.cpu_percent.toFixed(1) + '%' : '—') },
+      { label: '内存占用', value: formatBytes(host.memory_used) + ' / ' + formatBytes(host.memory_total) },
+      { label: '硬盘占用', value: formatBytes(host.disk_used) + ' / ' + formatBytes(host.disk_total) },
+    )
+  }
+  items.push(
+    { label: '累计流量', value: proxy ? '↓ ' + formatBytes(proxy.received_bytes) + ' · ↑ ' + formatBytes(proxy.sent_bytes) : '等待上报' },
+    { label: '最后在线', value: formatDateTime(node.last_seen_at, '从未在线') },
+  )
+  return items
 })
 
 const actions = computed(() => {

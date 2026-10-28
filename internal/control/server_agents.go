@@ -319,6 +319,16 @@ func (s *Server) handleAgentMessage(ctx context.Context, node Node, msgType byte
 			if st.HasProxyTotals {
 				m.Proxy, m.RawProxy = accumulateMetric(m.Proxy, m.RawProxy, st.ProxyReceivedBytes, st.ProxySentBytes)
 			}
+			if st.HasHostTotals {
+				m.Host = &HostResources{
+					CPUPercent:    st.CPUPercent,
+					MemoryTotal:   st.MemoryTotal,
+					MemoryUsed:    st.MemoryUsed,
+					DiskTotal:     st.DiskTotal,
+					DiskUsed:      st.DiskUsed,
+					UptimeSeconds: st.UptimeSeconds,
+				}
+			}
 			m.Health = &storedHealth{
 				Status: st.HealthStatus, Message: st.HealthMessage, SingBoxService: st.SingBoxService,
 				ClashAPIAvailable: st.ClashAPIAvailable, TrafficAvailable: st.TrafficAvailable,
@@ -518,6 +528,15 @@ func (s *Server) scheduleAutomaticSingBoxInstall(ctx context.Context, nodeID, ar
 // directly); it's assembled here from whichever wire message just arrived,
 // merged with whatever was already stored so a Status update doesn't erase
 // the last-known connections and vice versa.
+type HostResources struct {
+	CPUPercent    float64 `json:"cpu_percent"`
+	MemoryTotal   uint64  `json:"memory_total"`
+	MemoryUsed    uint64  `json:"memory_used"`
+	DiskTotal     uint64  `json:"disk_total"`
+	DiskUsed      uint64  `json:"disk_used"`
+	UptimeSeconds uint64  `json:"uptime_seconds,omitempty"`
+}
+
 type storedMetrics struct {
 	CollectedAt string             `json:"collected_at"`
 	Node        map[string]uint64  `json:"node,omitempty"`
@@ -526,6 +545,7 @@ type storedMetrics struct {
 	RawProxy    map[string]uint64  `json:"raw_proxy,omitempty"`
 	Connections []storedConnection `json:"connections,omitempty"`
 	Health      *storedHealth      `json:"health,omitempty"`
+	Host        *HostResources     `json:"host,omitempty"`
 }
 
 func accumulateMetric(totals map[string]uint64, rawTotals map[string]uint64, curRx, curTx uint64) (map[string]uint64, map[string]uint64) {
