@@ -56,7 +56,7 @@ function switchViewMode(mode) {
 
 const keyword = ref('')
 const statusFilter = ref('') // '' | 'online' | 'offline' | 'blocked'
-const sortBy = ref('last_seen')
+const sortBy = ref('name')
 
 const tokenDialog = ref(false)
 const token = ref('')
@@ -102,9 +102,11 @@ const filteredNodes = computed(() => {
     )
   })
 
-  // 排序
+  // 排序 (默认按服务器名称自然序)
   list = [...list].sort((a, b) => {
-    if (sortBy.value === 'name') return a.name.localeCompare(b.name)
+    if (sortBy.value === 'name') {
+      return (a.name || '').localeCompare(b.name || '', 'zh-Hans-CN', { numeric: true, sensitivity: 'base' })
+    }
     if (sortBy.value === 'conn') {
       const connA = live.value.get(a.id)?.connection_count || 0
       const connB = live.value.get(b.id)?.connection_count || 0
@@ -120,7 +122,7 @@ const filteredNodes = computed(() => {
       const memB = getResourcePercent(metrics.value[b.id]?.host?.memory_used, metrics.value[b.id]?.host?.memory_total)
       return memB - memA
     }
-    // 默认按在线优先及最后活跃时间倒序
+    // 活跃优先：在线优先及最后活跃时间倒序
     if (a.online !== b.online) return a.online ? -1 : 1
     return (b.last_seen_at || '').localeCompare(a.last_seen_at || '')
   })
@@ -279,20 +281,24 @@ function getInboundCarrierTooltip(st, isp) {
   let ispName = ''
   let route = ''
   let ping = 0
+  let probeCity = ''
   if (isp === 'mobile') {
     ispName = '中国移动'
     route = st.inbound_mobile_route || '移动 CMI'
     ping = st.inbound_mobile_latency_ms
+    probeCity = '昆明/广州骨干'
   } else if (isp === 'unicom') {
     ispName = '中国联通'
     route = st.inbound_unicom_route || '联通 4837'
     ping = st.inbound_unicom_latency_ms
+    probeCity = '武汉/北京骨干'
   } else if (isp === 'telecom') {
     ispName = '中国电信'
     route = st.inbound_telecom_route || '电信 163 骨干'
     ping = st.inbound_telecom_latency_ms
+    probeCity = '南京/上海骨干'
   }
-  return `【${ispName} 去程路由 (大陆 → 节点)】\n线路类型: ${route}\n去程延迟: ${ping ? ping + 'ms' : '正常通行'}\n探针网络: 国内真实探针向该服务器公网端口发起的 TCP 追踪`
+  return `【${ispName} 去程 (大陆 → 节点)】\n线路: ${route}\n延迟: ${ping ? ping + 'ms' : '正常通行'}\n端点: 大陆 (${probeCity}) → 节点公网`
 }
 
 function getISPTooltip(st, isp) {
@@ -300,20 +306,24 @@ function getISPTooltip(st, isp) {
   let ispName = ''
   let route = ''
   let ping = 0
+  let targetNode = ''
   if (isp === 'mobile') {
     ispName = '中国移动'
     route = st.mobile_route || '标准直连'
     ping = st.mobile_latency_ms ?? st.mobile_ping_ms
+    targetNode = '广州移动 (120.196.165.24)'
   } else if (isp === 'unicom') {
     ispName = '中国联通'
     route = st.unicom_route || '标准直连'
     ping = st.unicom_latency_ms ?? st.unicom_ping_ms
+    targetNode = '上海联通 (210.22.97.1)'
   } else if (isp === 'telecom') {
     ispName = '中国电信'
     route = st.telecom_route || '标准直连'
     ping = st.telecom_latency_ms ?? st.telecom_ping_ms
+    targetNode = '上海电信 (202.96.209.133)'
   }
-  return `【${ispName} 回程路由 (节点 → 大陆)】\n线路类型: ${route}\n回程延迟: ${ping ? ping + 'ms' : '超时'}\n测试端点: 骨干权威核心 DNS/POP (TCP握手)`
+  return `【${ispName} 返程 (节点 → 大陆)】\n线路: ${route}\n延迟: ${ping ? ping + 'ms' : '超时'}\n端点: 节点公网 → 大陆 (${targetNode})`
 }
 
 function getInboundSummary(st) {
@@ -334,9 +344,9 @@ function getInboundSummary(st) {
 function getInboundProbeTooltip(st) {
   if (!st) return ''
   if (isNodeGFWBlocked(st)) {
-    return `【去程连通性诊断 (国内探针 → 节点端口)】\n探针网络: ${st.domestic_source || '国内6探针全部超时'}\n诊断结果: 🚨 GFW 阻断 (国内多地发起的入站 TCP 握手均超时或被丢弃)\n说明: 大陆境内无法直连该节点端口，但海外节点本身回程出站不受影响。`
+    return `【去程连通性诊断】\n探针: ${st.domestic_source || '国内6探针全部超时'}\n状态: 🚨 GFW 阻断 (国内发起的 TCP 握手均超时丢弃)`
   }
-  return `【去程连通性诊断 (国内探针 → 节点端口)】\n探针明细: ${st.domestic_source || '国内多地探针'}\n入站延迟: ${st.domestic_latency_ms ? st.domestic_latency_ms + 'ms' : '正常通行'}\n说明: 从国内多地真实探针向该服务器公网端口发起的 TCP 握手测速。`
+  return `【去程连通性诊断】\n探针: ${st.domestic_source || '国内多地探针'}\n延迟: ${st.domestic_latency_ms ? st.domestic_latency_ms + 'ms' : '正常通行'}`
 }
 
 function formatRouteSimple(route) {
@@ -352,6 +362,16 @@ function formatRouteSimple(route) {
   if (route.includes('BGP')) return 'BGP'
   const clean = route.replace(/中国|电信|联通|移动|骨干|普通/g, '').trim()
   return clean || '直连'
+}
+
+function formatCarrierDisplay(route, latencyMs) {
+  const isTimeout = latencyMs == null || latencyMs <= 0
+  const rName = formatRouteSimple(route)
+  if (isTimeout) {
+    if (!rName || rName === '直连' || rName === '超时') return '超时'
+    return `${rName} 超时`
+  }
+  return `${rName} ${latencyMs}ms`
 }
 
 function getResourcePercent(used, total) {
@@ -432,21 +452,6 @@ function getGFWDetailTooltip(st) {
   if (!st) return ''
   const probe = st.domestic_source || '国内广州/杭州多线探针'
   return `探针来源: ${probe}\n诊断结果: 国内探针发起的 TCP SYN 握手均超时或被丢弃\n状态: 端口已被长城防火墙阻断，国内客户端无法直连`
-}
-
-function getPremiumRoute(st) {
-  if (!st) return null
-  const routes = [st.telecom_route, st.unicom_route, st.mobile_route].filter(Boolean)
-  for (const r of routes) {
-    if (r.includes('CN2 GIA')) return 'CN2 GIA'
-    if (r.includes('9929')) return 'AS9929'
-    if (r.includes('CMIN2')) return 'CMIN2'
-  }
-  for (const r of routes) {
-    if (r.includes('CN2 GT')) return 'CN2 GT'
-    if (r.includes('4837')) return 'AS4837'
-  }
-  return null
 }
 
 function getUsageStatusColor(percent) {
@@ -832,8 +837,8 @@ onBeforeUnmount(() => {
           </div>
 
           <el-select v-model="sortBy" placeholder="排序方式" style="width: 140px">
-            <el-option label="默认活跃优先" value="last_seen" />
-            <el-option label="服务器名称" value="name" />
+            <el-option label="服务器名称 (默认)" value="name" />
+            <el-option label="活跃时间优先" value="last_seen" />
             <el-option label="连接数最高" value="conn" />
             <el-option label="CPU 负载最高" value="cpu" />
             <el-option label="内存占用最高" value="mem" />
@@ -1071,7 +1076,7 @@ onBeforeUnmount(() => {
             <div class="route-matrix-box" :class="{ 'is-blocked': isNodeGFWBlocked(speedtests[node.id]) }">
               <!-- 去程 Inbound -->
               <div class="route-line">
-                <span class="dir-badge in">去程</span>
+                <span class="dir-badge in" title="中国大陆发起 → 抵达本服务器">去程 (大陆 → 节点)</span>
                 <!-- GFW 阻断提示 -->
                 <div v-if="isNodeGFWBlocked(speedtests[node.id])" class="gfw-alert-capsule">
                   <span class="gfw-alert-dot" />
@@ -1084,17 +1089,17 @@ onBeforeUnmount(() => {
                 <div v-else-if="speedtests[node.id]" class="carrier-tags-flow">
                   <el-tooltip :content="getInboundCarrierTooltip(speedtests[node.id], 'telecom')" placement="top">
                     <span class="carrier-tag font-mono" :class="getPingClass(speedtests[node.id].inbound_telecom_latency_ms)">
-                      <span class="dot-carrier ct" />电: {{ formatRouteSimple(speedtests[node.id].inbound_telecom_route) }} {{ getPingStr(speedtests[node.id].inbound_telecom_latency_ms) }}
+                      <span class="dot-carrier ct" />电: {{ formatCarrierDisplay(speedtests[node.id].inbound_telecom_route, speedtests[node.id].inbound_telecom_latency_ms) }}
                     </span>
                   </el-tooltip>
                   <el-tooltip :content="getInboundCarrierTooltip(speedtests[node.id], 'unicom')" placement="top">
                     <span class="carrier-tag font-mono" :class="getPingClass(speedtests[node.id].inbound_unicom_latency_ms)">
-                      <span class="dot-carrier cu" />联: {{ formatRouteSimple(speedtests[node.id].inbound_unicom_route) }} {{ getPingStr(speedtests[node.id].inbound_unicom_latency_ms) }}
+                      <span class="dot-carrier cu" />联: {{ formatCarrierDisplay(speedtests[node.id].inbound_unicom_route, speedtests[node.id].inbound_unicom_latency_ms) }}
                     </span>
                   </el-tooltip>
                   <el-tooltip :content="getInboundCarrierTooltip(speedtests[node.id], 'mobile')" placement="top">
                     <span class="carrier-tag font-mono" :class="getPingClass(speedtests[node.id].inbound_mobile_latency_ms)">
-                      <span class="dot-carrier cm" />移: {{ formatRouteSimple(speedtests[node.id].inbound_mobile_route) }} {{ getPingStr(speedtests[node.id].inbound_mobile_latency_ms) }}
+                      <span class="dot-carrier cm" />移: {{ formatCarrierDisplay(speedtests[node.id].inbound_mobile_route, speedtests[node.id].inbound_mobile_latency_ms) }}
                     </span>
                   </el-tooltip>
                 </div>
@@ -1103,27 +1108,23 @@ onBeforeUnmount(() => {
 
               <!-- 返程 Outbound -->
               <div class="route-line">
-                <span class="dir-badge out">返程</span>
+                <span class="dir-badge out" title="本服务器发起 → 回传至中国大陆核心网关">返程 (节点 → 大陆)</span>
                 <div v-if="speedtests[node.id]" class="carrier-tags-flow">
                   <el-tooltip :content="getISPTooltip(speedtests[node.id], 'telecom')" placement="top">
                     <span class="carrier-tag font-mono" :class="getPingClass(speedtests[node.id].telecom_latency_ms)">
-                      <span class="dot-carrier ct" />电: {{ formatRouteSimple(speedtests[node.id].telecom_route) }} {{ getPingStr(speedtests[node.id].telecom_latency_ms) }}
+                      <span class="dot-carrier ct" />电: {{ formatCarrierDisplay(speedtests[node.id].telecom_route, speedtests[node.id].telecom_latency_ms) }}
                     </span>
                   </el-tooltip>
                   <el-tooltip :content="getISPTooltip(speedtests[node.id], 'unicom')" placement="top">
                     <span class="carrier-tag font-mono" :class="getPingClass(speedtests[node.id].unicom_latency_ms)">
-                      <span class="dot-carrier cu" />联: {{ formatRouteSimple(speedtests[node.id].unicom_route) }} {{ getPingStr(speedtests[node.id].unicom_latency_ms) }}
+                      <span class="dot-carrier cu" />联: {{ formatCarrierDisplay(speedtests[node.id].unicom_route, speedtests[node.id].unicom_latency_ms) }}
                     </span>
                   </el-tooltip>
                   <el-tooltip :content="getISPTooltip(speedtests[node.id], 'mobile')" placement="top">
                     <span class="carrier-tag font-mono" :class="getPingClass(speedtests[node.id].mobile_latency_ms)">
-                      <span class="dot-carrier cm" />移: {{ formatRouteSimple(speedtests[node.id].mobile_route) }} {{ getPingStr(speedtests[node.id].mobile_latency_ms) }}
+                      <span class="dot-carrier cm" />移: {{ formatCarrierDisplay(speedtests[node.id].mobile_route, speedtests[node.id].mobile_latency_ms) }}
                     </span>
                   </el-tooltip>
-                  <!-- 优选标识 -->
-                  <span v-if="getPremiumRoute(speedtests[node.id])" class="premium-star-badge font-mono">
-                    ★ {{ getPremiumRoute(speedtests[node.id]) }}
-                  </span>
                 </div>
                 <span v-else class="route-empty-hint subtle font-mono">返程待测</span>
               </div>
@@ -1229,45 +1230,45 @@ onBeforeUnmount(() => {
                 <div v-if="speedtests[row.id]" class="table-net-stack">
                   <!-- 去程行 -->
                   <div class="table-net-row">
-                    <span class="table-dir-badge in">去程</span>
+                    <span class="table-dir-badge in" title="中国大陆发起 → 抵达本服务器">去 (大陆→节点)</span>
                     <div v-if="isNodeGFWBlocked(speedtests[row.id])" class="table-gfw-text font-mono">
                       🚨 GFW 阻断 (0/6 超时)
                     </div>
                     <div v-else class="table-isp-pills">
                       <el-tooltip :content="getInboundCarrierTooltip(speedtests[row.id], 'telecom')" placement="top">
                         <span class="table-isp-pill font-mono" :class="getPingClass(speedtests[row.id].inbound_telecom_latency_ms)">
-                          电: {{ formatRouteSimple(speedtests[row.id].inbound_telecom_route) }} {{ getPingStr(speedtests[row.id].inbound_telecom_latency_ms) }}
+                          电: {{ formatCarrierDisplay(speedtests[row.id].inbound_telecom_route, speedtests[row.id].inbound_telecom_latency_ms) }}
                         </span>
                       </el-tooltip>
                       <el-tooltip :content="getInboundCarrierTooltip(speedtests[row.id], 'unicom')" placement="top">
                         <span class="table-isp-pill font-mono" :class="getPingClass(speedtests[row.id].inbound_unicom_latency_ms)">
-                          联: {{ formatRouteSimple(speedtests[row.id].inbound_unicom_route) }} {{ getPingStr(speedtests[row.id].inbound_unicom_latency_ms) }}
+                          联: {{ formatCarrierDisplay(speedtests[row.id].inbound_unicom_route, speedtests[row.id].inbound_unicom_latency_ms) }}
                         </span>
                       </el-tooltip>
                       <el-tooltip :content="getInboundCarrierTooltip(speedtests[row.id], 'mobile')" placement="top">
                         <span class="table-isp-pill font-mono" :class="getPingClass(speedtests[row.id].inbound_mobile_latency_ms)">
-                          移: {{ formatRouteSimple(speedtests[row.id].inbound_mobile_route) }} {{ getPingStr(speedtests[row.id].inbound_mobile_latency_ms) }}
+                          移: {{ formatCarrierDisplay(speedtests[row.id].inbound_mobile_route, speedtests[row.id].inbound_mobile_latency_ms) }}
                         </span>
                       </el-tooltip>
                     </div>
                   </div>
                   <!-- 返程行 -->
                   <div class="table-net-row">
-                    <span class="table-dir-badge out">返程</span>
+                    <span class="table-dir-badge out" title="本服务器发起 → 回传至中国大陆核心网关">回 (节点→大陆)</span>
                     <div class="table-isp-pills">
                       <el-tooltip :content="getISPTooltip(speedtests[row.id], 'telecom')" placement="top">
                         <span class="table-isp-pill font-mono" :class="getPingClass(speedtests[row.id].telecom_latency_ms)">
-                          电: {{ formatRouteSimple(speedtests[row.id].telecom_route) }} {{ getPingStr(speedtests[row.id].telecom_latency_ms) }}
+                          电: {{ formatCarrierDisplay(speedtests[row.id].telecom_route, speedtests[row.id].telecom_latency_ms) }}
                         </span>
                       </el-tooltip>
                       <el-tooltip :content="getISPTooltip(speedtests[row.id], 'unicom')" placement="top">
                         <span class="table-isp-pill font-mono" :class="getPingClass(speedtests[row.id].unicom_latency_ms)">
-                          联: {{ formatRouteSimple(speedtests[row.id].unicom_route) }} {{ getPingStr(speedtests[row.id].unicom_latency_ms) }}
+                          联: {{ formatCarrierDisplay(speedtests[row.id].unicom_route, speedtests[row.id].unicom_latency_ms) }}
                         </span>
                       </el-tooltip>
                       <el-tooltip :content="getISPTooltip(speedtests[row.id], 'mobile')" placement="top">
                         <span class="table-isp-pill font-mono" :class="getPingClass(speedtests[row.id].mobile_latency_ms)">
-                          移: {{ formatRouteSimple(speedtests[row.id].mobile_route) }} {{ getPingStr(speedtests[row.id].mobile_latency_ms) }}
+                          移: {{ formatCarrierDisplay(speedtests[row.id].mobile_route, speedtests[row.id].mobile_latency_ms) }}
                         </span>
                       </el-tooltip>
                     </div>
@@ -2144,15 +2145,6 @@ onBeforeUnmount(() => {
 .dot-carrier.cu { background: #f59e0b; }
 .dot-carrier.cm { background: #10b981; }
 
-.premium-star-badge {
-  font-size: 10px;
-  font-weight: 700;
-  padding: 1px 6px;
-  border-radius: 4px;
-  background: rgba(245, 158, 11, 0.16);
-  color: #fbbf24;
-  border: 1px solid rgba(245, 158, 11, 0.35);
-}
 .route-empty-hint {
   font-size: 11px;
 }

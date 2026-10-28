@@ -39,13 +39,13 @@ func AnalyzeTelecomRoute(hops []string, latencyMs int) string {
 		}
 		return "电信普通直连"
 	}
-	return "电信直连"
+	return "电信超时"
 }
 
 // AnalyzeUnicomRoute evaluates intermediate IP hops to identify China Unicom route quality.
 func AnalyzeUnicomRoute(hops []string, latencyMs int) string {
 	if len(hops) > 0 {
-		if HasHopPrefix(hops, "218.105.") || HasHopPrefix(hops, "210.51.") {
+		if HasHopPrefix(hops, "218.105.") || HasHopPrefix(hops, "210.51.") || HasHopPrefix(hops, "218.107.") {
 			return "联通 9929"
 		}
 		if HasCN2Hop(hops) {
@@ -61,7 +61,7 @@ func AnalyzeUnicomRoute(hops []string, latencyMs int) string {
 		}
 		return "联通普通直连"
 	}
-	return "联通直连"
+	return "联通超时"
 }
 
 // AnalyzeMobileRoute evaluates intermediate IP hops to identify China Mobile route quality.
@@ -86,5 +86,5 @@ func AnalyzeMobileRoute(hops []string, latencyMs int) string {
 		}
 		return "移动普通直连"
 	}
-	return "移动直连"
+	return "移动超时"
 }
