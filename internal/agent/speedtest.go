@@ -9,6 +9,7 @@ import (
 	"regexp"
 	"runtime"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -27,10 +28,10 @@ type SpeedtestResult struct {
 	MobileRoute      string  `json:"mobile_route"`
 }
 
-// 权威三网骨干测试节点 (与开源工具 backtrace / nexttrace 标准对齐)
-// 电信: 上海电信核心 (202.96.209.133), 广州电信 (202.96.128.86), 成都电信 (61.139.2.69)
-// 联通: 上海联通核心 (210.22.97.1), 广州联通 (210.21.196.6), 北京联通 (202.106.50.1)
-// 移动: 广州移动核心 (120.196.165.24), 北京移动 (221.179.155.161), 成都移动 (211.137.96.205)
+// 权威三网骨干测试节点 (与开源工具 backtrace / nexttrace / zhanghanyun 行业标杆对齐)
+// 电信: 上海电信核心 (202.96.209.133), 广州电信 (58.60.188.222), 北京电信 (219.141.140.10), 成都电信 (61.139.2.69)
+// 联通: 上海联通核心 (210.22.97.1), 广州联通 (210.21.196.6), 北京联通 (202.106.195.68), 成都联通 (119.6.6.6)
+// 移动: 广州移动核心 (120.196.165.24), 上海移动 (211.136.112.200), 北京移动 (221.179.155.161), 成都移动 (211.137.96.205)
 type TargetEndpoint struct {
 	City string
 	Host string
@@ -39,16 +40,19 @@ type TargetEndpoint struct {
 var (
 	TelecomEndpoints = []TargetEndpoint{
 		{City: "上海电信", Host: "202.96.209.133"},
-		{City: "广州电信", Host: "202.96.128.86"},
+		{City: "广州电信", Host: "58.60.188.222"},
+		{City: "北京电信", Host: "219.141.140.10"},
 		{City: "成都电信", Host: "61.139.2.69"},
 	}
 	UnicomEndpoints = []TargetEndpoint{
 		{City: "上海联通", Host: "210.22.97.1"},
 		{City: "广州联通", Host: "210.21.196.6"},
-		{City: "北京联通", Host: "202.106.50.1"},
+		{City: "北京联通", Host: "202.106.195.68"},
+		{City: "成都联通", Host: "119.6.6.6"},
 	}
 	MobileEndpoints = []TargetEndpoint{
 		{City: "广州移动", Host: "120.196.165.24"},
+		{City: "上海移动", Host: "211.136.112.200"},
 		{City: "北京移动", Host: "221.179.155.161"},
 		{City: "成都移动", Host: "211.137.96.205"},
 	}
@@ -130,47 +134,86 @@ type traceRouteResult struct {
 	LatencyMs int
 }
 
-// traceRouteHops extracts intermediate IP hops towards the target using traceroute or tracepath.
+// inspectLocalRouteQuery uses `ip route get <target>` on Linux to immediately discover
+// the direct next-hop gateway and source interface IP without relying on external traceroute.
+func inspectLocalRouteQuery(ctx context.Context, targetHost string) []string {
+	if runtime.GOOS != "linux" || !commandExists("ip") {
+		return nil
+	}
+	cmdCtx, cancel := context.WithTimeout(ctx, 1500*time.Millisecond)
+	defer cancel()
+	out, err := exec.CommandContext(cmdCtx, "ip", "route", "get", targetHost).Output()
+	if err != nil || len(out) == 0 {
+		return nil
+	}
+	reIP := regexp.MustCompile(`\b\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\b`)
+	return reIP.FindAllString(string(out), -1)
+}
+
+// traceRoute extracts intermediate IP hops towards the target using traceroute or tracepath.
 func traceRoute(ctx context.Context, targetHost string) traceRouteResult {
-	if !commandExists("traceroute") && !commandExists("tracepath") {
-		_ = installPackages(ctx, "traceroute")
+	if runtime.GOOS == "linux" && !commandExists("traceroute") && !commandExists("tracepath") {
+		if commandExists("apt-get") {
+			installCtx, installCancel := context.WithTimeout(ctx, 4*time.Second)
+			_ = exec.CommandContext(installCtx, "apt-get", "install", "-y", "--no-install-recommends", "traceroute").Run()
+			installCancel()
+		}
 	}
 
 	var out []byte
 	var err error
 
-	if commandExists("traceroute") {
-		// 1. Try ICMP traceroute (-I) with fast options (-n -m 20 -q 1 -w 1)
-		traceCtx, cancel := context.WithTimeout(ctx, 6*time.Second)
-		out, err = exec.CommandContext(traceCtx, "traceroute", "-I", "-n", "-m", "20", "-q", "1", "-w", "1", targetHost).Output()
+	if runtime.GOOS == "windows" {
+		traceCtx, cancel := context.WithTimeout(ctx, 8*time.Second)
+		out, err = exec.CommandContext(traceCtx, "tracert", "-d", "-h", "30", "-w", "800", targetHost).Output()
+		cancel()
+	} else if commandExists("traceroute") {
+		// 1. Try ICMP traceroute (-I) with 30 max hops (-m 30 -q 1 -w 1)
+		traceCtx, cancel := context.WithTimeout(ctx, 7*time.Second)
+		out, err = exec.CommandContext(traceCtx, "traceroute", "-I", "-n", "-m", "30", "-q", "1", "-w", "1", targetHost).Output()
 		cancel()
 
 		// 2. If ICMP failed (e.g. non-root or firewall), try standard UDP traceroute
 		if err != nil || len(out) == 0 {
-			traceCtx2, cancel2 := context.WithTimeout(ctx, 6*time.Second)
-			out, err = exec.CommandContext(traceCtx2, "traceroute", "-n", "-m", "20", "-q", "1", "-w", "1", targetHost).Output()
+			traceCtx2, cancel2 := context.WithTimeout(ctx, 7*time.Second)
+			out, err = exec.CommandContext(traceCtx2, "traceroute", "-n", "-m", "30", "-q", "1", "-w", "1", targetHost).Output()
 			cancel2()
 		}
 
 		// 3. If standard UDP failed, try TCP SYN traceroute (-T -p 80)
 		if err != nil || len(out) == 0 {
-			traceCtx3, cancel3 := context.WithTimeout(ctx, 6*time.Second)
-			out, err = exec.CommandContext(traceCtx3, "traceroute", "-T", "-p", "80", "-n", "-m", "20", "-q", "1", "-w", "1", targetHost).Output()
+			traceCtx3, cancel3 := context.WithTimeout(ctx, 7*time.Second)
+			out, err = exec.CommandContext(traceCtx3, "traceroute", "-T", "-p", "80", "-n", "-m", "30", "-q", "1", "-w", "1", targetHost).Output()
 			cancel3()
 		}
 	} else if commandExists("tracepath") {
 		traceCtx, cancel := context.WithTimeout(ctx, 8*time.Second)
-		out, err = exec.CommandContext(traceCtx, "tracepath", "-n", "-m", "20", targetHost).Output()
+		out, err = exec.CommandContext(traceCtx, "tracepath", "-n", "-m", "30", targetHost).Output()
 		cancel()
-	}
-
-	if err != nil || len(out) == 0 {
-		return traceRouteResult{}
 	}
 
 	outStr := string(out)
 	reIP := regexp.MustCompile(`\b\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\b`)
 	hops := reIP.FindAllString(outStr, -1)
+
+	// Combine local kernel routing table evidence
+	if localHops := inspectLocalRouteQuery(ctx, targetHost); len(localHops) > 0 {
+		hops = append(hops, localHops...)
+	}
+
+	lowerOut := strings.ToLower(outStr)
+	if strings.Contains(lowerOut, "9929") || strings.Contains(lowerOut, "cuii") {
+		hops = append(hops, "9929")
+	}
+	if strings.Contains(lowerOut, "10099") || strings.Contains(lowerOut, "cug") {
+		hops = append(hops, "10099")
+	}
+	if strings.Contains(lowerOut, "59.43.") || strings.Contains(lowerOut, "cn2") {
+		hops = append(hops, "59.43.0.1")
+	}
+	if strings.Contains(lowerOut, "cmin2") || strings.Contains(lowerOut, "58807") {
+		hops = append(hops, "58807")
+	}
 
 	// 提取 traceroute 响应中末跳 RTT 耗时
 	reHopRTT := regexp.MustCompile(`(?i)([0-9]+(?:\.[0-9]+)?)\s*ms`)
@@ -202,7 +245,7 @@ func analyzeMobileRoute(hops []string, latencyMs int) string {
 }
 
 func runSpeedtest(ctx context.Context, task Task) TaskResult {
-	timeoutCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	timeoutCtx, cancel := context.WithTimeout(ctx, 35*time.Second)
 	defer cancel()
 
 	var telecomLatency, unicomLatency, mobileLatency int
@@ -214,8 +257,9 @@ func runSpeedtest(ctx context.Context, task Task) TaskResult {
 		for _, ep := range TelecomEndpoints {
 			l := measureLatency(timeoutCtx, ep.Host)
 			if l > 0 {
-				telecomLatency = l
-				return
+				if telecomLatency <= 0 || l < telecomLatency {
+					telecomLatency = l
+				}
 			}
 		}
 	}()
@@ -225,8 +269,9 @@ func runSpeedtest(ctx context.Context, task Task) TaskResult {
 		for _, ep := range UnicomEndpoints {
 			l := measureLatency(timeoutCtx, ep.Host)
 			if l > 0 {
-				unicomLatency = l
-				return
+				if unicomLatency <= 0 || l < unicomLatency {
+					unicomLatency = l
+				}
 			}
 		}
 	}()
@@ -236,57 +281,76 @@ func runSpeedtest(ctx context.Context, task Task) TaskResult {
 		for _, ep := range MobileEndpoints {
 			l := measureLatency(timeoutCtx, ep.Host)
 			if l > 0 {
-				mobileLatency = l
-				return
+				if mobileLatency <= 0 || l < mobileLatency {
+					mobileLatency = l
+				}
 			}
 		}
 	}()
 
 	latencyWg.Wait()
 
-	// 并发执行三大运营商路由追踪
+	// 并发执行三大运营商路由追踪 (采用多端点联合证据判定，杜绝单点超时漏判 9929 / CN2)
 	var telecomHops, unicomHops, mobileHops []string
 	var traceWg sync.WaitGroup
 	traceWg.Add(3)
 
+	// 电信路由探测 (先测核心上海节点，若已确认精品线路则提前结束，否则测试广州备选节点)
 	go func() {
 		defer traceWg.Done()
-		for _, ep := range TelecomEndpoints {
+		for i, ep := range TelecomEndpoints {
+			if i >= 2 && len(telecomHops) > 0 {
+				break
+			}
 			res := traceRoute(timeoutCtx, ep.Host)
 			if len(res.Hops) > 0 {
-				telecomHops = res.Hops
+				telecomHops = append(telecomHops, res.Hops...)
 				if telecomLatency <= 0 && res.LatencyMs > 0 {
 					telecomLatency = res.LatencyMs
 				}
-				return
+				if wire.AnalyzeTelecomRoute(telecomHops, telecomLatency) == "电信 CN2 GIA" {
+					return
+				}
 			}
 		}
 	}()
 
+	// 联通路由探测 (先测核心上海节点，若已确认 9929/CUG 精品线路则提前结束，否则测试广州/北京备选节点)
 	go func() {
 		defer traceWg.Done()
-		for _, ep := range UnicomEndpoints {
+		for i, ep := range UnicomEndpoints {
+			if i >= 2 && len(unicomHops) > 0 {
+				break
+			}
 			res := traceRoute(timeoutCtx, ep.Host)
 			if len(res.Hops) > 0 {
-				unicomHops = res.Hops
+				unicomHops = append(unicomHops, res.Hops...)
 				if unicomLatency <= 0 && res.LatencyMs > 0 {
 					unicomLatency = res.LatencyMs
 				}
-				return
+				if wire.AnalyzeUnicomRoute(unicomHops, unicomLatency) == "联通 9929" {
+					return
+				}
 			}
 		}
 	}()
 
+	// 移动路由探测 (先测广州核心节点，若已确认 CMIN2 精品线路则提前结束，否则测试上海备选节点)
 	go func() {
 		defer traceWg.Done()
-		for _, ep := range MobileEndpoints {
+		for i, ep := range MobileEndpoints {
+			if i >= 2 && len(mobileHops) > 0 {
+				break
+			}
 			res := traceRoute(timeoutCtx, ep.Host)
 			if len(res.Hops) > 0 {
-				mobileHops = res.Hops
+				mobileHops = append(mobileHops, res.Hops...)
 				if mobileLatency <= 0 && res.LatencyMs > 0 {
 					mobileLatency = res.LatencyMs
 				}
-				return
+				if wire.AnalyzeMobileRoute(mobileHops, mobileLatency) == "移动 CMIN2" {
+					return
+				}
 			}
 		}
 	}()

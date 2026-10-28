@@ -281,24 +281,20 @@ function getInboundCarrierTooltip(st, isp) {
   let ispName = ''
   let route = ''
   let ping = 0
-  let probeCity = ''
   if (isp === 'mobile') {
     ispName = '中国移动'
     route = st.inbound_mobile_route || '移动 CMI'
     ping = st.inbound_mobile_latency_ms
-    probeCity = '昆明/广州骨干'
   } else if (isp === 'unicom') {
     ispName = '中国联通'
     route = st.inbound_unicom_route || '联通 4837'
     ping = st.inbound_unicom_latency_ms
-    probeCity = '武汉/北京骨干'
   } else if (isp === 'telecom') {
     ispName = '中国电信'
     route = st.inbound_telecom_route || '电信 163 骨干'
     ping = st.inbound_telecom_latency_ms
-    probeCity = '南京/上海骨干'
   }
-  return `【${ispName} 去程 (大陆 → 节点)】\n线路: ${route}\n延迟: ${ping ? ping + 'ms' : '正常通行'}\n端点: 大陆 (${probeCity}) → 节点公网`
+  return `【${ispName} 去程】\n线路: ${route}\n延迟: ${ping ? ping + 'ms' : '正常通行'}`
 }
 
 function getISPTooltip(st, isp) {
@@ -306,35 +302,25 @@ function getISPTooltip(st, isp) {
   let ispName = ''
   let route = ''
   let ping = 0
-  let targetNode = ''
   if (isp === 'mobile') {
     ispName = '中国移动'
     route = st.mobile_route || '标准直连'
     ping = st.mobile_latency_ms ?? st.mobile_ping_ms
-    targetNode = '广州移动 (120.196.165.24)'
   } else if (isp === 'unicom') {
     ispName = '中国联通'
     route = st.unicom_route || '标准直连'
     ping = st.unicom_latency_ms ?? st.unicom_ping_ms
-    targetNode = '上海联通 (210.22.97.1)'
   } else if (isp === 'telecom') {
     ispName = '中国电信'
     route = st.telecom_route || '标准直连'
     ping = st.telecom_latency_ms ?? st.telecom_ping_ms
-    targetNode = '上海电信 (202.96.209.133)'
   }
-  return `【${ispName} 返程 (节点 → 大陆)】\n线路: ${route}\n延迟: ${ping ? ping + 'ms' : '超时'}\n端点: 节点公网 → 大陆 (${targetNode})`
+  return `【${ispName} 返程】\n线路: ${route}\n延迟: ${ping ? ping + 'ms' : '超时'}`
 }
 
 function getInboundSummary(st) {
   if (!st) return '待探测'
   if (isNodeGFWBlocked(st)) return '0/6 超时 · GFW 阻断'
-  if (st.domestic_source) {
-    const match = st.domestic_source.match(/\((.*?)\):/)
-    if (match && match[1]) {
-      return match[1]
-    }
-  }
   if (st.domestic_latency_ms) {
     return `6/6 畅通 · 均值 ${st.domestic_latency_ms}ms`
   }
@@ -344,9 +330,9 @@ function getInboundSummary(st) {
 function getInboundProbeTooltip(st) {
   if (!st) return ''
   if (isNodeGFWBlocked(st)) {
-    return `【去程连通性诊断】\n探针: ${st.domestic_source || '国内6探针全部超时'}\n状态: 🚨 GFW 阻断 (国内发起的 TCP 握手均超时丢弃)`
+    return '🚨 GFW 阻断\n国内探针发起的 TCP 端口握手全部超时丢弃'
   }
-  return `【去程连通性诊断】\n探针: ${st.domestic_source || '国内多地探针'}\n延迟: ${st.domestic_latency_ms ? st.domestic_latency_ms + 'ms' : '正常通行'}`
+  return `去程正常通行\n国内探针 TCP 延迟: ${st.domestic_latency_ms ? st.domestic_latency_ms + 'ms' : '畅通'}`
 }
 
 function formatRouteSimple(route) {
@@ -1076,7 +1062,7 @@ onBeforeUnmount(() => {
             <div class="route-matrix-box" :class="{ 'is-blocked': isNodeGFWBlocked(speedtests[node.id]) }">
               <!-- 去程 Inbound -->
               <div class="route-line">
-                <span class="dir-badge in" title="中国大陆发起 → 抵达本服务器">去程 (大陆 → 节点)</span>
+                <span class="dir-badge in">去程</span>
                 <!-- GFW 阻断提示 -->
                 <div v-if="isNodeGFWBlocked(speedtests[node.id])" class="gfw-alert-capsule">
                   <span class="gfw-alert-dot" />
@@ -1108,7 +1094,7 @@ onBeforeUnmount(() => {
 
               <!-- 返程 Outbound -->
               <div class="route-line">
-                <span class="dir-badge out" title="本服务器发起 → 回传至中国大陆核心网关">返程 (节点 → 大陆)</span>
+                <span class="dir-badge out">返程</span>
                 <div v-if="speedtests[node.id]" class="carrier-tags-flow">
                   <el-tooltip :content="getISPTooltip(speedtests[node.id], 'telecom')" placement="top">
                     <span class="carrier-tag font-mono" :class="getPingClass(speedtests[node.id].telecom_latency_ms)">
@@ -1230,7 +1216,7 @@ onBeforeUnmount(() => {
                 <div v-if="speedtests[row.id]" class="table-net-stack">
                   <!-- 去程行 -->
                   <div class="table-net-row">
-                    <span class="table-dir-badge in" title="中国大陆发起 → 抵达本服务器">去 (大陆→节点)</span>
+                    <span class="table-dir-badge in">去程</span>
                     <div v-if="isNodeGFWBlocked(speedtests[row.id])" class="table-gfw-text font-mono">
                       🚨 GFW 阻断 (0/6 超时)
                     </div>
@@ -1254,7 +1240,7 @@ onBeforeUnmount(() => {
                   </div>
                   <!-- 返程行 -->
                   <div class="table-net-row">
-                    <span class="table-dir-badge out" title="本服务器发起 → 回传至中国大陆核心网关">回 (节点→大陆)</span>
+                    <span class="table-dir-badge out">返程</span>
                     <div class="table-isp-pills">
                       <el-tooltip :content="getISPTooltip(speedtests[row.id], 'telecom')" placement="top">
                         <span class="table-isp-pill font-mono" :class="getPingClass(speedtests[row.id].telecom_latency_ms)">
@@ -2270,5 +2256,12 @@ onBeforeUnmount(() => {
   font-weight: 600;
   color: var(--sb-text-1);
   margin-bottom: 2px;
+}
+
+:deep(.el-popper) {
+  max-width: 280px !important;
+  white-space: pre-line !important;
+  line-height: 1.45 !important;
+  font-size: 11px !important;
 }
 </style>
