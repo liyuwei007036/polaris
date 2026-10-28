@@ -1,6 +1,7 @@
 package wire
 
 import (
+	"fmt"
 	"strconv"
 	"strings"
 )
@@ -89,9 +90,16 @@ func IPv4ToASN(ip string) string {
 	if strings.Contains(lower, "as9808") || strings.Contains(lower, "cmnet") {
 		return "AS9808"
 	}
+	if strings.Contains(lower, "as174") || strings.Contains(lower, "cogent") {
+		return "AS174"
+	}
 
 	// Authoritative IP prefix lookup
 	switch {
+	// Cogent (AS174)
+	case strings.HasPrefix(raw, "38.") || strings.HasPrefix(raw, "154."):
+		return "AS174"
+
 	// 电信 CN2 (AS4809)
 	case strings.HasPrefix(raw, "59.43."):
 		return "AS4809"
@@ -147,6 +155,7 @@ func AnalyzeTelecomRoute(hops []string, latencyMs int) string {
 	if len(hops) > 0 {
 		var asns []string
 		cn2Index, ct163Index, ctgIndex := -1, -1, -1
+		cu9929Index, cmin2Index := -1, -1
 		cn2Count, ct163Count := 0, 0
 
 		for idx, ip := range hops {
@@ -165,6 +174,10 @@ func AnalyzeTelecomRoute(hops []string, latencyMs int) string {
 					ct163Count++
 				} else if asn == "AS23764" && ctgIndex < 0 {
 					ctgIndex = idx
+				} else if (asn == "AS9929" || asn == "AS10099") && cu9929Index < 0 {
+					cu9929Index = idx
+				} else if asn == "AS58807" && cmin2Index < 0 {
+					cmin2Index = idx
 				}
 			}
 		}
@@ -184,6 +197,16 @@ func AnalyzeTelecomRoute(hops []string, latencyMs int) string {
 
 		if ctgIndex >= 0 {
 			return "电信 CTGNet"
+		}
+
+		// 跨网借道 联通 AS9929 / AS10099 精品网回程
+		if cu9929Index >= 0 {
+			return "电信 9929"
+		}
+
+		// 跨网借道 移动 AS58807 CMIN2 精品网回程
+		if cmin2Index >= 0 {
+			return "电信 CMIN2"
 		}
 
 		if ct163Index >= 0 || ct163Count > 0 {
@@ -208,6 +231,7 @@ func AnalyzeUnicomRoute(hops []string, latencyMs int) string {
 		has10099 := false
 		has4837 := false
 		hasCN2 := false
+		hasCMIN2 := false
 
 		for _, ip := range hops {
 			asn := IPv4ToASN(ip)
@@ -220,6 +244,8 @@ func AnalyzeUnicomRoute(hops []string, latencyMs int) string {
 				has4837 = true
 			case "AS4809":
 				hasCN2 = true
+			case "AS58807":
+				hasCMIN2 = true
 			}
 		}
 
@@ -235,7 +261,12 @@ func AnalyzeUnicomRoute(hops []string, latencyMs int) string {
 
 		// 跨网 CN2 优质回程
 		if hasCN2 {
-			return "CN2 GIA"
+			return "联通 CN2 GIA"
+		}
+
+		// 跨网 CMIN2 优质回程
+		if hasCMIN2 {
+			return "联通 CMIN2"
 		}
 
 		// AS4837 联通 169 普通骨干
@@ -259,6 +290,7 @@ func AnalyzeMobileRoute(hops []string, latencyMs int) string {
 	if len(hops) > 0 {
 		hasCMIN2 := false
 		hasCN2 := false
+		has9929 := false
 		hasCMI := false
 
 		for _, ip := range hops {
@@ -268,6 +300,8 @@ func AnalyzeMobileRoute(hops []string, latencyMs int) string {
 				hasCMIN2 = true
 			case "AS4809":
 				hasCN2 = true
+			case "AS9929", "AS10099":
+				has9929 = true
 			case "AS58453", "AS9808":
 				hasCMI = true
 			}
@@ -278,7 +312,11 @@ func AnalyzeMobileRoute(hops []string, latencyMs int) string {
 		}
 
 		if hasCN2 {
-			return "CN2 GIA"
+			return "移动 CN2 GIA"
+		}
+
+		if has9929 {
+			return "移动 9929"
 		}
 
 		if hasCMI {
@@ -293,4 +331,118 @@ func AnalyzeMobileRoute(hops []string, latencyMs int) string {
 		return "移动 CMI"
 	}
 	return "移动超时"
+}
+
+// ASNToName converts an authoritative ASN identifier to a readable trajectory node label.
+func ASNToName(asn string) string {
+	switch asn {
+	case "AS4809":
+		return "AS4809 (电信CN2)"
+	case "AS4134":
+		return "AS4134 (电信163)"
+	case "AS23764":
+		return "AS23764 (电信CTGNet)"
+	case "AS9929":
+		return "AS9929 (联通A网)"
+	case "AS10099":
+		return "AS10099 (联通CUG)"
+	case "AS4837":
+		return "AS4837 (联通169)"
+	case "AS58807":
+		return "AS58807 (移动CMIN2)"
+	case "AS58453":
+		return "AS58453 (移动CMI)"
+	case "AS9808":
+		return "AS9808 (移动骨干)"
+	case "AS174":
+		return "AS174 (Cogent)"
+	default:
+		return ""
+	}
+}
+
+// BuildTracePath constructs a clean hop trajectory from real traceroute intermediate hops.
+func BuildTracePath(hops []string, targetName string) string {
+	var seq []string
+	seenASN := ""
+
+	for _, ip := range hops {
+		asn := IPv4ToASN(ip)
+		if asn == "" {
+			continue
+		}
+		if asn == seenASN {
+			continue
+		}
+		seenASN = asn
+		name := ASNToName(asn)
+		if name != "" {
+			seq = append(seq, name)
+		}
+	}
+
+	if len(seq) == 0 {
+		return ""
+	}
+
+	parts := append([]string{"机房出发"}, seq...)
+	if targetName != "" {
+		parts = append(parts, targetName)
+	}
+	return strings.Join(parts, " ➔ ")
+}
+
+// BuildTracePathFallback returns a clean line trajectory when intermediate hops are uncaptured.
+func BuildTracePathFallback(route, targetName string) string {
+	if strings.Contains(route, "9929") || strings.Contains(route, "CUII") {
+		if strings.Contains(route, "电信") {
+			return "机房出发 ➔ AS10099 (联通CUG) ➔ AS9929 (联通A网) ➔ AS4134 (电信163) ➔ " + targetName
+		}
+		return "机房出发 ➔ AS10099 (联通CUG) ➔ AS9929 (联通A网) ➔ " + targetName
+	}
+	if strings.Contains(route, "CMIN2") || strings.Contains(route, "58807") {
+		return "机房出发 ➔ AS58807 (移动CMIN2跨洋专线) ➔ AS9808 (移动骨干) ➔ " + targetName
+	}
+	if strings.Contains(route, "CN2 GIA") {
+		return "机房出发 ➔ AS4809 (电信CN2 GIA全程专线) ➔ 跨洋海缆直连 ➔ " + targetName
+	}
+	if strings.Contains(route, "CN2 GT") {
+		return "机房出发 ➔ AS4809 (电信CN2半程) ➔ AS4134 (电信163骨干) ➔ " + targetName
+	}
+	if strings.Contains(route, "CTGNet") {
+		return "机房出发 ➔ AS23764 (电信CTGNet商业专网) ➔ 国际直连 ➔ " + targetName
+	}
+	if strings.Contains(route, "4837") {
+		return "机房出发 ➔ 国际公网出口 ➔ AS4837 (联通169常规骨干) ➔ " + targetName
+	}
+	if strings.Contains(route, "CMI") {
+		return "机房出发 ➔ 国际公网出口 ➔ AS9808 (移动CMI常规骨干) ➔ " + targetName
+	}
+	if strings.Contains(route, "163") {
+		return "机房出发 ➔ 国际公网出口 ➔ AS4134 (电信163常规骨干) ➔ " + targetName
+	}
+	return "机房出发 ➔ 国际BGP出口 ➔ " + targetName
+}
+
+// BuildInboundTracePath constructs an inbound trajectory from domestic source to the target node.
+func BuildInboundTracePath(route, carrier, destName string) string {
+	if strings.Contains(route, "CN2 GIA") || strings.Contains(route, "4809") {
+		return fmt.Sprintf("国内电信 ➔ AS4809 (电信CN2 GIA专线出海) ➔ %s ➔ 目标机房", destName)
+	}
+	if strings.Contains(route, "9929") || strings.Contains(route, "CUII") {
+		return fmt.Sprintf("国内联通 ➔ AS9929 (联通A网精品专线出海) ➔ %s ➔ 目标机房", destName)
+	}
+	if strings.Contains(route, "CMIN2") || strings.Contains(route, "58807") {
+		return fmt.Sprintf("国内移动 ➔ AS58807 (移动CMIN2优质海缆出海) ➔ %s ➔ 目标机房", destName)
+	}
+	if carrier == "电信" || strings.Contains(route, "163") {
+		return fmt.Sprintf("国内电信 ➔ AS4134 (电信163常规骨干出海) ➔ %s ➔ 目标机房", destName)
+	}
+	if carrier == "联通" || strings.Contains(route, "4837") {
+		return fmt.Sprintf("国内联通 ➔ AS4837 (联通169常规骨干出海) ➔ %s ➔ 目标机房", destName)
+	}
+	if carrier == "移动" || strings.Contains(route, "CMI") {
+		return fmt.Sprintf("国内移动 ➔ AS9808 (移动CMI常规骨干出海) ➔ %s ➔ 目标机房", destName)
+	}
+	return fmt.Sprintf("国内核心节点 ➔ 骨干网出海 ➔ %s ➔ 目标机房", destName)
 }

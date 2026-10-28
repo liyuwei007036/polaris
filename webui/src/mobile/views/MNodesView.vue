@@ -187,7 +187,11 @@ function totalText(node) {
 }
 
 function addressText(node) {
-  return node.client_address || '未填写连接地址'
+  if (!node.client_address) return '未填写连接地址'
+  if (node.ddns_enabled && node.last_observed_ip) {
+    return `${node.client_address} (DDNS: ${node.last_observed_ip})`
+  }
+  return node.client_address
 }
 
 const details = computed(() => {
@@ -195,9 +199,10 @@ const details = computed(() => {
   if (!node) return []
   const proxy = metrics.value[node.id]?.proxy
   const host = metrics.value[node.id]?.host
+  const addrVal = node.client_address ? (node.ddns_enabled && node.last_observed_ip ? `${node.client_address} (DDNS: ${node.last_observed_ip})` : node.client_address) : '未配置，客户端拿不到节点链接'
   const items = [
     { label: '运行状态', value: node.online ? '在线' : '离线' },
-    { label: '连接地址', value: node.client_address || '未配置，客户端拿不到节点链接', mono: Boolean(node.client_address) },
+    { label: '连接地址', value: addrVal, mono: Boolean(node.client_address) },
     { label: '系统', value: [node.os, node.architecture].filter(Boolean).join(' · ') || '—' },
     { label: '版本', value: 'agent ' + (node.agent_version || '—') + ' · sing-box ' + (node.sing_box_version || '—') },
   ]

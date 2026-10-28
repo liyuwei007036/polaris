@@ -100,6 +100,18 @@ func TestAnalyzeTelecomRoute(t *testing.T) {
 		t.Fatalf("expected '电信 CN2 GT', got %q", r)
 	}
 
+	// 跨网 9929 / CUG (重点：国内交接段虽然有 202.97.163，但国际出海核心走 9929，判定为 电信 9929)
+	hops9929 := []string{"10.0.0.1", "203.160.75.222", "218.105.2.150", "202.97.81.81", "202.96.209.133"}
+	if r := AnalyzeTelecomRoute(hops9929, 146); r != "电信 9929" {
+		t.Fatalf("expected '电信 9929', got %q", r)
+	}
+
+	// 跨网 CMIN2 (国际出海走 AS58807，国内转接)
+	hopsCMIN2 := []string{"10.0.0.1", "223.120.16.1", "202.97.81.81", "202.96.209.133"}
+	if r := AnalyzeTelecomRoute(hopsCMIN2, 140); r != "电信 CMIN2" {
+		t.Fatalf("expected '电信 CMIN2', got %q", r)
+	}
+
 	// 163 backbone
 	hops163 := []string{"10.0.0.1", "202.97.1.1", "202.96.209.133"}
 	if r := AnalyzeTelecomRoute(hops163, 180); r != "电信 163 骨干" {

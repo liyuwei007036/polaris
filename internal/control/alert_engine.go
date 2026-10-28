@@ -604,12 +604,18 @@ type ProbeResultItem struct {
 	LatencyMs               int    `json:"latency_ms"`
 	StatusDesc              string `json:"status_desc,omitempty"`
 	Error                   string `json:"error,omitempty"`
-	InboundTelecomRoute     string `json:"inbound_telecom_route,omitempty"`
-	InboundTelecomLatencyMs int    `json:"inbound_telecom_latency_ms,omitempty"`
-	InboundUnicomRoute      string `json:"inbound_unicom_route,omitempty"`
-	InboundUnicomLatencyMs  int    `json:"inbound_unicom_latency_ms,omitempty"`
-	InboundMobileRoute      string `json:"inbound_mobile_route,omitempty"`
-	InboundMobileLatencyMs  int    `json:"inbound_mobile_latency_ms,omitempty"`
+	InboundTelecomRoute         string `json:"inbound_telecom_route,omitempty"`
+	InboundTelecomLatencyMs     int    `json:"inbound_telecom_latency_ms,omitempty"`
+	InboundTelecomNodeLatencies string `json:"inbound_telecom_node_latencies,omitempty"`
+	InboundTelecomTracePath     string `json:"inbound_telecom_trace_path,omitempty"`
+	InboundUnicomRoute          string `json:"inbound_unicom_route,omitempty"`
+	InboundUnicomLatencyMs      int    `json:"inbound_unicom_latency_ms,omitempty"`
+	InboundUnicomNodeLatencies  string `json:"inbound_unicom_node_latencies,omitempty"`
+	InboundUnicomTracePath      string `json:"inbound_unicom_trace_path,omitempty"`
+	InboundMobileRoute          string `json:"inbound_mobile_route,omitempty"`
+	InboundMobileLatencyMs      int    `json:"inbound_mobile_latency_ms,omitempty"`
+	InboundMobileNodeLatencies  string `json:"inbound_mobile_node_latencies,omitempty"`
+	InboundMobileTracePath      string `json:"inbound_mobile_trace_path,omitempty"`
 }
 
 // NotifyProbeSummary dispatches a Bark report after a scheduled GFW/connectivity probe.

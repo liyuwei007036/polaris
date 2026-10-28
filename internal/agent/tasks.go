@@ -958,11 +958,15 @@ func installPackages(ctx context.Context, packages ...string) error {
 	}
 	refreshWarning := ""
 	if refresh {
-		if output, err := exec.CommandContext(ctx, "apt-get", "update").CombinedOutput(); err != nil {
+		updateCmd := exec.CommandContext(ctx, "apt-get", "update")
+		updateCmd.Env = append(os.Environ(), "DEBIAN_FRONTEND=noninteractive")
+		if output, err := updateCmd.CombinedOutput(); err != nil {
 			refreshWarning = "；软件源刷新有告警：" + commandSummary("apt-get update", output, err)
 		}
 	}
-	if output, err := exec.CommandContext(ctx, command[0], command[1:]...).CombinedOutput(); err != nil {
+	installCmd := exec.CommandContext(ctx, command[0], command[1:]...)
+	installCmd.Env = append(os.Environ(), "DEBIAN_FRONTEND=noninteractive")
+	if output, err := installCmd.CombinedOutput(); err != nil {
 		return errors.New(commandSummary(strings.Join(command, " "), output, err) + refreshWarning)
 	}
 	return nil

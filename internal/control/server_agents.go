@@ -84,6 +84,9 @@ func (s *Server) handleAgentConn(ctx context.Context, raw net.Conn) {
 		if err := s.store.SetNodeObservedAddress(ctx, node.ID, address); err != nil {
 			log.Printf("record observed address for node %s: %v", node.ID, err)
 		}
+		if err := s.store.SetNodeLastObservedIP(ctx, node.ID, address); err != nil {
+			log.Printf("record last observed ip for node %s: %v", node.ID, err)
+		}
 	}
 	_ = raw.SetDeadline(time.Time{})
 	s.runAgentSession(ctx, conn, node, address)

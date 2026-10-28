@@ -317,7 +317,27 @@ EOF
   mv "$temporary" "$target"
 }
 
+ensure_agent_dependencies() {
+  if [[ -n "$DESTDIR" ]]; then
+    return 0
+  fi
+  if ! command -v traceroute >/dev/null 2>&1; then
+    log "安装 Agent 网络检测基础依赖 (traceroute)..."
+    if command -v apt-get >/dev/null 2>&1; then
+      DEBIAN_FRONTEND=noninteractive apt-get update -qq && \
+      DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends traceroute iproute2 iputils-ping || true
+    elif command -v dnf >/dev/null 2>&1; then
+      dnf install -y traceroute iproute iputils || true
+    elif command -v yum >/dev/null 2>&1; then
+      yum install -y traceroute iproute iputils || true
+    elif command -v apk >/dev/null 2>&1; then
+      apk add traceroute iproute2 iputils || true
+    fi
+  fi
+}
+
 configure_agent() {
+  ensure_agent_dependencies
   local master_address="$1"
   local master_pubkey="$2"
   install_directory 0700 root root /var/lib/polaris-agent

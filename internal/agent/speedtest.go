@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"math"
 	"net"
 	"os/exec"
@@ -17,15 +18,21 @@ import (
 )
 
 type SpeedtestResult struct {
-	TelecomLatencyMs int     `json:"telecom_latency_ms"`
-	TelecomSpeedMbps float64 `json:"telecom_speed_mbps,omitempty"`
-	TelecomRoute     string  `json:"telecom_route"`
-	UnicomLatencyMs  int     `json:"unicom_latency_ms"`
-	UnicomSpeedMbps  float64 `json:"unicom_speed_mbps,omitempty"`
-	UnicomRoute      string  `json:"unicom_route"`
-	MobileLatencyMs  int     `json:"mobile_latency_ms"`
-	MobileSpeedMbps  float64 `json:"mobile_speed_mbps,omitempty"`
-	MobileRoute      string  `json:"mobile_route"`
+	TelecomLatencyMs     int     `json:"telecom_latency_ms"`
+	TelecomSpeedMbps     float64 `json:"telecom_speed_mbps,omitempty"`
+	TelecomRoute         string  `json:"telecom_route"`
+	TelecomNodeLatencies string  `json:"telecom_node_latencies,omitempty"`
+	TelecomTracePath     string  `json:"telecom_trace_path,omitempty"`
+	UnicomLatencyMs      int     `json:"unicom_latency_ms"`
+	UnicomSpeedMbps      float64 `json:"unicom_speed_mbps,omitempty"`
+	UnicomRoute          string  `json:"unicom_route"`
+	UnicomNodeLatencies  string  `json:"unicom_node_latencies,omitempty"`
+	UnicomTracePath      string  `json:"unicom_trace_path,omitempty"`
+	MobileLatencyMs      int     `json:"mobile_latency_ms"`
+	MobileSpeedMbps      float64 `json:"mobile_speed_mbps,omitempty"`
+	MobileRoute          string  `json:"mobile_route"`
+	MobileNodeLatencies  string  `json:"mobile_node_latencies,omitempty"`
+	MobileTracePath      string  `json:"mobile_trace_path,omitempty"`
 }
 
 // 权威三网骨干测试节点 (与开源工具 backtrace / nexttrace / zhanghanyun 行业标杆对齐)
@@ -221,17 +228,28 @@ func extractHopsFromOutput(targetHost, output string) ([]string, int) {
 	return hops, latency
 }
 
+var (
+	toolsCheckOnce sync.Once
+)
+
+// EnsureNetworkTools checks and automatically installs missing network diagnosis tools (e.g. traceroute).
+func EnsureNetworkTools(ctx context.Context) {
+	toolsCheckOnce.Do(func() {
+		if runtime.GOOS != "linux" {
+			return
+		}
+		if commandExists("traceroute") || commandExists("tracepath") {
+			return
+		}
+		installCtx, cancel := context.WithTimeout(ctx, 25*time.Second)
+		defer cancel()
+		_ = installPackages(installCtx, "traceroute")
+	})
+}
+
 // traceRoute extracts intermediate IP hops towards the target using traceroute or tracepath.
 // It uses CombinedOutput and never discards captured hops due to non-zero exit codes.
 func traceRoute(ctx context.Context, targetHost string) traceRouteResult {
-	if runtime.GOOS == "linux" && !commandExists("traceroute") && !commandExists("tracepath") {
-		if commandExists("apt-get") {
-			installCtx, installCancel := context.WithTimeout(ctx, 4*time.Second)
-			_ = exec.CommandContext(installCtx, "apt-get", "install", "-y", "--no-install-recommends", "traceroute").Run()
-			installCancel()
-		}
-	}
-
 	var outStr string
 
 	if runtime.GOOS == "windows" {
@@ -316,44 +334,60 @@ func runSpeedtest(ctx context.Context, task Task) TaskResult {
 	timeoutCtx, cancel := context.WithTimeout(ctx, 35*time.Second)
 	defer cancel()
 
+	// 确保基础网络测试工具已就绪，缺失时自动安装
+	EnsureNetworkTools(timeoutCtx)
+
+	measureEndpoints := func(endpoints []TargetEndpoint) ([]string, int) {
+		type epRes struct {
+			index   int
+			city    string
+			latency int
+		}
+		ch := make(chan epRes, len(endpoints))
+		for i, ep := range endpoints {
+			go func(idx int, target TargetEndpoint) {
+				l := measureLatency(timeoutCtx, target.Host)
+				ch <- epRes{index: idx, city: target.City, latency: l}
+			}(i, ep)
+		}
+		items := make([]epRes, len(endpoints))
+		for range endpoints {
+			r := <-ch
+			items[r.index] = r
+		}
+		var list []string
+		minLat := 0
+		for _, r := range items {
+			if r.latency > 0 {
+				list = append(list, fmt.Sprintf("%s: %dms", r.city, r.latency))
+				if minLat <= 0 || r.latency < minLat {
+					minLat = r.latency
+				}
+			} else {
+				list = append(list, fmt.Sprintf("%s: 超时", r.city))
+			}
+		}
+		return list, minLat
+	}
+
 	var telecomLatency, unicomLatency, mobileLatency int
+	var telecomLatList, unicomLatList, mobileLatList []string
 	var latencyWg sync.WaitGroup
 	latencyWg.Add(3)
 
 	go func() {
 		defer latencyWg.Done()
-		for _, ep := range TelecomEndpoints {
-			l := measureLatency(timeoutCtx, ep.Host)
-			if l > 0 {
-				if telecomLatency <= 0 || l < telecomLatency {
-					telecomLatency = l
-				}
-			}
-		}
+		telecomLatList, telecomLatency = measureEndpoints(TelecomEndpoints)
 	}()
 
 	go func() {
 		defer latencyWg.Done()
-		for _, ep := range UnicomEndpoints {
-			l := measureLatency(timeoutCtx, ep.Host)
-			if l > 0 {
-				if unicomLatency <= 0 || l < unicomLatency {
-					unicomLatency = l
-				}
-			}
-		}
+		unicomLatList, unicomLatency = measureEndpoints(UnicomEndpoints)
 	}()
 
 	go func() {
 		defer latencyWg.Done()
-		for _, ep := range MobileEndpoints {
-			l := measureLatency(timeoutCtx, ep.Host)
-			if l > 0 {
-				if mobileLatency <= 0 || l < mobileLatency {
-					mobileLatency = l
-				}
-			}
-		}
+		mobileLatList, mobileLatency = measureEndpoints(MobileEndpoints)
 	}()
 
 	latencyWg.Wait()
@@ -377,7 +411,7 @@ func runSpeedtest(ctx context.Context, task Task) TaskResult {
 					telecomLatency = res.LatencyMs
 				}
 				rName := wire.AnalyzeTelecomRoute(telecomHops, telecomLatency)
-				if rName == "电信 CN2 GIA" || rName == "电信 CN2 GT" || rName == "电信 CTGNet" {
+				if rName == "电信 CN2 GIA" || rName == "电信 CN2 GT" || rName == "电信 CTGNet" || rName == "电信 9929" || rName == "电信 CMIN2" {
 					return
 				}
 			}
@@ -397,7 +431,8 @@ func runSpeedtest(ctx context.Context, task Task) TaskResult {
 				if unicomLatency <= 0 && res.LatencyMs > 0 {
 					unicomLatency = res.LatencyMs
 				}
-				if wire.AnalyzeUnicomRoute(unicomHops, unicomLatency) == "联通 9929" {
+				uName := wire.AnalyzeUnicomRoute(unicomHops, unicomLatency)
+				if uName == "联通 9929" || uName == "联通 CN2 GIA" || uName == "联通 CMIN2" {
 					return
 				}
 			}
@@ -417,7 +452,8 @@ func runSpeedtest(ctx context.Context, task Task) TaskResult {
 				if mobileLatency <= 0 && res.LatencyMs > 0 {
 					mobileLatency = res.LatencyMs
 				}
-				if wire.AnalyzeMobileRoute(mobileHops, mobileLatency) == "移动 CMIN2" {
+				mName := wire.AnalyzeMobileRoute(mobileHops, mobileLatency)
+				if mName == "移动 CMIN2" || mName == "移动 CN2 GIA" || mName == "移动 9929" {
 					return
 				}
 			}
@@ -430,13 +466,32 @@ func runSpeedtest(ctx context.Context, task Task) TaskResult {
 	unicomRoute := analyzeUnicomRoute(unicomHops, unicomLatency)
 	mobileRoute := analyzeMobileRoute(mobileHops, mobileLatency)
 
+	telecomTracePath := wire.BuildTracePath(telecomHops, "上海电信")
+	if telecomTracePath == "" {
+		telecomTracePath = wire.BuildTracePathFallback(telecomRoute, "上海电信")
+	}
+	unicomTracePath := wire.BuildTracePath(unicomHops, "上海联通")
+	if unicomTracePath == "" {
+		unicomTracePath = wire.BuildTracePathFallback(unicomRoute, "上海联通")
+	}
+	mobileTracePath := wire.BuildTracePath(mobileHops, "广州移动")
+	if mobileTracePath == "" {
+		mobileTracePath = wire.BuildTracePathFallback(mobileRoute, "广州移动")
+	}
+
 	result := SpeedtestResult{
-		TelecomLatencyMs: telecomLatency,
-		TelecomRoute:     telecomRoute,
-		UnicomLatencyMs:  unicomLatency,
-		UnicomRoute:      unicomRoute,
-		MobileLatencyMs:  mobileLatency,
-		MobileRoute:      mobileRoute,
+		TelecomLatencyMs:     telecomLatency,
+		TelecomRoute:         telecomRoute,
+		TelecomNodeLatencies: strings.Join(telecomLatList, " | "),
+		TelecomTracePath:     telecomTracePath,
+		UnicomLatencyMs:      unicomLatency,
+		UnicomRoute:          unicomRoute,
+		UnicomNodeLatencies:  strings.Join(unicomLatList, " | "),
+		UnicomTracePath:      unicomTracePath,
+		MobileLatencyMs:      mobileLatency,
+		MobileRoute:          mobileRoute,
+		MobileNodeLatencies:  strings.Join(mobileLatList, " | "),
+		MobileTracePath:      mobileTracePath,
 	}
 
 	encoded, err := json.Marshal(result)

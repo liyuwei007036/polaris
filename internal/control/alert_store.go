@@ -1,4 +1,4 @@
-﻿package control
+package control
 
 import (
 	"context"
@@ -42,19 +42,31 @@ type NodeSpeedtest struct {
 	TelecomLatencyMs        int     `json:"telecom_latency_ms"`
 	TelecomSpeedMbps        float64 `json:"telecom_speed_mbps"`
 	TelecomRoute            string  `json:"telecom_route"`
+	TelecomNodeLatencies    string  `json:"telecom_node_latencies,omitempty"`
+	TelecomTracePath        string  `json:"telecom_trace_path,omitempty"`
 	UnicomLatencyMs         int     `json:"unicom_latency_ms"`
 	UnicomSpeedMbps         float64 `json:"unicom_speed_mbps"`
 	UnicomRoute             string  `json:"unicom_route"`
+	UnicomNodeLatencies     string  `json:"unicom_node_latencies,omitempty"`
+	UnicomTracePath         string  `json:"unicom_trace_path,omitempty"`
 	MobileLatencyMs         int     `json:"mobile_latency_ms"`
 	MobileSpeedMbps         float64 `json:"mobile_speed_mbps"`
 	MobileRoute             string  `json:"mobile_route"`
+	MobileNodeLatencies     string  `json:"mobile_node_latencies,omitempty"`
+	MobileTracePath         string  `json:"mobile_trace_path,omitempty"`
 	// 去程 (Inbound)
-	InboundTelecomRoute     string  `json:"inbound_telecom_route"`
-	InboundTelecomLatencyMs int     `json:"inbound_telecom_latency_ms"`
-	InboundUnicomRoute      string  `json:"inbound_unicom_route"`
-	InboundUnicomLatencyMs  int     `json:"inbound_unicom_latency_ms"`
-	InboundMobileRoute      string  `json:"inbound_mobile_route"`
-	InboundMobileLatencyMs  int     `json:"inbound_mobile_latency_ms"`
+	InboundTelecomRoute         string `json:"inbound_telecom_route"`
+	InboundTelecomLatencyMs     int    `json:"inbound_telecom_latency_ms"`
+	InboundTelecomNodeLatencies string `json:"inbound_telecom_node_latencies,omitempty"`
+	InboundTelecomTracePath     string `json:"inbound_telecom_trace_path,omitempty"`
+	InboundUnicomRoute          string `json:"inbound_unicom_route"`
+	InboundUnicomLatencyMs      int    `json:"inbound_unicom_latency_ms"`
+	InboundUnicomNodeLatencies  string `json:"inbound_unicom_node_latencies,omitempty"`
+	InboundUnicomTracePath      string `json:"inbound_unicom_trace_path,omitempty"`
+	InboundMobileRoute          string `json:"inbound_mobile_route"`
+	InboundMobileLatencyMs      int    `json:"inbound_mobile_latency_ms"`
+	InboundMobileNodeLatencies  string `json:"inbound_mobile_node_latencies,omitempty"`
+	InboundMobileTracePath      string `json:"inbound_mobile_trace_path,omitempty"`
 	// GFW 连通性
 	GFWBlocked              bool    `json:"gfw_blocked"`
 	GFWStatus               string  `json:"gfw_status"`
@@ -248,8 +260,14 @@ func (s *Store) SaveNodeSpeedtest(ctx context.Context, st NodeSpeedtest) error {
 		inbound_telecom_route, inbound_telecom_latency_ms,
 		inbound_unicom_route, inbound_unicom_latency_ms,
 		inbound_mobile_route, inbound_mobile_latency_ms,
+		telecom_node_latencies, telecom_trace_path,
+		unicom_node_latencies, unicom_trace_path,
+		mobile_node_latencies, mobile_trace_path,
+		inbound_telecom_node_latencies, inbound_telecom_trace_path,
+		inbound_unicom_node_latencies, inbound_unicom_trace_path,
+		inbound_mobile_node_latencies, inbound_mobile_trace_path,
 		tested_at
-	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		st.ID, st.NodeID, st.TelecomLatencyMs, st.TelecomSpeedMbps, st.TelecomRoute,
 		st.UnicomLatencyMs, st.UnicomSpeedMbps, st.UnicomRoute,
 		st.MobileLatencyMs, st.MobileSpeedMbps, st.MobileRoute,
@@ -257,6 +275,12 @@ func (s *Store) SaveNodeSpeedtest(ctx context.Context, st NodeSpeedtest) error {
 		st.InboundTelecomRoute, st.InboundTelecomLatencyMs,
 		st.InboundUnicomRoute, st.InboundUnicomLatencyMs,
 		st.InboundMobileRoute, st.InboundMobileLatencyMs,
+		st.TelecomNodeLatencies, st.TelecomTracePath,
+		st.UnicomNodeLatencies, st.UnicomTracePath,
+		st.MobileNodeLatencies, st.MobileTracePath,
+		st.InboundTelecomNodeLatencies, st.InboundTelecomTracePath,
+		st.InboundUnicomNodeLatencies, st.InboundUnicomTracePath,
+		st.InboundMobileNodeLatencies, st.InboundMobileTracePath,
 		now)
 	if err != nil {
 		return fmt.Errorf("save node speedtest: %w", err)
@@ -271,6 +295,12 @@ func (s *Store) GetLatestNodeSpeedtest(ctx context.Context, nodeID string) (*Nod
 		COALESCE(inbound_telecom_route, ''), COALESCE(inbound_telecom_latency_ms, 0),
 		COALESCE(inbound_unicom_route, ''), COALESCE(inbound_unicom_latency_ms, 0),
 		COALESCE(inbound_mobile_route, ''), COALESCE(inbound_mobile_latency_ms, 0),
+		COALESCE(telecom_node_latencies, ''), COALESCE(telecom_trace_path, ''),
+		COALESCE(unicom_node_latencies, ''), COALESCE(unicom_trace_path, ''),
+		COALESCE(mobile_node_latencies, ''), COALESCE(mobile_trace_path, ''),
+		COALESCE(inbound_telecom_node_latencies, ''), COALESCE(inbound_telecom_trace_path, ''),
+		COALESCE(inbound_unicom_node_latencies, ''), COALESCE(inbound_unicom_trace_path, ''),
+		COALESCE(inbound_mobile_node_latencies, ''), COALESCE(inbound_mobile_trace_path, ''),
 		tested_at
 		FROM node_speedtests WHERE node_id = ? ORDER BY tested_at DESC LIMIT 1`, nodeID)
 	var st NodeSpeedtest
@@ -283,6 +313,12 @@ func (s *Store) GetLatestNodeSpeedtest(ctx context.Context, nodeID string) (*Nod
 		&st.InboundTelecomRoute, &st.InboundTelecomLatencyMs,
 		&st.InboundUnicomRoute, &st.InboundUnicomLatencyMs,
 		&st.InboundMobileRoute, &st.InboundMobileLatencyMs,
+		&st.TelecomNodeLatencies, &st.TelecomTracePath,
+		&st.UnicomNodeLatencies, &st.UnicomTracePath,
+		&st.MobileNodeLatencies, &st.MobileTracePath,
+		&st.InboundTelecomNodeLatencies, &st.InboundTelecomTracePath,
+		&st.InboundUnicomNodeLatencies, &st.InboundUnicomTracePath,
+		&st.InboundMobileNodeLatencies, &st.InboundMobileTracePath,
 		&testedAt)
 	st.GFWBlocked = gfwBlockedInt != 0
 	if errors.Is(err, sql.ErrNoRows) {
@@ -303,6 +339,12 @@ func (s *Store) ListLatestNodeSpeedtests(ctx context.Context) (map[string]NodeSp
 		COALESCE(s1.inbound_telecom_route, ''), COALESCE(s1.inbound_telecom_latency_ms, 0),
 		COALESCE(s1.inbound_unicom_route, ''), COALESCE(s1.inbound_unicom_latency_ms, 0),
 		COALESCE(s1.inbound_mobile_route, ''), COALESCE(s1.inbound_mobile_latency_ms, 0),
+		COALESCE(s1.telecom_node_latencies, ''), COALESCE(s1.telecom_trace_path, ''),
+		COALESCE(s1.unicom_node_latencies, ''), COALESCE(s1.unicom_trace_path, ''),
+		COALESCE(s1.mobile_node_latencies, ''), COALESCE(s1.mobile_trace_path, ''),
+		COALESCE(s1.inbound_telecom_node_latencies, ''), COALESCE(s1.inbound_telecom_trace_path, ''),
+		COALESCE(s1.inbound_unicom_node_latencies, ''), COALESCE(s1.inbound_unicom_trace_path, ''),
+		COALESCE(s1.inbound_mobile_node_latencies, ''), COALESCE(s1.inbound_mobile_trace_path, ''),
 		s1.tested_at
 		FROM node_speedtests s1
 		JOIN (
@@ -325,6 +367,12 @@ func (s *Store) ListLatestNodeSpeedtests(ctx context.Context) (map[string]NodeSp
 			&st.InboundTelecomRoute, &st.InboundTelecomLatencyMs,
 			&st.InboundUnicomRoute, &st.InboundUnicomLatencyMs,
 			&st.InboundMobileRoute, &st.InboundMobileLatencyMs,
+			&st.TelecomNodeLatencies, &st.TelecomTracePath,
+			&st.UnicomNodeLatencies, &st.UnicomTracePath,
+			&st.MobileNodeLatencies, &st.MobileTracePath,
+			&st.InboundTelecomNodeLatencies, &st.InboundTelecomTracePath,
+			&st.InboundUnicomNodeLatencies, &st.InboundUnicomTracePath,
+			&st.InboundMobileNodeLatencies, &st.InboundMobileTracePath,
 			&testedAt); err != nil {
 			return nil, err
 		}

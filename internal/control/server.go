@@ -1250,6 +1250,15 @@ func (s *Server) listNodes(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
+	s.controlMu.Lock()
+	for i := range nodes {
+		if session := s.controls[nodes[i].ID]; session != nil && session.remoteAddr != "" {
+			if nodes[i].LastObservedIP == "" {
+				nodes[i].LastObservedIP = session.remoteAddr
+			}
+		}
+	}
+	s.controlMu.Unlock()
 	writeJSON(w, http.StatusOK, map[string]any{"nodes": nodes})
 }
 

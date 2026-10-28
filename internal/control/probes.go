@@ -175,17 +175,23 @@ func isMasterOverseas() bool {
 }
 
 type ChinaProbeResult struct {
-	OK                      bool
-	LatencyMs               int
-	PacketLoss              int
-	Source                  string
-	Error                   string
-	InboundTelecomRoute     string
-	InboundTelecomLatencyMs int
-	InboundUnicomRoute      string
-	InboundUnicomLatencyMs  int
-	InboundMobileRoute      string
-	InboundMobileLatencyMs  int
+	OK                          bool
+	LatencyMs                   int
+	PacketLoss                  int
+	Source                      string
+	Error                       string
+	InboundTelecomRoute         string
+	InboundTelecomLatencyMs     int
+	InboundTelecomNodeLatencies string
+	InboundTelecomTracePath     string
+	InboundUnicomRoute          string
+	InboundUnicomLatencyMs      int
+	InboundUnicomNodeLatencies  string
+	InboundUnicomTracePath      string
+	InboundMobileRoute          string
+	InboundMobileLatencyMs      int
+	InboundMobileNodeLatencies  string
+	InboundMobileTracePath      string
 }
 
 func formatProbeCity(city string) string {
@@ -393,6 +399,7 @@ func probeFromChinaReal(ctx context.Context, host string, port uint16) ChinaProb
 	var totalRTT float64
 	var validRTTCount int
 
+	var telecomCities, unicomCities, mobileCities []string
 	for _, item := range lastRes.Results {
 		probeRTT := 0
 		if item.Result.Stats.Avg != nil && *item.Result.Stats.Avg > 0 {
@@ -414,18 +421,32 @@ func probeFromChinaReal(ctx context.Context, host string, port uint16) ChinaProb
 		// Carrier-specific inbound latency and route
 		asn := item.Probe.ASN
 		upperNet := strings.ToUpper(item.Probe.Network)
+		cityName := formatProbeCity(item.Probe.City)
+		if cityName == "" {
+			cityName = item.Probe.City
+		}
+
 		if asn == 4134 || strings.Contains(upperNet, "CHINANET") || strings.Contains(upperNet, "TELECOM") {
-			if res.InboundTelecomLatencyMs == 0 && probeRTT > 0 {
+			if probeRTT > 0 {
+				telecomCities = append(telecomCities, fmt.Sprintf("%s: %dms", cityName, probeRTT))
+			}
+			if (res.InboundTelecomLatencyMs == 0 || (probeRTT > 0 && probeRTT < res.InboundTelecomLatencyMs)) && probeRTT > 0 {
 				res.InboundTelecomLatencyMs = probeRTT
 				res.InboundTelecomRoute = wire.AnalyzeTelecomRoute([]string{host}, probeRTT)
 			}
 		} else if asn == 4837 || asn == 9929 || strings.Contains(upperNet, "UNICOM") {
-			if res.InboundUnicomLatencyMs == 0 && probeRTT > 0 {
+			if probeRTT > 0 {
+				unicomCities = append(unicomCities, fmt.Sprintf("%s: %dms", cityName, probeRTT))
+			}
+			if (res.InboundUnicomLatencyMs == 0 || (probeRTT > 0 && probeRTT < res.InboundUnicomLatencyMs)) && probeRTT > 0 {
 				res.InboundUnicomLatencyMs = probeRTT
 				res.InboundUnicomRoute = wire.AnalyzeUnicomRoute([]string{host}, probeRTT)
 			}
 		} else if asn == 9808 || asn == 58807 || strings.Contains(upperNet, "MOBILE") {
-			if res.InboundMobileLatencyMs == 0 && probeRTT > 0 {
+			if probeRTT > 0 {
+				mobileCities = append(mobileCities, fmt.Sprintf("%s: %dms", cityName, probeRTT))
+			}
+			if (res.InboundMobileLatencyMs == 0 || (probeRTT > 0 && probeRTT < res.InboundMobileLatencyMs)) && probeRTT > 0 {
 				res.InboundMobileLatencyMs = probeRTT
 				res.InboundMobileRoute = wire.AnalyzeMobileRoute([]string{host}, probeRTT)
 			}
@@ -436,6 +457,14 @@ func probeFromChinaReal(ctx context.Context, host string, port uint16) ChinaProb
 	avgRTT := 0
 	if validRTTCount > 0 {
 		avgRTT = int(totalRTT / float64(validRTTCount))
+	}
+
+	destASN := wire.IPv4ToASN(host)
+	destName := "目标机房"
+	if destASN != "" {
+		if n := wire.ASNToName(destASN); n != "" {
+			destName = n
+		}
 	}
 
 	if successCount > 0 {
@@ -452,6 +481,13 @@ func probeFromChinaReal(ctx context.Context, host string, port uint16) ChinaProb
 		if res.InboundMobileRoute == "" {
 			res.InboundMobileRoute = "移动 CMI"
 		}
+		res.InboundTelecomNodeLatencies = strings.Join(telecomCities, " | ")
+		res.InboundUnicomNodeLatencies = strings.Join(unicomCities, " | ")
+		res.InboundMobileNodeLatencies = strings.Join(mobileCities, " | ")
+
+		res.InboundTelecomTracePath = wire.BuildInboundTracePath(res.InboundTelecomRoute, "电信", destName)
+		res.InboundUnicomTracePath = wire.BuildInboundTracePath(res.InboundUnicomRoute, "联通", destName)
+		res.InboundMobileTracePath = wire.BuildInboundTracePath(res.InboundMobileRoute, "移动", destName)
 		return res
 	}
 
@@ -587,10 +623,16 @@ func (s *Server) probeSingleNode(ctx context.Context, node Node, host string, po
 		item.PacketLoss = domResult.PacketLoss
 		item.InboundTelecomRoute = domResult.InboundTelecomRoute
 		item.InboundTelecomLatencyMs = domResult.InboundTelecomLatencyMs
+		item.InboundTelecomNodeLatencies = domResult.InboundTelecomNodeLatencies
+		item.InboundTelecomTracePath = domResult.InboundTelecomTracePath
 		item.InboundUnicomRoute = domResult.InboundUnicomRoute
 		item.InboundUnicomLatencyMs = domResult.InboundUnicomLatencyMs
+		item.InboundUnicomNodeLatencies = domResult.InboundUnicomNodeLatencies
+		item.InboundUnicomTracePath = domResult.InboundUnicomTracePath
 		item.InboundMobileRoute = domResult.InboundMobileRoute
 		item.InboundMobileLatencyMs = domResult.InboundMobileLatencyMs
+		item.InboundMobileNodeLatencies = domResult.InboundMobileNodeLatencies
+		item.InboundMobileTracePath = domResult.InboundMobileTracePath
 
 		if !item.DomesticOK {
 			item.StatusDesc = "疑似被 GFW 阻断 (国内探针全超时)"
@@ -610,10 +652,16 @@ func (s *Server) probeSingleNode(ctx context.Context, node Node, host string, po
 		item.PacketLoss = domResult.PacketLoss
 		item.InboundTelecomRoute = domResult.InboundTelecomRoute
 		item.InboundTelecomLatencyMs = domResult.InboundTelecomLatencyMs
+		item.InboundTelecomNodeLatencies = domResult.InboundTelecomNodeLatencies
+		item.InboundTelecomTracePath = domResult.InboundTelecomTracePath
 		item.InboundUnicomRoute = domResult.InboundUnicomRoute
 		item.InboundUnicomLatencyMs = domResult.InboundUnicomLatencyMs
+		item.InboundUnicomNodeLatencies = domResult.InboundUnicomNodeLatencies
+		item.InboundUnicomTracePath = domResult.InboundUnicomTracePath
 		item.InboundMobileRoute = domResult.InboundMobileRoute
 		item.InboundMobileLatencyMs = domResult.InboundMobileLatencyMs
+		item.InboundMobileNodeLatencies = domResult.InboundMobileNodeLatencies
+		item.InboundMobileTracePath = domResult.InboundMobileTracePath
 
 		// Also local dial from Master inside China
 		dialer := net.Dialer{Timeout: 2 * time.Second}
@@ -701,15 +749,21 @@ func (s *Server) ExecuteNodeSpeedtest(ctx context.Context, nodeID string) (*Node
 	}
 
 	var res struct {
-		TelecomLatencyMs int     `json:"telecom_latency_ms"`
-		TelecomSpeedMbps float64 `json:"telecom_speed_mbps"`
-		TelecomRoute     string  `json:"telecom_route"`
-		UnicomLatencyMs  int     `json:"unicom_latency_ms"`
-		UnicomSpeedMbps  float64 `json:"unicom_speed_mbps"`
-		UnicomRoute      string  `json:"unicom_route"`
-		MobileLatencyMs  int     `json:"mobile_latency_ms"`
-		MobileSpeedMbps  float64 `json:"mobile_speed_mbps"`
-		MobileRoute      string  `json:"mobile_route"`
+		TelecomLatencyMs     int     `json:"telecom_latency_ms"`
+		TelecomSpeedMbps     float64 `json:"telecom_speed_mbps"`
+		TelecomRoute         string  `json:"telecom_route"`
+		TelecomNodeLatencies string  `json:"telecom_node_latencies"`
+		TelecomTracePath     string  `json:"telecom_trace_path"`
+		UnicomLatencyMs      int     `json:"unicom_latency_ms"`
+		UnicomSpeedMbps      float64 `json:"unicom_speed_mbps"`
+		UnicomRoute          string  `json:"unicom_route"`
+		UnicomNodeLatencies  string  `json:"unicom_node_latencies"`
+		UnicomTracePath      string  `json:"unicom_trace_path"`
+		MobileLatencyMs      int     `json:"mobile_latency_ms"`
+		MobileSpeedMbps      float64 `json:"mobile_speed_mbps"`
+		MobileRoute          string  `json:"mobile_route"`
+		MobileNodeLatencies  string  `json:"mobile_node_latencies"`
+		MobileTracePath      string  `json:"mobile_trace_path"`
 	}
 	if err := json.Unmarshal([]byte(resA.data), &res); err != nil {
 		return nil, fmt.Errorf("解析检测数据失败: %w", err)
@@ -718,22 +772,34 @@ func (s *Server) ExecuteNodeSpeedtest(ctx context.Context, nodeID string) (*Node
 	resB := <-probeCh
 
 	st := NodeSpeedtest{
-		NodeID:                  nodeID,
-		TelecomLatencyMs:        res.TelecomLatencyMs,
-		TelecomSpeedMbps:        res.TelecomSpeedMbps,
-		TelecomRoute:            res.TelecomRoute,
-		UnicomLatencyMs:         res.UnicomLatencyMs,
-		UnicomSpeedMbps:         res.UnicomSpeedMbps,
-		UnicomRoute:             res.UnicomRoute,
-		MobileLatencyMs:         res.MobileLatencyMs,
-		MobileSpeedMbps:         res.MobileSpeedMbps,
-		MobileRoute:             res.MobileRoute,
-		InboundTelecomRoute:     resB.item.InboundTelecomRoute,
-		InboundTelecomLatencyMs: resB.item.InboundTelecomLatencyMs,
-		InboundUnicomRoute:      resB.item.InboundUnicomRoute,
-		InboundUnicomLatencyMs:  resB.item.InboundUnicomLatencyMs,
-		InboundMobileRoute:      resB.item.InboundMobileRoute,
-		InboundMobileLatencyMs:  resB.item.InboundMobileLatencyMs,
+		NodeID:                      nodeID,
+		TelecomLatencyMs:            res.TelecomLatencyMs,
+		TelecomSpeedMbps:            res.TelecomSpeedMbps,
+		TelecomRoute:                res.TelecomRoute,
+		TelecomNodeLatencies:        res.TelecomNodeLatencies,
+		TelecomTracePath:            res.TelecomTracePath,
+		UnicomLatencyMs:             res.UnicomLatencyMs,
+		UnicomSpeedMbps:             res.UnicomSpeedMbps,
+		UnicomRoute:                 res.UnicomRoute,
+		UnicomNodeLatencies:         res.UnicomNodeLatencies,
+		UnicomTracePath:             res.UnicomTracePath,
+		MobileLatencyMs:             res.MobileLatencyMs,
+		MobileSpeedMbps:             res.MobileSpeedMbps,
+		MobileRoute:                 res.MobileRoute,
+		MobileNodeLatencies:         res.MobileNodeLatencies,
+		MobileTracePath:             res.MobileTracePath,
+		InboundTelecomRoute:         resB.item.InboundTelecomRoute,
+		InboundTelecomLatencyMs:     resB.item.InboundTelecomLatencyMs,
+		InboundTelecomNodeLatencies: resB.item.InboundTelecomNodeLatencies,
+		InboundTelecomTracePath:     resB.item.InboundTelecomTracePath,
+		InboundUnicomRoute:          resB.item.InboundUnicomRoute,
+		InboundUnicomLatencyMs:      resB.item.InboundUnicomLatencyMs,
+		InboundUnicomNodeLatencies:  resB.item.InboundUnicomNodeLatencies,
+		InboundUnicomTracePath:      resB.item.InboundUnicomTracePath,
+		InboundMobileRoute:          resB.item.InboundMobileRoute,
+		InboundMobileLatencyMs:      resB.item.InboundMobileLatencyMs,
+		InboundMobileNodeLatencies:  resB.item.InboundMobileNodeLatencies,
+		InboundMobileTracePath:      resB.item.InboundMobileTracePath,
 	}
 
 	if resB.has {

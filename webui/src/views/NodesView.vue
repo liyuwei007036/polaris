@@ -276,46 +276,135 @@ function isNodeGFWBlocked(st) {
   )
 }
 
-function getInboundCarrierTooltip(st, isp) {
-  if (!st) return ''
-  let ispName = ''
-  let route = ''
-  let ping = 0
-  if (isp === 'mobile') {
-    ispName = '中国移动'
-    route = st.inbound_mobile_route || '移动 CMI'
-    ping = st.inbound_mobile_latency_ms
-  } else if (isp === 'unicom') {
-    ispName = '中国联通'
-    route = st.inbound_unicom_route || '联通 4837'
-    ping = st.inbound_unicom_latency_ms
-  } else if (isp === 'telecom') {
-    ispName = '中国电信'
-    route = st.inbound_telecom_route || '电信 163 骨干'
-    ping = st.inbound_telecom_latency_ms
+function formatNodeLatencies(raw) {
+  if (!raw) return ''
+  return raw
+    .split('|')
+    .map(s => s.trim())
+    .filter(Boolean)
+    .map(s => `• ${s.replace(/电信|联通|移动/g, '')}`)
+    .join('\n')
+}
+
+function getCarrierFallbackTrace(route, isp) {
+  const r = route || ''
+  if (r.includes('9929') || r.includes('CUII')) {
+    if (isp === 'telecom') {
+      return '机房出发 ➔ AS10099 (联通CUG) ➔ AS9929 (联通A网) ➔ AS4134 (电信163) ➔ 上海电信'
+    }
+    return '机房出发 ➔ AS9929 (联通A网) ➔ AS4837 (联通169) ➔ 上海联通'
   }
-  return `【${ispName} 去程】\n线路: ${route}\n延迟: ${ping ? ping + 'ms' : '正常通行'}`
+  if (r.includes('CMIN2') || r.includes('58807')) {
+    return '机房出发 ➔ AS58807 (移动CMIN2跨洋专线) ➔ AS9808 (移动骨干) ➔ 广州移动'
+  }
+  if (r.includes('CN2 GIA')) {
+    return '机房出发 ➔ AS4809 (电信CN2 GIA全程专线) ➔ 跨洋海缆直连 ➔ 电信骨干'
+  }
+  if (r.includes('CN2 GT')) {
+    return '机房出发 ➔ AS4809 (电信CN2半程) ➔ AS4134 (电信163骨干) ➔ 上海/广州电信'
+  }
+  if (r.includes('CTGNet')) {
+    return '机房出发 ➔ AS23764 (电信CTGNet商业专网) ➔ 国际直连 ➔ 电信骨干'
+  }
+  if (r.includes('4837')) {
+    return '机房出发 ➔ 国际公网出口 ➔ AS4837 (联通169常规骨干) ➔ 联通骨干'
+  }
+  if (r.includes('CMI')) {
+    return '机房出发 ➔ 国际公网出口 ➔ AS9808 (移动CMI常规骨干) ➔ 移动骨干'
+  }
+  if (r.includes('163')) {
+    return '机房出发 ➔ 国际公网出口 ➔ AS4134 (电信163常规骨干) ➔ 电信骨干'
+  }
+  return '机房出发 ➔ 国际公网BGP出口 ➔ 目标网络'
+}
+
+function getInboundFallbackTrace(route, isp) {
+  const r = route || ''
+  if (r.includes('CN2 GIA') || r.includes('4809')) {
+    return '国内电信 ➔ AS4809 (电信CN2 GIA全程专线出海) ➔ 国际跨洋专线 ➔ 目标机房'
+  }
+  if (r.includes('9929') || r.includes('CUII')) {
+    return '国内联通 ➔ AS9929 (联通A网精品专线出海) ➔ 国际海缆 ➔ 目标机房'
+  }
+  if (r.includes('CMIN2') || r.includes('58807')) {
+    return '国内移动 ➔ AS58807 (移动CMIN2优质海缆出海) ➔ 国际专线 ➔ 目标机房'
+  }
+  if (isp === 'telecom' || r.includes('163')) {
+    return '国内电信 ➔ AS4134 (电信163常规骨干出海) ➔ 国际海缆 ➔ 目标机房'
+  }
+  if (isp === 'unicom' || r.includes('4837')) {
+    return '国内联通 ➔ AS4837 (联通169常规骨干出海) ➔ 国际海缆 ➔ 目标机房'
+  }
+  if (isp === 'mobile' || r.includes('CMI')) {
+    return '国内移动 ➔ AS9808 (移动CMI常规骨干出海) ➔ 国际海缆 ➔ 目标机房'
+  }
+  return '国内核心节点 ➔ 骨干网出海 ➔ 国际传输 ➔ 目标机房'
+}
+
+function getInboundCarrierTooltip(st, isp) {
+  if (!st) return '暂无探测数据'
+  let lats = ''
+  let trace = ''
+  let ping = 0
+  if (isp === 'telecom') {
+    lats = st.inbound_telecom_node_latencies
+    trace = st.inbound_telecom_trace_path || getInboundFallbackTrace(st.inbound_telecom_route, 'telecom')
+    ping = st.inbound_telecom_latency_ms
+  } else if (isp === 'unicom') {
+    lats = st.inbound_unicom_node_latencies
+    trace = st.inbound_unicom_trace_path || getInboundFallbackTrace(st.inbound_unicom_route, 'unicom')
+    ping = st.inbound_unicom_latency_ms
+  } else if (isp === 'mobile') {
+    lats = st.inbound_mobile_node_latencies
+    trace = st.inbound_mobile_trace_path || getInboundFallbackTrace(st.inbound_mobile_route, 'mobile')
+    ping = st.inbound_mobile_latency_ms
+  }
+
+  const sections = []
+  const formattedLats = formatNodeLatencies(lats)
+  if (formattedLats) {
+    sections.push(`【不同节点去程延迟】\n${formattedLats}`)
+  } else if (ping > 0) {
+    sections.push(`【不同节点去程延迟】\n• 探针实测: ${ping}ms`)
+  }
+
+  if (trace) {
+    sections.push(`【去程线路轨迹】\n${trace}`)
+  }
+  return sections.join('\n\n')
 }
 
 function getISPTooltip(st, isp) {
-  if (!st) return ''
-  let ispName = ''
-  let route = ''
+  if (!st) return '暂无测速数据'
+  let lats = ''
+  let trace = ''
   let ping = 0
-  if (isp === 'mobile') {
-    ispName = '中国移动'
-    route = st.mobile_route || '移动 CMI'
-    ping = st.mobile_latency_ms ?? st.mobile_ping_ms
-  } else if (isp === 'unicom') {
-    ispName = '中国联通'
-    route = st.unicom_route || '联通 4837'
-    ping = st.unicom_latency_ms ?? st.unicom_ping_ms
-  } else if (isp === 'telecom') {
-    ispName = '中国电信'
-    route = st.telecom_route || '电信 163 骨干'
+  if (isp === 'telecom') {
+    lats = st.telecom_node_latencies
+    trace = st.telecom_trace_path || getCarrierFallbackTrace(st.telecom_route, 'telecom')
     ping = st.telecom_latency_ms ?? st.telecom_ping_ms
+  } else if (isp === 'unicom') {
+    lats = st.unicom_node_latencies
+    trace = st.unicom_trace_path || getCarrierFallbackTrace(st.unicom_route, 'unicom')
+    ping = st.unicom_latency_ms ?? st.unicom_ping_ms
+  } else if (isp === 'mobile') {
+    lats = st.mobile_node_latencies
+    trace = st.mobile_trace_path || getCarrierFallbackTrace(st.mobile_route, 'mobile')
+    ping = st.mobile_latency_ms ?? st.mobile_ping_ms
   }
-  return `【${ispName} 返程】\n线路: ${route}\n延迟: ${ping ? ping + 'ms' : '超时'}`
+
+  const sections = []
+  const formattedLats = formatNodeLatencies(lats)
+  if (formattedLats) {
+    sections.push(`【不同节点回程延迟】\n${formattedLats}`)
+  } else if (ping > 0) {
+    sections.push(`【不同节点回程延迟】\n• 实测主延迟: ${ping}ms`)
+  }
+
+  if (trace) {
+    sections.push(`【回程线路轨迹】\n${trace}`)
+  }
+  return sections.join('\n\n')
 }
 
 function getInboundSummary(st) {
@@ -938,7 +1027,15 @@ onBeforeUnmount(() => {
                     {{ node.client_address }}
                     <el-icon class="copy-icon"><CopyDocument /></el-icon>
                   </span>
-                  <span v-if="node.ddns_enabled" class="chip-ddns" :title="`DDNS: ${node.ddns_domain || '解析中'}`">DDNS</span>
+                  <el-tooltip
+                    v-if="node.ddns_enabled"
+                    :content="`DDNS 域名: ${node.ddns_domain || node.client_address}\n当前解析 IP: ${node.last_observed_ip || '同步中'}`"
+                    placement="top"
+                  >
+                    <span class="chip-ddns">
+                      DDNS: {{ node.last_observed_ip || '同步中' }}
+                    </span>
+                  </el-tooltip>
                 </div>
               </div>
 
@@ -1069,14 +1166,13 @@ onBeforeUnmount(() => {
               <!-- 去程 Inbound -->
               <div class="route-line">
                 <span class="dir-badge in">去程</span>
-                <!-- GFW 阻断提示 -->
-                <div v-if="isNodeGFWBlocked(speedtests[node.id])" class="gfw-alert-capsule">
-                  <span class="gfw-alert-dot" />
-                  <span class="gfw-alert-txt font-mono">GFW 阻断 · 0/6 探针超时</span>
-                  <el-tooltip :content="getInboundProbeTooltip(speedtests[node.id])" placement="top">
-                    <button class="gfw-detail-btn">明细 ↗</button>
-                  </el-tooltip>
-                </div>
+                <!-- GFW 阻断提示 (悬停显示探针诊断详情，无需明细按钮) -->
+                <el-tooltip v-if="isNodeGFWBlocked(speedtests[node.id])" :content="getInboundProbeTooltip(speedtests[node.id])" placement="top">
+                  <div class="gfw-alert-capsule">
+                    <span class="gfw-alert-dot" />
+                    <span class="gfw-alert-txt font-mono">GFW 阻断 · 0/6 探针超时</span>
+                  </div>
+                </el-tooltip>
                 <!-- 去程正常线路 -->
                 <div v-else-if="speedtests[node.id]" class="carrier-tags-flow">
                   <el-tooltip :content="getInboundCarrierTooltip(speedtests[node.id], 'telecom')" placement="top">
@@ -1199,7 +1295,15 @@ onBeforeUnmount(() => {
               <template #default="{ row }">
                 <div v-if="row.client_address" class="mono" style="cursor: pointer" @click="copyAddress(row.client_address)">
                   {{ row.client_address }}
-                  <span v-if="row.ddns_enabled" class="chip-ddns" style="margin-left: 4px">DDNS</span>
+                  <el-tooltip
+                    v-if="row.ddns_enabled"
+                    :content="`DDNS 域名: ${row.ddns_domain || row.client_address}\n当前解析 IP: ${row.last_observed_ip || '同步中'}`"
+                    placement="top"
+                  >
+                    <span class="chip-ddns" style="margin-left: 4px">
+                      DDNS: {{ row.last_observed_ip || '同步中' }}
+                    </span>
+                  </el-tooltip>
                 </div>
                 <span v-else class="danger-text">未配置连接地址</span>
               </template>

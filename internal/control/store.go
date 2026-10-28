@@ -2522,6 +2522,18 @@ CREATE TABLE IF NOT EXISTS node_speedtests (
   inbound_unicom_latency_ms INTEGER NOT NULL DEFAULT 0,
   inbound_mobile_route TEXT NOT NULL DEFAULT '',
   inbound_mobile_latency_ms INTEGER NOT NULL DEFAULT 0,
+  telecom_node_latencies TEXT NOT NULL DEFAULT '',
+  telecom_trace_path TEXT NOT NULL DEFAULT '',
+  unicom_node_latencies TEXT NOT NULL DEFAULT '',
+  unicom_trace_path TEXT NOT NULL DEFAULT '',
+  mobile_node_latencies TEXT NOT NULL DEFAULT '',
+  mobile_trace_path TEXT NOT NULL DEFAULT '',
+  inbound_telecom_node_latencies TEXT NOT NULL DEFAULT '',
+  inbound_telecom_trace_path TEXT NOT NULL DEFAULT '',
+  inbound_unicom_node_latencies TEXT NOT NULL DEFAULT '',
+  inbound_unicom_trace_path TEXT NOT NULL DEFAULT '',
+  inbound_mobile_node_latencies TEXT NOT NULL DEFAULT '',
+  inbound_mobile_trace_path TEXT NOT NULL DEFAULT '',
   tested_at INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_node_speedtests_node_tested ON node_speedtests(node_id, tested_at DESC);
@@ -2544,6 +2556,18 @@ INSERT OR IGNORE INTO alert_settings (id, updated_at) VALUES (1, unixepoch());
 		"inbound_unicom_latency_ms INTEGER NOT NULL DEFAULT 0",
 		"inbound_mobile_route TEXT NOT NULL DEFAULT ''",
 		"inbound_mobile_latency_ms INTEGER NOT NULL DEFAULT 0",
+		"telecom_node_latencies TEXT NOT NULL DEFAULT ''",
+		"telecom_trace_path TEXT NOT NULL DEFAULT ''",
+		"unicom_node_latencies TEXT NOT NULL DEFAULT ''",
+		"unicom_trace_path TEXT NOT NULL DEFAULT ''",
+		"mobile_node_latencies TEXT NOT NULL DEFAULT ''",
+		"mobile_trace_path TEXT NOT NULL DEFAULT ''",
+		"inbound_telecom_node_latencies TEXT NOT NULL DEFAULT ''",
+		"inbound_telecom_trace_path TEXT NOT NULL DEFAULT ''",
+		"inbound_unicom_node_latencies TEXT NOT NULL DEFAULT ''",
+		"inbound_unicom_trace_path TEXT NOT NULL DEFAULT ''",
+		"inbound_mobile_node_latencies TEXT NOT NULL DEFAULT ''",
+		"inbound_mobile_trace_path TEXT NOT NULL DEFAULT ''",
 	} {
 		if err := s.addSpeedtestColumn(ctx, column); err != nil {
 			return err
