@@ -132,3 +132,21 @@ func TestAnalyzeMobileRoute(t *testing.T) {
 		t.Fatalf("expected '移动 CMI', got %q", r)
 	}
 }
+
+func TestBuildTracePathDeduplication(t *testing.T) {
+	// Oscillating CMI and CMNet interconnect hops:
+	hops := []string{
+		"38.244.30.254", // AS174
+		"223.120.2.1",   // AS58453 (CMI)
+		"221.183.55.22", // AS9808 (CMNet)
+		"223.119.1.5",   // AS58453 (CMI)
+		"221.183.25.1",  // AS9808 (CMNet)
+		"120.196.165.24",
+	}
+
+	path := BuildTracePath(hops, "广州移动")
+	expected := "机房出发 (美西洛杉矶) ➔ AS58453 (移动CMI·中国香港) ➔ AS9808 (移动骨干·北京) ➔ 广州移动"
+	if path != expected {
+		t.Fatalf("expected %q, got %q", expected, path)
+	}
+}

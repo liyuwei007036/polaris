@@ -460,7 +460,7 @@ func probeFromChinaReal(ctx context.Context, host string, port uint16) ChinaProb
 	}
 
 	destASN := wire.IPv4ToASN(host)
-	destName := "目标机房"
+	destName := "服务器节点"
 	if destASN != "" {
 		if n := wire.ASNToName(destASN); n != "" {
 			destName = n

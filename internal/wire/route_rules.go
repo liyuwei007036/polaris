@@ -333,116 +333,312 @@ func AnalyzeMobileRoute(hops []string, latencyMs int) string {
 	return "移动超时"
 }
 
-// ASNToName converts an authoritative ASN identifier to a readable trajectory node label.
-func ASNToName(asn string) string {
+// IPv4ToCity extracts the geographic city or international region for intermediate carrier hops.
+func IPv4ToCity(ip string) string {
+	raw := strings.TrimSpace(ip)
+	lower := strings.ToLower(raw)
+
+	switch {
+	case strings.Contains(lower, "lax") || strings.Contains(lower, "losangeles"):
+		return "洛杉矶"
+	case strings.Contains(lower, "sjc") || strings.Contains(lower, "sanjose"):
+		return "圣何塞"
+	case strings.Contains(lower, "fra") || strings.Contains(lower, "frankfurt"):
+		return "德国法兰克福"
+	case strings.Contains(lower, "lon") || strings.Contains(lower, "london"):
+		return "英国伦敦"
+	case strings.Contains(lower, "tyo") || strings.Contains(lower, "tokyo"):
+		return "日本东京"
+	case strings.Contains(lower, "sin") || strings.Contains(lower, "singapore"):
+		return "新加坡"
+	case strings.Contains(lower, "hkg") || strings.Contains(lower, "hongkong"):
+		return "中国香港"
+	case strings.Contains(lower, "sha") || strings.Contains(lower, "shanghai"):
+		return "上海"
+	case strings.Contains(lower, "can") || strings.Contains(lower, "guangzhou"):
+		return "广州"
+	case strings.Contains(lower, "pek") || strings.Contains(lower, "beijing"):
+		return "北京"
+	}
+
+	switch {
+	// Cogent US West
+	case strings.HasPrefix(raw, "38.244.") || strings.HasPrefix(raw, "154."):
+		return "美西洛杉矶"
+
+	// Telecom CN2 (AS4809)
+	case strings.HasPrefix(raw, "59.43.247.") || strings.HasPrefix(raw, "59.43.182."):
+		return "美西洛杉矶"
+	case strings.HasPrefix(raw, "59.43.248."):
+		return "日本东京"
+	case strings.HasPrefix(raw, "59.43.250."):
+		return "新加坡"
+	case strings.HasPrefix(raw, "59.43.249."):
+		return "德国法兰克福"
+	case strings.HasPrefix(raw, "59.43.251."):
+		return "英国伦敦"
+	case strings.HasPrefix(raw, "59.43.244."):
+		return "中国香港"
+	case strings.HasPrefix(raw, "59.43.187.") || strings.HasPrefix(raw, "59.43.130.") || strings.HasPrefix(raw, "59.43.39."):
+		return "上海"
+	case strings.HasPrefix(raw, "59.43.18.") || strings.HasPrefix(raw, "59.43.246."):
+		return "广州"
+	case strings.HasPrefix(raw, "59.43.138.") || strings.HasPrefix(raw, "59.43.245."):
+		return "北京"
+
+	// Telecom 163 (AS4134)
+	case strings.HasPrefix(raw, "202.97.50.") || strings.HasPrefix(raw, "202.97.51.") || strings.HasPrefix(raw, "202.97.90."):
+		return "美西洛杉矶"
+	case strings.HasPrefix(raw, "202.97.58."):
+		return "美西圣何塞"
+	case strings.HasPrefix(raw, "202.97.60."):
+		return "中国香港"
+	case strings.HasPrefix(raw, "202.97.61."):
+		return "日本东京"
+	case strings.HasPrefix(raw, "202.97.88."):
+		return "新加坡"
+	case strings.HasPrefix(raw, "202.97.81.") || strings.HasPrefix(raw, "202.97.87.") || strings.HasPrefix(raw, "202.97.62.") || strings.HasPrefix(raw, "202.97.33."):
+		return "上海"
+	case strings.HasPrefix(raw, "202.97.94.") || strings.HasPrefix(raw, "202.97.91.") || strings.HasPrefix(raw, "202.97.67."):
+		return "广州"
+	case strings.HasPrefix(raw, "202.97.63.") || strings.HasPrefix(raw, "202.97.53.") || strings.HasPrefix(raw, "202.97.24."):
+		return "北京"
+	case strings.HasPrefix(raw, "202.97.45.") || strings.HasPrefix(raw, "202.97.46."):
+		return "成都"
+
+	// Unicom 9929 / CUII
+	case strings.HasPrefix(raw, "218.105.2.174") || strings.HasPrefix(raw, "218.105.2.170"):
+		return "美西洛杉矶"
+	case strings.HasPrefix(raw, "218.105.2.198"):
+		return "中国香港"
+	case strings.HasPrefix(raw, "218.105.2.150") || strings.HasPrefix(raw, "218.105.2.152"):
+		return "上海"
+	case strings.HasPrefix(raw, "218.105.2.154"):
+		return "广州"
+	case strings.HasPrefix(raw, "218.105.2.146"):
+		return "北京"
+
+	// Unicom CUG (AS10099)
+	case strings.HasPrefix(raw, "203.160.75.") || strings.HasPrefix(raw, "203.160.") || strings.HasPrefix(raw, "202.77."):
+		return "中国香港"
+	case strings.HasPrefix(raw, "38.69."):
+		return "美西洛杉矶"
+
+	// Unicom 169 (AS4837)
+	case strings.HasPrefix(raw, "219.158.102."):
+		return "美西洛杉矶"
+	case strings.HasPrefix(raw, "219.158.103."):
+		return "美西圣何塞"
+	case strings.HasPrefix(raw, "219.158.104."):
+		return "德国法兰克福"
+	case strings.HasPrefix(raw, "219.158.105."):
+		return "日本东京"
+	case strings.HasPrefix(raw, "219.158.10."):
+		return "中国香港"
+	case strings.HasPrefix(raw, "219.158.9."):
+		return "上海"
+	case strings.HasPrefix(raw, "219.158.11.") || strings.HasPrefix(raw, "219.158.24."):
+		return "广州"
+	case strings.HasPrefix(raw, "219.158.3.") || strings.HasPrefix(raw, "219.158.21."):
+		return "北京"
+
+	// Mobile CMIN2 (AS58807)
+	case strings.HasPrefix(raw, "223.120.161.5"):
+		return "美西洛杉矶"
+	case strings.HasPrefix(raw, "223.120.16."):
+		return "中国香港"
+	case strings.HasPrefix(raw, "223.120.17."):
+		return "上海"
+
+	// Mobile CMI (AS58453)
+	case strings.HasPrefix(raw, "223.120.161."):
+		return "美西洛杉矶"
+	case strings.HasPrefix(raw, "223.120.162."):
+		return "美西圣何塞"
+	case strings.HasPrefix(raw, "223.120.2."):
+		return "中国香港"
+	case strings.HasPrefix(raw, "223.120.6."):
+		return "新加坡"
+	case strings.HasPrefix(raw, "223.120.12."):
+		return "日本东京"
+	case strings.HasPrefix(raw, "223.120.14."):
+		return "德国法兰克福"
+	case strings.HasPrefix(raw, "223.120.15."):
+		return "英国伦敦"
+
+	// Mobile CMNet (AS9808)
+	case strings.HasPrefix(raw, "221.183.18."):
+		return "中国香港"
+	case strings.HasPrefix(raw, "221.183.92.") || strings.HasPrefix(raw, "221.183.89."):
+		return "上海"
+	case strings.HasPrefix(raw, "221.183.116.") || strings.HasPrefix(raw, "221.183.125."):
+		return "广州"
+	case strings.HasPrefix(raw, "221.183.25.") || strings.HasPrefix(raw, "221.183.26."):
+		return "北京"
+	}
+	return ""
+}
+
+// ASNToNameWithLocation converts an authoritative ASN and detected city to a readable trajectory node label.
+func ASNToNameWithLocation(asn, city string) string {
+	base := ""
 	switch asn {
 	case "AS4809":
-		return "AS4809 (电信CN2)"
+		base = "AS4809 (电信CN2"
 	case "AS4134":
-		return "AS4134 (电信163)"
+		base = "AS4134 (电信163"
 	case "AS23764":
-		return "AS23764 (电信CTGNet)"
+		base = "AS23764 (电信CTGNet"
 	case "AS9929":
-		return "AS9929 (联通A网)"
+		base = "AS9929 (联通A网"
 	case "AS10099":
-		return "AS10099 (联通CUG)"
+		base = "AS10099 (联通CUG"
 	case "AS4837":
-		return "AS4837 (联通169)"
+		base = "AS4837 (联通169"
 	case "AS58807":
-		return "AS58807 (移动CMIN2)"
+		base = "AS58807 (移动CMIN2"
 	case "AS58453":
-		return "AS58453 (移动CMI)"
+		base = "AS58453 (移动CMI"
 	case "AS9808":
-		return "AS9808 (移动骨干)"
+		base = "AS9808 (移动骨干"
 	case "AS174":
-		return "AS174 (Cogent)"
+		base = "AS174 (Cogent"
 	default:
 		return ""
 	}
+
+	if city != "" {
+		return base + "·" + city + ")"
+	}
+	return base + ")"
 }
 
-// BuildTracePath constructs a clean hop trajectory from real traceroute intermediate hops.
-func BuildTracePath(hops []string, targetName string) string {
-	var seq []string
-	seenASN := ""
+// ASNToName converts an authoritative ASN identifier to a readable trajectory node label.
+func ASNToName(asn string) string {
+	return ASNToNameWithLocation(asn, "")
+}
 
-	for _, ip := range hops {
+// BuildTracePath constructs a clean hop trajectory from real traceroute intermediate hops, including geographical regions.
+func BuildTracePath(hops []string, targetName string) string {
+	type asnNode struct {
+		asn  string
+		city string
+	}
+	var nodes []asnNode
+	originCity := ""
+
+	for i, ip := range hops {
 		asn := IPv4ToASN(ip)
+		city := IPv4ToCity(ip)
+
+		if i < 3 && originCity == "" && city != "" {
+			originCity = city
+		}
+
 		if asn == "" {
 			continue
 		}
-		if asn == seenASN {
+
+		foundIdx := -1
+		for idx, n := range nodes {
+			if n.asn == asn {
+				foundIdx = idx
+				break
+			}
+		}
+
+		if foundIdx >= 0 {
+			if nodes[foundIdx].city == "" && city != "" {
+				nodes[foundIdx].city = city
+			}
+		} else {
+			nodes = append(nodes, asnNode{asn: asn, city: city})
+		}
+	}
+
+	if len(nodes) == 0 {
+		return ""
+	}
+
+	var seq []string
+	for _, n := range nodes {
+		// If DC upstream is AS174 and origin city is already identified, avoid redundant repetition
+		if n.asn == "AS174" && originCity != "" {
 			continue
 		}
-		seenASN = asn
-		name := ASNToName(asn)
+		name := ASNToNameWithLocation(n.asn, n.city)
 		if name != "" {
 			seq = append(seq, name)
 		}
 	}
 
-	if len(seq) == 0 {
-		return ""
+	originLabel := "机房出发"
+	if originCity != "" {
+		originLabel = fmt.Sprintf("机房出发 (%s)", originCity)
 	}
 
-	parts := append([]string{"机房出发"}, seq...)
+	parts := append([]string{originLabel}, seq...)
 	if targetName != "" {
 		parts = append(parts, targetName)
 	}
 	return strings.Join(parts, " ➔ ")
 }
 
-// BuildTracePathFallback returns a clean line trajectory when intermediate hops are uncaptured.
+// BuildTracePathFallback returns a clean line trajectory with regions when intermediate hops are uncaptured.
 func BuildTracePathFallback(route, targetName string) string {
 	if strings.Contains(route, "9929") || strings.Contains(route, "CUII") {
 		if strings.Contains(route, "电信") {
-			return "机房出发 ➔ AS10099 (联通CUG) ➔ AS9929 (联通A网) ➔ AS4134 (电信163) ➔ " + targetName
+			return "机房出发 ➔ AS10099 (联通CUG·中国香港) ➔ AS9929 (联通A网·上海) ➔ AS4134 (电信163·上海) ➔ " + targetName
 		}
-		return "机房出发 ➔ AS10099 (联通CUG) ➔ AS9929 (联通A网) ➔ " + targetName
+		return "机房出发 ➔ AS10099 (联通CUG·中国香港) ➔ AS9929 (联通A网·上海) ➔ " + targetName
 	}
 	if strings.Contains(route, "CMIN2") || strings.Contains(route, "58807") {
-		return "机房出发 ➔ AS58807 (移动CMIN2跨洋专线) ➔ AS9808 (移动骨干) ➔ " + targetName
+		return "机房出发 ➔ AS58807 (移动CMIN2·美西直连) ➔ AS9808 (移动骨干·上海) ➔ " + targetName
 	}
 	if strings.Contains(route, "CN2 GIA") {
-		return "机房出发 ➔ AS4809 (电信CN2 GIA全程专线) ➔ 跨洋海缆直连 ➔ " + targetName
+		return "机房出发 ➔ AS4809 (电信CN2 GIA·中美直连) ➔ 跨洋海缆直连 ➔ " + targetName
 	}
 	if strings.Contains(route, "CN2 GT") {
-		return "机房出发 ➔ AS4809 (电信CN2半程) ➔ AS4134 (电信163骨干) ➔ " + targetName
+		return "机房出发 ➔ AS4809 (电信CN2·国际出口) ➔ AS4134 (电信163·国内骨干) ➔ " + targetName
 	}
 	if strings.Contains(route, "CTGNet") {
-		return "机房出发 ➔ AS23764 (电信CTGNet商业专网) ➔ 国际直连 ➔ " + targetName
+		return "机房出发 ➔ AS23764 (电信CTGNet·国际直连) ➔ 电信骨干 ➔ " + targetName
 	}
 	if strings.Contains(route, "4837") {
-		return "机房出发 ➔ 国际公网出口 ➔ AS4837 (联通169常规骨干) ➔ " + targetName
+		return "机房出发 ➔ 国际公网出口 ➔ AS4837 (联通169·国内骨干) ➔ " + targetName
 	}
 	if strings.Contains(route, "CMI") {
-		return "机房出发 ➔ 国际公网出口 ➔ AS9808 (移动CMI常规骨干) ➔ " + targetName
+		return "机房出发 ➔ AS58453 (移动CMI·香港/国际出口) ➔ AS9808 (移动骨干) ➔ " + targetName
 	}
 	if strings.Contains(route, "163") {
-		return "机房出发 ➔ 国际公网出口 ➔ AS4134 (电信163常规骨干) ➔ " + targetName
+		return "机房出发 ➔ 国际公网出口 ➔ AS4134 (电信163·国内骨干) ➔ " + targetName
 	}
-	return "机房出发 ➔ 国际BGP出口 ➔ " + targetName
+	return "机房出发 ➔ 国际公网BGP出口 ➔ " + targetName
 }
 
-// BuildInboundTracePath constructs an inbound trajectory from domestic source to the target node.
+// BuildInboundTracePath constructs an inbound trajectory from domestic source to the target node with regions.
 func BuildInboundTracePath(route, carrier, destName string) string {
+	targetLabel := "服务器节点"
+	if destName != "" && destName != "目标机房" && destName != "海外骨干" {
+		targetLabel = destName
+	}
 	if strings.Contains(route, "CN2 GIA") || strings.Contains(route, "4809") {
-		return fmt.Sprintf("国内电信 ➔ AS4809 (电信CN2 GIA专线出海) ➔ %s ➔ 目标机房", destName)
+		return fmt.Sprintf("国内电信 ➔ AS4809 (电信CN2 GIA·上海/广州出口) ➔ 国际跨洋专线 ➔ %s", targetLabel)
 	}
 	if strings.Contains(route, "9929") || strings.Contains(route, "CUII") {
-		return fmt.Sprintf("国内联通 ➔ AS9929 (联通A网精品专线出海) ➔ %s ➔ 目标机房", destName)
+		return fmt.Sprintf("国内联通 ➔ AS9929 (联通A网·上海国际出口) ➔ 国际海缆直连 ➔ %s", targetLabel)
 	}
 	if strings.Contains(route, "CMIN2") || strings.Contains(route, "58807") {
-		return fmt.Sprintf("国内移动 ➔ AS58807 (移动CMIN2优质海缆出海) ➔ %s ➔ 目标机房", destName)
+		return fmt.Sprintf("国内移动 ➔ AS58807 (移动CMIN2·上海直连专线) ➔ 跨洋海缆 ➔ %s", targetLabel)
 	}
 	if carrier == "电信" || strings.Contains(route, "163") {
-		return fmt.Sprintf("国内电信 ➔ AS4134 (电信163常规骨干出海) ➔ %s ➔ 目标机房", destName)
+		return fmt.Sprintf("国内电信 ➔ AS4134 (电信163·上海/广州出口) ➔ 国际跨洋传输 ➔ %s", targetLabel)
 	}
 	if carrier == "联通" || strings.Contains(route, "4837") {
-		return fmt.Sprintf("国内联通 ➔ AS4837 (联通169常规骨干出海) ➔ %s ➔ 目标机房", destName)
+		return fmt.Sprintf("国内联通 ➔ AS4837 (联通169·上海/广州出口) ➔ 国际跨洋传输 ➔ %s", targetLabel)
 	}
 	if carrier == "移动" || strings.Contains(route, "CMI") {
-		return fmt.Sprintf("国内移动 ➔ AS9808 (移动CMI常规骨干出海) ➔ %s ➔ 目标机房", destName)
+		return fmt.Sprintf("国内移动 ➔ AS9808 (移动骨干·广州/上海出口) ➔ AS58453 (移动CMI·中国香港) ➔ %s", targetLabel)
 	}
-	return fmt.Sprintf("国内核心节点 ➔ 骨干网出海 ➔ %s ➔ 目标机房", destName)
+	return fmt.Sprintf("国内核心节点 ➔ 骨干网出海 ➔ 国际公网传输 ➔ %s", targetLabel)
 }
