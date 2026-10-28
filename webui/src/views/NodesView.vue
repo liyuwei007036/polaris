@@ -304,15 +304,15 @@ function getISPTooltip(st, isp) {
   let ping = 0
   if (isp === 'mobile') {
     ispName = '中国移动'
-    route = st.mobile_route || '标准直连'
+    route = st.mobile_route || '移动 CMI'
     ping = st.mobile_latency_ms ?? st.mobile_ping_ms
   } else if (isp === 'unicom') {
     ispName = '中国联通'
-    route = st.unicom_route || '标准直连'
+    route = st.unicom_route || '联通 4837'
     ping = st.unicom_latency_ms ?? st.unicom_ping_ms
   } else if (isp === 'telecom') {
     ispName = '中国电信'
-    route = st.telecom_route || '标准直连'
+    route = st.telecom_route || '电信 163 骨干'
     ping = st.telecom_latency_ms ?? st.telecom_ping_ms
   }
   return `【${ispName} 返程】\n线路: ${route}\n延迟: ${ping ? ping + 'ms' : '超时'}`
@@ -336,7 +336,7 @@ function getInboundProbeTooltip(st) {
 }
 
 function formatRouteSimple(route) {
-  if (!route) return '直连'
+  if (!route) return '待测'
   if (route.includes('CN2 GIA')) return 'CN2 GIA'
   if (route.includes('CN2 GT')) return 'CN2 GT'
   if (route.includes('9929')) return '9929'
@@ -346,15 +346,21 @@ function formatRouteSimple(route) {
   if (route.includes('CTGNet')) return 'CTGNet'
   if (route.includes('163')) return '163'
   if (route.includes('BGP')) return 'BGP'
-  const clean = route.replace(/中国|电信|联通|移动|骨干|普通/g, '').trim()
-  return clean || '直连'
+  if (route.includes('GFW')) return 'GFW 阻断'
+  if (route.includes('超时')) return '超时'
+  // 若包含旧的“电信普通直连”等历史字段，映射为骨干网
+  if (route.includes('电信')) return '163'
+  if (route.includes('联通')) return '4837'
+  if (route.includes('移动')) return 'CMI'
+  const clean = route.replace(/中国|骨干|普通/g, '').trim()
+  return clean || '163'
 }
 
 function formatCarrierDisplay(route, latencyMs) {
   const isTimeout = latencyMs == null || latencyMs <= 0
   const rName = formatRouteSimple(route)
   if (isTimeout) {
-    if (!rName || rName === '直连' || rName === '超时') return '超时'
+    if (!rName || rName === '待测' || rName === '超时') return '超时'
     return `${rName} 超时`
   }
   return `${rName} ${latencyMs}ms`

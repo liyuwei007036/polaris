@@ -192,10 +192,10 @@ func AnalyzeTelecomRoute(hops []string, latencyMs int) string {
 	}
 
 	if latencyMs > 0 {
-		if latencyMs < 80 {
+		if latencyMs < 60 {
 			return "电信 BGP 直连"
 		}
-		return "电信普通直连"
+		return "电信 163 骨干"
 	}
 	return "电信超时"
 }
@@ -245,10 +245,10 @@ func AnalyzeUnicomRoute(hops []string, latencyMs int) string {
 	}
 
 	if latencyMs > 0 {
-		if latencyMs < 80 {
+		if latencyMs < 60 {
 			return "联通 BGP 直连"
 		}
-		return "联通普通直连"
+		return "联通 4837"
 	}
 	return "联通超时"
 }
@@ -287,10 +287,10 @@ func AnalyzeMobileRoute(hops []string, latencyMs int) string {
 	}
 
 	if latencyMs > 0 {
-		if latencyMs < 80 {
+		if latencyMs < 60 {
 			return "移动 BGP 直连"
 		}
-		return "移动普通直连"
+		return "移动 CMI"
 	}
 	return "移动超时"
 }

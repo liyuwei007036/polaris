@@ -134,7 +134,7 @@ type traceRouteResult struct {
 	LatencyMs int
 }
 
-// inspectLocalRouteQuery uses `ip route get <target>` on Linux to immediately discover
+// inspectLocalRouteQuery uses `ip route get <target>` on Linux to discover
 // the direct next-hop gateway and source interface IP without relying on external traceroute.
 func inspectLocalRouteQuery(ctx context.Context, targetHost string) []string {
 	if runtime.GOOS != "linux" || !commandExists("ip") {
@@ -142,15 +142,87 @@ func inspectLocalRouteQuery(ctx context.Context, targetHost string) []string {
 	}
 	cmdCtx, cancel := context.WithTimeout(ctx, 1500*time.Millisecond)
 	defer cancel()
-	out, err := exec.CommandContext(cmdCtx, "ip", "route", "get", targetHost).Output()
-	if err != nil || len(out) == 0 {
+	out, _ := exec.CommandContext(cmdCtx, "ip", "route", "get", targetHost).CombinedOutput()
+	if len(out) == 0 {
 		return nil
 	}
+	var hops []string
+	reVia := regexp.MustCompile(`via\s+(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})`)
+	if m := reVia.FindStringSubmatch(string(out)); len(m) > 1 {
+		hops = append(hops, m[1])
+	}
+	reSrc := regexp.MustCompile(`src\s+(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})`)
+	if m := reSrc.FindStringSubmatch(string(out)); len(m) > 1 {
+		hops = append(hops, m[1])
+	}
+	return hops
+}
+
+// extractHopsFromOutput parses traceroute / tracert output line-by-line.
+// It strictly ignores the header line (preventing target IP from polluting hop 1)
+// and extracts intermediate IP hops and the final RTT latency.
+func extractHopsFromOutput(targetHost, output string) ([]string, int) {
+	var hops []string
+	latency := 0
+	reHopLine := regexp.MustCompile(`^\s*(\d{1,2})\s+(.+)`)
 	reIP := regexp.MustCompile(`\b\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\b`)
-	return reIP.FindAllString(string(out), -1)
+	reHopRTT := regexp.MustCompile(`(?i)([0-9]+(?:\.[0-9]+)?)\s*ms`)
+
+	lines := strings.Split(output, "\n")
+	for _, rawLine := range lines {
+		line := strings.TrimSpace(rawLine)
+		if line == "" {
+			continue
+		}
+		// Skip header line (e.g. "traceroute to 210.22.97.1 ...", "通过最多 30 个跃点跟踪到 ...")
+		if strings.HasPrefix(strings.ToLower(line), "traceroute to") ||
+			strings.Contains(line, "跃点跟踪到") ||
+			strings.HasPrefix(strings.ToLower(line), "tracing route to") {
+			continue
+		}
+
+		match := reHopLine.FindStringSubmatch(rawLine)
+		if len(match) > 2 {
+			hopContent := match[2]
+			ips := reIP.FindAllString(hopContent, -1)
+			for _, ip := range ips {
+				// Don't append if it's identical to the target destination as hop 1
+				if len(hops) == 0 && ip == targetHost {
+					continue
+				}
+				hops = append(hops, ip)
+			}
+
+			// Check for text tokens in line (AS9929, CUII, CN2, CMIN2, CUG)
+			lower := strings.ToLower(hopContent)
+			if strings.Contains(lower, "9929") || strings.Contains(lower, "cuii") {
+				hops = append(hops, "9929")
+			}
+			if strings.Contains(lower, "10099") || strings.Contains(lower, "cug") {
+				hops = append(hops, "10099")
+			}
+			if strings.Contains(lower, "59.43.") || strings.Contains(lower, "cn2") {
+				hops = append(hops, "59.43.0.1")
+			}
+			if strings.Contains(lower, "cmin2") || strings.Contains(lower, "58807") {
+				hops = append(hops, "58807")
+			}
+
+			// Extract RTT from this hop
+			if rtts := reHopRTT.FindAllStringSubmatch(hopContent, -1); len(rtts) > 0 {
+				last := rtts[len(rtts)-1]
+				if f, err := strconv.ParseFloat(last[1], 64); err == nil && f > 0 {
+					latency = int(f)
+				}
+			}
+		}
+	}
+
+	return hops, latency
 }
 
 // traceRoute extracts intermediate IP hops towards the target using traceroute or tracepath.
+// It uses CombinedOutput and never discards captured hops due to non-zero exit codes.
 func traceRoute(ctx context.Context, targetHost string) traceRouteResult {
 	if runtime.GOOS == "linux" && !commandExists("traceroute") && !commandExists("tracepath") {
 		if commandExists("apt-get") {
@@ -160,41 +232,48 @@ func traceRoute(ctx context.Context, targetHost string) traceRouteResult {
 		}
 	}
 
-	var out []byte
-	var err error
+	var outStr string
 
 	if runtime.GOOS == "windows" {
-		traceCtx, cancel := context.WithTimeout(ctx, 8*time.Second)
-		out, err = exec.CommandContext(traceCtx, "tracert", "-d", "-h", "30", "-w", "800", targetHost).Output()
+		traceCtx, cancel := context.WithTimeout(ctx, 6*time.Second)
+		out, _ := exec.CommandContext(traceCtx, "tracert", "-d", "-h", "20", "-w", "500", targetHost).CombinedOutput()
 		cancel()
+		outStr = string(out)
 	} else if commandExists("traceroute") {
-		// 1. Try ICMP traceroute (-I) with 30 max hops (-m 30 -q 1 -w 1)
-		traceCtx, cancel := context.WithTimeout(ctx, 7*time.Second)
-		out, err = exec.CommandContext(traceCtx, "traceroute", "-I", "-n", "-m", "30", "-q", "1", "-w", "1", targetHost).Output()
+		// 1. Try ICMP traceroute (-I) with 20 max hops (-m 20 -q 1 -w 1)
+		traceCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		out, _ := exec.CommandContext(traceCtx, "traceroute", "-I", "-n", "-m", "20", "-q", "1", "-w", "1", targetHost).CombinedOutput()
 		cancel()
 
-		// 2. If ICMP failed (e.g. non-root or firewall), try standard UDP traceroute
-		if err != nil || len(out) == 0 {
-			traceCtx2, cancel2 := context.WithTimeout(ctx, 7*time.Second)
-			out, err = exec.CommandContext(traceCtx2, "traceroute", "-n", "-m", "30", "-q", "1", "-w", "1", targetHost).Output()
+		hops, lat := extractHopsFromOutput(targetHost, string(out))
+		if len(hops) > 0 {
+			outStr = string(out)
+		} else {
+			// 2. If ICMP produced 0 hops (e.g. non-root or firewall drop), try standard UDP traceroute
+			traceCtx2, cancel2 := context.WithTimeout(ctx, 5*time.Second)
+			out2, _ := exec.CommandContext(traceCtx2, "traceroute", "-n", "-m", "20", "-q", "1", "-w", "1", targetHost).CombinedOutput()
 			cancel2()
-		}
 
-		// 3. If standard UDP failed, try TCP SYN traceroute (-T -p 80)
-		if err != nil || len(out) == 0 {
-			traceCtx3, cancel3 := context.WithTimeout(ctx, 7*time.Second)
-			out, err = exec.CommandContext(traceCtx3, "traceroute", "-T", "-p", "80", "-n", "-m", "30", "-q", "1", "-w", "1", targetHost).Output()
-			cancel3()
+			hops2, _ := extractHopsFromOutput(targetHost, string(out2))
+			if len(hops2) > 0 {
+				outStr = string(out2)
+			} else {
+				// 3. Fallback to TCP SYN traceroute (-T -p 80)
+				traceCtx3, cancel3 := context.WithTimeout(ctx, 5*time.Second)
+				out3, _ := exec.CommandContext(traceCtx3, "traceroute", "-T", "-p", "80", "-n", "-m", "20", "-q", "1", "-w", "1", targetHost).CombinedOutput()
+				cancel3()
+				outStr = string(out3)
+			}
 		}
+		_ = lat
 	} else if commandExists("tracepath") {
-		traceCtx, cancel := context.WithTimeout(ctx, 8*time.Second)
-		out, err = exec.CommandContext(traceCtx, "tracepath", "-n", "-m", "30", targetHost).Output()
+		traceCtx, cancel := context.WithTimeout(ctx, 6*time.Second)
+		out, _ := exec.CommandContext(traceCtx, "tracepath", "-n", "-m", "20", targetHost).CombinedOutput()
 		cancel()
+		outStr = string(out)
 	}
 
-	outStr := string(out)
-	reIP := regexp.MustCompile(`\b\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\b`)
-	hops := reIP.FindAllString(outStr, -1)
+	hops, latency := extractHopsFromOutput(targetHost, outStr)
 
 	// Combine local kernel routing table evidence
 	if localHops := inspectLocalRouteQuery(ctx, targetHost); len(localHops) > 0 {
@@ -213,17 +292,6 @@ func traceRoute(ctx context.Context, targetHost string) traceRouteResult {
 	}
 	if strings.Contains(lowerOut, "cmin2") || strings.Contains(lowerOut, "58807") {
 		hops = append(hops, "58807")
-	}
-
-	// 提取 traceroute 响应中末跳 RTT 耗时
-	reHopRTT := regexp.MustCompile(`(?i)([0-9]+(?:\.[0-9]+)?)\s*ms`)
-	rttMatches := reHopRTT.FindAllStringSubmatch(outStr, -1)
-	latency := 0
-	if len(rttMatches) > 0 {
-		lastMatch := rttMatches[len(rttMatches)-1]
-		if f, err := strconv.ParseFloat(lastMatch[1], 64); err == nil && f > 0 {
-			latency = int(f)
-		}
 	}
 
 	return traceRouteResult{
@@ -295,11 +363,11 @@ func runSpeedtest(ctx context.Context, task Task) TaskResult {
 	var traceWg sync.WaitGroup
 	traceWg.Add(3)
 
-	// 电信路由探测 (先测核心上海节点，若已确认精品线路则提前结束，否则测试广州备选节点)
+	// 电信路由探测 (先测核心上海节点，若已确认精品线路则提前结束，否则测试广州、北京节点)
 	go func() {
 		defer traceWg.Done()
 		for i, ep := range TelecomEndpoints {
-			if i >= 2 && len(telecomHops) > 0 {
+			if i >= 3 && len(telecomHops) > 0 {
 				break
 			}
 			res := traceRoute(timeoutCtx, ep.Host)
@@ -308,18 +376,19 @@ func runSpeedtest(ctx context.Context, task Task) TaskResult {
 				if telecomLatency <= 0 && res.LatencyMs > 0 {
 					telecomLatency = res.LatencyMs
 				}
-				if wire.AnalyzeTelecomRoute(telecomHops, telecomLatency) == "电信 CN2 GIA" {
+				rName := wire.AnalyzeTelecomRoute(telecomHops, telecomLatency)
+				if rName == "电信 CN2 GIA" || rName == "电信 CN2 GT" || rName == "电信 CTGNet" {
 					return
 				}
 			}
 		}
 	}()
 
-	// 联通路由探测 (先测核心上海节点，若已确认 9929/CUG 精品线路则提前结束，否则测试广州/北京备选节点)
+	// 联通路由探测 (先测核心上海节点，若已确认 9929/CUG 精品线路则提前结束，否则测试广州、北京节点)
 	go func() {
 		defer traceWg.Done()
 		for i, ep := range UnicomEndpoints {
-			if i >= 2 && len(unicomHops) > 0 {
+			if i >= 3 && len(unicomHops) > 0 {
 				break
 			}
 			res := traceRoute(timeoutCtx, ep.Host)
@@ -335,11 +404,11 @@ func runSpeedtest(ctx context.Context, task Task) TaskResult {
 		}
 	}()
 
-	// 移动路由探测 (先测广州核心节点，若已确认 CMIN2 精品线路则提前结束，否则测试上海备选节点)
+	// 移动路由探测 (先测广州核心节点，若已确认 CMIN2 精品线路则提前结束，否则测试上海、北京节点)
 	go func() {
 		defer traceWg.Done()
 		for i, ep := range MobileEndpoints {
-			if i >= 2 && len(mobileHops) > 0 {
+			if i >= 3 && len(mobileHops) > 0 {
 				break
 			}
 			res := traceRoute(timeoutCtx, ep.Host)

@@ -76,9 +76,14 @@ func TestAnalyzeUnicomRoute(t *testing.T) {
 		t.Fatalf("expected '联通 4837', got %q", r)
 	}
 
-	// Fallback BGP direct
+	// Fallback BGP direct (< 60ms)
 	if r := AnalyzeUnicomRoute(nil, 45); r != "联通 BGP 直连" {
 		t.Fatalf("expected '联通 BGP 直连', got %q", r)
+	}
+
+	// Fallback overseas standard backbone (>= 60ms)
+	if r := AnalyzeUnicomRoute(nil, 150); r != "联通 4837" {
+		t.Fatalf("expected '联通 4837', got %q", r)
 	}
 }
 

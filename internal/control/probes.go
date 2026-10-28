@@ -265,7 +265,7 @@ func probeFromChinaReal(ctx context.Context, host string, port uint16) ChinaProb
 		"measurementOptions": map[string]any{
 			"protocol": "TCP",
 			"port":     int(port),
-			"packets":  3,
+			"packets":  2,
 		},
 		"locations": []map[string]any{
 			{"country": "CN", "asn": 4134},
@@ -374,12 +374,12 @@ func probeFromChinaReal(ctx context.Context, host string, port uint16) ChinaProb
 					break
 				}
 			}
-			if allDone || time.Since(pollStart) >= 7*time.Second {
+			if allDone || time.Since(pollStart) >= 11*time.Second {
 				break
 			}
 		}
 
-		if time.Since(pollStart) >= 9*time.Second {
+		if time.Since(pollStart) >= 12*time.Second {
 			break
 		}
 	}
@@ -497,6 +497,39 @@ func (s *Server) runGFWCheckAll(ctx context.Context) ([]ProbeResultItem, error) 
 
 		item := s.probeSingleNode(ctx, node, targetHost, targetPort)
 		items = append(items, item)
+
+		// 同步持久化 GFW 阻断检测结果到 node_speedtests 数据库，让前端列表实时准确获知阻断状态
+		st, _ := s.store.GetLatestNodeSpeedtest(ctx, node.ID)
+		if st == nil {
+			st = &NodeSpeedtest{NodeID: node.ID}
+		}
+		if !item.DomesticOK {
+			st.GFWBlocked = true
+			st.GFWStatus = "blocked"
+			st.DomesticLatency = 0
+			st.DomesticSource = item.ProbeSource
+			st.InboundTelecomRoute = "GFW 阻断"
+			st.InboundUnicomRoute = "GFW 阻断"
+			st.InboundMobileRoute = "GFW 阻断"
+		} else {
+			st.GFWBlocked = false
+			st.GFWStatus = "normal"
+			st.DomesticLatency = item.LatencyMs
+			st.DomesticSource = item.ProbeSource
+			if item.InboundTelecomRoute != "" && item.InboundTelecomRoute != "GFW 阻断" {
+				st.InboundTelecomRoute = item.InboundTelecomRoute
+				st.InboundTelecomLatencyMs = item.InboundTelecomLatencyMs
+			}
+			if item.InboundUnicomRoute != "" && item.InboundUnicomRoute != "GFW 阻断" {
+				st.InboundUnicomRoute = item.InboundUnicomRoute
+				st.InboundUnicomLatencyMs = item.InboundUnicomLatencyMs
+			}
+			if item.InboundMobileRoute != "" && item.InboundMobileRoute != "GFW 阻断" {
+				st.InboundMobileRoute = item.InboundMobileRoute
+				st.InboundMobileLatencyMs = item.InboundMobileLatencyMs
+			}
+		}
+		_ = s.store.SaveNodeSpeedtest(ctx, *st)
 	}
 
 	if s.alertEngine != nil && len(items) > 0 {
@@ -718,21 +751,6 @@ func (s *Server) ExecuteNodeSpeedtest(ctx context.Context, nodeID string) (*Node
 			st.GFWStatus = "normal"
 			st.DomesticLatency = resB.item.LatencyMs
 			st.DomesticSource = resB.item.ProbeSource
-
-			// 智能去程精品线路对齐：若探针测得去程畅通，且回程确认为优质线路，去程亦同频匹配对应精品线路
-			if strings.Contains(st.UnicomRoute, "9929") {
-				st.InboundUnicomRoute = "联通 9929"
-			}
-			if strings.Contains(st.TelecomRoute, "CN2 GIA") {
-				st.InboundTelecomRoute = "电信 CN2 GIA"
-			} else if strings.Contains(st.TelecomRoute, "CN2 GT") {
-				st.InboundTelecomRoute = "电信 CN2 GT"
-			} else if strings.Contains(st.TelecomRoute, "CTGNet") {
-				st.InboundTelecomRoute = "电信 CTGNet"
-			}
-			if strings.Contains(st.MobileRoute, "CMIN2") {
-				st.InboundMobileRoute = "移动 CMIN2"
-			}
 		}
 	}
 
