@@ -593,17 +593,23 @@ func (e *AlertEngine) NotifySubscriptionPullFailed(tokenHint, reason, ip, userAg
 
 // ProbeResultItem holds one node's probe outcome.
 type ProbeResultItem struct {
-	NodeID      string `json:"node_id"`
-	NodeName    string `json:"node_name"`
-	TargetHost  string `json:"target_host,omitempty"`
-	TargetPort  uint16 `json:"target_port,omitempty"`
-	OverseasOK  bool   `json:"overseas_ok"`
-	DomesticOK  bool   `json:"domestic_ok"`
-	ProbeSource string `json:"probe_source,omitempty"`
-	PacketLoss  int    `json:"packet_loss"`
-	LatencyMs   int    `json:"latency_ms"`
-	StatusDesc  string `json:"status_desc,omitempty"`
-	Error       string `json:"error,omitempty"`
+	NodeID                  string `json:"node_id"`
+	NodeName                string `json:"node_name"`
+	TargetHost              string `json:"target_host,omitempty"`
+	TargetPort              uint16 `json:"target_port,omitempty"`
+	OverseasOK              bool   `json:"overseas_ok"`
+	DomesticOK              bool   `json:"domestic_ok"`
+	ProbeSource             string `json:"probe_source,omitempty"`
+	PacketLoss              int    `json:"packet_loss"`
+	LatencyMs               int    `json:"latency_ms"`
+	StatusDesc              string `json:"status_desc,omitempty"`
+	Error                   string `json:"error,omitempty"`
+	InboundTelecomRoute     string `json:"inbound_telecom_route,omitempty"`
+	InboundTelecomLatencyMs int    `json:"inbound_telecom_latency_ms,omitempty"`
+	InboundUnicomRoute      string `json:"inbound_unicom_route,omitempty"`
+	InboundUnicomLatencyMs  int    `json:"inbound_unicom_latency_ms,omitempty"`
+	InboundMobileRoute      string `json:"inbound_mobile_route,omitempty"`
+	InboundMobileLatencyMs  int    `json:"inbound_mobile_latency_ms,omitempty"`
 }
 
 // NotifyProbeSummary dispatches a Bark report after a scheduled GFW/connectivity probe.

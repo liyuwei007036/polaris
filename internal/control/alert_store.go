@@ -1,4 +1,4 @@
-package control
+﻿package control
 
 import (
 	"context"
@@ -36,22 +36,31 @@ type AlertSettings struct {
 }
 
 type NodeSpeedtest struct {
-	ID               string  `json:"id"`
-	NodeID           string  `json:"node_id"`
-	TelecomLatencyMs int     `json:"telecom_latency_ms"`
-	TelecomSpeedMbps float64 `json:"telecom_speed_mbps"`
-	TelecomRoute     string  `json:"telecom_route"`
-	UnicomLatencyMs  int     `json:"unicom_latency_ms"`
-	UnicomSpeedMbps  float64 `json:"unicom_speed_mbps"`
-	UnicomRoute      string  `json:"unicom_route"`
-	MobileLatencyMs  int     `json:"mobile_latency_ms"`
-	MobileSpeedMbps  float64 `json:"mobile_speed_mbps"`
-	MobileRoute      string  `json:"mobile_route"`
-	GFWBlocked       bool    `json:"gfw_blocked"`
-	GFWStatus        string  `json:"gfw_status"`
-	DomesticLatency  int     `json:"domestic_latency_ms"`
-	DomesticSource   string  `json:"domestic_source"`
-	TestedAt         string  `json:"tested_at"`
+	ID                      string  `json:"id"`
+	NodeID                  string  `json:"node_id"`
+	// 返程 (Outbound)
+	TelecomLatencyMs        int     `json:"telecom_latency_ms"`
+	TelecomSpeedMbps        float64 `json:"telecom_speed_mbps"`
+	TelecomRoute            string  `json:"telecom_route"`
+	UnicomLatencyMs         int     `json:"unicom_latency_ms"`
+	UnicomSpeedMbps         float64 `json:"unicom_speed_mbps"`
+	UnicomRoute             string  `json:"unicom_route"`
+	MobileLatencyMs         int     `json:"mobile_latency_ms"`
+	MobileSpeedMbps         float64 `json:"mobile_speed_mbps"`
+	MobileRoute             string  `json:"mobile_route"`
+	// 去程 (Inbound)
+	InboundTelecomRoute     string  `json:"inbound_telecom_route"`
+	InboundTelecomLatencyMs int     `json:"inbound_telecom_latency_ms"`
+	InboundUnicomRoute      string  `json:"inbound_unicom_route"`
+	InboundUnicomLatencyMs  int     `json:"inbound_unicom_latency_ms"`
+	InboundMobileRoute      string  `json:"inbound_mobile_route"`
+	InboundMobileLatencyMs  int     `json:"inbound_mobile_latency_ms"`
+	// GFW 连通性
+	GFWBlocked              bool    `json:"gfw_blocked"`
+	GFWStatus               string  `json:"gfw_status"`
+	DomesticLatency         int     `json:"domestic_latency_ms"`
+	DomesticSource          string  `json:"domestic_source"`
+	TestedAt                string  `json:"tested_at"`
 }
 
 func (s *Store) GetAlertSettings(ctx context.Context) (AlertSettings, error) {
@@ -216,10 +225,7 @@ func (s *Store) UpdateAlertSettings(ctx context.Context, in AlertSettings) (Aler
 }
 
 func cleanLegacyRoute(r string) string {
-	if strings.Contains(r, "优化") {
-		return "CN2 GIA"
-	}
-	return r
+	return strings.TrimSpace(r)
 }
 
 func (s *Store) SaveNodeSpeedtest(ctx context.Context, st NodeSpeedtest) error {
@@ -239,12 +245,18 @@ func (s *Store) SaveNodeSpeedtest(ctx context.Context, st NodeSpeedtest) error {
 		unicom_latency_ms, unicom_speed_mbps, unicom_route,
 		mobile_latency_ms, mobile_speed_mbps, mobile_route,
 		gfw_blocked, gfw_status, domestic_latency_ms, domestic_source,
+		inbound_telecom_route, inbound_telecom_latency_ms,
+		inbound_unicom_route, inbound_unicom_latency_ms,
+		inbound_mobile_route, inbound_mobile_latency_ms,
 		tested_at
-	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		st.ID, st.NodeID, st.TelecomLatencyMs, st.TelecomSpeedMbps, st.TelecomRoute,
 		st.UnicomLatencyMs, st.UnicomSpeedMbps, st.UnicomRoute,
 		st.MobileLatencyMs, st.MobileSpeedMbps, st.MobileRoute,
 		boolToInt(st.GFWBlocked), st.GFWStatus, st.DomesticLatency, st.DomesticSource,
+		st.InboundTelecomRoute, st.InboundTelecomLatencyMs,
+		st.InboundUnicomRoute, st.InboundUnicomLatencyMs,
+		st.InboundMobileRoute, st.InboundMobileLatencyMs,
 		now)
 	if err != nil {
 		return fmt.Errorf("save node speedtest: %w", err)
@@ -256,6 +268,9 @@ func (s *Store) GetLatestNodeSpeedtest(ctx context.Context, nodeID string) (*Nod
 	row := s.db.QueryRowContext(ctx, `SELECT id, node_id, telecom_latency_ms, telecom_speed_mbps, telecom_route,
 		unicom_latency_ms, unicom_speed_mbps, unicom_route, mobile_latency_ms, mobile_speed_mbps, mobile_route,
 		COALESCE(gfw_blocked, 0), COALESCE(gfw_status, ''), COALESCE(domestic_latency_ms, 0), COALESCE(domestic_source, ''),
+		COALESCE(inbound_telecom_route, ''), COALESCE(inbound_telecom_latency_ms, 0),
+		COALESCE(inbound_unicom_route, ''), COALESCE(inbound_unicom_latency_ms, 0),
+		COALESCE(inbound_mobile_route, ''), COALESCE(inbound_mobile_latency_ms, 0),
 		tested_at
 		FROM node_speedtests WHERE node_id = ? ORDER BY tested_at DESC LIMIT 1`, nodeID)
 	var st NodeSpeedtest
@@ -265,6 +280,9 @@ func (s *Store) GetLatestNodeSpeedtest(ctx context.Context, nodeID string) (*Nod
 		&st.UnicomLatencyMs, &st.UnicomSpeedMbps, &st.UnicomRoute,
 		&st.MobileLatencyMs, &st.MobileSpeedMbps, &st.MobileRoute,
 		&gfwBlockedInt, &st.GFWStatus, &st.DomesticLatency, &st.DomesticSource,
+		&st.InboundTelecomRoute, &st.InboundTelecomLatencyMs,
+		&st.InboundUnicomRoute, &st.InboundUnicomLatencyMs,
+		&st.InboundMobileRoute, &st.InboundMobileLatencyMs,
 		&testedAt)
 	st.GFWBlocked = gfwBlockedInt != 0
 	if errors.Is(err, sql.ErrNoRows) {
@@ -282,6 +300,9 @@ func (s *Store) ListLatestNodeSpeedtests(ctx context.Context) (map[string]NodeSp
 	rows, err := s.db.QueryContext(ctx, `SELECT s1.id, s1.node_id, s1.telecom_latency_ms, s1.telecom_speed_mbps, s1.telecom_route,
 		s1.unicom_latency_ms, s1.unicom_speed_mbps, s1.unicom_route, s1.mobile_latency_ms, s1.mobile_speed_mbps, s1.mobile_route,
 		COALESCE(s1.gfw_blocked, 0), COALESCE(s1.gfw_status, ''), COALESCE(s1.domestic_latency_ms, 0), COALESCE(s1.domestic_source, ''),
+		COALESCE(s1.inbound_telecom_route, ''), COALESCE(s1.inbound_telecom_latency_ms, 0),
+		COALESCE(s1.inbound_unicom_route, ''), COALESCE(s1.inbound_unicom_latency_ms, 0),
+		COALESCE(s1.inbound_mobile_route, ''), COALESCE(s1.inbound_mobile_latency_ms, 0),
 		s1.tested_at
 		FROM node_speedtests s1
 		JOIN (
@@ -301,6 +322,9 @@ func (s *Store) ListLatestNodeSpeedtests(ctx context.Context) (map[string]NodeSp
 			&st.UnicomLatencyMs, &st.UnicomSpeedMbps, &st.UnicomRoute,
 			&st.MobileLatencyMs, &st.MobileSpeedMbps, &st.MobileRoute,
 			&gfwBlockedInt, &st.GFWStatus, &st.DomesticLatency, &st.DomesticSource,
+			&st.InboundTelecomRoute, &st.InboundTelecomLatencyMs,
+			&st.InboundUnicomRoute, &st.InboundUnicomLatencyMs,
+			&st.InboundMobileRoute, &st.InboundMobileLatencyMs,
 			&testedAt); err != nil {
 			return nil, err
 		}

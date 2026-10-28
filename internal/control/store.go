@@ -2516,6 +2516,12 @@ CREATE TABLE IF NOT EXISTS node_speedtests (
   gfw_status TEXT NOT NULL DEFAULT '',
   domestic_latency_ms INTEGER NOT NULL DEFAULT 0,
   domestic_source TEXT NOT NULL DEFAULT '',
+  inbound_telecom_route TEXT NOT NULL DEFAULT '',
+  inbound_telecom_latency_ms INTEGER NOT NULL DEFAULT 0,
+  inbound_unicom_route TEXT NOT NULL DEFAULT '',
+  inbound_unicom_latency_ms INTEGER NOT NULL DEFAULT 0,
+  inbound_mobile_route TEXT NOT NULL DEFAULT '',
+  inbound_mobile_latency_ms INTEGER NOT NULL DEFAULT 0,
   tested_at INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_node_speedtests_node_tested ON node_speedtests(node_id, tested_at DESC);
@@ -2532,6 +2538,12 @@ INSERT OR IGNORE INTO alert_settings (id, updated_at) VALUES (1, unixepoch());
 		"gfw_status TEXT NOT NULL DEFAULT ''",
 		"domestic_latency_ms INTEGER NOT NULL DEFAULT 0",
 		"domestic_source TEXT NOT NULL DEFAULT ''",
+		"inbound_telecom_route TEXT NOT NULL DEFAULT ''",
+		"inbound_telecom_latency_ms INTEGER NOT NULL DEFAULT 0",
+		"inbound_unicom_route TEXT NOT NULL DEFAULT ''",
+		"inbound_unicom_latency_ms INTEGER NOT NULL DEFAULT 0",
+		"inbound_mobile_route TEXT NOT NULL DEFAULT ''",
+		"inbound_mobile_latency_ms INTEGER NOT NULL DEFAULT 0",
 	} {
 		if err := s.addSpeedtestColumn(ctx, column); err != nil {
 			return err

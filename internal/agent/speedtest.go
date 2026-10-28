@@ -1,4 +1,4 @@
-package agent
+﻿package agent
 
 import (
 	"context"
@@ -6,9 +6,10 @@ import (
 	"net"
 	"os/exec"
 	"regexp"
-	"strings"
+	"strconv"
 	"sync"
 	"time"
+	"github.com/liyuwei007036/polaris/internal/wire"
 )
 
 type SpeedtestResult struct {
@@ -23,25 +24,54 @@ type SpeedtestResult struct {
 	MobileRoute      string  `json:"mobile_route"`
 }
 
-// measureTCPLatency attempts a TCP handshake to a target address and returns latency in milliseconds.
-func measureTCPLatency(ctx context.Context, target string) int {
-	dialer := net.Dialer{Timeout: 3 * time.Second}
-	started := time.Now()
-	conn, err := dialer.DialContext(ctx, "tcp", target)
-	if err != nil {
-		return 0
+// 权威三网骨干测试节点 (与开源工具 backtrace / nexttrace 标准对齐)
+// 电信: 上海电信核心 DNS (202.96.209.133), 广州电信 (58.60.188.222), 北京电信 (219.141.136.12)
+// 联通: 上海联通核心 DNS (210.22.84.3), 广州联通 (210.21.196.6), 北京联通 (202.106.50.1)
+// 移动: 上海移动核心网关 (120.204.80.1), 广州移动 (120.196.165.24), 北京移动 (221.179.155.161)
+type TargetEndpoint struct {
+	City string
+	Host string
+}
+
+var (
+	TelecomEndpoints = []TargetEndpoint{
+		{City: "上海电信", Host: "202.96.209.133"},
+		{City: "广州电信", Host: "58.60.188.222"},
+		{City: "北京电信", Host: "219.141.136.12"},
 	}
-	_ = conn.Close()
-	latency := int(time.Since(started).Milliseconds())
-	if latency <= 0 {
-		return 1
+	UnicomEndpoints = []TargetEndpoint{
+		{City: "上海联通", Host: "210.22.84.3"},
+		{City: "广州联通", Host: "210.21.196.6"},
+		{City: "北京联通", Host: "202.106.50.1"},
 	}
-	return latency
+	MobileEndpoints = []TargetEndpoint{
+		{City: "上海移动", Host: "120.204.80.1"},
+		{City: "广州移动", Host: "120.196.165.24"},
+		{City: "北京移动", Host: "221.179.155.161"},
+	}
+)
+
+// measureTCPLatency attempts a TCP handshake to authoritative carrier target ports (53, 80, 443) and returns latency in milliseconds.
+func measureTCPLatency(ctx context.Context, host string) int {
+	ports := []int{53, 80, 443}
+	for _, port := range ports {
+		dialer := net.Dialer{Timeout: 2 * time.Second}
+		started := time.Now()
+		conn, err := dialer.DialContext(ctx, "tcp", net.JoinHostPort(host, strconv.Itoa(port)))
+		if err == nil {
+			_ = conn.Close()
+			ms := int(time.Since(started).Milliseconds())
+			if ms <= 0 {
+				return 1
+			}
+			return ms
+		}
+	}
+	return 0
 }
 
 // traceRouteHops extracts intermediate IP hops towards the target using traceroute or tracepath.
 func traceRouteHops(ctx context.Context, targetHost string) []string {
-	// Auto-complete traceroute environment if neither traceroute nor tracepath is found
 	if !commandExists("traceroute") && !commandExists("tracepath") {
 		_ = installPackages(ctx, "traceroute")
 	}
@@ -50,32 +80,28 @@ func traceRouteHops(ctx context.Context, targetHost string) []string {
 	var err error
 
 	if commandExists("traceroute") {
-		// 1. Try ICMP traceroute (-I) with parallel probing (-N 16): fast and works through carrier core firewalls
-		traceCtx, cancel := context.WithTimeout(ctx, 8*time.Second)
-		defer cancel()
-		out, err = exec.CommandContext(traceCtx, "traceroute", "-I", "-n", "-m", "15", "-q", "1", "-w", "1", "-N", "16", targetHost).Output()
+		// 1. Try ICMP traceroute (-I) with fast options (-n -m 20 -q 1 -w 1)
+		traceCtx, cancel := context.WithTimeout(ctx, 6*time.Second)
+		out, err = exec.CommandContext(traceCtx, "traceroute", "-I", "-n", "-m", "20", "-q", "1", "-w", "1", targetHost).Output()
+		cancel()
+
+		// 2. If ICMP failed (e.g. non-root or firewall), try standard UDP traceroute
 		if err != nil || len(out) == 0 {
-			// 2. Try TCP SYN probe (-T -p 443): highest pass-through rate across international border firewalls
-			traceCtx2, cancel2 := context.WithTimeout(ctx, 8*time.Second)
-			defer cancel2()
-			out, err = exec.CommandContext(traceCtx2, "traceroute", "-T", "-p", "443", "-n", "-m", "15", "-q", "1", "-w", "1", "-N", "16", targetHost).Output()
+			traceCtx2, cancel2 := context.WithTimeout(ctx, 6*time.Second)
+			out, err = exec.CommandContext(traceCtx2, "traceroute", "-n", "-m", "20", "-q", "1", "-w", "1", targetHost).Output()
+			cancel2()
 		}
+
+		// 3. If standard UDP failed, try TCP SYN traceroute (-T -p 80)
 		if err != nil || len(out) == 0 {
-			// 3. Try standard parallel traceroute (UDP with -N 16)
-			traceCtx3, cancel3 := context.WithTimeout(ctx, 8*time.Second)
-			defer cancel3()
-			out, err = exec.CommandContext(traceCtx3, "traceroute", "-n", "-m", "15", "-q", "1", "-w", "1", "-N", "16", targetHost).Output()
-		}
-		if err != nil || len(out) == 0 {
-			// 4. Fallback without -N (for older busybox/traceroute builds)
-			traceCtx4, cancel4 := context.WithTimeout(ctx, 6*time.Second)
-			defer cancel4()
-			out, err = exec.CommandContext(traceCtx4, "traceroute", "-n", "-m", "15", "-q", "1", "-w", "1", targetHost).Output()
+			traceCtx3, cancel3 := context.WithTimeout(ctx, 6*time.Second)
+			out, err = exec.CommandContext(traceCtx3, "traceroute", "-T", "-p", "80", "-n", "-m", "20", "-q", "1", "-w", "1", targetHost).Output()
+			cancel3()
 		}
 	} else if commandExists("tracepath") {
 		traceCtx, cancel := context.WithTimeout(ctx, 8*time.Second)
-		defer cancel()
-		out, err = exec.CommandContext(traceCtx, "tracepath", "-n", "-m", "15", targetHost).Output()
+		out, err = exec.CommandContext(traceCtx, "tracepath", "-n", "-m", "20", targetHost).Output()
+		cancel()
 	}
 
 	if err != nil || len(out) == 0 {
@@ -86,94 +112,21 @@ func traceRouteHops(ctx context.Context, targetHost string) []string {
 	return re.FindAllString(string(out), -1)
 }
 
-func hasHopPrefix(hops []string, prefix string) bool {
-	for _, ip := range hops {
-		if strings.HasPrefix(ip, prefix) {
-			return true
-		}
-	}
-	return false
+func analyzeTelecomRoute(hops []string, latencyMs int) string {
+	return wire.AnalyzeTelecomRoute(hops, latencyMs)
 }
 
-func hasCN2Hop(hops []string) bool {
-	return hasHopPrefix(hops, "59.43.")
+func analyzeUnicomRoute(hops []string, latencyMs int) string {
+	return wire.AnalyzeUnicomRoute(hops, latencyMs)
 }
 
-func analyzeTelecomRoute(hops []string, allHopsCombined []string, latencyMs int) string {
-	if len(hops) > 0 {
-		hasCN2 := hasCN2Hop(hops) || hasCN2Hop(allHopsCombined)
-		has163 := hasHopPrefix(hops, "202.97.")
-		if hasCN2 && !has163 {
-			return "CN2 GIA"
-		}
-		if hasCN2 && has163 {
-			return "CN2 GT"
-		}
-		if has163 {
-			return "163 骨干网"
-		}
-	}
-
-	if latencyMs > 0 {
-		if hasCN2Hop(allHopsCombined) {
-			return "CN2 GIA"
-		}
-		return "电信直连"
-	}
-	return "不可达"
-}
-
-func analyzeUnicomRoute(hops []string, allHopsCombined []string, latencyMs int) string {
-	if len(hops) > 0 {
-		if hasHopPrefix(hops, "218.105.") || hasHopPrefix(hops, "210.51.") {
-			return "联通 9929"
-		}
-		// In three-network CN2 GIA VPS (e.g. BandwagonHost DC6/DC9), Unicom returns via CN2
-		if hasCN2Hop(hops) {
-			return "CN2 GIA"
-		}
-		if hasHopPrefix(hops, "219.158.") {
-			return "联通 4837"
-		}
-	}
-	if latencyMs > 0 {
-		return "联通直连"
-	}
-	return "不可达"
-}
-
-func analyzeMobileRoute(hops []string, allHopsCombined []string, latencyMs int) string {
-	if len(hops) > 0 {
-		// 1. CMIN2 (China Mobile International Next-generation Network, AS58807) uses 223.120.16.* ~ 223.120.19.*
-		for _, ip := range hops {
-			if strings.HasPrefix(ip, "223.120.16.") || strings.HasPrefix(ip, "223.120.17.") ||
-				strings.HasPrefix(ip, "223.120.18.") || strings.HasPrefix(ip, "223.120.19.") {
-				return "移动 CMIN2"
-			}
-		}
-		// 2. Mobile routed via CN2 GIA (59.43.*)
-		if hasCN2Hop(hops) {
-			return "CN2 GIA"
-		}
-		// 3. Regular CMI / CMNET (221.183.*, general 223.120.*)
-		if hasHopPrefix(hops, "221.183.") || hasHopPrefix(hops, "223.120.") {
-			return "移动 CMI"
-		}
-	}
-	if latencyMs > 0 {
-		return "移动直连"
-	}
-	return "不可达"
+func analyzeMobileRoute(hops []string, latencyMs int) string {
+	return wire.AnalyzeMobileRoute(hops, latencyMs)
 }
 
 func runSpeedtest(ctx context.Context, task Task) TaskResult {
 	timeoutCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
-
-	// High-availability carrier HTTPS (TCP port 443) endpoints for TCP latency
-	telecomTarget := "www.189.cn:443"
-	unicomTarget := "www.10010.com:443"
-	mobileTarget := "www.10086.cn:443"
 
 	var telecomLatency, unicomLatency, mobileLatency int
 	var latencyWg sync.WaitGroup
@@ -181,80 +134,82 @@ func runSpeedtest(ctx context.Context, task Task) TaskResult {
 
 	go func() {
 		defer latencyWg.Done()
-		telecomLatency = measureTCPLatency(timeoutCtx, telecomTarget)
-		if telecomLatency == 0 {
-			telecomLatency = measureTCPLatency(timeoutCtx, "189.cn:443")
+		for _, ep := range TelecomEndpoints {
+			l := measureTCPLatency(timeoutCtx, ep.Host)
+			if l > 0 {
+				telecomLatency = l
+				return
+			}
 		}
 	}()
 
 	go func() {
 		defer latencyWg.Done()
-		unicomLatency = measureTCPLatency(timeoutCtx, unicomTarget)
-		if unicomLatency == 0 {
-			unicomLatency = measureTCPLatency(timeoutCtx, "10010.com:443")
+		for _, ep := range UnicomEndpoints {
+			l := measureTCPLatency(timeoutCtx, ep.Host)
+			if l > 0 {
+				unicomLatency = l
+				return
+			}
 		}
 	}()
 
 	go func() {
 		defer latencyWg.Done()
-		mobileLatency = measureTCPLatency(timeoutCtx, mobileTarget)
-		if mobileLatency == 0 {
-			mobileLatency = measureTCPLatency(timeoutCtx, "10086.cn:443")
+		for _, ep := range MobileEndpoints {
+			l := measureTCPLatency(timeoutCtx, ep.Host)
+			if l > 0 {
+				mobileLatency = l
+				return
+			}
 		}
 	}()
 
 	latencyWg.Wait()
 
-	// Authoritative carrier backbone test IPs for three networks:
-	// Shanghai Telecom (AS4134/AS4809), Shanghai Unicom (AS4837/AS9929), Shanghai Mobile (AS9808/AS58807)
+	// 并发执行三大运营商路由追踪
 	var telecomHops, unicomHops, mobileHops []string
 	var traceWg sync.WaitGroup
 	traceWg.Add(3)
 
 	go func() {
 		defer traceWg.Done()
-		telecomHops = traceRouteHops(timeoutCtx, "202.96.209.133")
-		if len(telecomHops) == 0 {
-			telecomHops = traceRouteHops(timeoutCtx, "180.153.28.5")
+		for _, ep := range TelecomEndpoints {
+			hops := traceRouteHops(timeoutCtx, ep.Host)
+			if len(hops) > 0 {
+				telecomHops = hops
+				return
+			}
 		}
 	}()
 
 	go func() {
 		defer traceWg.Done()
-		unicomHops = traceRouteHops(timeoutCtx, "210.22.84.3")
-		if len(unicomHops) == 0 {
-			unicomHops = traceRouteHops(timeoutCtx, "123.125.99.99")
+		for _, ep := range UnicomEndpoints {
+			hops := traceRouteHops(timeoutCtx, ep.Host)
+			if len(hops) > 0 {
+				unicomHops = hops
+				return
+			}
 		}
 	}()
 
 	go func() {
 		defer traceWg.Done()
-		mobileHops = traceRouteHops(timeoutCtx, "120.204.80.1")
-		if len(mobileHops) == 0 {
-			mobileHops = traceRouteHops(timeoutCtx, "211.136.192.6")
+		for _, ep := range MobileEndpoints {
+			hops := traceRouteHops(timeoutCtx, ep.Host)
+			if len(hops) > 0 {
+				mobileHops = hops
+				return
+			}
 		}
 	}()
 
 	traceWg.Wait()
 
-	var allHopsCombined []string
-	allHopsCombined = append(allHopsCombined, telecomHops...)
-	allHopsCombined = append(allHopsCombined, unicomHops...)
-	allHopsCombined = append(allHopsCombined, mobileHops...)
-
-	telecomRoute := analyzeTelecomRoute(telecomHops, allHopsCombined, telecomLatency)
-	unicomRoute := analyzeUnicomRoute(unicomHops, allHopsCombined, unicomLatency)
-	mobileRoute := analyzeMobileRoute(mobileHops, allHopsCombined, mobileLatency)
-
-	// In three-network servers, mark cross-carrier CN2 GIA if the carrier's own hops genuinely transit CN2 (59.43.*)
-	if strings.Contains(telecomRoute, "CN2") {
-		if hasCN2Hop(unicomHops) {
-			unicomRoute = "CN2 GIA"
-		}
-		if hasCN2Hop(mobileHops) {
-			mobileRoute = "CN2 GIA"
-		}
-	}
+	telecomRoute := analyzeTelecomRoute(telecomHops, telecomLatency)
+	unicomRoute := analyzeUnicomRoute(unicomHops, unicomLatency)
+	mobileRoute := analyzeMobileRoute(mobileHops, mobileLatency)
 
 	result := SpeedtestResult{
 		TelecomLatencyMs: telecomLatency,
@@ -272,7 +227,7 @@ func runSpeedtest(ctx context.Context, task Task) TaskResult {
 
 	return TaskResult{
 		Status:  "succeeded",
-		Summary: "三网延迟与线路检测完成",
+		Summary: "三网回程延迟与线路检测完成",
 		Data:    string(encoded),
 	}
 }

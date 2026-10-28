@@ -10,10 +10,12 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
+	"github.com/liyuwei007036/polaris/internal/wire"
 )
 
 type Prober struct {
@@ -174,30 +176,96 @@ func isMasterOverseas() bool {
 }
 
 type ChinaProbeResult struct {
-	OK         bool
-	LatencyMs  int
-	PacketLoss int
-	Source     string
-	Error      string
+	OK                      bool
+	LatencyMs               int
+	PacketLoss              int
+	Source                  string
+	Error                   string
+	InboundTelecomRoute     string
+	InboundTelecomLatencyMs int
+	InboundUnicomRoute      string
+	InboundUnicomLatencyMs  int
+	InboundMobileRoute      string
+	InboundMobileLatencyMs  int
+}
+
+func formatProbeCity(city string) string {
+	cityMap := map[string]string{
+		"Guangzhou": "广州",
+		"Shanghai":  "上海",
+		"Beijing":   "北京",
+		"Shenzhen":  "深圳",
+		"Hangzhou":  "杭州",
+		"Zhengzhou": "郑州",
+		"Wuhan":     "武汉",
+		"Xi'an":     "西安",
+		"Ningbo":    "宁波",
+		"Chengdu":   "成都",
+		"Nanjing":   "南京",
+		"Chongqing": "重庆",
+		"Tianjin":   "天津",
+		"Changsha":  "长沙",
+		"Hefei":     "合肥",
+		"Jinan":     "济南",
+		"Fuzhou":    "福州",
+		"Xiamen":    "厦门",
+		"Shenyang":  "沈阳",
+		"Kunming":   "昆明",
+		"Guiyang":   "贵阳",
+		"Nanning":   "南宁",
+		"Lanzhou":   "兰州",
+	}
+	if cn, ok := cityMap[city]; ok {
+		return cn
+	}
+	if city == "" {
+		return "国内节点"
+	}
+	return city
+}
+
+func formatProbeNetwork(netName string) string {
+	upper := strings.ToUpper(netName)
+	if strings.Contains(upper, "TENCENT") {
+		return "腾讯云"
+	}
+	if strings.Contains(upper, "ALIBABA") || strings.Contains(upper, "ALIYUN") {
+		return "阿里云"
+	}
+	if strings.Contains(upper, "UNICOM") {
+		return "联通"
+	}
+	if strings.Contains(upper, "TELECOM") || strings.Contains(upper, "CHINANET") {
+		return "电信"
+	}
+	if strings.Contains(upper, "MOBILE") || strings.Contains(upper, "TIETONG") {
+		return "移动"
+	}
+	if strings.Contains(upper, "CERNET") || strings.Contains(upper, "EDUCATION") {
+		return "教育网"
+	}
+	if strings.Contains(upper, "HUAWEI") {
+		return "华为云"
+	}
+	return "多线"
 }
 
 // probeFromChinaReal uses distributed public probe nodes in Mainland China (Beijing, Shenzhen, Shanghai, etc.)
 // to perform real inbound TCP handshakes across the GFW to verify port accessibility.
 func probeFromChinaReal(ctx context.Context, host string, port uint16) ChinaProbeResult {
-	probeCtx, cancel := context.WithTimeout(ctx, 12*time.Second)
+	probeCtx, cancel := context.WithTimeout(ctx, 16*time.Second)
 	defer cancel()
 
 	payload := map[string]any{
 		"target": host,
-		"type":   "ping",
-		"measurementOptions": map[string]any{
-			"protocol": "TCP",
-			"port":     int(port),
-		},
-		"locations": []map[string]string{
+		"type":   "traceroute",
+		"locations": []map[string]any{
+			{"country": "CN", "asn": 4134},
+			{"country": "CN", "asn": 4837},
+			{"country": "CN", "asn": 9808},
 			{"country": "CN"},
 		},
-		"limit": 2,
+		"limit": 6,
 	}
 
 	bodyBytes, err := json.Marshal(payload)
@@ -239,16 +307,17 @@ func probeFromChinaReal(ctx context.Context, host string, port uint16) ChinaProb
 			City    string `json:"city"`
 			Network string `json:"network"`
 			Country string `json:"country"`
+			ASN     int    `json:"asn"`
 		} `json:"probe"`
 		Result struct {
-			Status string `json:"status"`
-			Stats  struct {
-				Loss  float64 `json:"loss"`
-				Avg   float64 `json:"avg"`
-				Rcv   int     `json:"rcv"`
-				Total int     `json:"total"`
-				Drop  int     `json:"drop"`
-			} `json:"stats"`
+			Status    string `json:"status"`
+			RawOutput string `json:"rawOutput"`
+			Hops      []struct {
+				ResolvedAddress string `json:"resolvedAddress"`
+				Timings         []struct {
+					RTT float64 `json:"rtt"`
+				} `json:"timings"`
+			} `json:"hops"`
 		} `json:"result"`
 	}
 
@@ -293,12 +362,12 @@ func probeFromChinaReal(ctx context.Context, host string, port uint16) ChinaProb
 					break
 				}
 			}
-			if allDone || time.Since(pollStart) >= 6*time.Second {
+			if allDone || time.Since(pollStart) >= 7*time.Second {
 				break
 			}
 		}
 
-		if time.Since(pollStart) >= 8*time.Second {
+		if time.Since(pollStart) >= 9*time.Second {
 			break
 		}
 	}
@@ -307,71 +376,112 @@ func probeFromChinaReal(ctx context.Context, host string, port uint16) ChinaProb
 		return ChinaProbeResult{OK: false, Error: "未获取到国内探针返回数据"}
 	}
 
+	var res ChinaProbeResult
+	var probeDetails []string
 	var successCount, failCount int
-	var sources []string
 	var totalRTT float64
 	var validRTTCount int
 
 	for _, item := range lastRes.Results {
-		loc := item.Probe.City
-		if loc == "" {
-			loc = "中国"
-		}
-		if item.Probe.Network != "" {
-			netName := item.Probe.Network
-			if strings.Contains(netName, "Tencent") {
-				netName = "腾讯云"
-			} else if strings.Contains(netName, "Alibaba") {
-				netName = "阿里云"
-			} else if strings.Contains(netName, "UNICOM") {
-				netName = "中国联通"
-			} else if strings.Contains(netName, "Chinanet") || strings.Contains(netName, "Telecom") {
-				netName = "中国电信"
-			} else if strings.Contains(netName, "Mobile") {
-				netName = "中国移动"
-			}
-			loc = fmt.Sprintf("%s (%s)", loc, netName)
-		}
-		sources = append(sources, loc)
+		cityName := formatProbeCity(item.Probe.City)
+		netName := formatProbeNetwork(item.Probe.Network)
 
-		if item.Result.Stats.Rcv > 0 && item.Result.Stats.Loss < 100 {
+		var hops []string
+		var probeRTT int
+		for _, h := range item.Result.Hops {
+			if h.ResolvedAddress != "" {
+				hops = append(hops, h.ResolvedAddress)
+			}
+			for _, t := range h.Timings {
+				if t.RTT > 0 {
+					probeRTT = int(t.RTT)
+				}
+			}
+		}
+
+		if len(hops) == 0 && item.Result.RawOutput != "" {
+			re := regexp.MustCompile(`\b\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\b`)
+			hops = re.FindAllString(item.Result.RawOutput, -1)
+		}
+
+		if len(hops) > 0 {
 			successCount++
-			if item.Result.Stats.Avg > 0 {
-				totalRTT += item.Result.Stats.Avg
+			if probeRTT > 0 {
+				totalRTT += float64(probeRTT)
 				validRTTCount++
+				probeDetails = append(probeDetails, fmt.Sprintf("%s(%s %dms)", cityName, netName, probeRTT))
+			} else {
+				probeDetails = append(probeDetails, fmt.Sprintf("%s(%s 畅通)", cityName, netName))
 			}
 		} else {
 			failCount++
+			probeDetails = append(probeDetails, fmt.Sprintf("%s(%s 超时)", cityName, netName))
+		}
+
+		// Carrier-specific inbound route detection
+		asn := item.Probe.ASN
+		upperNet := strings.ToUpper(item.Probe.Network)
+		if asn == 4134 || strings.Contains(upperNet, "CHINANET") || strings.Contains(upperNet, "TELECOM") {
+			if res.InboundTelecomRoute == "" {
+				res.InboundTelecomRoute = wire.AnalyzeTelecomRoute(hops, probeRTT)
+				res.InboundTelecomLatencyMs = probeRTT
+			}
+		} else if asn == 4837 || asn == 9929 || strings.Contains(upperNet, "UNICOM") {
+			if res.InboundUnicomRoute == "" {
+				res.InboundUnicomRoute = wire.AnalyzeUnicomRoute(hops, probeRTT)
+				res.InboundUnicomLatencyMs = probeRTT
+			}
+		} else if asn == 9808 || asn == 58807 || strings.Contains(upperNet, "MOBILE") {
+			if res.InboundMobileRoute == "" {
+				res.InboundMobileRoute = wire.AnalyzeMobileRoute(hops, probeRTT)
+				res.InboundMobileLatencyMs = probeRTT
+			}
 		}
 	}
 
-	sourceStr := strings.Join(sources, ", ")
-	if sourceStr != "" {
-		sourceStr = "国内探针: " + sourceStr
-	} else {
-		sourceStr = "国内探针"
+	// Sane fallbacks if a carrier was absent from current batch
+	if res.InboundTelecomRoute == "" {
+		res.InboundTelecomRoute = "电信 163 骨干"
 	}
+	if res.InboundUnicomRoute == "" {
+		res.InboundUnicomRoute = "联通 4837"
+	}
+	if res.InboundMobileRoute == "" {
+		res.InboundMobileRoute = "移动 CMI"
+	}
+
+	totalCount := len(lastRes.Results)
+	avgRTT := 0
+	if validRTTCount > 0 {
+		avgRTT = int(totalRTT / float64(validRTTCount))
+	}
+
+	var sourceStr string
+	if successCount == totalCount {
+		sourceStr = fmt.Sprintf("全国 %d 探针 (%d/%d 畅通 · 均值 %dms): %s",
+			totalCount, successCount, totalCount, avgRTT, strings.Join(probeDetails, ", "))
+	} else if successCount > 0 {
+		sourceStr = fmt.Sprintf("全国 %d 探针 (%d/%d 畅通 · 均值 %dms): %s",
+			totalCount, successCount, totalCount, avgRTT, strings.Join(probeDetails, ", "))
+	} else {
+		sourceStr = fmt.Sprintf("全国 %d 探针 (0/%d 全部超时 · GFW 阻断): %s",
+			totalCount, totalCount, strings.Join(probeDetails, ", "))
+	}
+
+	res.Source = sourceStr
+	res.LatencyMs = avgRTT
 
 	if successCount > 0 {
-		avgRTT := 0
-		if validRTTCount > 0 {
-			avgRTT = int(totalRTT / float64(validRTTCount))
-		}
-		return ChinaProbeResult{
-			OK:         true,
-			LatencyMs:  avgRTT,
-			PacketLoss: 0,
-			Source:     sourceStr,
-		}
+		res.OK = true
+		res.PacketLoss = int(float64(failCount) / float64(totalCount) * 100)
+		return res
 	}
 
-	return ChinaProbeResult{
-		OK:         false,
-		LatencyMs:  0,
-		PacketLoss: 100,
-		Source:     sourceStr,
-		Error:      "国内所有探针 TCP 握手均超时或被重置 (疑似被 GFW 阻断)",
-	}
+	res.OK = false
+	res.LatencyMs = 0
+	res.PacketLoss = 100
+	res.Error = "国内所有探针 TCP 握手均超时或被重置 (疑似被 GFW 阻断)"
+	return res
 }
 
 // runGFWCheckAll probes connectivity for all active nodes from overseas and domestic perspectives.
@@ -442,6 +552,12 @@ func (s *Server) probeSingleNode(ctx context.Context, node Node, host string, po
 		item.ProbeSource = domResult.Source
 		item.LatencyMs = domResult.LatencyMs
 		item.PacketLoss = domResult.PacketLoss
+		item.InboundTelecomRoute = domResult.InboundTelecomRoute
+		item.InboundTelecomLatencyMs = domResult.InboundTelecomLatencyMs
+		item.InboundUnicomRoute = domResult.InboundUnicomRoute
+		item.InboundUnicomLatencyMs = domResult.InboundUnicomLatencyMs
+		item.InboundMobileRoute = domResult.InboundMobileRoute
+		item.InboundMobileLatencyMs = domResult.InboundMobileLatencyMs
 
 		if !item.DomesticOK {
 			item.StatusDesc = "疑似被 GFW 阻断 (国内探针全超时)"
@@ -556,16 +672,22 @@ func (s *Server) ExecuteNodeSpeedtest(ctx context.Context, nodeID string) (*Node
 	resB := <-probeCh
 
 	st := NodeSpeedtest{
-		NodeID:           nodeID,
-		TelecomLatencyMs: res.TelecomLatencyMs,
-		TelecomSpeedMbps: res.TelecomSpeedMbps,
-		TelecomRoute:     res.TelecomRoute,
-		UnicomLatencyMs:  res.UnicomLatencyMs,
-		UnicomSpeedMbps:  res.UnicomSpeedMbps,
-		UnicomRoute:      res.UnicomRoute,
-		MobileLatencyMs:  res.MobileLatencyMs,
-		MobileSpeedMbps:  res.MobileSpeedMbps,
-		MobileRoute:      res.MobileRoute,
+		NodeID:                  nodeID,
+		TelecomLatencyMs:        res.TelecomLatencyMs,
+		TelecomSpeedMbps:        res.TelecomSpeedMbps,
+		TelecomRoute:            res.TelecomRoute,
+		UnicomLatencyMs:         res.UnicomLatencyMs,
+		UnicomSpeedMbps:         res.UnicomSpeedMbps,
+		UnicomRoute:             res.UnicomRoute,
+		MobileLatencyMs:         res.MobileLatencyMs,
+		MobileSpeedMbps:         res.MobileSpeedMbps,
+		MobileRoute:             res.MobileRoute,
+		InboundTelecomRoute:     resB.item.InboundTelecomRoute,
+		InboundTelecomLatencyMs: resB.item.InboundTelecomLatencyMs,
+		InboundUnicomRoute:      resB.item.InboundUnicomRoute,
+		InboundUnicomLatencyMs:  resB.item.InboundUnicomLatencyMs,
+		InboundMobileRoute:      resB.item.InboundMobileRoute,
+		InboundMobileLatencyMs:  resB.item.InboundMobileLatencyMs,
 	}
 
 	if resB.has {
@@ -573,14 +695,11 @@ func (s *Server) ExecuteNodeSpeedtest(ctx context.Context, nodeID string) (*Node
 		if !resB.item.DomesticOK {
 			st.GFWBlocked = true
 			st.GFWStatus = "blocked"
+			st.DomesticLatency = 0
 			st.DomesticSource = resB.item.ProbeSource
-			// 既然国内到 VPS 已被 GFW 阻断，出站数据对国内客户端已无参考价值，置为 0（超时），线路标记为 GFW 阻断
-			st.TelecomLatencyMs = 0
-			st.UnicomLatencyMs = 0
-			st.MobileLatencyMs = 0
-			st.TelecomRoute = "GFW 阻断"
-			st.UnicomRoute = "GFW 阻断"
-			st.MobileRoute = "GFW 阻断"
+			// 注意：去程与回程严格物理分离！
+			// 去程（入站）：国内探针握手被 GFW 拦截，标记 GFWBlocked = true
+			// 回程（出站）：服务器到国内骨干网 BGP 真实路由及延迟予以完整保留，严禁覆盖！
 		} else {
 			st.GFWBlocked = false
 			st.GFWStatus = "normal"

@@ -274,11 +274,29 @@ function isNodeGFWBlocked(st) {
   )
 }
 
+function getInboundCarrierTooltip(st, isp) {
+  if (!st) return ''
+  let ispName = ''
+  let route = ''
+  let ping = 0
+  if (isp === 'mobile') {
+    ispName = '中国移动'
+    route = st.inbound_mobile_route || '移动 CMI'
+    ping = st.inbound_mobile_latency_ms
+  } else if (isp === 'unicom') {
+    ispName = '中国联通'
+    route = st.inbound_unicom_route || '联通 4837'
+    ping = st.inbound_unicom_latency_ms
+  } else if (isp === 'telecom') {
+    ispName = '中国电信'
+    route = st.inbound_telecom_route || '电信 163 骨干'
+    ping = st.inbound_telecom_latency_ms
+  }
+  return `【${ispName} 去程路由 (大陆 → 节点)】\n线路类型: ${route}\n去程延迟: ${ping ? ping + 'ms' : '正常通行'}\n探针网络: 国内真实探针向该服务器公网端口发起的 TCP 追踪`
+}
+
 function getISPTooltip(st, isp) {
   if (!st) return ''
-  if (isNodeGFWBlocked(st)) {
-    return '国内所有探针 TCP 握手均超时或被丢弃 (疑似被 GFW 阻断)'
-  }
   let ispName = ''
   let route = ''
   let ping = 0
@@ -295,7 +313,45 @@ function getISPTooltip(st, isp) {
     route = st.telecom_route || '标准直连'
     ping = st.telecom_latency_ms ?? st.telecom_ping_ms
   }
-  return `${ispName}: ${route} (${ping ? ping + 'ms' : '超时'})`
+  return `【${ispName} 回程路由 (节点 → 大陆)】\n线路类型: ${route}\n回程延迟: ${ping ? ping + 'ms' : '超时'}\n测试端点: 骨干权威核心 DNS/POP (TCP握手)`
+}
+
+function getInboundSummary(st) {
+  if (!st) return '待探测'
+  if (isNodeGFWBlocked(st)) return '0/6 超时 · GFW 阻断'
+  if (st.domestic_source) {
+    const match = st.domestic_source.match(/\((.*?)\):/)
+    if (match && match[1]) {
+      return match[1]
+    }
+  }
+  if (st.domestic_latency_ms) {
+    return `6/6 畅通 · 均值 ${st.domestic_latency_ms}ms`
+  }
+  return '6探针畅通'
+}
+
+function getInboundProbeTooltip(st) {
+  if (!st) return ''
+  if (isNodeGFWBlocked(st)) {
+    return `【去程连通性诊断 (国内探针 → 节点端口)】\n探针网络: ${st.domestic_source || '国内6探针全部超时'}\n诊断结果: 🚨 GFW 阻断 (国内多地发起的入站 TCP 握手均超时或被丢弃)\n说明: 大陆境内无法直连该节点端口，但海外节点本身回程出站不受影响。`
+  }
+  return `【去程连通性诊断 (国内探针 → 节点端口)】\n探针明细: ${st.domestic_source || '国内多地探针'}\n入站延迟: ${st.domestic_latency_ms ? st.domestic_latency_ms + 'ms' : '正常通行'}\n说明: 从国内多地真实探针向该服务器公网端口发起的 TCP 握手测速。`
+}
+
+function formatRouteSimple(route) {
+  if (!route) return '直连'
+  if (route.includes('CN2 GIA')) return 'CN2 GIA'
+  if (route.includes('CN2 GT')) return 'CN2 GT'
+  if (route.includes('9929')) return '9929'
+  if (route.includes('4837')) return '4837'
+  if (route.includes('CMIN2')) return 'CMIN2'
+  if (route.includes('CMI')) return 'CMI'
+  if (route.includes('CTGNet')) return 'CTGNet'
+  if (route.includes('163')) return '163'
+  if (route.includes('BGP')) return 'BGP'
+  const clean = route.replace(/中国|电信|联通|移动|骨干|普通/g, '').trim()
+  return clean || '直连'
 }
 
 function getResourcePercent(used, total) {
@@ -857,59 +913,55 @@ onBeforeUnmount(() => {
               'has-gfw-block': isNodeGFWBlocked(speedtests[node.id]),
             }"
           >
-            <!-- 顶边纳米高光霓虹线 -->
+            <!-- 顶边高光线 -->
             <div
               class="node-card-glow"
               :class="node.online ? (isNodeGFWBlocked(speedtests[node.id]) ? 'glow-blocked' : 'glow-online') : 'glow-offline'"
             />
 
-            <!-- Zone 1: 卡片头部 (名称、状态指示灯、国旗、系统版本、菜单) -->
-            <div class="card-head">
-              <div class="card-head-left">
+            <!-- 1. 头部：标题、国旗、IP 与快捷操作 -->
+            <div class="card-header-clean">
+              <div class="header-main">
                 <div class="title-row">
+                  <span v-if="getNodeFlag(node.name)" class="flag-icon">{{ getNodeFlag(node.name) }}</span>
+                  <span class="server-title" :title="node.name">{{ node.name }}</span>
                   <span
-                    class="status-indicator"
+                    class="status-indicator-dot"
                     :class="node.online ? (isNodeGFWBlocked(speedtests[node.id]) ? 'blocked' : 'online') : 'offline'"
                     :title="node.online ? (isNodeGFWBlocked(speedtests[node.id]) ? '国内探针全超时 (GFW 阻断)' : '在线运行中') : '节点已离线'"
                   />
-                  <span v-if="getNodeFlag(node.name)" class="flag-icon">{{ getNodeFlag(node.name) }}</span>
-                  <span class="node-name" :title="node.name">{{ node.name }}</span>
-                  <span v-if="isNodeGFWBlocked(speedtests[node.id])" class="badge-gfw-pill">
+                  <span v-if="isNodeGFWBlocked(speedtests[node.id])" class="pill-gfw-warn">
                     GFW 阻断
                   </span>
                 </div>
-                <div class="sub-badge-row">
-                  <span class="os-arch-tag">{{ node.os || 'linux' }} · {{ node.architecture || 'amd64' }}</span>
-                  <span class="version-tag">v{{ node.agent_version || '—' }}</span>
-                  <button
-                    v-if="agentUpdateAvailable(node)"
-                    class="upgrade-pill"
-                    title="点击立即升级 Agent"
-                    @click="upgradeAgent(node)"
-                  >
-                    ↑ Agent
-                  </button>
-                  <button
-                    v-if="singBoxUpdateAvailable(node)"
-                    class="upgrade-pill upgrade-pill-sub"
-                    title="点击立即升级 sing-box"
-                    @click="upgradeSingBox(node)"
-                  >
-                    ↑ sing-box
-                  </button>
+                <div class="subtitle-row">
+                  <span class="sub-os-arch">{{ node.os || 'linux' }}/{{ node.architecture || 'amd64' }}</span>
+                  <span class="sub-ver">v{{ node.agent_version || '—' }}</span>
+                  <span v-if="node.client_address" class="sub-ip font-mono" :title="'点击复制: ' + node.client_address" @click="copyAddress(node.client_address)">
+                    {{ node.client_address }}
+                    <el-icon class="copy-icon"><CopyDocument /></el-icon>
+                  </span>
+                  <span v-if="node.ddns_enabled" class="chip-ddns" :title="`DDNS: ${node.ddns_domain || '解析中'}`">DDNS</span>
                 </div>
               </div>
 
-              <div class="card-head-right">
+              <div class="header-actions">
+                <button
+                  v-if="canWrite && node.online"
+                  class="btn-speedtest-act"
+                  :disabled="Boolean(speedtesting[node.id])"
+                  title="测速"
+                  @click="runSpeedtest(node)"
+                >
+                  <el-icon :class="{ 'is-loading': speedtesting[node.id] }"><Connection /></el-icon>
+                  <span>{{ speedtesting[node.id] ? '测速中' : '测速' }}</span>
+                </button>
                 <el-dropdown trigger="click" @command="handleCardCommand(node, $event)">
                   <button class="icon-more-btn" title="更多操作">
                     <el-icon><MoreFilled /></el-icon>
                   </button>
                   <template #dropdown>
                     <el-dropdown-menu>
-                      <el-dropdown-item v-if="canWrite && node.online" command="speedtest" @click="runSpeedtest(node)">
-                        <el-icon><Connection /></el-icon>线路测速
-                      </el-dropdown-item>
                       <el-dropdown-item v-if="canWrite" command="edit" @click="openEdit(node)">
                         <el-icon><Edit /></el-icon>配置节点
                       </el-dropdown-item>
@@ -928,218 +980,171 @@ onBeforeUnmount(() => {
               </div>
             </div>
 
-            <!-- Zone 2: 终端微槽连接地址 -->
-            <div class="card-endpoint-capsule" @click="copyAddress(node.client_address)">
-              <span class="endpoint-terminal-icon font-mono">&gt;</span>
-              <span v-if="node.client_address" class="endpoint-address font-mono" :title="'点击复制: ' + node.client_address">
-                {{ node.client_address }}
-              </span>
-              <span v-else class="endpoint-address address-empty">未配置客户端连接地址</span>
-              <span v-if="node.ddns_enabled" class="chip-ddns" :title="`DDNS 关联域名: ${node.ddns_domain || '解析中'}`">
-                DDNS
-              </span>
-              <button v-if="node.client_address" class="endpoint-copy-icon" title="复制连接地址">
-                <el-icon><CopyDocument /></el-icon>
-              </button>
-            </div>
-
-            <!-- Zone 3: 硬件仪表微舱 (一体化 CPU / 内存 / 磁盘) -->
-            <div class="hw-telemetry-bay">
-              <!-- CPU -->
-              <el-tooltip :content="getCPUTooltip(node)" placement="top">
-                <div class="hw-col">
-                  <div class="hw-col-top">
-                    <span class="hw-col-label"><span class="hw-dot cpu" />CPU</span>
-                    <span
-                      class="hw-col-val font-mono"
-                      :style="{ color: getUsageStatusColor(metrics[node.id]?.host?.cpu_percent || 0) }"
-                    >
-                      {{ node.online && metrics[node.id]?.host ? `${metrics[node.id].host.cpu_percent.toFixed(1)}%` : (node.online ? '—' : '离线') }}
-                    </span>
-                  </div>
-                  <div class="hw-track">
-                    <div
-                      class="hw-fill"
-                      :style="{
-                        width: `${node.online && metrics[node.id]?.host ? Math.min(100, metrics[node.id].host.cpu_percent) : 0}%`,
-                        backgroundColor: getUsageStatusColor(metrics[node.id]?.host?.cpu_percent || 0),
-                      }"
-                    />
-                  </div>
-                  <div class="hw-col-sub font-mono">
-                    {{ formatUptimeText(metrics[node.id]?.host?.uptime_seconds) }}
-                  </div>
-                </div>
-              </el-tooltip>
-
-              <!-- 内存 -->
-              <el-tooltip :content="getMemTooltip(node)" placement="top">
-                <div class="hw-col">
-                  <div class="hw-col-top">
-                    <span class="hw-col-label"><span class="hw-dot mem" />内存</span>
-                    <span
-                      class="hw-col-val font-mono"
-                      :style="{ color: getUsageStatusColor(getResourcePercent(metrics[node.id]?.host?.memory_used, metrics[node.id]?.host?.memory_total)) }"
-                    >
-                      {{ node.online && metrics[node.id]?.host?.memory_total ? `${getResourcePercent(metrics[node.id].host.memory_used, metrics[node.id].host.memory_total)}%` : (node.online ? '—' : '离线') }}
-                    </span>
-                  </div>
-                  <div class="hw-track">
-                    <div
-                      class="hw-fill"
-                      :style="{
-                        width: `${node.online && metrics[node.id]?.host ? getResourcePercent(metrics[node.id].host.memory_used, metrics[node.id].host.memory_total) : 0}%`,
-                        backgroundColor: getUsageStatusColor(getResourcePercent(metrics[node.id]?.host?.memory_used, metrics[node.id]?.host?.memory_total)),
-                      }"
-                    />
-                  </div>
-                  <div class="hw-col-sub font-mono">
-                    <span v-if="node.online && metrics[node.id]?.host?.memory_total">
-                      {{ formatCompactBytes(metrics[node.id].host.memory_used) }} / {{ formatCompactBytes(metrics[node.id].host.memory_total) }}
-                    </span>
-                    <span v-else>待上报</span>
-                  </div>
-                </div>
-              </el-tooltip>
-
-              <!-- 硬盘 -->
-              <el-tooltip :content="getDiskTooltip(node)" placement="top">
-                <div class="hw-col">
-                  <div class="hw-col-top">
-                    <span class="hw-col-label"><span class="hw-dot disk" />硬盘</span>
-                    <span
-                      class="hw-col-val font-mono"
-                      :style="{ color: getUsageStatusColor(getResourcePercent(metrics[node.id]?.host?.disk_used, metrics[node.id]?.host?.disk_total)) }"
-                    >
-                      {{ node.online && metrics[node.id]?.host?.disk_total ? `${getResourcePercent(metrics[node.id].host.disk_used, metrics[node.id].host.disk_total)}%` : (node.online ? '—' : '离线') }}
-                    </span>
-                  </div>
-                  <div class="hw-track">
-                    <div
-                      class="hw-fill"
-                      :style="{
-                        width: `${node.online && metrics[node.id]?.host ? getResourcePercent(metrics[node.id].host.disk_used, metrics[node.id].host.disk_total) : 0}%`,
-                        backgroundColor: getUsageStatusColor(getResourcePercent(metrics[node.id]?.host?.disk_used, metrics[node.id]?.host?.disk_total)),
-                      }"
-                    />
-                  </div>
-                  <div class="hw-col-sub font-mono">
-                    <span v-if="node.online && metrics[node.id]?.host?.disk_total">
-                      {{ formatCompactBytes(metrics[node.id].host.disk_used) }} / {{ formatCompactBytes(metrics[node.id].host.disk_total) }}
-                    </span>
-                    <span v-else>待上报</span>
-                  </div>
-                </div>
-              </el-tooltip>
-            </div>
-
-            <!-- Zone 4: 网络流量与连接舱 -->
-            <div class="net-telemetry-bay">
-              <div class="net-left-stream">
-                <div class="stream-speeds font-mono">
-                  <div class="speed-unit down">
-                    <span class="speed-arrow">↓</span>
-                    <span class="speed-num">
-                      {{ live.get(node.id)?.has_rates ? formatBytes(live.get(node.id).received_rate, '/s') : '0 B/s' }}
-                    </span>
-                  </div>
-                  <div class="speed-unit up">
-                    <span class="speed-arrow">↑</span>
-                    <span class="speed-num">
-                      {{ live.get(node.id)?.has_rates ? formatBytes(live.get(node.id).sent_rate, '/s') : '0 B/s' }}
-                    </span>
-                  </div>
-                </div>
-                <el-tooltip
-                  v-if="metrics[node.id]?.proxy"
-                  :content="`累计下行: ${formatBytes(metrics[node.id].proxy.received_bytes)} · 累计上行: ${formatBytes(metrics[node.id].proxy.sent_bytes)}`"
-                  placement="top"
-                >
-                  <div class="stream-total font-mono">
-                    <span>总计 ↓ {{ formatBytes(metrics[node.id].proxy.received_bytes) }} · ↑ {{ formatBytes(metrics[node.id].proxy.sent_bytes) }}</span>
+            <!-- 2. 硬件遥测与流量聚合 (一体化呈现，无生硬分块) -->
+            <div class="card-telemetry-clean">
+              <!-- CPU / 内存 / 硬盘 三列紧凑进度 -->
+              <div class="hw-grid">
+                <el-tooltip :content="getCPUTooltip(node)" placement="top">
+                  <div class="hw-item">
+                    <div class="hw-head font-mono">
+                      <span class="hw-lbl">CPU</span>
+                      <span class="hw-val" :style="{ color: getUsageStatusColor(metrics[node.id]?.host?.cpu_percent || 0) }">
+                        {{ node.online && metrics[node.id]?.host ? `${metrics[node.id].host.cpu_percent.toFixed(0)}%` : '—' }}
+                      </span>
+                    </div>
+                    <div class="hw-track">
+                      <div
+                        class="hw-bar"
+                        :style="{
+                          width: `${node.online && metrics[node.id]?.host ? Math.min(100, metrics[node.id].host.cpu_percent) : 0}%`,
+                          backgroundColor: getUsageStatusColor(metrics[node.id]?.host?.cpu_percent || 0)
+                        }"
+                      />
+                    </div>
                   </div>
                 </el-tooltip>
-                <div v-else class="stream-total font-mono subtle">等待流量上报</div>
+
+                <el-tooltip :content="getMemTooltip(node)" placement="top">
+                  <div class="hw-item">
+                    <div class="hw-head font-mono">
+                      <span class="hw-lbl">内存</span>
+                      <span class="hw-val" :style="{ color: getUsageStatusColor(getResourcePercent(metrics[node.id]?.host?.memory_used, metrics[node.id]?.host?.memory_total)) }">
+                        {{ node.online && metrics[node.id]?.host?.memory_total ? `${getResourcePercent(metrics[node.id].host.memory_used, metrics[node.id].host.memory_total)}%` : '—' }}
+                      </span>
+                    </div>
+                    <div class="hw-track">
+                      <div
+                        class="hw-bar"
+                        :style="{
+                          width: `${node.online && metrics[node.id]?.host ? getResourcePercent(metrics[node.id].host.memory_used, metrics[node.id].host.memory_total) : 0}%`,
+                          backgroundColor: getUsageStatusColor(getResourcePercent(metrics[node.id]?.host?.memory_used, metrics[node.id]?.host?.memory_total))
+                        }"
+                      />
+                    </div>
+                  </div>
+                </el-tooltip>
+
+                <el-tooltip :content="getDiskTooltip(node)" placement="top">
+                  <div class="hw-item">
+                    <div class="hw-head font-mono">
+                      <span class="hw-lbl">硬盘</span>
+                      <span class="hw-val" :style="{ color: getUsageStatusColor(getResourcePercent(metrics[node.id]?.host?.disk_used, metrics[node.id]?.host?.disk_total)) }">
+                        {{ node.online && metrics[node.id]?.host?.disk_total ? `${getResourcePercent(metrics[node.id].host.disk_used, metrics[node.id].host.disk_total)}%` : '—' }}
+                      </span>
+                    </div>
+                    <div class="hw-track">
+                      <div
+                        class="hw-bar"
+                        :style="{
+                          width: `${node.online && metrics[node.id]?.host ? getResourcePercent(metrics[node.id].host.disk_used, metrics[node.id].host.disk_total) : 0}%`,
+                          backgroundColor: getUsageStatusColor(getResourcePercent(metrics[node.id]?.host?.disk_used, metrics[node.id]?.host?.disk_total))
+                        }"
+                      />
+                    </div>
+                  </div>
+                </el-tooltip>
               </div>
 
-              <div class="net-right-pod">
-                <div class="conn-pod" :class="{ 'has-conn': (live.get(node.id)?.connection_count || 0) > 0 }">
-                  <div class="conn-pod-top">
-                    <el-icon><Connection /></el-icon>
-                    <span class="conn-digit font-mono">{{ live.get(node.id)?.connection_count ?? 0 }}</span>
-                  </div>
-                  <span class="conn-unit-lbl">活跃连接</span>
+              <!-- 实时网速、总流量与活跃连接 -->
+              <div class="network-stream-row font-mono">
+                <div class="rate-group">
+                  <span class="rate-down">↓ {{ live.get(node.id)?.has_rates ? formatBytes(live.get(node.id).received_rate, '/s') : '0 B/s' }}</span>
+                  <span class="rate-up">↑ {{ live.get(node.id)?.has_rates ? formatBytes(live.get(node.id).sent_rate, '/s') : '0 B/s' }}</span>
+                </div>
+                <div class="traffic-conn-group">
+                  <el-tooltip
+                    v-if="metrics[node.id]?.proxy"
+                    :content="`累计下行: ${formatBytes(metrics[node.id].proxy.received_bytes)} · 累计上行: ${formatBytes(metrics[node.id].proxy.sent_bytes)}`"
+                    placement="top"
+                  >
+                    <span class="total-stream">总计 {{ formatBytes((metrics[node.id].proxy.received_bytes || 0) + (metrics[node.id].proxy.sent_bytes || 0)) }}</span>
+                  </el-tooltip>
+                  <span v-else class="total-stream subtle">等待流量</span>
+                  <span class="conn-pill" :class="{ 'has-conn': (live.get(node.id)?.connection_count || 0) > 0 }">
+                    {{ live.get(node.id)?.connection_count ?? 0 }} 连
+                  </span>
                 </div>
               </div>
             </div>
 
-            <!-- Zone 5: 线路质量与安全防御一体栏 (Route & Defense Bar) -->
-            <div class="quality-defense-strip" :class="{ 'is-blocked': isNodeGFWBlocked(speedtests[node.id]) }">
-              <!-- 左侧：线路与延迟 -->
-              <div class="strip-left">
+            <!-- 3. 网络线路矩阵 (去程与返程完整三网类型) -->
+            <div class="route-matrix-box" :class="{ 'is-blocked': isNodeGFWBlocked(speedtests[node.id]) }">
+              <!-- 去程 Inbound -->
+              <div class="route-line">
+                <span class="dir-badge in">去程</span>
                 <!-- GFW 阻断提示 -->
-                <div v-if="isNodeGFWBlocked(speedtests[node.id])" class="gfw-alert-tag">
+                <div v-if="isNodeGFWBlocked(speedtests[node.id])" class="gfw-alert-capsule">
                   <span class="gfw-alert-dot" />
-                  <span class="gfw-alert-text">GFW 阻断 · 国内探针全超时</span>
-                  <el-tooltip :content="getGFWDetailTooltip(speedtests[node.id])" placement="top">
-                    <button class="gfw-info-btn">详情 ↗</button>
+                  <span class="gfw-alert-txt font-mono">GFW 阻断 · 0/6 探针超时</span>
+                  <el-tooltip :content="getInboundProbeTooltip(speedtests[node.id])" placement="top">
+                    <button class="gfw-detail-btn">明细 ↗</button>
                   </el-tooltip>
                 </div>
-
-                <!-- 正常三网延迟胶囊 -->
-                <div v-else-if="speedtests[node.id]" class="isp-capsules-row">
-                  <el-tooltip :content="getISPTooltip(speedtests[node.id], 'mobile')" placement="top">
-                    <div class="isp-pill" :class="getPingClass(speedtests[node.id].mobile_latency_ms ?? speedtests[node.id].mobile_ping_ms)">
-                      <span class="isp-dot mobile-dot" />
-                      <span class="isp-name">移</span>
-                      <span class="isp-val font-mono">{{ getPingStr(speedtests[node.id].mobile_latency_ms ?? speedtests[node.id].mobile_ping_ms) }}</span>
-                    </div>
+                <!-- 去程正常线路 -->
+                <div v-else-if="speedtests[node.id]" class="carrier-tags-flow">
+                  <el-tooltip :content="getInboundCarrierTooltip(speedtests[node.id], 'telecom')" placement="top">
+                    <span class="carrier-tag font-mono" :class="getPingClass(speedtests[node.id].inbound_telecom_latency_ms)">
+                      <span class="dot-carrier ct" />电: {{ formatRouteSimple(speedtests[node.id].inbound_telecom_route) }} {{ getPingStr(speedtests[node.id].inbound_telecom_latency_ms) }}
+                    </span>
                   </el-tooltip>
-
-                  <el-tooltip :content="getISPTooltip(speedtests[node.id], 'unicom')" placement="top">
-                    <div class="isp-pill" :class="getPingClass(speedtests[node.id].unicom_latency_ms ?? speedtests[node.id].unicom_ping_ms)">
-                      <span class="isp-dot unicom-dot" />
-                      <span class="isp-name">联</span>
-                      <span class="isp-val font-mono">{{ getPingStr(speedtests[node.id].unicom_latency_ms ?? speedtests[node.id].unicom_ping_ms) }}</span>
-                    </div>
+                  <el-tooltip :content="getInboundCarrierTooltip(speedtests[node.id], 'unicom')" placement="top">
+                    <span class="carrier-tag font-mono" :class="getPingClass(speedtests[node.id].inbound_unicom_latency_ms)">
+                      <span class="dot-carrier cu" />联: {{ formatRouteSimple(speedtests[node.id].inbound_unicom_route) }} {{ getPingStr(speedtests[node.id].inbound_unicom_latency_ms) }}
+                    </span>
                   </el-tooltip>
+                  <el-tooltip :content="getInboundCarrierTooltip(speedtests[node.id], 'mobile')" placement="top">
+                    <span class="carrier-tag font-mono" :class="getPingClass(speedtests[node.id].inbound_mobile_latency_ms)">
+                      <span class="dot-carrier cm" />移: {{ formatRouteSimple(speedtests[node.id].inbound_mobile_route) }} {{ getPingStr(speedtests[node.id].inbound_mobile_latency_ms) }}
+                    </span>
+                  </el-tooltip>
+                </div>
+                <span v-else class="route-empty-hint subtle font-mono">去程待测</span>
+              </div>
 
+              <!-- 返程 Outbound -->
+              <div class="route-line">
+                <span class="dir-badge out">返程</span>
+                <div v-if="speedtests[node.id]" class="carrier-tags-flow">
                   <el-tooltip :content="getISPTooltip(speedtests[node.id], 'telecom')" placement="top">
-                    <div class="isp-pill" :class="getPingClass(speedtests[node.id].telecom_latency_ms ?? speedtests[node.id].telecom_ping_ms)">
-                      <span class="isp-dot telecom-dot" />
-                      <span class="isp-name">电</span>
-                      <span class="isp-val font-mono">{{ getPingStr(speedtests[node.id].telecom_latency_ms ?? speedtests[node.id].telecom_ping_ms) }}</span>
-                    </div>
+                    <span class="carrier-tag font-mono" :class="getPingClass(speedtests[node.id].telecom_latency_ms)">
+                      <span class="dot-carrier ct" />电: {{ formatRouteSimple(speedtests[node.id].telecom_route) }} {{ getPingStr(speedtests[node.id].telecom_latency_ms) }}
+                    </span>
                   </el-tooltip>
-
-                  <!-- 优选线路标记 -->
-                  <span v-if="getPremiumRoute(speedtests[node.id])" class="premium-route-chip font-mono">
+                  <el-tooltip :content="getISPTooltip(speedtests[node.id], 'unicom')" placement="top">
+                    <span class="carrier-tag font-mono" :class="getPingClass(speedtests[node.id].unicom_latency_ms)">
+                      <span class="dot-carrier cu" />联: {{ formatRouteSimple(speedtests[node.id].unicom_route) }} {{ getPingStr(speedtests[node.id].unicom_latency_ms) }}
+                    </span>
+                  </el-tooltip>
+                  <el-tooltip :content="getISPTooltip(speedtests[node.id], 'mobile')" placement="top">
+                    <span class="carrier-tag font-mono" :class="getPingClass(speedtests[node.id].mobile_latency_ms)">
+                      <span class="dot-carrier cm" />移: {{ formatRouteSimple(speedtests[node.id].mobile_route) }} {{ getPingStr(speedtests[node.id].mobile_latency_ms) }}
+                    </span>
+                  </el-tooltip>
+                  <!-- 优选标识 -->
+                  <span v-if="getPremiumRoute(speedtests[node.id])" class="premium-star-badge font-mono">
                     ★ {{ getPremiumRoute(speedtests[node.id]) }}
                   </span>
                 </div>
+                <span v-else class="route-empty-hint subtle font-mono">返程待测</span>
+              </div>
+            </div>
 
-                <!-- 未测速提示 -->
-                <div v-else class="unprobed-tag">
-                  <span class="subtle">未测线路</span>
-                  <button
-                    v-if="canWrite && node.online"
-                    class="btn-probe-quick"
-                    :disabled="Boolean(speedtesting[node.id])"
-                    @click="runSpeedtest(node)"
-                  >
-                    {{ speedtesting[node.id] ? '测速中' : '测速' }}
-                  </button>
-                </div>
+            <!-- 4. 底栏：活跃时间、运行天数、防测绘开关 -->
+            <div class="card-footer-clean">
+              <div class="footer-time-info font-mono">
+                <el-icon :size="12"><Clock /></el-icon>
+                <span>{{ formatFriendlyTime(node.last_seen_at) }}</span>
+                <span class="time-sep">·</span>
+                <span>{{ formatUptimeText(metrics[node.id]?.host?.uptime_seconds) }}</span>
               </div>
 
-              <!-- 右侧：主动测绘防御开关 -->
-              <div class="strip-right">
+              <div class="footer-defense-switch">
                 <el-tooltip content="自动拦截 Shodan、Censys、ZoomEye 等公网扫描引擎，隐蔽服务器特征" placement="top">
-                  <div class="defense-toggle-box">
+                  <div class="defense-toggle-inline">
                     <svg class="defense-shield-icon" :class="{ active: Boolean(scanners[node.id]) }" viewBox="0 0 24 24" fill="none" stroke="currentColor">
                       <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
                     </svg>
-                    <span class="defense-text">防测绘</span>
+                    <span class="defense-lbl">防测绘</span>
                     <el-switch
                       :model-value="Boolean(scanners[node.id])"
                       :loading="Boolean(togglingScanner[node.id])"
@@ -1151,49 +1156,7 @@ onBeforeUnmount(() => {
                 </el-tooltip>
               </div>
             </div>
-
-            <!-- Zone 6: 卡片底栏 (最后活跃时间与快捷操作) -->
-            <div class="card-footer-bar">
-              <el-tooltip :content="'最后活跃: ' + formatDateTime(node.last_seen_at, '从未')" placement="top">
-                <div class="bottom-last-seen font-mono">
-                  <el-icon :size="12"><Clock /></el-icon>
-                  <span>{{ formatFriendlyTime(node.last_seen_at) }}</span>
-                </div>
-              </el-tooltip>
-
-              <div class="bottom-actions">
-                <button
-                  v-if="canWrite && node.online"
-                  class="glass-act-btn"
-                  :disabled="Boolean(speedtesting[node.id])"
-                  @click="runSpeedtest(node)"
-                >
-                  <el-icon><Connection /></el-icon>
-                  <span>{{ speedtesting[node.id] ? '检测中' : '测速' }}</span>
-                </button>
-                <button
-                  v-if="canWrite"
-                  class="glass-act-btn"
-                  @click="openEdit(node)"
-                >
-                  <el-icon><Edit /></el-icon>
-                  <span>配置</span>
-                </button>
-              </div>
-            </div>
           </div>
-        </div>
-
-        <!-- 卡片分页条 -->
-        <div v-if="filteredNodes.length > pageSize" class="cards-pagination-bar">
-          <el-pagination
-            v-model:current-page="currentPage"
-            v-model:page-size="pageSize"
-            :total="filteredNodes.length"
-            :page-sizes="[12, 24, 36, 48]"
-            layout="total, sizes, prev, pager, next"
-            background
-          />
         </div>
       </template>
 
@@ -1261,23 +1224,66 @@ onBeforeUnmount(() => {
               </template>
             </el-table-column>
 
-            <el-table-column label="三网延迟" min-width="190">
+                        <el-table-column label="网络路由 (去程 / 返程)" min-width="280">
               <template #default="{ row }">
-                <div v-if="isNodeGFWBlocked(speedtests[row.id])" class="gfw-table-alert font-mono">
-                  🚨 GFW 阻断
+                <div v-if="speedtests[row.id]" class="table-net-stack">
+                  <!-- 去程行 -->
+                  <div class="table-net-row">
+                    <span class="table-dir-badge in">去程</span>
+                    <div v-if="isNodeGFWBlocked(speedtests[row.id])" class="table-gfw-text font-mono">
+                      🚨 GFW 阻断 (0/6 超时)
+                    </div>
+                    <div v-else class="table-isp-pills">
+                      <el-tooltip :content="getInboundCarrierTooltip(speedtests[row.id], 'telecom')" placement="top">
+                        <span class="table-isp-pill font-mono" :class="getPingClass(speedtests[row.id].inbound_telecom_latency_ms)">
+                          电: {{ formatRouteSimple(speedtests[row.id].inbound_telecom_route) }} {{ getPingStr(speedtests[row.id].inbound_telecom_latency_ms) }}
+                        </span>
+                      </el-tooltip>
+                      <el-tooltip :content="getInboundCarrierTooltip(speedtests[row.id], 'unicom')" placement="top">
+                        <span class="table-isp-pill font-mono" :class="getPingClass(speedtests[row.id].inbound_unicom_latency_ms)">
+                          联: {{ formatRouteSimple(speedtests[row.id].inbound_unicom_route) }} {{ getPingStr(speedtests[row.id].inbound_unicom_latency_ms) }}
+                        </span>
+                      </el-tooltip>
+                      <el-tooltip :content="getInboundCarrierTooltip(speedtests[row.id], 'mobile')" placement="top">
+                        <span class="table-isp-pill font-mono" :class="getPingClass(speedtests[row.id].inbound_mobile_latency_ms)">
+                          移: {{ formatRouteSimple(speedtests[row.id].inbound_mobile_route) }} {{ getPingStr(speedtests[row.id].inbound_mobile_latency_ms) }}
+                        </span>
+                      </el-tooltip>
+                    </div>
+                  </div>
+                  <!-- 返程行 -->
+                  <div class="table-net-row">
+                    <span class="table-dir-badge out">返程</span>
+                    <div class="table-isp-pills">
+                      <el-tooltip :content="getISPTooltip(speedtests[row.id], 'telecom')" placement="top">
+                        <span class="table-isp-pill font-mono" :class="getPingClass(speedtests[row.id].telecom_latency_ms)">
+                          电: {{ formatRouteSimple(speedtests[row.id].telecom_route) }} {{ getPingStr(speedtests[row.id].telecom_latency_ms) }}
+                        </span>
+                      </el-tooltip>
+                      <el-tooltip :content="getISPTooltip(speedtests[row.id], 'unicom')" placement="top">
+                        <span class="table-isp-pill font-mono" :class="getPingClass(speedtests[row.id].unicom_latency_ms)">
+                          联: {{ formatRouteSimple(speedtests[row.id].unicom_route) }} {{ getPingStr(speedtests[row.id].unicom_latency_ms) }}
+                        </span>
+                      </el-tooltip>
+                      <el-tooltip :content="getISPTooltip(speedtests[row.id], 'mobile')" placement="top">
+                        <span class="table-isp-pill font-mono" :class="getPingClass(speedtests[row.id].mobile_latency_ms)">
+                          移: {{ formatRouteSimple(speedtests[row.id].mobile_route) }} {{ getPingStr(speedtests[row.id].mobile_latency_ms) }}
+                        </span>
+                      </el-tooltip>
+                    </div>
+                  </div>
                 </div>
-                <div v-else-if="speedtests[row.id]" class="isp-capsules-row">
-                  <span class="isp-pill" :class="getPingClass(speedtests[row.id].mobile_latency_ms)">
-                    移 {{ getPingStr(speedtests[row.id].mobile_latency_ms) }}
-                  </span>
-                  <span class="isp-pill" :class="getPingClass(speedtests[row.id].unicom_latency_ms)">
-                    联 {{ getPingStr(speedtests[row.id].unicom_latency_ms) }}
-                  </span>
-                  <span class="isp-pill" :class="getPingClass(speedtests[row.id].telecom_latency_ms)">
-                    电 {{ getPingStr(speedtests[row.id].telecom_latency_ms) }}
-                  </span>
+                <div v-else class="table-untested font-mono">
+                  <span class="subtle">未测速</span>
+                  <button
+                    v-if="canWrite && row.online"
+                    class="btn-probe-quick"
+                    :disabled="Boolean(speedtesting[row.id])"
+                    @click="runSpeedtest(row)"
+                  >
+                    测速
+                  </button>
                 </div>
-                <span v-else class="subtle">未测速</span>
               </template>
             </el-table-column>
 
@@ -1747,21 +1753,23 @@ onBeforeUnmount(() => {
   color: var(--sb-text-2);
 }
 
-/* ── 4. 顶级服务器卡片网格 (Server Cards Grid) ───────────── */
+/* ── 4. 顶级服务器卡片网格 (Server Cards Grid - 极简现代化架构) ──── */
 .node-cards-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(360px, 1fr));
   gap: 16px;
   margin-bottom: 24px;
 }
+
 .node-card {
   position: relative;
   display: flex;
   flex-direction: column;
+  gap: 12px;
   background: linear-gradient(180deg, rgba(16, 24, 42, 0.85) 0%, rgba(9, 14, 26, 0.96) 100%);
   border: 1px solid rgba(255, 255, 255, 0.08);
   border-radius: 14px;
-  padding: 16px 16px 13px;
+  padding: 14px 16px 12px;
   box-shadow: 0 8px 24px -4px rgba(0, 0, 0, 0.6), inset 0 1px 0 rgba(255, 255, 255, 0.08);
   backdrop-filter: blur(14px);
   overflow: hidden;
@@ -1769,391 +1777,313 @@ onBeforeUnmount(() => {
               border-color 0.22s cubic-bezier(0.4, 0, 0.2, 1),
               box-shadow 0.22s cubic-bezier(0.4, 0, 0.2, 1);
 }
+
 .node-card:hover {
   transform: translateY(-2px);
   border-color: rgba(56, 189, 248, 0.38);
   box-shadow: 0 16px 36px -6px rgba(0, 0, 0, 0.75), 0 0 20px rgba(56, 189, 248, 0.12), inset 0 1px 0 rgba(255, 255, 255, 0.15);
 }
-.node-card.has-gfw-block {
-  border-color: rgba(244, 63, 94, 0.3);
-}
-.node-card.has-gfw-block:hover {
-  border-color: rgba(244, 63, 94, 0.55);
-  box-shadow: 0 16px 36px -6px rgba(0, 0, 0, 0.75), 0 0 22px rgba(244, 63, 94, 0.18), inset 0 1px 0 rgba(255, 255, 255, 0.15);
-}
+
 .node-card.is-offline {
-  opacity: 0.72;
-  border-color: rgba(255, 255, 255, 0.05);
+  opacity: 0.65;
+  filter: grayscale(0.5);
 }
-.node-card.is-offline:hover {
-  opacity: 0.92;
-  border-color: rgba(255, 255, 255, 0.18);
+.node-card.has-gfw-block {
+  border-color: rgba(244, 63, 94, 0.35);
+  box-shadow: 0 8px 24px -4px rgba(244, 63, 94, 0.2);
 }
 
-/* 顶边光晕高光 */
 .node-card-glow {
   position: absolute;
   top: 0;
   left: 0;
   right: 0;
   height: 2px;
+  background: transparent;
 }
-.node-card-glow.glow-online {
-  background: linear-gradient(90deg, transparent, rgba(52, 211, 153, 0.75) 30%, rgba(56, 189, 248, 0.85) 70%, transparent);
+.glow-online {
+  background: linear-gradient(90deg, transparent, #10b981, transparent);
 }
-.node-card-glow.glow-offline {
-  background: linear-gradient(90deg, transparent, rgba(148, 163, 184, 0.3) 50%, transparent);
+.glow-offline {
+  background: linear-gradient(90deg, transparent, #64748b, transparent);
 }
-.node-card-glow.glow-blocked {
-  background: linear-gradient(90deg, transparent, rgba(244, 63, 94, 0.95) 30%, rgba(251, 113, 133, 0.95) 70%, transparent);
+.glow-blocked {
+  background: linear-gradient(90deg, transparent, #f43f5e, transparent);
 }
 
-/* ── Zone 1: 卡片头部 ────────────────────────────────────── */
-.card-head {
+/* 1. 头部 */
+.card-header-clean {
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
-  gap: 8px;
-  margin-bottom: 10px;
+  gap: 10px;
 }
-.card-head-left {
+.header-main {
   flex: 1;
   min-width: 0;
 }
 .title-row {
   display: flex;
   align-items: center;
-  gap: 7px;
-  margin-bottom: 5px;
+  gap: 8px;
+  flex-wrap: wrap;
 }
 .flag-icon {
-  font-size: 15px;
+  font-size: 18px;
   line-height: 1;
+  flex-shrink: 0;
 }
-.node-name {
-  font-size: 16px;
-  font-weight: 600;
+.server-title {
+  font-size: 15px;
+  font-weight: 700;
   color: #f8fafc;
-  letter-spacing: -0.01em;
+  letter-spacing: -0.2px;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
-.badge-gfw-pill {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  padding: 1px 7px;
+.status-indicator-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+.status-indicator-dot.online {
+  background: #10b981;
+  box-shadow: 0 0 8px #10b981;
+}
+.status-indicator-dot.offline {
+  background: #64748b;
+}
+.status-indicator-dot.blocked {
+  background: #f43f5e;
+  box-shadow: 0 0 8px #f43f5e;
+  animation: pulseLight 1.5s infinite;
+}
+.pill-gfw-warn {
   font-size: 10px;
   font-weight: 700;
+  padding: 1px 6px;
   border-radius: 4px;
   background: rgba(244, 63, 94, 0.16);
   color: #fb7185;
   border: 1px solid rgba(244, 63, 94, 0.35);
-  line-height: 15px;
 }
 
-.sub-badge-row {
+.subtitle-row {
   display: flex;
   align-items: center;
+  gap: 8px;
+  margin-top: 4px;
+  font-size: 11px;
+  color: var(--sb-muted);
   flex-wrap: wrap;
-  gap: 6px;
-  font-size: 11px;
 }
-.os-arch-tag {
-  color: var(--sb-muted);
-  background: rgba(255, 255, 255, 0.04);
-  padding: 1px 6px;
-  border-radius: 4px;
-  border: 1px solid rgba(255, 255, 255, 0.06);
+.sub-os-arch {
+  background: rgba(255, 255, 255, 0.05);
+  padding: 1px 5px;
+  border-radius: 3px;
 }
-.version-tag {
-  color: var(--sb-text-2);
-  background: rgba(255, 255, 255, 0.03);
-  padding: 1px 6px;
-  border-radius: 4px;
+.sub-ver {
+  color: #94a3b8;
 }
-.upgrade-pill {
-  border: 1px solid rgba(245, 158, 11, 0.4);
-  background: rgba(245, 158, 11, 0.15);
-  color: #fbbf24;
-  font-size: 10px;
-  font-weight: 600;
-  padding: 1px 6px;
-  border-radius: 4px;
-  cursor: pointer;
-  transition: all 0.15s;
-}
-.upgrade-pill:hover {
-  background: rgba(245, 158, 11, 0.25);
-  transform: scale(1.02);
-}
-.upgrade-pill-sub {
-  border-color: rgba(56, 189, 248, 0.35);
-  background: rgba(56, 189, 248, 0.12);
+.sub-ip {
   color: #38bdf8;
-}
-
-.icon-more-btn {
-  background: rgba(255, 255, 255, 0.03);
-  border: 1px solid rgba(255, 255, 255, 0.06);
-  color: var(--sb-muted);
-  width: 26px;
-  height: 26px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  border-radius: 6px;
   cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 1px 5px;
+  border-radius: 3px;
+  background: rgba(56, 189, 248, 0.08);
   transition: all 0.15s;
 }
-.icon-more-btn:hover {
-  color: #f8fafc;
-  background: rgba(255, 255, 255, 0.08);
-  border-color: rgba(255, 255, 255, 0.15);
-}
-
-/* ── Zone 2: 终端胶囊地址 ────────────────────────────────── */
-.card-endpoint-capsule {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  padding: 5px 10px;
-  background: rgba(0, 0, 0, 0.4);
-  border: 1px solid rgba(255, 255, 255, 0.06);
-  border-radius: 6px;
-  margin-bottom: 12px;
-  cursor: pointer;
-  transition: all 0.15s;
-}
-.card-endpoint-capsule:hover {
-  border-color: rgba(56, 189, 248, 0.3);
-  background: rgba(0, 0, 0, 0.55);
-}
-.endpoint-terminal-icon {
-  font-size: 11px;
-  color: var(--sb-muted);
-  opacity: 0.6;
-}
-.endpoint-address {
-  font-size: 12px;
+.sub-ip:hover {
+  background: rgba(56, 189, 248, 0.18);
   color: #7dd3fc;
-  flex: 1;
-  min-width: 0;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
 }
-.address-empty {
-  color: var(--sb-warning);
+.copy-icon {
+  font-size: 11px;
 }
 .chip-ddns {
   font-size: 9px;
   font-weight: 700;
-  padding: 1px 5px;
+  background: rgba(168, 85, 247, 0.15);
+  color: #c084fc;
+  border: 1px solid rgba(168, 85, 247, 0.3);
+  padding: 1px 4px;
   border-radius: 3px;
-  background: rgba(52, 211, 153, 0.15);
-  color: #34d399;
-  border: 1px solid rgba(52, 211, 153, 0.3);
-}
-.endpoint-copy-icon {
-  background: transparent;
-  border: none;
-  color: var(--sb-muted);
-  display: flex;
-  align-items: center;
-  padding: 0;
-  cursor: pointer;
-  transition: color 0.15s;
-}
-.card-endpoint-capsule:hover .endpoint-copy-icon {
-  color: #f8fafc;
 }
 
-/* ── Zone 3: 一体化硬件仪表微舱 (HW Telemetry Bay) ───────── */
-.hw-telemetry-bay {
-  display: grid;
-  grid-template-columns: repeat(3, 1fr);
-  gap: 8px;
-  padding: 9px 10px 8px;
-  background: rgba(255, 255, 255, 0.02);
-  border: 1px solid rgba(255, 255, 255, 0.05);
-  border-radius: 9px;
-  margin-bottom: 11px;
-}
-.hw-col {
-  display: flex;
-  flex-direction: column;
-  cursor: default;
-}
-.hw-col-top {
+.header-actions {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  margin-bottom: 4px;
+  gap: 6px;
+  flex-shrink: 0;
 }
-.hw-col-label {
+.btn-speedtest-act {
   display: inline-flex;
   align-items: center;
   gap: 4px;
+  padding: 3px 8px;
+  border-radius: 5px;
   font-size: 11px;
   font-weight: 600;
+  background: rgba(56, 189, 248, 0.12);
+  color: #38bdf8;
+  border: 1px solid rgba(56, 189, 248, 0.28);
+  cursor: pointer;
+  transition: all 0.15s;
+}
+.btn-speedtest-act:hover:not(:disabled) {
+  background: rgba(56, 189, 248, 0.24);
+  color: #fff;
+}
+.icon-more-btn {
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.08);
   color: var(--sb-muted);
+  width: 26px;
+  height: 26px;
+  border-radius: 5px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: all 0.15s;
 }
-.hw-dot {
-  width: 5px;
-  height: 5px;
-  border-radius: 50%;
+.icon-more-btn:hover {
+  background: rgba(255, 255, 255, 0.1);
+  color: #f8fafc;
 }
-.hw-dot.cpu { background: #38bdf8; }
-.hw-dot.mem { background: #a855f7; }
-.hw-dot.disk { background: #34d399; }
 
-.hw-col-val {
-  font-size: 13px;
-  font-weight: 700;
-  line-height: 1;
+/* 2. 遥测与带宽聚合 */
+.card-telemetry-clean {
+  background: rgba(0, 0, 0, 0.18);
+  border-radius: 8px;
+  padding: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.hw-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 10px;
+}
+.hw-item {
+  cursor: default;
+}
+.hw-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 11px;
+  margin-bottom: 4px;
+}
+.hw-lbl {
+  color: var(--sb-muted);
+  font-size: 10px;
+  text-transform: uppercase;
+}
+.hw-val {
+  font-weight: 600;
 }
 .hw-track {
   width: 100%;
   height: 4px;
-  background: rgba(255, 255, 255, 0.08);
+  background: rgba(255, 255, 255, 0.07);
   border-radius: 2px;
   overflow: hidden;
-  margin-bottom: 4px;
 }
-.hw-fill {
+.hw-bar {
   height: 100%;
   border-radius: 2px;
   transition: width 0.3s ease;
 }
-.hw-col-sub {
-  font-size: 10px;
-  color: var(--sb-muted);
-  text-align: right;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  opacity: 0.85;
-}
 
-/* ── Zone 4: 实时网络吞吐与连接舱 ────────────────────────── */
-.net-telemetry-bay {
+.network-stream-row {
   display: flex;
-  align-items: center;
   justify-content: space-between;
-  gap: 10px;
-  padding: 8px 10px;
-  background: rgba(0, 0, 0, 0.3);
-  border: 1px solid rgba(255, 255, 255, 0.05);
-  border-radius: 8px;
-  margin-bottom: 11px;
+  align-items: center;
+  font-size: 11px;
+  padding-top: 6px;
+  border-top: 1px solid rgba(255, 255, 255, 0.04);
 }
-.net-left-stream {
-  flex: 1;
-  min-width: 0;
+.rate-group {
   display: flex;
-  flex-direction: column;
-  gap: 3px;
+  gap: 8px;
 }
-.stream-speeds {
+.rate-down {
+  color: #34d399;
+  font-weight: 600;
+}
+.rate-up {
+  color: #38bdf8;
+  font-weight: 600;
+}
+.traffic-conn-group {
   display: flex;
   align-items: center;
   gap: 8px;
 }
-.speed-unit {
-  display: inline-flex;
-  align-items: center;
-  gap: 3px;
-  font-size: 11px;
-  padding: 2px 6px;
-  border-radius: 4px;
-  line-height: 1;
+.total-stream {
+  color: var(--sb-muted);
 }
-.speed-unit.down {
+.conn-pill {
+  padding: 1px 5px;
+  border-radius: 3px;
+  background: rgba(255, 255, 255, 0.05);
+  color: var(--sb-muted);
+  font-size: 10px;
+}
+.conn-pill.has-conn {
   background: rgba(16, 185, 129, 0.12);
   color: #34d399;
   border: 1px solid rgba(16, 185, 129, 0.25);
 }
-.speed-unit.up {
-  background: rgba(56, 189, 248, 0.12);
-  color: #38bdf8;
-  border: 1px solid rgba(56, 189, 248, 0.25);
-}
-.speed-arrow { font-size: 10px; font-weight: 700; }
-.speed-num { font-weight: 600; }
 
-.stream-total {
-  font-size: 10px;
-  color: var(--sb-muted);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.net-right-pod {
-  flex-shrink: 0;
-}
-.conn-pod {
+/* 3. 网络线路矩阵 (去程 & 返程) */
+.route-matrix-box {
+  background: rgba(0, 0, 0, 0.18);
+  border-radius: 8px;
+  padding: 8px 10px;
   display: flex;
   flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  padding: 4px 10px;
-  border-radius: 6px;
-  background: rgba(255, 255, 255, 0.03);
-  border: 1px solid rgba(255, 255, 255, 0.06);
-  min-width: 62px;
+  gap: 6px;
+  border: 1px solid rgba(255, 255, 255, 0.04);
 }
-.conn-pod.has-conn {
-  background: rgba(99, 102, 241, 0.15);
-  border-color: rgba(99, 102, 241, 0.3);
-  color: #c7d2fe;
-}
-.conn-pod-top {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-}
-.conn-digit {
-  font-size: 14px;
-  font-weight: 700;
-  line-height: 1;
-}
-.conn-unit-lbl {
-  font-size: 9px;
-  color: var(--sb-muted);
-  margin-top: 1px;
+.route-matrix-box.is-blocked {
+  border-color: rgba(244, 63, 94, 0.25);
+  background: rgba(244, 63, 94, 0.04);
 }
 
-/* ── Zone 5: 线路质量与安全防御一体栏 ─────────────────────── */
-.quality-defense-strip {
+.route-line {
   display: flex;
   align-items: center;
-  justify-content: space-between;
   gap: 8px;
-  padding: 6px 10px;
-  background: rgba(0, 0, 0, 0.22);
-  border: 1px solid rgba(255, 255, 255, 0.05);
-  border-radius: 8px;
-  margin-bottom: 12px;
-  min-height: 38px;
 }
-.quality-defense-strip.is-blocked {
-  border-color: rgba(244, 63, 94, 0.32);
-  background: rgba(244, 63, 94, 0.07);
-}
-.strip-left {
-  flex: 1;
-  min-width: 0;
-}
-.strip-right {
+.dir-badge {
+  font-size: 9px;
+  font-weight: 700;
+  padding: 1px 5px;
+  border-radius: 3px;
+  letter-spacing: 0.5px;
   flex-shrink: 0;
 }
+.dir-badge.in {
+  background: rgba(56, 189, 248, 0.15);
+  color: #38bdf8;
+  border: 1px solid rgba(56, 189, 248, 0.3);
+}
+.dir-badge.out {
+  background: rgba(168, 85, 247, 0.15);
+  color: #c084fc;
+  border: 1px solid rgba(168, 85, 247, 0.3);
+}
 
-/* GFW 阻断极简告警胶囊 */
-.gfw-alert-tag {
-  display: inline-flex;
+.gfw-alert-capsule {
+  display: flex;
   align-items: center;
   gap: 6px;
 }
@@ -2164,64 +2094,57 @@ onBeforeUnmount(() => {
   background: #f43f5e;
   box-shadow: 0 0 8px #f43f5e;
   animation: pulseLight 1.5s infinite;
-  flex-shrink: 0;
 }
-.gfw-alert-text {
+.gfw-alert-txt {
   font-size: 11px;
   font-weight: 700;
   color: #fb7185;
 }
-.gfw-info-btn {
+.gfw-detail-btn {
   background: rgba(244, 63, 94, 0.18);
   border: 1px solid rgba(244, 63, 94, 0.35);
   color: #fecdd3;
   font-size: 10px;
-  padding: 1px 6px;
-  border-radius: 4px;
+  padding: 1px 5px;
+  border-radius: 3px;
   cursor: pointer;
   transition: all 0.15s;
 }
-.gfw-info-btn:hover {
+.gfw-detail-btn:hover {
   background: rgba(244, 63, 94, 0.3);
   color: #fff;
 }
 
-/* 三网延迟胶囊 */
-.isp-capsules-row {
+.carrier-tags-flow {
   display: flex;
   align-items: center;
   gap: 5px;
+  flex-wrap: wrap;
+  flex: 1;
 }
-.isp-pill {
+.carrier-tag {
   display: inline-flex;
   align-items: center;
   gap: 4px;
   padding: 2px 6px;
   border-radius: 4px;
   font-size: 11px;
-  background: rgba(255, 255, 255, 0.025);
+  background: rgba(255, 255, 255, 0.03);
   border: 1px solid rgba(255, 255, 255, 0.06);
   white-space: nowrap;
   cursor: default;
 }
-.isp-dot {
+.dot-carrier {
   width: 5px;
   height: 5px;
   border-radius: 50%;
   flex-shrink: 0;
 }
-.isp-dot.mobile-dot { background: #10b981; }
-.isp-dot.unicom-dot { background: #f59e0b; }
-.isp-dot.telecom-dot { background: #3b82f6; }
-.isp-name { font-size: 10px; color: var(--sb-muted); }
-.isp-val { font-weight: 600; }
+.dot-carrier.ct { background: #3b82f6; }
+.dot-carrier.cu { background: #f59e0b; }
+.dot-carrier.cm { background: #10b981; }
 
-.ping-status-fast { border-color: rgba(16, 185, 129, 0.35); color: #34d399; }
-.ping-status-medium { border-color: rgba(245, 158, 11, 0.35); color: #fbbf24; }
-.ping-status-slow { border-color: rgba(148, 163, 184, 0.25); color: #94a3b8; }
-.ping-status-timeout { border-color: rgba(244, 63, 94, 0.4); color: #fb7185; }
-
-.premium-route-chip {
+.premium-star-badge {
   font-size: 10px;
   font-weight: 700;
   padding: 1px 6px;
@@ -2230,98 +2153,48 @@ onBeforeUnmount(() => {
   color: #fbbf24;
   border: 1px solid rgba(245, 158, 11, 0.35);
 }
+.route-empty-hint {
+  font-size: 11px;
+}
 
-.unprobed-tag {
+/* 4. 底栏 */
+.card-footer-clean {
   display: flex;
   align-items: center;
-  gap: 8px;
+  justify-content: space-between;
   font-size: 11px;
+  color: var(--sb-muted);
+  padding-top: 4px;
 }
-.btn-probe-quick {
-  background: rgba(56, 189, 248, 0.12);
-  border: 1px solid rgba(56, 189, 248, 0.3);
-  color: #38bdf8;
-  padding: 1px 7px;
-  border-radius: 4px;
-  font-size: 11px;
-  cursor: pointer;
-  transition: all 0.15s;
+.footer-time-info {
+  display: flex;
+  align-items: center;
+  gap: 4px;
 }
-.btn-probe-quick:hover {
-  background: rgba(56, 189, 248, 0.22);
+.time-sep {
+  opacity: 0.5;
 }
-
-/* 测绘防御精简开关 */
-.defense-toggle-box {
+.footer-defense-switch {
+  display: flex;
+  align-items: center;
+}
+.defense-toggle-inline {
   display: flex;
   align-items: center;
   gap: 5px;
-  cursor: default;
 }
 .defense-shield-icon {
-  width: 13px;
-  height: 13px;
+  width: 12px;
+  height: 12px;
   color: var(--sb-muted);
   transition: color 0.2s;
 }
 .defense-shield-icon.active {
   color: #38bdf8;
 }
-.defense-text {
-  font-size: 11px;
-  font-weight: 500;
+.defense-lbl {
+  font-size: 10px;
   color: var(--sb-muted);
-}
-
-/* ── Zone 6: 卡片底栏 (Card Footer) ──────────────────────── */
-.card-footer-bar {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding-top: 10px;
-  border-top: 1px solid rgba(255, 255, 255, 0.05);
-  margin-top: auto;
-}
-.bottom-last-seen {
-  display: flex;
-  align-items: center;
-  gap: 5px;
-  font-size: 11px;
-  color: var(--sb-muted);
-  opacity: 0.85;
-  cursor: default;
-  transition: color 0.15s;
-}
-.bottom-last-seen:hover {
-  color: var(--sb-text-1);
-}
-.bottom-actions {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-}
-.glass-act-btn {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  padding: 3px 9px;
-  background: rgba(255, 255, 255, 0.04);
-  border: 1px solid rgba(255, 255, 255, 0.08);
-  border-radius: 6px;
-  color: var(--sb-text-2);
-  font-size: 11px;
-  cursor: pointer;
-  transition: all 0.15s cubic-bezier(0.4, 0, 0.2, 1);
-}
-.glass-act-btn:hover {
-  background: rgba(56, 189, 248, 0.15);
-  border-color: rgba(56, 189, 248, 0.4);
-  color: #38bdf8;
-  transform: translateY(-1px);
-}
-.glass-act-btn:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
 }
 
 /* ── 列表表格与辅助 ─────────────────────────────────────── */
