@@ -28,17 +28,6 @@ const remoteError = ref('')
 // domain, so the operator only pastes the plain "*.example.com" text and the
 // PEM pair Cloudflare issued for it.
 const certificate = reactive({ id: '', domain: '', certificate: '', private_key: '' })
-const masterDDNS = reactive({
-  enabled: false,
-  domains: [],
-  record_ids: [],
-  last_observed_ip: '',
-  last_updated_at: '',
-  last_error: '',
-})
-const currentMasterIP = ref('')
-const savingMasterDDNS = ref(false)
-const syncingMasterDDNS = ref(false)
 const keyword = ref('')
 const selectedType = ref('')
 const selectedNode = ref('')
@@ -76,11 +65,10 @@ function domainCovered(pattern, domain) {
 async function load() {
   loading.value = true
   try {
-    const [settingsResult, certificateResult, listenerResult, masterDDNSResult] = await Promise.all([
+    const [settingsResult, certificateResult, listenerResult] = await Promise.all([
       api('/cloudflare/settings'),
       api('/cloudflare/origin-certificates'),
       api('/listeners'),
-      api('/master/ddns').catch(() => ({ settings: {}, current_master_ip: '' })),
     ])
     remoteError.value = settingsResult.error || ''
     let recordResult = { records: [] }
@@ -96,10 +84,6 @@ async function load() {
     records.value = recordResult.records || []
     certificates.value = certificateResult.certificates || []
     listeners.value = listenerResult.listeners || []
-    if (masterDDNSResult && masterDDNSResult.settings) {
-      Object.assign(masterDDNS, masterDDNSResult.settings)
-      currentMasterIP.value = masterDDNSResult.current_master_ip || ''
-    }
   } finally { loading.value = false }
 }
 
@@ -199,53 +183,6 @@ function boundTo(row) {
   return bindings.map((binding) => (binding.listener_name ? `${binding.node_name} · ${binding.listener_name}` : binding.node_name)).join('、')
 }
 
-function onMasterDDNSRecordsChange(selectedIds) {
-  masterDDNS.record_ids = selectedIds
-  const names = records.value
-    .filter((r) => selectedIds.includes(r.id))
-    .map((r) => String(r.name || '').replace(/\.$/, ''))
-  masterDDNS.domains = names
-}
-
-async function saveMasterDDNS() {
-  savingMasterDDNS.value = true
-  try {
-    const res = await put('/master/ddns', {
-      enabled: masterDDNS.enabled,
-      domains: masterDDNS.domains,
-      record_ids: masterDDNS.record_ids,
-    })
-    if (res.settings) {
-      Object.assign(masterDDNS, res.settings)
-    }
-    ElMessage.success('Master 动态域名设置已保存')
-    await load()
-  } catch (error) {
-    ElMessage.error(error instanceof Error ? error.message : '保存 Master 动态域名设置失败')
-  } finally {
-    savingMasterDDNS.value = false
-  }
-}
-
-async function syncMasterDDNSNow() {
-  syncingMasterDDNS.value = true
-  try {
-    const res = await post('/master/ddns/sync', {})
-    if (res.settings) {
-      Object.assign(masterDDNS, res.settings)
-    }
-    if (res.detected_ip) {
-      currentMasterIP.value = res.detected_ip
-    }
-    ElMessage.success(`Master 动态域名已同步成功，当前公网 IP：${res.detected_ip || currentMasterIP.value}`)
-    await load()
-  } catch (error) {
-    ElMessage.error(error instanceof Error ? error.message : '立即同步 Master 动态域名失败')
-  } finally {
-    syncingMasterDDNS.value = false
-  }
-}
-
 onMounted(load)
 </script>
 
@@ -260,7 +197,6 @@ onMounted(load)
       <el-button v-if="isAdmin && tab === 'records'" :icon="Setting" @click="openSettings">设置</el-button>
       <el-button v-if="isAdmin && tab === 'records'" type="primary" :icon="Plus" :disabled="!settings.connected" @click="addRecord">新建</el-button>
       <el-button v-if="isAdmin && tab === 'certificates'" type="primary" :icon="Plus" @click="addCertificate">新建</el-button>
-      <el-button v-if="isAdmin && tab === 'master_ddns'" type="success" :icon="Refresh" :loading="syncingMasterDDNS" :disabled="!settings.connected || !masterDDNS.enabled || !(masterDDNS.record_ids || []).length" @click="syncMasterDDNSNow">立即同步解析</el-button>
     </PageHeader>
     <main class="page-content page-content--tight">
       <el-alert
@@ -268,7 +204,7 @@ onMounted(load)
         :title="`读取 Cloudflare 失败：${remoteError}`"
         description="请点击「设置」检查区域编号与访问令牌，并确认这台控制机可以访问 api.cloudflare.com。"
         type="error" show-icon :closable="false" style="margin-bottom: 12px" />
-      <div v-if="tab !== 'master_ddns'" class="search-toolbar">
+      <div class="search-toolbar">
         <el-input v-model="keyword" clearable :prefix-icon="Search" :placeholder="tab === 'records' ? '搜索域名、内容或服务器' : '搜索域名或证书'" style="width: 260px" />
         <template v-if="tab === 'records'">
           <el-select v-model="selectedNode" clearable placeholder="全部服务器" style="width: 180px">
@@ -330,108 +266,6 @@ onMounted(load)
                 </template>
               </el-table-column>
             </PagedTable>
-          </el-tab-pane>
-
-          <el-tab-pane label="Master 动态域名 (DDNS)" name="master_ddns">
-            <div class="master-ddns-container">
-              <el-alert
-                title="Master 节点动态域名绑定 (DDNS)"
-                description="当 Master 主控机公网 IP 发生变更时，系统将自动探测本机最新公网 IP，并调用 Cloudflare API 自动更新所绑定的多个域名 A 记录（解析 TTL 设为 60 秒极速生效）。各 Agent 节点配置为连接该域名时，在主控 IP 更换后将自动平滑重连至新 IP，无需人工干预。"
-                type="info" show-icon :closable="false" style="margin-bottom: 16px" />
-
-              <el-alert
-                v-if="!settings.connected"
-                title="未连接 Cloudflare"
-                description="请先在「域名记录」标签页中点击「设置」并连接 Cloudflare 区域与 API 访问令牌，方可启用 Master DDNS 自动同步功能。"
-                type="warning" show-icon :closable="false" style="margin-bottom: 16px" />
-
-              <div class="ddns-card">
-                <div class="ddns-card-header">
-                  <div class="ddns-title">
-                    <h3>Master 主控自动 DDNS 同步</h3>
-                    <p>开启后主控端定时探测外网 IP，发现 IP 变更时自动更新所有绑定的域名</p>
-                  </div>
-                  <el-switch
-                    v-model="masterDDNS.enabled"
-                    :disabled="!isAdmin || !settings.connected"
-                    active-text="启用 DDNS"
-                    inactive-text="关闭 DDNS" />
-                </div>
-
-                <div class="ddns-status-grid">
-                  <div class="status-item">
-                    <span class="status-label">本机实时探测公网 IP</span>
-                    <el-tag :type="currentMasterIP ? 'success' : 'info'" size="large" effect="light">
-                      {{ currentMasterIP || '探测中或未连接' }}
-                    </el-tag>
-                  </div>
-                  <div class="status-item">
-                    <span class="status-label">上次同步解析 IP</span>
-                    <el-tag :type="masterDDNS.last_observed_ip ? 'primary' : 'info'" size="large" effect="plain">
-                      {{ masterDDNS.last_observed_ip || '暂未同步' }}
-                    </el-tag>
-                  </div>
-                  <div class="status-item">
-                    <span class="status-label">上次同步时间</span>
-                    <span class="status-value">{{ masterDDNS.last_updated_at ? formatDateTime(masterDDNS.last_updated_at) : '—' }}</span>
-                  </div>
-                  <div v-if="masterDDNS.last_error" class="status-item">
-                    <span class="status-label">上次同步错误</span>
-                    <el-tag type="danger" size="small">{{ masterDDNS.last_error }}</el-tag>
-                  </div>
-                </div>
-
-                <el-divider style="margin: 20px 0" />
-
-                <el-form label-position="top" class="ddns-form">
-                  <el-form-item label="绑定 Cloudflare 域名记录（支持绑定多个域名）" required>
-                    <el-select
-                      v-model="masterDDNS.record_ids"
-                      multiple
-                      filterable
-                      placeholder="请选择需要由 Master 自动绑定的 Cloudflare A 记录"
-                      style="width: 100%"
-                      :disabled="!isAdmin || !settings.connected"
-                      @change="onMasterDDNSRecordsChange">
-                      <el-option
-                        v-for="r in records.filter(item => item.type === 'A')"
-                        :key="r.id"
-                        :label="`${r.name} (${r.content})`"
-                        :value="r.id" />
-                    </el-select>
-                    <div class="form-hint">
-                      可同时选择多个域名解析记录（如主控内网/外网域名）。主控机 IP 发生变化时将并发更新 Cloudflare 上的所有选定记录，TTL 将强制设为 60 秒。
-                    </div>
-                  </el-form-item>
-
-                  <el-form-item v-if="(masterDDNS.domains || []).length" label="已绑定的域名列表">
-                    <div class="bound-domains">
-                      <el-tag v-for="d in masterDDNS.domains" :key="d" type="success" size="default" effect="plain">
-                        {{ d }}
-                      </el-tag>
-                    </div>
-                  </el-form-item>
-
-                  <div v-if="isAdmin" class="ddns-footer-actions">
-                    <el-button
-                      type="primary"
-                      :loading="savingMasterDDNS"
-                      :disabled="!settings.connected"
-                      @click="saveMasterDDNS">
-                      保存 DDNS 设置
-                    </el-button>
-                    <el-button
-                      type="success"
-                      plain
-                      :loading="syncingMasterDDNS"
-                      :disabled="!settings.connected || !masterDDNS.enabled || !(masterDDNS.record_ids || []).length"
-                      @click="syncMasterDDNSNow">
-                      立即同步解析至 Cloudflare
-                    </el-button>
-                  </div>
-                </el-form>
-              </div>
-            </div>
           </el-tab-pane>
         </el-tabs>
       </div>
@@ -506,68 +340,4 @@ onMounted(load)
 .form-hint { margin-top: 6px; color: var(--sb-muted); font-size: 12px; line-height: 1.5; }
 .address-picks { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
 .address-pick { cursor: pointer; }
-
-.master-ddns-container {
-  padding: 8px 0;
-}
-.ddns-card {
-  background: var(--sb-surface-card, rgba(255, 255, 255, 0.04));
-  border: 1px solid var(--sb-line);
-  border-radius: var(--sb-radius, 8px);
-  padding: 24px;
-}
-.ddns-card-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 16px;
-}
-.ddns-title h3 {
-  margin: 0 0 6px 0;
-  font-size: 16px;
-  font-weight: 600;
-  color: var(--sb-text);
-}
-.ddns-title p {
-  margin: 0;
-  font-size: 13px;
-  color: var(--sb-muted);
-}
-.ddns-status-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
-  gap: 16px;
-  margin-top: 20px;
-  background: var(--sb-surface, rgba(0, 0, 0, 0.2));
-  padding: 16px;
-  border-radius: var(--sb-radius-sm, 6px);
-  border: 1px solid var(--sb-line);
-}
-.status-item {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-.status-label {
-  font-size: 12px;
-  color: var(--sb-muted);
-}
-.status-value {
-  font-size: 14px;
-  color: var(--sb-text);
-  font-weight: 500;
-}
-.bound-domains {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-}
-.ddns-footer-actions {
-  display: flex;
-  justify-content: flex-end;
-  gap: 12px;
-  margin-top: 24px;
-  padding-top: 16px;
-  border-top: 1px solid var(--sb-line);
-}
 </style>

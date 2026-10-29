@@ -649,3 +649,122 @@ func TestServerDDNSChainedNodesAutoDispatch(t *testing.T) {
 	}
 }
 
+func TestNodeDDNSMultiDomainAndMasterDetection(t *testing.T) {
+	var mu sync.Mutex
+	rec1Content := "1.1.1.1"
+	rec2Content := "1.1.1.1"
+	patchedRecords := make(map[string]string)
+
+	mockCF := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		defer mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/zones/zone-multi":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"success": true,
+				"result":  map[string]any{"id": "zone-multi", "name": "example.com", "status": "active"},
+			})
+		case r.Method == http.MethodGet && r.URL.Path == "/zones/zone-multi/dns_records/rec-1":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"success": true,
+				"result": map[string]any{
+					"id": "rec-1", "type": "A", "name": "dom1.example.com", "content": rec1Content, "ttl": 60, "proxied": false,
+				},
+			})
+		case r.Method == http.MethodPatch && r.URL.Path == "/zones/zone-multi/dns_records/rec-1":
+			var req map[string]any
+			_ = json.NewDecoder(r.Body).Decode(&req)
+			rec1Content = req["content"].(string)
+			patchedRecords["rec-1"] = rec1Content
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"success": true,
+				"result": map[string]any{
+					"id": "rec-1", "type": "A", "name": "dom1.example.com", "content": rec1Content, "ttl": 60, "proxied": false,
+				},
+			})
+		case r.Method == http.MethodGet && r.URL.Path == "/zones/zone-multi/dns_records/rec-2":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"success": true,
+				"result": map[string]any{
+					"id": "rec-2", "type": "A", "name": "dom2.example.com", "content": rec2Content, "ttl": 60, "proxied": false,
+				},
+			})
+		case r.Method == http.MethodPatch && r.URL.Path == "/zones/zone-multi/dns_records/rec-2":
+			var req map[string]any
+			_ = json.NewDecoder(r.Body).Decode(&req)
+			rec2Content = req["content"].(string)
+			patchedRecords["rec-2"] = rec2Content
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"success": true,
+				"result": map[string]any{
+					"id": "rec-2", "type": "A", "name": "dom2.example.com", "content": rec2Content, "ttl": 60, "proxied": false,
+				},
+			})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer mockCF.Close()
+
+	store, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+
+	oldAPI := cloudflareAPI
+	cloudflareAPI = mockCF.URL
+	defer func() { cloudflareAPI = oldAPI }()
+
+	if err := store.SetCloudflareSettings(t.Context(), "zone-multi", "example.com", "mock-token-xyz"); err != nil {
+		t.Fatalf("SetCloudflareSettings failed: %v", err)
+	}
+
+	nodeID := newTestNode(t, store, "multi-ddns-node", "d")
+	enabled := true
+	recIDs := []string{"rec-1", "rec-2"}
+	domains := []string{"dom1.example.com", "dom2.example.com"}
+
+	if err := store.UpdateNodeWithDDNS(t.Context(), nodeID, "Master Node", "dom1.example.com", &enabled, nil, nil, recIDs, domains); err != nil {
+		t.Fatalf("UpdateNodeWithDDNS failed: %v", err)
+	}
+
+	node, err := store.GetNode(t.Context(), nodeID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(node.DDNSRecordIDs) != 2 || node.DDNSRecordIDs[0] != "rec-1" || node.DDNSRecordIDs[1] != "rec-2" {
+		t.Fatalf("unexpected DDNSRecordIDs: %v", node.DDNSRecordIDs)
+	}
+	if len(node.DDNSDomains) != 2 || node.DDNSDomains[0] != "dom1.example.com" || node.DDNSDomains[1] != "dom2.example.com" {
+		t.Fatalf("unexpected DDNSDomains: %v", node.DDNSDomains)
+	}
+
+	server, err := NewServer(store, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Execute DDNS for node with new IP 203.0.113.88
+	if err := server.executeNodeDDNS(t.Context(), nodeID, "203.0.113.88"); err != nil {
+		t.Fatalf("executeNodeDDNS failed: %v", err)
+	}
+
+	mu.Lock()
+	p1 := patchedRecords["rec-1"]
+	p2 := patchedRecords["rec-2"]
+	mu.Unlock()
+
+	if p1 != "203.0.113.88" || p2 != "203.0.113.88" {
+		t.Fatalf("expected both records to be patched with 203.0.113.88, got rec-1: %s, rec-2: %s", p1, p2)
+	}
+
+	// Verify node last observed IP is updated
+	updatedNode, _ := store.GetNode(t.Context(), nodeID)
+	if updatedNode.LastObservedIP != "203.0.113.88" {
+		t.Fatalf("expected LastObservedIP 203.0.113.88, got %s", updatedNode.LastObservedIP)
+	}
+}
+
+

@@ -77,6 +77,8 @@ const editForm = ref({
   ddns_enabled: false,
   ddns_record_id: '',
   ddns_domain: '',
+  ddns_record_ids: [],
+  ddns_domains: [],
 })
 const cfRecords = ref([])
 const cfLoading = ref(false)
@@ -754,12 +756,15 @@ async function loadCloudflareRecords() {
   }
 }
 
-function onRecordSelected(recordId) {
-  const rec = cfRecords.value.find((r) => r.id === recordId)
-  if (rec) {
-    editForm.value.ddns_domain = rec.name
-    if (!editForm.value.client_address || /^[0-9.:]+$/.test(editForm.value.client_address)) {
-      editForm.value.client_address = rec.name
+function onRecordsSelected(selectedIds) {
+  editForm.value.ddns_record_ids = selectedIds
+  const selectedRecords = cfRecords.value.filter((r) => selectedIds.includes(r.id))
+  editForm.value.ddns_domains = selectedRecords.map((r) => r.name)
+  editForm.value.ddns_record_id = selectedIds[0] || ''
+  editForm.value.ddns_domain = editForm.value.ddns_domains[0] || ''
+  if (!editForm.value.client_address || /^[0-9.:]+$/.test(editForm.value.client_address)) {
+    if (editForm.value.ddns_domain) {
+      editForm.value.client_address = editForm.value.ddns_domain
     }
   }
 }
@@ -788,6 +793,13 @@ async function openEdit(node) {
     }
   }
 
+  const recordIds = (node.ddns_record_ids && node.ddns_record_ids.length)
+    ? [...node.ddns_record_ids]
+    : (node.ddns_record_id ? [node.ddns_record_id] : [])
+  const domains = (node.ddns_domains && node.ddns_domains.length)
+    ? [...node.ddns_domains]
+    : (node.ddns_domain ? [node.ddns_domain] : [])
+
   editForm.value = {
     name: node.name,
     client_address: node.client_address || '',
@@ -795,6 +807,8 @@ async function openEdit(node) {
     ddns_enabled: Boolean(node.ddns_enabled),
     ddns_record_id: node.ddns_record_id || '',
     ddns_domain: node.ddns_domain || '',
+    ddns_record_ids: recordIds,
+    ddns_domains: domains,
   }
   loadCloudflareRecords()
   editDialog.value = true
@@ -810,6 +824,8 @@ async function saveEdit() {
       ddns_enabled: editForm.value.ddns_enabled,
       ddns_record_id: editForm.value.ddns_record_id,
       ddns_domain: editForm.value.ddns_domain,
+      ddns_record_ids: editForm.value.ddns_record_ids,
+      ddns_domains: editForm.value.ddns_domains,
     })
     if (
       isAdmin.value &&
@@ -887,6 +903,7 @@ function handleCardCommand(node, command) {
   else if (command === 'upgradeSingBox') upgradeSingBox(node)
   else if (command === 'revoke') revoke(node)
   else if (command === 'mtr') openMTRDialog(node)
+  else if (command === 'syncDDNS') triggerManualDDNS(node)
 }
 
 onMounted(() => {
@@ -1145,7 +1162,7 @@ onBeforeUnmount(() => {
                   <el-tooltip
                     v-if="node.ddns_enabled"
                     raw-content
-                    :content="`DDNS 域名: ${node.ddns_domain || node.client_address}<br/>当前解析 IP: ${node.last_observed_ip || '同步中'}`"
+                    :content="`DDNS 域名: ${(node.ddns_domains && node.ddns_domains.length ? node.ddns_domains : [node.ddns_domain || node.client_address]).join('、')}<br/>当前解析 IP: ${node.last_observed_ip || '同步中'}`"
                     placement="top"
                   >
                     <span class="chip-ddns">
@@ -1174,6 +1191,9 @@ onBeforeUnmount(() => {
                     <el-dropdown-menu>
                       <el-dropdown-item v-if="canWrite && node.online" command="mtr">
                         <el-icon><Aim /></el-icon>逐跳丢包排障 (MTR)
+                      </el-dropdown-item>
+                      <el-dropdown-item v-if="canWrite && node.ddns_enabled" command="syncDDNS">
+                        <el-icon><Refresh /></el-icon>同步 DDNS
                       </el-dropdown-item>
                       <el-dropdown-item v-if="canWrite" command="edit" @click="openEdit(node)">
                         <el-icon><Edit /></el-icon>配置节点
@@ -1417,7 +1437,7 @@ onBeforeUnmount(() => {
                   <el-tooltip
                     v-if="row.ddns_enabled"
                     raw-content
-                    :content="`DDNS 域名: ${row.ddns_domain || row.client_address}<br/>当前解析 IP: ${row.last_observed_ip || '同步中'}`"
+                    :content="`DDNS 域名: ${(row.ddns_domains && row.ddns_domains.length ? row.ddns_domains : [row.ddns_domain || row.client_address]).join('、')}<br/>当前解析 IP: ${row.last_observed_ip || '同步中'}`"
                     placement="top"
                   >
                     <span class="chip-ddns" style="margin-left: 4px">
@@ -1527,13 +1547,16 @@ onBeforeUnmount(() => {
               </template>
             </el-table-column>
 
-            <el-table-column label="操作" width="190" fixed="right">
+            <el-table-column label="操作" width="220" fixed="right">
               <template #default="{ row }">
                 <el-button v-if="canWrite && row.online" link type="primary" size="small" @click="runSpeedtest(row)">
                   测速
                 </el-button>
                 <el-button v-if="canWrite && row.online" link type="primary" size="small" @click="openMTRDialog(row)">
                   排障
+                </el-button>
+                <el-button v-if="canWrite && row.ddns_enabled" link type="primary" size="small" :loading="syncingDDNS" @click="triggerManualDDNS(row)">
+                  DDNS
                 </el-button>
                 <el-button v-if="canWrite" link type="primary" size="small" @click="openEdit(row)">
                   配置
@@ -1599,11 +1622,15 @@ onBeforeUnmount(() => {
           </div>
           <div v-if="editForm.ddns_enabled" style="margin-top: 10px; width: 100%">
             <el-select
-              v-model="editForm.ddns_record_id"
-              placeholder="选择绑定的 Cloudflare A 记录"
+              v-model="editForm.ddns_record_ids"
+              multiple
+              filterable
+              collapse-tags
+              collapse-tags-tooltip
+              placeholder="选择绑定的 Cloudflare A 记录（支持多选）"
               style="width: 100%"
               :loading="cfLoading"
-              @change="onRecordSelected"
+              @change="onRecordsSelected"
             >
               <el-option
                 v-for="rec in cfRecords"
@@ -1612,6 +1639,11 @@ onBeforeUnmount(() => {
                 :value="rec.id"
               />
             </el-select>
+            <div v-if="(editForm.ddns_domains || []).length" style="margin-top: 8px; display: flex; flex-wrap: wrap; gap: 4px">
+              <el-tag v-for="d in editForm.ddns_domains" :key="d" size="small" type="info">
+                {{ d }}
+              </el-tag>
+            </div>
           </div>
         </el-form-item>
       </el-form>

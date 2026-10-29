@@ -354,9 +354,6 @@ func (s *Server) registerBrowserRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/v1/cloudflare/origin-certificates", s.createOriginCertificate)
 	mux.HandleFunc("PUT /api/v1/cloudflare/origin-certificates/{id}", s.updateOriginCertificate)
 	mux.HandleFunc("DELETE /api/v1/cloudflare/origin-certificates/{id}", s.deleteOriginCertificate)
-	mux.HandleFunc("GET /api/v1/master/ddns", s.getMasterDDNS)
-	mux.HandleFunc("PUT /api/v1/master/ddns", s.updateMasterDDNS)
-	mux.HandleFunc("POST /api/v1/master/ddns/sync", s.syncMasterDDNS)
 	mux.HandleFunc("GET /api/v1/tasks", s.listTasks)
 	mux.HandleFunc("GET /api/v1/tasks/{id}", s.getTask)
 	mux.HandleFunc("GET /api/v1/audit-events", s.listAuditEvents)
@@ -1350,17 +1347,19 @@ func (s *Server) updateNode(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var input struct {
-		Name         string  `json:"name"`
-		Address      string  `json:"client_address"`
-		DDNSEnabled  *bool   `json:"ddns_enabled"`
-		DDNSRecordID *string `json:"ddns_record_id"`
-		DDNSDomain   *string `json:"ddns_domain"`
+		Name          string   `json:"name"`
+		Address       string   `json:"client_address"`
+		DDNSEnabled   *bool    `json:"ddns_enabled"`
+		DDNSRecordID  *string  `json:"ddns_record_id"`
+		DDNSDomain    *string  `json:"ddns_domain"`
+		DDNSRecordIDs []string `json:"ddns_record_ids"`
+		DDNSDomains   []string `json:"ddns_domains"`
 	}
 	if !decodeJSON(w, r, &input) {
 		return
 	}
 	nodeID := r.PathValue("id")
-	if err := s.store.UpdateNodeWithDDNS(r.Context(), nodeID, input.Name, input.Address, input.DDNSEnabled, input.DDNSRecordID, input.DDNSDomain); err != nil {
+	if err := s.store.UpdateNodeWithDDNS(r.Context(), nodeID, input.Name, input.Address, input.DDNSEnabled, input.DDNSRecordID, input.DDNSDomain, input.DDNSRecordIDs, input.DDNSDomains); err != nil {
 		writeError(w, err)
 		return
 	}
@@ -1374,14 +1373,12 @@ func (s *Server) updateNode(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
-	if node.DDNSEnabled && node.DDNSRecordID != "" {
+	if node.DDNSEnabled && (len(node.DDNSRecordIDs) > 0 || node.DDNSRecordID != "") {
 		currentIP := s.nodeActiveAddress(node.ID)
 		if currentIP == "" {
 			currentIP = node.LastObservedIP
 		}
-		if currentIP != "" {
-			go s.triggerNodeDDNS(context.Background(), node.ID, currentIP)
-		}
+		go s.triggerNodeDDNS(context.Background(), node.ID, currentIP)
 	}
 	writeJSON(w, http.StatusOK, node)
 }

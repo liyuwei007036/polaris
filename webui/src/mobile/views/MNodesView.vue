@@ -38,7 +38,7 @@ const agentPort = ref(19994)
 
 const editSheet = ref(false)
 const editNode = ref(null)
-const editForm = ref({ name: '', client_address: '', scanner_protection: false, ddns_enabled: false, ddns_record_id: '', ddns_domain: '' })
+const editForm = ref({ name: '', client_address: '', scanner_protection: false, ddns_enabled: false, ddns_record_id: '', ddns_domain: '', ddns_record_ids: [], ddns_domains: [] })
 const cfRecords = ref([])
 const cfLoading = ref(false)
 const editSaving = ref(false)
@@ -279,12 +279,15 @@ async function loadCloudflareRecords() {
   }
 }
 
-function onRecordSelected(recordId) {
-  const rec = cfRecords.value.find(r => r.id === recordId)
-  if (rec) {
-    editForm.value.ddns_domain = rec.name
-    if (!editForm.value.client_address || /^[0-9.:]+$/.test(editForm.value.client_address)) {
-      editForm.value.client_address = rec.name
+function onRecordsSelected(selectedIds) {
+  editForm.value.ddns_record_ids = selectedIds
+  const selectedRecords = cfRecords.value.filter(r => selectedIds.includes(r.id))
+  editForm.value.ddns_domains = selectedRecords.map(r => r.name)
+  editForm.value.ddns_record_id = selectedIds[0] || ''
+  editForm.value.ddns_domain = editForm.value.ddns_domains[0] || ''
+  if (!editForm.value.client_address || /^[0-9.:]+$/.test(editForm.value.client_address)) {
+    if (editForm.value.ddns_domain) {
+      editForm.value.client_address = editForm.value.ddns_domain
     }
   }
 }
@@ -299,6 +302,14 @@ async function openEdit(node) {
       scanners.value[node.id] = isProtected
     }
   }
+
+  const recordIds = (node.ddns_record_ids && node.ddns_record_ids.length)
+    ? [...node.ddns_record_ids]
+    : (node.ddns_record_id ? [node.ddns_record_id] : [])
+  const domains = (node.ddns_domains && node.ddns_domains.length)
+    ? [...node.ddns_domains]
+    : (node.ddns_domain ? [node.ddns_domain] : [])
+
   editForm.value = {
     name: node.name,
     client_address: node.client_address || '',
@@ -306,6 +317,8 @@ async function openEdit(node) {
     ddns_enabled: Boolean(node.ddns_enabled),
     ddns_record_id: node.ddns_record_id || '',
     ddns_domain: node.ddns_domain || '',
+    ddns_record_ids: recordIds,
+    ddns_domains: domains,
   }
   loadCloudflareRecords()
   editSheet.value = true
@@ -320,6 +333,8 @@ async function saveNode() {
       ddns_enabled: editForm.value.ddns_enabled,
       ddns_record_id: editForm.value.ddns_record_id,
       ddns_domain: editForm.value.ddns_domain,
+      ddns_record_ids: editForm.value.ddns_record_ids,
+      ddns_domains: editForm.value.ddns_domains,
     })
     if (isAdmin.value && editNode.value.online && editForm.value.scanner_protection !== Boolean(scanners.value[editNode.value.id])) {
       const updated = await post(`/nodes/${editNode.value.id}/firewall/scanners`, { enabled: editForm.value.scanner_protection })
@@ -448,19 +463,17 @@ onBeforeUnmount(() => {
         <div class="m-field__hint">NAT 机器公网出口 IP 变动时自动更新绑定的 Cloudflare A 记录。</div>
         <div v-if="editForm.ddns_enabled" style="margin-top: 8px;">
           <el-select
-            v-model="editForm.ddns_record_id"
-            placeholder="选择关联的 Cloudflare A 记录"
+            v-model="editForm.ddns_record_ids"
+            multiple
+            filterable
+            collapse-tags
+            collapse-tags-tooltip
+            placeholder="选择关联的 Cloudflare 记录（支持多选）"
             style="width: 100%;"
             :loading="cfLoading"
             no-data-text="未找到可用记录（请先在域名解析中添加）"
-            @change="onRecordSelected"
+            @change="onRecordsSelected"
           >
-            <el-option
-              v-if="editForm.ddns_record_id && !cfRecords.some(r => r.id === editForm.ddns_record_id)"
-              :key="editForm.ddns_record_id"
-              :label="`${editForm.ddns_domain || '已绑定记录'} (当前绑定)`"
-              :value="editForm.ddns_record_id"
-            />
             <el-option
               v-for="item in cfRecords"
               :key="item.id"
@@ -468,6 +481,11 @@ onBeforeUnmount(() => {
               :value="item.id"
             />
           </el-select>
+          <div v-if="(editForm.ddns_domains || []).length" style="margin-top: 6px; display: flex; flex-wrap: wrap; gap: 4px">
+            <el-tag v-for="d in editForm.ddns_domains" :key="d" size="small" type="info">
+              {{ d }}
+            </el-tag>
+          </div>
         </div>
       </div>
       <template #footer>

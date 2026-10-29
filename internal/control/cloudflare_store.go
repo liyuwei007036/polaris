@@ -357,26 +357,23 @@ func (s *Store) cloudflareBindingIndex(ctx context.Context) (map[string][]Cloudf
 	if err := rows.Err(); err != nil {
 		return nil, nil, err
 	}
-	ddnsRows, err := s.db.QueryContext(ctx, `SELECT LOWER(ddns_domain), name FROM nodes
-		WHERE ddns_enabled = 1 AND ddns_domain <> '' AND revoked_at IS NULL ORDER BY name, id`)
+	ddnsRows, err := s.db.QueryContext(ctx, `SELECT COALESCE(ddns_domains, '[]'), COALESCE(ddns_domain, ''), name FROM nodes
+		WHERE ddns_enabled = 1 AND revoked_at IS NULL ORDER BY name, id`)
 	if err == nil {
 		defer ddnsRows.Close()
 		for ddnsRows.Next() {
-			var domain, nodeName string
-			if err := ddnsRows.Scan(&domain, &nodeName); err == nil {
-				byDomain[domain] = append(byDomain[domain], CloudflareBinding{NodeName: nodeName + " (DDNS)"})
-			}
-		}
-	}
-	var masterEnabled int
-	var masterDomainsJSON string
-	if err := s.db.QueryRowContext(ctx, `SELECT enabled, domains FROM master_ddns_settings WHERE id = 1`).Scan(&masterEnabled, &masterDomainsJSON); err == nil && masterEnabled == 1 {
-		var masterDomains []string
-		if json.Unmarshal([]byte(masterDomainsJSON), &masterDomains) == nil {
-			for _, d := range masterDomains {
-				d = strings.ToLower(strings.TrimSpace(d))
-				if d != "" {
-					byDomain[d] = append(byDomain[d], CloudflareBinding{NodeName: "Master 主控 (DDNS)"})
+			var domainsJSON, domain, nodeName string
+			if err := ddnsRows.Scan(&domainsJSON, &domain, &nodeName); err == nil {
+				var domains []string
+				_ = json.Unmarshal([]byte(domainsJSON), &domains)
+				if len(domains) == 0 && domain != "" {
+					domains = []string{domain}
+				}
+				for _, d := range domains {
+					d = strings.ToLower(strings.TrimSpace(d))
+					if d != "" {
+						byDomain[d] = append(byDomain[d], CloudflareBinding{NodeName: nodeName + " (DDNS)"})
+					}
 				}
 			}
 		}
