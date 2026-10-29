@@ -6,10 +6,12 @@ import (
 	"database/sql"
 	"embed"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"mime"
 	"net"
 	"net/http"
@@ -47,6 +49,8 @@ type Server struct {
 	controlMu              sync.Mutex
 	controls               map[string]*controlSession
 	ddnsMu                 sync.Mutex
+	ddnsReconcileMu        sync.Mutex
+	ddnsReconcileState     map[string]*ddnsReconcileAttempt
 	autoInstallMu          sync.Mutex
 	autoInstallChecked     map[string]bool
 	latestSingBoxReleaseFn func(context.Context, string) (SingBoxRelease, error)
@@ -120,6 +124,7 @@ func NewServer(store *Store, secureCookies bool) (*Server, error) {
 	server := &Server{
 		store: store, noiseKeypair: keypair, agentPort: defaultAgentPort, secureCookies: secureCookies,
 		controls: make(map[string]*controlSession), autoInstallChecked: make(map[string]bool),
+		ddnsReconcileState:     make(map[string]*ddnsReconcileAttempt),
 		taskWaiters:            make(map[string]chan wire.TaskResult),
 		latestSingBoxReleaseFn: LatestOfficialSingBoxRelease,
 		connHub:                newConnectionsHub(), connRates: newConnectionRates(), connActivity: newNodeActivity(),
@@ -393,6 +398,7 @@ func (s *Server) registerBrowserRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/v1/alerts/test", s.testAlert)
 	mux.HandleFunc("POST /api/v1/probes/run-gfw-check", s.handleRunGFWCheck)
 	mux.HandleFunc("POST /api/v1/nodes/{id}/speedtest", s.handleRunNodeSpeedtest)
+	mux.HandleFunc("POST /api/v1/nodes/{id}/diagnose/mtr", s.handleRunNodeMTR)
 	mux.HandleFunc("GET /api/v1/nodes/{id}/speedtest/latest", s.handleGetNodeSpeedtestLatest)
 	mux.HandleFunc("GET /api/v1/nodes/speedtests/latest", s.handleListNodeSpeedtestsLatest)
 	mux.HandleFunc("POST /api/v1/tools/reality-check", s.handleCheckRealityCandidate)
@@ -939,6 +945,48 @@ func (s *Server) dispatchNodeConfigurations(ctx context.Context, nodeIDs []strin
 	return tasks, nil
 }
 
+// dispatchNodeDNSUpdate dispatches a "dns.update" task instruction to the given nodes,
+// instructing them to update their local DNS resolution for the specified domains to the target IP,
+// without recompiling or changing the sing-box configurations on those nodes.
+func (s *Server) dispatchNodeDNSUpdate(ctx context.Context, nodeIDs []string, domains []string, ip, operatorID string) ([]Task, error) {
+	domains = deduplicateStrings(domains)
+	if len(nodeIDs) == 0 || len(domains) == 0 || ip == "" {
+		return nil, nil
+	}
+	payloadBytes, err := json.Marshal(map[string]any{
+		"ip":      ip,
+		"domains": domains,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("marshal dns update payload: %w", err)
+	}
+	payload := string(payloadBytes)
+	digest := sha256.Sum256(payloadBytes)
+	hash := hex.EncodeToString(digest[:])
+
+	tasks := make([]Task, 0, len(nodeIDs))
+	for _, nodeID := range nodeIDs {
+		task, err := s.DispatchTask(ctx, Task{
+			NodeID:         nodeID,
+			OperatorID:     operatorID,
+			Kind:           "dns.update",
+			IdempotencyKey: fmt.Sprintf("dns-update-%s-%s", nodeID, hash[:16]),
+			Payload:        payload,
+			ExpectedHash:   hash,
+		})
+		if err != nil {
+			log.Printf("ddns: dispatch dns.update for node %s failed: %v", nodeID, err)
+			continue
+		}
+		tasks = append(tasks, task)
+		if operatorID != "" {
+			auditSummary := fmt.Sprintf("NAT 出口 IP 变更，已向前置节点「%s」下发 DNS 刷新与链路自愈指令（目标 IP: %s，域名: %s）", nodeID, ip, strings.Join(domains, ", "))
+			_ = s.store.AppendAudit(ctx, operatorID, "node.dns_update_dispatched", "node", nodeID, auditSummary)
+		}
+	}
+	return tasks, nil
+}
+
 func setAutoApplyTaskHeaders(w http.ResponseWriter, tasks []Task) {
 	ids := make([]string, 0, len(tasks))
 	for _, task := range tasks {
@@ -1317,6 +1365,7 @@ func (s *Server) updateNode(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
+	s.clearReconcileState(nodeID)
 	node, err := s.store.GetNode(r.Context(), nodeID)
 	if err != nil {
 		writeError(w, err)

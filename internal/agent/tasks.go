@@ -129,10 +129,14 @@ func executeTask(ctx context.Context, task Task, options TaskOptions) TaskResult
 		return testOutbound(ctx, task)
 	case "speedtest.run":
 		return runSpeedtest(ctx, task)
+	case "diagnose.mtr":
+		return runMTRDiagnose(ctx, task)
 	case "probe.tcp":
 		return runTCPProbe(ctx, task)
 	case "firewall.toggle_scanners":
 		return toggleScannerProtection(ctx, task)
+	case "dns.update":
+		return updateDNS(ctx, task)
 	default:
 		return TaskResult{Status: "failed", Summary: "task kind is not implemented by this agent build"}
 	}

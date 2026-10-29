@@ -84,9 +84,6 @@ func (s *Server) handleAgentConn(ctx context.Context, raw net.Conn) {
 		if err := s.store.SetNodeObservedAddress(ctx, node.ID, address); err != nil {
 			log.Printf("record observed address for node %s: %v", node.ID, err)
 		}
-		if err := s.store.SetNodeLastObservedIP(ctx, node.ID, address); err != nil {
-			log.Printf("record last observed ip for node %s: %v", node.ID, err)
-		}
 	}
 	_ = raw.SetDeadline(time.Time{})
 	s.runAgentSession(ctx, conn, node, address)
@@ -311,6 +308,7 @@ func (s *Server) handleAgentMessage(ctx context.Context, node Node, msgType byte
 		if st.Capabilities["configuration_hashes"] == "true" {
 			s.reconcileNodeDesiredState(ctx, node.ID, st.SingBoxVersion, st.SingBoxConfigHash, st.NginxConfigHash)
 		}
+		s.reconcileNodeDDNS(ctx, node.ID)
 		if err := s.mergeNodeMetrics(ctx, node.ID, func(m *storedMetrics) {
 			m.CollectedAt = st.CollectedAt
 			// Connections are real-time only and live in connectionsHub; drop
@@ -365,6 +363,13 @@ func (s *Server) handleAgentMessage(ctx context.Context, node Node, msgType byte
 		}
 		if task.OperatorID != "" {
 			_ = s.store.AppendAudit(ctx, task.OperatorID, "task.completed."+res.Status, "task", task.ID, "agent task completed: "+task.Kind)
+		}
+		if task.Kind == "dns.update" {
+			summary := fmt.Sprintf("前置节点「%s」完成动态 DNS 刷新与链路自愈：%s", node.Name, res.Summary)
+			_ = s.store.AppendAudit(ctx, task.OperatorID, "node.dns_update_completed", "node", node.ID, summary)
+			if s.alertEngine != nil && res.Status == "succeeded" {
+				s.alertEngine.NotifyChainedDNSCompleted(node.ID, node.Name, res.Summary)
+			}
 		}
 	case wire.MsgConnections:
 		var push wire.ConnectionsPush
@@ -454,9 +459,13 @@ func (s *Server) shouldReconcile(nodeID, kind, desiredHash string) bool {
 // something, since that is a deliberate action and must feel immediate.
 func (s *Server) clearReconcileState(nodeID string) {
 	s.reconcileMu.Lock()
-	defer s.reconcileMu.Unlock()
 	delete(s.reconcileState, nodeID+"/singbox")
 	delete(s.reconcileState, nodeID+"/nginx")
+	s.reconcileMu.Unlock()
+
+	s.ddnsReconcileMu.Lock()
+	delete(s.ddnsReconcileState, nodeID)
+	s.ddnsReconcileMu.Unlock()
 }
 
 func (s *Server) reconcileNodeDesiredState(ctx context.Context, nodeID, singBoxVersion, singBoxConfigHash, nginxConfigHash string) {

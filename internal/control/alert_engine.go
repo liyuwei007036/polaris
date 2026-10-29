@@ -456,6 +456,36 @@ func (e *AlertEngine) NotifyNodeOnline(nodeID, nodeName string) {
 	}
 }
 
+// NotifyDDNSUpdated sends an alert when a NAT node's public IP changes and DDNS is updated.
+func (e *AlertEngine) NotifyDDNSUpdated(nodeID, nodeName, oldIP, currentIP, domain string) {
+	alertKey := "ddns:" + nodeID + ":" + currentIP
+	if e.canAlert(alertKey, 1) {
+		body := fmt.Sprintf("• NAT 节点: %s\n• 原公网 IP: %s\n• 新公网 IP: %s\n• 解析域名: %s\n• 状态说明: Cloudflare DNS 解析已自动同步 (TTL: 60s)\n🕒 变更时间: %s",
+			nodeName, e.formatIP(oldIP), e.formatIP(currentIP), domain, NowAlertTime())
+		e.sendAlert(context.Background(), "🌐 [Polaris] NAT 节点 IP 变更与 DDNS 自动更新", body, "Polaris-DDNS监控", "active", "bell.caf", "")
+	}
+}
+
+// NotifyChainedDNSHealing sends an alert when chained nodes are signaled to refresh DNS and heal connections.
+func (e *AlertEngine) NotifyChainedDNSHealing(targetNodeName string, chainedCount int, domains []string, targetIP string) {
+	alertKey := "dns_healing:" + targetNodeName + ":" + targetIP
+	if e.canAlert(alertKey, 1) {
+		body := fmt.Sprintf("• 出口 NAT 节点: %s\n• 依赖前置节点数: %d 台\n• 影响域名: %s\n• 目标最新 IP: %s\n• 联动状态: 已下发轻量自愈指令，重置旧连接并刷新解析\n🕒 触发时间: %s",
+			targetNodeName, chainedCount, strings.Join(domains, ", "), e.formatIP(targetIP), NowAlertTime())
+		e.sendAlert(context.Background(), "🔄 [Polaris] 链路自愈：已触发前置节点 DNS 刷新", body, "Polaris-链路自愈", "active", "anticipate.caf", "")
+	}
+}
+
+// NotifyChainedDNSCompleted sends a notification when a chained node completes DNS refresh and verification.
+func (e *AlertEngine) NotifyChainedDNSCompleted(nodeID, nodeName, summary string) {
+	alertKey := "dns_completed:" + nodeID
+	if e.canAlert(alertKey, 1) {
+		body := fmt.Sprintf("• 前置中转节点: %s\n• 自愈执行结果: %s\n• 状态说明: 底层卡死连接已切断，DNS 状态已重载恢复\n🕒 完成时间: %s",
+			nodeName, summary, NowAlertTime())
+		e.sendAlert(context.Background(), "✅ [Polaris] 链路自愈成功：DNS 刷新与验证完成", body, "Polaris-链路自愈", "active", "calypso.caf", "")
+	}
+}
+
 // NotifyFail2BanBlock notifies when an attacker or scanner is blocked.
 func (e *AlertEngine) NotifyFail2BanBlock(nodeID, nodeName, ip, jail string) {
 	alertKey := "f2b:" + nodeID + ":" + ip

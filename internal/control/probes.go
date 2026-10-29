@@ -400,6 +400,8 @@ func probeFromChinaReal(ctx context.Context, host string, port uint16) ChinaProb
 	var validRTTCount int
 
 	var telecomCities, unicomCities, mobileCities []string
+	var telecomProbeCity, unicomProbeCity, mobileProbeCity string
+	var telecomProbeASN, unicomProbeASN, mobileProbeASN int
 	for _, item := range lastRes.Results {
 		probeRTT := 0
 		if item.Result.Stats.Avg != nil && *item.Result.Stats.Avg > 0 {
@@ -433,6 +435,8 @@ func probeFromChinaReal(ctx context.Context, host string, port uint16) ChinaProb
 			if (res.InboundTelecomLatencyMs == 0 || (probeRTT > 0 && probeRTT < res.InboundTelecomLatencyMs)) && probeRTT > 0 {
 				res.InboundTelecomLatencyMs = probeRTT
 				res.InboundTelecomRoute = wire.AnalyzeTelecomRoute([]string{host}, probeRTT)
+				telecomProbeCity = cityName
+				telecomProbeASN = asn
 			}
 		} else if asn == 4837 || asn == 9929 || strings.Contains(upperNet, "UNICOM") {
 			if probeRTT > 0 {
@@ -441,6 +445,8 @@ func probeFromChinaReal(ctx context.Context, host string, port uint16) ChinaProb
 			if (res.InboundUnicomLatencyMs == 0 || (probeRTT > 0 && probeRTT < res.InboundUnicomLatencyMs)) && probeRTT > 0 {
 				res.InboundUnicomLatencyMs = probeRTT
 				res.InboundUnicomRoute = wire.AnalyzeUnicomRoute([]string{host}, probeRTT)
+				unicomProbeCity = cityName
+				unicomProbeASN = asn
 			}
 		} else if asn == 9808 || asn == 58807 || strings.Contains(upperNet, "MOBILE") {
 			if probeRTT > 0 {
@@ -449,6 +455,8 @@ func probeFromChinaReal(ctx context.Context, host string, port uint16) ChinaProb
 			if (res.InboundMobileLatencyMs == 0 || (probeRTT > 0 && probeRTT < res.InboundMobileLatencyMs)) && probeRTT > 0 {
 				res.InboundMobileLatencyMs = probeRTT
 				res.InboundMobileRoute = wire.AnalyzeMobileRoute([]string{host}, probeRTT)
+				mobileProbeCity = cityName
+				mobileProbeASN = asn
 			}
 		}
 	}
@@ -466,10 +474,17 @@ func probeFromChinaReal(ctx context.Context, host string, port uint16) ChinaProb
 		destName = wire.ASNToNameWithLocation(destASN, city)
 	}
 	if destName == "" {
+		if loc, err := newIPLocator(); err == nil {
+			if l := loc.Locate(host); l != "" && l != "未知" {
+				destName = l
+			}
+		}
+	}
+	if destName == "" {
 		if city != "" {
 			destName = fmt.Sprintf("节点 (%s)", city)
 		} else {
-			destName = "AS174 (Cogent·美西洛杉矶)"
+			destName = host
 		}
 	}
 
@@ -479,21 +494,21 @@ func probeFromChinaReal(ctx context.Context, host string, port uint16) ChinaProb
 		res.PacketLoss = int(float64(failCount) / float64(totalCount) * 100)
 		res.Source = fmt.Sprintf("全国 %d 探针 (%d/%d 畅通 · %dms)", totalCount, successCount, totalCount, avgRTT)
 		if res.InboundTelecomRoute == "" {
-			res.InboundTelecomRoute = "电信 163 骨干"
+			res.InboundTelecomRoute = "电信直连"
 		}
 		if res.InboundUnicomRoute == "" {
-			res.InboundUnicomRoute = "联通 4837"
+			res.InboundUnicomRoute = "联通直连"
 		}
 		if res.InboundMobileRoute == "" {
-			res.InboundMobileRoute = "移动 CMI"
+			res.InboundMobileRoute = "移动直连"
 		}
 		res.InboundTelecomNodeLatencies = strings.Join(telecomCities, " | ")
 		res.InboundUnicomNodeLatencies = strings.Join(unicomCities, " | ")
 		res.InboundMobileNodeLatencies = strings.Join(mobileCities, " | ")
 
-		res.InboundTelecomTracePath = wire.BuildInboundTracePath(res.InboundTelecomRoute, "电信", destName)
-		res.InboundUnicomTracePath = wire.BuildInboundTracePath(res.InboundUnicomRoute, "联通", destName)
-		res.InboundMobileTracePath = wire.BuildInboundTracePath(res.InboundMobileRoute, "移动", destName)
+		res.InboundTelecomTracePath = wire.BuildRealInboundTracePath(telecomProbeCity, telecomProbeASN, "电信", destName, nil)
+		res.InboundUnicomTracePath = wire.BuildRealInboundTracePath(unicomProbeCity, unicomProbeASN, "联通", destName, nil)
+		res.InboundMobileTracePath = wire.BuildRealInboundTracePath(mobileProbeCity, mobileProbeASN, "移动", destName, nil)
 		return res
 	}
 
@@ -561,14 +576,20 @@ func (s *Server) runGFWCheckAll(ctx context.Context) ([]ProbeResultItem, error) 
 			if item.InboundTelecomRoute != "" && item.InboundTelecomRoute != "GFW 阻断" {
 				st.InboundTelecomRoute = item.InboundTelecomRoute
 				st.InboundTelecomLatencyMs = item.InboundTelecomLatencyMs
+				st.InboundTelecomNodeLatencies = item.InboundTelecomNodeLatencies
+				st.InboundTelecomTracePath = item.InboundTelecomTracePath
 			}
 			if item.InboundUnicomRoute != "" && item.InboundUnicomRoute != "GFW 阻断" {
 				st.InboundUnicomRoute = item.InboundUnicomRoute
 				st.InboundUnicomLatencyMs = item.InboundUnicomLatencyMs
+				st.InboundUnicomNodeLatencies = item.InboundUnicomNodeLatencies
+				st.InboundUnicomTracePath = item.InboundUnicomTracePath
 			}
 			if item.InboundMobileRoute != "" && item.InboundMobileRoute != "GFW 阻断" {
 				st.InboundMobileRoute = item.InboundMobileRoute
 				st.InboundMobileLatencyMs = item.InboundMobileLatencyMs
+				st.InboundMobileNodeLatencies = item.InboundMobileNodeLatencies
+				st.InboundMobileTracePath = item.InboundMobileTracePath
 			}
 		}
 		_ = s.store.SaveNodeSpeedtest(ctx, *st)
@@ -694,6 +715,36 @@ func (s *Server) probeSingleNode(ctx context.Context, node Node, host string, po
 	return item
 }
 
+// getNodeLocationLabel resolves a human-readable location label for a node based on its observed IP and ASN.
+func (s *Server) getNodeLocationLabel(node Node) string {
+	ip := strings.TrimSpace(node.LastObservedIP)
+	if ip == "" {
+		ip = strings.TrimSpace(node.ClientAddress)
+	}
+	if ip != "" {
+		asn := wire.IPv4ToASN(ip)
+		city := wire.IPv4ToCity(ip)
+		if asn != "" && city != "" {
+			return wire.ASNToNameWithLocation(asn, city)
+		}
+		if s.ipLocator != nil {
+			if loc := s.ipLocator.Locate(ip); loc != "" && loc != "未知" && loc != "本机" && loc != "内网" {
+				if asn != "" {
+					return fmt.Sprintf("%s (%s)", wire.ASNToName(asn), loc)
+				}
+				return loc
+			}
+		}
+		if city != "" {
+			return city
+		}
+	}
+	if node.Name != "" {
+		return node.Name
+	}
+	return "本地节点"
+}
+
 // ExecuteNodeSpeedtest runs a three-network latency and route detection task on an agent and records the result.
 func (s *Server) ExecuteNodeSpeedtest(ctx context.Context, nodeID string) (*NodeSpeedtest, error) {
 	node, err := s.store.GetNode(ctx, nodeID)
@@ -703,6 +754,8 @@ func (s *Server) ExecuteNodeSpeedtest(ctx context.Context, nodeID string) (*Node
 	if !node.Online {
 		return nil, errors.New("服务器当前处于离线状态，无法进行检测")
 	}
+
+	nodeLoc := s.getNodeLocationLabel(node)
 
 	targetHost := strings.TrimSpace(node.ClientAddress)
 	if targetHost == "" {
@@ -777,23 +830,34 @@ func (s *Server) ExecuteNodeSpeedtest(ctx context.Context, nodeID string) (*Node
 
 	resB := <-probeCh
 
+	enrichOutboundTrace := func(trace, defaultTarget string) string {
+		if trace == "" {
+			return fmt.Sprintf("%s ➔ %s (骨干跃点未回显)", nodeLoc, defaultTarget)
+		}
+		t := strings.Replace(trace, "节点 ➔", nodeLoc+" ➔", 1)
+		t = strings.Replace(t, "本地节点 ➔", nodeLoc+" ➔", 1)
+		t = strings.Replace(t, "服务器节点 ➔", nodeLoc+" ➔", 1)
+		t = strings.Replace(t, "➔ 目标", "➔ "+defaultTarget, 1)
+		return t
+	}
+
 	st := NodeSpeedtest{
 		NodeID:                      nodeID,
 		TelecomLatencyMs:            res.TelecomLatencyMs,
 		TelecomSpeedMbps:            res.TelecomSpeedMbps,
 		TelecomRoute:                res.TelecomRoute,
 		TelecomNodeLatencies:        res.TelecomNodeLatencies,
-		TelecomTracePath:            res.TelecomTracePath,
+		TelecomTracePath:            enrichOutboundTrace(res.TelecomTracePath, "上海电信"),
 		UnicomLatencyMs:             res.UnicomLatencyMs,
 		UnicomSpeedMbps:             res.UnicomSpeedMbps,
 		UnicomRoute:                 res.UnicomRoute,
 		UnicomNodeLatencies:         res.UnicomNodeLatencies,
-		UnicomTracePath:             res.UnicomTracePath,
+		UnicomTracePath:             enrichOutboundTrace(res.UnicomTracePath, "上海联通"),
 		MobileLatencyMs:             res.MobileLatencyMs,
 		MobileSpeedMbps:             res.MobileSpeedMbps,
 		MobileRoute:                 res.MobileRoute,
 		MobileNodeLatencies:         res.MobileNodeLatencies,
-		MobileTracePath:             res.MobileTracePath,
+		MobileTracePath:             enrichOutboundTrace(res.MobileTracePath, "广州移动"),
 		InboundTelecomRoute:         resB.item.InboundTelecomRoute,
 		InboundTelecomLatencyMs:     resB.item.InboundTelecomLatencyMs,
 		InboundTelecomNodeLatencies: resB.item.InboundTelecomNodeLatencies,

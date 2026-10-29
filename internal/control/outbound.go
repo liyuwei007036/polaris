@@ -509,3 +509,58 @@ func (s *Store) ListenerChainedNodeIDs(ctx context.Context, listenerID string) (
 	return nodeIDs, rows.Err()
 }
 
+// NodeChainedNodeIDs returns node IDs that have endpoints or listeners configured to chain to any endpoint on the given node.
+func (s *Store) NodeChainedNodeIDs(ctx context.Context, nodeID string) ([]string, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT DISTINCT l.node_id
+		FROM listeners l
+		LEFT JOIN endpoints e ON e.listener_id = l.id
+		WHERE (
+			e.outbound_id IN (
+				SELECT 'chain:' || target_e.id
+				FROM endpoints target_e
+				JOIN listeners target_l ON target_l.id = target_e.listener_id
+				WHERE target_l.node_id = ?
+			)
+			OR
+			l.outbound_id IN (
+				SELECT 'chain:' || target_e.id
+				FROM endpoints target_e
+				JOIN listeners target_l ON target_l.id = target_e.listener_id
+				WHERE target_l.node_id = ?
+			)
+		)
+		AND l.node_id <> ?
+		AND l.node_id IS NOT NULL`, nodeID, nodeID, nodeID)
+	if err != nil {
+		return nil, fmt.Errorf("list node chained nodes: %w", err)
+	}
+	defer rows.Close()
+	var chainedIDs []string
+	for rows.Next() {
+		var nid string
+		if err := rows.Scan(&nid); err != nil {
+			return nil, fmt.Errorf("read node chained node: %w", err)
+		}
+		chainedIDs = append(chainedIDs, nid)
+	}
+	return chainedIDs, rows.Err()
+}
+
+// NodeConnectionDomains returns all non-empty connection domains configured on listeners of the given node.
+func (s *Store) NodeConnectionDomains(ctx context.Context, nodeID string) ([]string, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT DISTINCT connection_domain FROM listeners WHERE node_id = ? AND connection_domain <> '' AND enabled = 1`, nodeID)
+	if err != nil {
+		return nil, fmt.Errorf("list node connection domains: %w", err)
+	}
+	defer rows.Close()
+	var domains []string
+	for rows.Next() {
+		var d string
+		if err := rows.Scan(&d); err == nil && strings.TrimSpace(d) != "" {
+			domains = append(domains, strings.TrimSpace(d))
+		}
+	}
+	return domains, rows.Err()
+}
+

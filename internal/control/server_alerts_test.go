@@ -146,4 +146,10 @@ func TestAlertsAndSpeedtestAPIs(t *testing.T) {
 	if rec.Code == http.StatusInternalServerError {
 		t.Errorf("expected clean client error or handled response, got 500: %s", rec.Body.String())
 	}
+
+	// 6. POST /api/v1/nodes/{id}/diagnose/mtr on offline node should return clean 400
+	rec = doRequest("POST", "/api/v1/nodes/"+nodeID+"/diagnose/mtr", map[string]any{"target": "202.96.209.133"})
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("expected 400 for offline node MTR, got %d %s", rec.Code, rec.Body.String())
+	}
 }

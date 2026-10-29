@@ -2,6 +2,7 @@
 import { computed, inject, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import {
+  Aim,
   Clock,
   Connection,
   CopyDocument,
@@ -10,6 +11,7 @@ import {
   Edit,
   Grid,
   InfoFilled,
+  Loading,
   Lock,
   Management,
   Monitor,
@@ -80,6 +82,21 @@ const cfRecords = ref([])
 const cfLoading = ref(false)
 const syncingDDNS = ref(false)
 const editSaving = ref(false)
+
+const mtrDialogVisible = ref(false)
+const mtrTargetNode = ref(null)
+const mtrLoading = ref(false)
+const mtrTargetType = ref('telecom')
+const mtrCustomTarget = ref('')
+const mtrCount = ref(10)
+const mtrReport = ref(null)
+const mtrShowRaw = ref(false)
+const mtrTargetOptions = [
+  { label: '上海电信 (AS4134 骨干出口)', value: 'telecom', ip: '202.97.108.1' },
+  { label: '上海联通 (AS4837 骨干出口)', value: 'unicom', ip: '219.158.113.133' },
+  { label: '广州移动 (AS9808 骨干出口)', value: 'mobile', ip: '183.242.126.1' },
+  { label: '自定义 IP / 域名', value: 'custom', ip: '' },
+]
 
 // 架构 -> 官方最新 sing-box 版本号
 const singBoxLatest = ref({})
@@ -286,85 +303,82 @@ function formatNodeLatencies(raw) {
     .join('<br/>')
 }
 
-function getCarrierFallbackTrace(route, isp) {
-  const r = route || ''
-  const origin = 'AS174 (Cogent·美西洛杉矶)'
-  if (r.includes('9929') || r.includes('CUII')) {
-    if (isp === 'telecom') {
-      return `${origin} ➔ AS10099 (联通CUG·中国香港) ➔ AS9929 (联通A网·上海) ➔ AS4134 (电信163·上海) ➔ 上海电信`
-    }
-    return `${origin} ➔ AS10099 (联通CUG·中国香港) ➔ AS9929 (联通A网·上海) ➔ 上海联通`
+function getNodeLocationLabel(node) {
+  if (!node) return '本地节点'
+  const name = (node.name || '').trim()
+  const upper = name.toUpperCase()
+
+  if (upper.includes('TW') || upper.includes('台湾') || upper.includes('HINET')) return '中国台湾'
+  if (upper.includes('HK') || upper.includes('香港')) return '中国香港'
+  if (upper.includes('SG') || upper.includes('新加坡') || upper.includes('狮城')) return '新加坡'
+  if (upper.includes('JP') || upper.includes('日本') || upper.includes('东京') || upper.includes('大阪')) return '日本东京'
+  if (upper.includes('KR') || upper.includes('韩国') || upper.includes('首尔')) return '韩国首尔'
+  if (upper.includes('US') || upper.includes('美国') || upper.includes('圣何塞') || upper.includes('洛杉矶') || upper.includes('美西') || upper.includes('西雅图') || upper.includes('纽约')) return '美西洛杉矶'
+  if (upper.includes('DE') || upper.includes('德国') || upper.includes('法兰克福')) return '德国法兰克福'
+  if (upper.includes('GB') || upper.includes('UK') || upper.includes('英国') || upper.includes('伦敦')) return '英国伦敦'
+  if (upper.includes('FR') || upper.includes('法国') || upper.includes('巴黎')) return '法国巴黎'
+  if (upper.includes('RU') || upper.includes('俄罗斯') || upper.includes('莫斯科')) return '俄罗斯莫斯科'
+
+  const ip = (node.last_observed_ip || node.client_address || '').trim()
+  if (ip) {
+    if (ip.startsWith('38.') || ip.startsWith('154.')) return '美西洛杉矶'
+    if (ip.startsWith('223.118.') || ip.startsWith('223.119.') || ip.startsWith('223.120.')) return '中国香港'
+    if (ip.startsWith('203.160.') || ip.startsWith('202.77.')) return '中国香港'
+    if (ip.startsWith('210.140.') || ip.startsWith('133.')) return '日本东京'
   }
-  if (r.includes('CMIN2') || r.includes('58807')) {
-    return `${origin} ➔ AS58807 (移动CMIN2·美西洛杉矶) ➔ AS9808 (移动骨干·上海) ➔ 广州移动`
+
+  if (name && !name.includes('http') && name.length <= 15) {
+    return name
   }
-  if (r.includes('CN2 GIA')) {
-    return `${origin} ➔ AS4809 (电信CN2·美西洛杉矶) ➔ AS4809 (电信CN2·上海) ➔ 上海电信`
-  }
-  if (r.includes('CN2 GT')) {
-    return `${origin} ➔ AS4809 (电信CN2·美西洛杉矶) ➔ AS4134 (电信163·上海) ➔ 上海电信`
-  }
-  if (r.includes('CTGNet')) {
-    return `${origin} ➔ AS23764 (电信CTGNet·中国香港) ➔ AS4134 (电信163·广州) ➔ 上海电信`
-  }
-  if (r.includes('4837')) {
-    return `${origin} ➔ AS4837 (联通169·美西洛杉矶) ➔ AS4837 (联通169·上海) ➔ 上海联通`
-  }
-  if (r.includes('CMI')) {
-    return `${origin} ➔ AS58453 (移动CMI·中国香港) ➔ AS9808 (移动骨干·广州) ➔ 广州移动`
-  }
-  if (r.includes('163')) {
-    return `${origin} ➔ AS4134 (电信163·美西洛杉矶) ➔ AS4134 (电信163·上海) ➔ 上海电信`
-  }
-  return `${origin} ➔ 目标网络`
+  return '本地节点'
 }
 
-function getInboundFallbackTrace(route, isp) {
-  const r = route || ''
-  const target = 'AS174 (Cogent·美西洛杉矶)'
-  if (r.includes('CN2 GIA') || r.includes('4809')) {
-    return `AS4809 (电信CN2·上海) ➔ AS4809 (电信CN2·美西洛杉矶) ➔ ${target}`
-  }
-  if (r.includes('9929') || r.includes('CUII')) {
-    return `AS9929 (联通A网·上海) ➔ AS10099 (联通CUG·中国香港) ➔ ${target}`
-  }
-  if (r.includes('CMIN2') || r.includes('58807')) {
-    return `AS58807 (移动CMIN2·上海) ➔ AS58807 (移动CMIN2·美西洛杉矶) ➔ ${target}`
-  }
-  if (isp === 'telecom' || r.includes('163')) {
-    return `AS4134 (电信163·上海) ➔ AS4134 (电信163·美西洛杉矶) ➔ ${target}`
-  }
-  if (isp === 'unicom' || r.includes('4837')) {
-    return `AS4837 (联通169·上海) ➔ AS4837 (联通169·美西洛杉矶) ➔ ${target}`
-  }
-  if (isp === 'mobile' || r.includes('CMI')) {
-    return `AS9808 (移动骨干·广州) ➔ AS58453 (移动CMI·中国香港) ➔ ${target}`
-  }
-  return `AS4134 (电信163·上海) ➔ ${target}`
+function getCarrierFallbackTrace(route, isp, node) {
+  const origin = getNodeLocationLabel(node)
+  const targetMap = { telecom: '上海电信', unicom: '上海联通', mobile: '广州移动' }
+  const target = targetMap[isp] || '国内骨干'
+  return `${origin} ➔ ${target}`
 }
 
-function cleanTracePath(trace) {
+function getInboundFallbackTrace(route, isp, node) {
+  const target = getNodeLocationLabel(node)
+  const srcMap = { telecom: '国内电信探针', unicom: '国内联通探针', mobile: '国内移动探针' }
+  const src = srcMap[isp] || '国内探针'
+  return `${src} ➔ ${target}`
+}
+
+function cleanTracePath(trace, node) {
   if (!trace) return ''
+  const loc = getNodeLocationLabel(node)
   let t = trace
-    .replace(/目标机房/g, 'AS174 (Cogent·美西洛杉矶)')
-    .replace(/服务器节点/g, 'AS174 (Cogent·美西洛杉矶)')
-    .replace(/机房出发(?:\s*\([^)]*\))?/g, 'AS174 (Cogent·美西洛杉矶)')
-    .replace(/国际公网出口/g, 'AS4837 (联通169·美西洛杉矶)')
-    .replace(/国内骨干/g, '上海')
-    .replace(/国内电信/g, 'AS4134 (电信163·上海)')
-    .replace(/国内联通/g, 'AS4837 (联通169·上海)')
-    .replace(/国内移动/g, 'AS9808 (移动骨干·广州)')
-    .replace(/国内核心节点/g, 'AS4134 (电信163·上海)')
+    .replace(/^节点\s*➔/g, `${loc} ➔`)
+    .replace(/^本地节点\s*➔/g, `${loc} ➔`)
+    .replace(/^服务器节点\s*➔/g, `${loc} ➔`)
+    .replace(/目标机房/g, loc)
+    .replace(/服务器节点/g, loc)
+    .replace(/境外节点/g, loc)
+    .replace(/机房出发(?:\s*\([^)]*\))?/g, loc)
+    .replace(/➔\s*目标\b/g, `➔ ${loc}`)
+    .replace(/➔\s*目标网络/g, `➔ 国内骨干`)
+    .replace(/境外节点/g, loc)
+    .replace(/机房出发(?:\s*\([^)]*\))?/g, loc)
+    .replace(/国际公网出口/g, '')
+    .replace(/国际公网BGP出口/g, '')
+    .replace(/国内骨干/g, '')
     .replace(/上海\/广州出口/g, '上海')
     .replace(/广州\/上海出口/g, '广州')
     .replace(/香港\/国际出口/g, '中国香港')
-    .replace(/国际跨洋传输/g, 'AS4134 (电信163·美西洛杉矶)')
-    .replace(/国际跨洋专线/g, 'AS4809 (电信CN2·美西洛杉矶)')
-    .replace(/国际公网BGP出口/g, 'AS174 (Cogent·美西洛杉矶)')
-    .replace(/跨洋海缆直连/g, 'AS4809 (电信CN2·美西洛杉矶)')
-    .replace(/跨洋海缆/g, 'AS58807 (移动CMIN2·美西洛杉矶)')
-    .replace(/国际传输/g, 'AS174 (Cogent·美西洛杉矶)')
-    .replace(/骨干网出海/g, '国际直连')
+    .replace(/国际跨洋传输/g, '')
+    .replace(/国际跨洋专线/g, '')
+    .replace(/跨洋海缆直连/g, '')
+    .replace(/跨洋海缆/g, '')
+    .replace(/国际传输/g, '')
+    .replace(/骨干网出海/g, '')
+
+  // Fix any previously cached erroneous AS174 string for non-US nodes
+  if (loc !== '美西洛杉矶' && loc !== '本地节点') {
+    t = t.replace(/AS174 \(Cogent·美西洛杉矶\)/g, loc)
+  }
 
   const parts = t.split('➔').map(s => s.trim()).filter(Boolean)
   const unique = []
@@ -390,22 +404,22 @@ function cleanTracePath(trace) {
   return unique.join(' ➔ ')
 }
 
-function getInboundCarrierTooltip(st, isp) {
+function getInboundCarrierTooltip(st, isp, node) {
   if (!st) return '暂无探测数据'
   let lats = ''
   let trace = ''
   let ping = 0
   if (isp === 'telecom') {
     lats = st.inbound_telecom_node_latencies
-    trace = st.inbound_telecom_trace_path || getInboundFallbackTrace(st.inbound_telecom_route, 'telecom')
+    trace = st.inbound_telecom_trace_path || getInboundFallbackTrace(st.inbound_telecom_route, 'telecom', node)
     ping = st.inbound_telecom_latency_ms
   } else if (isp === 'unicom') {
     lats = st.inbound_unicom_node_latencies
-    trace = st.inbound_unicom_trace_path || getInboundFallbackTrace(st.inbound_unicom_route, 'unicom')
+    trace = st.inbound_unicom_trace_path || getInboundFallbackTrace(st.inbound_unicom_route, 'unicom', node)
     ping = st.inbound_unicom_latency_ms
   } else if (isp === 'mobile') {
     lats = st.inbound_mobile_node_latencies
-    trace = st.inbound_mobile_trace_path || getInboundFallbackTrace(st.inbound_mobile_route, 'mobile')
+    trace = st.inbound_mobile_trace_path || getInboundFallbackTrace(st.inbound_mobile_route, 'mobile', node)
     ping = st.inbound_mobile_latency_ms
   }
 
@@ -418,27 +432,27 @@ function getInboundCarrierTooltip(st, isp) {
   }
 
   if (trace) {
-    sections.push(`<b>【去程线路轨迹】</b><br/>${cleanTracePath(trace)}`)
+    sections.push(`<b>【去程线路轨迹】</b><br/>${cleanTracePath(trace, node)}`)
   }
   return sections.join('<br/><br/>')
 }
 
-function getISPTooltip(st, isp) {
+function getISPTooltip(st, isp, node) {
   if (!st) return '暂无测速数据'
   let lats = ''
   let trace = ''
   let ping = 0
   if (isp === 'telecom') {
     lats = st.telecom_node_latencies
-    trace = st.telecom_trace_path || getCarrierFallbackTrace(st.telecom_route, 'telecom')
+    trace = st.telecom_trace_path || getCarrierFallbackTrace(st.telecom_route, 'telecom', node)
     ping = st.telecom_latency_ms ?? st.telecom_ping_ms
   } else if (isp === 'unicom') {
     lats = st.unicom_node_latencies
-    trace = st.unicom_trace_path || getCarrierFallbackTrace(st.unicom_route, 'unicom')
+    trace = st.unicom_trace_path || getCarrierFallbackTrace(st.unicom_route, 'unicom', node)
     ping = st.unicom_latency_ms ?? st.unicom_ping_ms
   } else if (isp === 'mobile') {
     lats = st.mobile_node_latencies
-    trace = st.mobile_trace_path || getCarrierFallbackTrace(st.mobile_route, 'mobile')
+    trace = st.mobile_trace_path || getCarrierFallbackTrace(st.mobile_route, 'mobile', node)
     ping = st.mobile_latency_ms ?? st.mobile_ping_ms
   }
 
@@ -451,7 +465,7 @@ function getISPTooltip(st, isp) {
   }
 
   if (trace) {
-    sections.push(`<b>【回程线路轨迹】</b><br/>${cleanTracePath(trace)}`)
+    sections.push(`<b>【回程线路轨迹】</b><br/>${cleanTracePath(trace, node)}`)
   }
   return sections.join('<br/><br/>')
 }
@@ -817,10 +831,54 @@ async function saveEdit() {
   }
 }
 
+function openMTRDialog(node) {
+  mtrTargetNode.value = node
+  mtrReport.value = null
+  mtrShowRaw.value = false
+  mtrDialogVisible.value = true
+}
+
+async function startMTRDiagnose() {
+  if (!mtrTargetNode.value) return
+  let target = ''
+  if (mtrTargetType.value === 'custom') {
+    target = mtrCustomTarget.value.trim()
+    if (!target) {
+      ElMessage.warning('请输入自定义目标 IP 或域名')
+      return
+    }
+  } else {
+    const opt = mtrTargetOptions.find((o) => o.value === mtrTargetType.value)
+    target = opt ? opt.ip : '202.97.108.1'
+  }
+
+  mtrLoading.value = true
+  mtrReport.value = null
+  try {
+    const res = await post(`/nodes/${mtrTargetNode.value.id}/diagnose/mtr`, {
+      target,
+      count: Number(mtrCount.value) || 10,
+    })
+    mtrReport.value = res
+  } catch (error) {
+    ElMessage.error(error instanceof Error ? error.message : '链路诊断失败，请检查节点网络连接')
+  } finally {
+    mtrLoading.value = false
+  }
+}
+
+function getLossColor(loss) {
+  if (!loss || loss <= 0) return 'var(--sb-success, #10b981)'
+  if (loss < 10) return '#f59e0b'
+  if (loss < 50) return '#ea580c'
+  return 'var(--sb-danger, #ef4444)'
+}
+
 function handleCardCommand(node, command) {
   if (command === 'upgradeAgent') upgradeAgent(node)
   else if (command === 'upgradeSingBox') upgradeSingBox(node)
   else if (command === 'revoke') revoke(node)
+  else if (command === 'mtr') openMTRDialog(node)
 }
 
 onMounted(() => {
@@ -1106,6 +1164,9 @@ onBeforeUnmount(() => {
                   </button>
                   <template #dropdown>
                     <el-dropdown-menu>
+                      <el-dropdown-item v-if="canWrite && node.online" command="mtr">
+                        <el-icon><Aim /></el-icon>逐跳丢包排障 (MTR)
+                      </el-dropdown-item>
                       <el-dropdown-item v-if="canWrite" command="edit" @click="openEdit(node)">
                         <el-icon><Edit /></el-icon>配置节点
                       </el-dropdown-item>
@@ -1225,17 +1286,17 @@ onBeforeUnmount(() => {
                 </el-tooltip>
                 <!-- 去程正常线路 -->
                 <div v-else-if="speedtests[node.id]" class="carrier-tags-flow">
-                  <el-tooltip raw-content :content="getInboundCarrierTooltip(speedtests[node.id], 'telecom')" placement="top">
+                  <el-tooltip raw-content :content="getInboundCarrierTooltip(speedtests[node.id], 'telecom', node)" placement="top">
                     <span class="carrier-tag font-mono" :class="getPingClass(speedtests[node.id].inbound_telecom_latency_ms)">
                       <span class="dot-carrier ct" />电: {{ formatCarrierDisplay(speedtests[node.id].inbound_telecom_route, speedtests[node.id].inbound_telecom_latency_ms) }}
                     </span>
                   </el-tooltip>
-                  <el-tooltip raw-content :content="getInboundCarrierTooltip(speedtests[node.id], 'unicom')" placement="top">
+                  <el-tooltip raw-content :content="getInboundCarrierTooltip(speedtests[node.id], 'unicom', node)" placement="top">
                     <span class="carrier-tag font-mono" :class="getPingClass(speedtests[node.id].inbound_unicom_latency_ms)">
                       <span class="dot-carrier cu" />联: {{ formatCarrierDisplay(speedtests[node.id].inbound_unicom_route, speedtests[node.id].inbound_unicom_latency_ms) }}
                     </span>
                   </el-tooltip>
-                  <el-tooltip raw-content :content="getInboundCarrierTooltip(speedtests[node.id], 'mobile')" placement="top">
+                  <el-tooltip raw-content :content="getInboundCarrierTooltip(speedtests[node.id], 'mobile', node)" placement="top">
                     <span class="carrier-tag font-mono" :class="getPingClass(speedtests[node.id].inbound_mobile_latency_ms)">
                       <span class="dot-carrier cm" />移: {{ formatCarrierDisplay(speedtests[node.id].inbound_mobile_route, speedtests[node.id].inbound_mobile_latency_ms) }}
                     </span>
@@ -1248,17 +1309,17 @@ onBeforeUnmount(() => {
               <div class="route-line">
                 <span class="dir-badge out">返程</span>
                 <div v-if="speedtests[node.id]" class="carrier-tags-flow">
-                  <el-tooltip raw-content :content="getISPTooltip(speedtests[node.id], 'telecom')" placement="top">
+                  <el-tooltip raw-content :content="getISPTooltip(speedtests[node.id], 'telecom', node)" placement="top">
                     <span class="carrier-tag font-mono" :class="getPingClass(speedtests[node.id].telecom_latency_ms)">
                       <span class="dot-carrier ct" />电: {{ formatCarrierDisplay(speedtests[node.id].telecom_route, speedtests[node.id].telecom_latency_ms) }}
                     </span>
                   </el-tooltip>
-                  <el-tooltip raw-content :content="getISPTooltip(speedtests[node.id], 'unicom')" placement="top">
+                  <el-tooltip raw-content :content="getISPTooltip(speedtests[node.id], 'unicom', node)" placement="top">
                     <span class="carrier-tag font-mono" :class="getPingClass(speedtests[node.id].unicom_latency_ms)">
                       <span class="dot-carrier cu" />联: {{ formatCarrierDisplay(speedtests[node.id].unicom_route, speedtests[node.id].unicom_latency_ms) }}
                     </span>
                   </el-tooltip>
-                  <el-tooltip raw-content :content="getISPTooltip(speedtests[node.id], 'mobile')" placement="top">
+                  <el-tooltip raw-content :content="getISPTooltip(speedtests[node.id], 'mobile', node)" placement="top">
                     <span class="carrier-tag font-mono" :class="getPingClass(speedtests[node.id].mobile_latency_ms)">
                       <span class="dot-carrier cm" />移: {{ formatCarrierDisplay(speedtests[node.id].mobile_route, speedtests[node.id].mobile_latency_ms) }}
                     </span>
@@ -1382,17 +1443,17 @@ onBeforeUnmount(() => {
                       🚨 GFW 阻断 (0/6 超时)
                     </div>
                     <div v-else class="table-isp-pills">
-                      <el-tooltip raw-content :content="getInboundCarrierTooltip(speedtests[row.id], 'telecom')" placement="top">
+                      <el-tooltip raw-content :content="getInboundCarrierTooltip(speedtests[row.id], 'telecom', row)" placement="top">
                         <span class="table-isp-pill font-mono" :class="getPingClass(speedtests[row.id].inbound_telecom_latency_ms)">
                           电: {{ formatCarrierDisplay(speedtests[row.id].inbound_telecom_route, speedtests[row.id].inbound_telecom_latency_ms) }}
                         </span>
                       </el-tooltip>
-                      <el-tooltip raw-content :content="getInboundCarrierTooltip(speedtests[row.id], 'unicom')" placement="top">
+                      <el-tooltip raw-content :content="getInboundCarrierTooltip(speedtests[row.id], 'unicom', row)" placement="top">
                         <span class="table-isp-pill font-mono" :class="getPingClass(speedtests[row.id].inbound_unicom_latency_ms)">
                           联: {{ formatCarrierDisplay(speedtests[row.id].inbound_unicom_route, speedtests[row.id].inbound_unicom_latency_ms) }}
                         </span>
                       </el-tooltip>
-                      <el-tooltip raw-content :content="getInboundCarrierTooltip(speedtests[row.id], 'mobile')" placement="top">
+                      <el-tooltip raw-content :content="getInboundCarrierTooltip(speedtests[row.id], 'mobile', row)" placement="top">
                         <span class="table-isp-pill font-mono" :class="getPingClass(speedtests[row.id].inbound_mobile_latency_ms)">
                           移: {{ formatCarrierDisplay(speedtests[row.id].inbound_mobile_route, speedtests[row.id].inbound_mobile_latency_ms) }}
                         </span>
@@ -1403,17 +1464,17 @@ onBeforeUnmount(() => {
                   <div class="table-net-row">
                     <span class="table-dir-badge out">返程</span>
                     <div class="table-isp-pills">
-                      <el-tooltip raw-content :content="getISPTooltip(speedtests[row.id], 'telecom')" placement="top">
+                      <el-tooltip raw-content :content="getISPTooltip(speedtests[row.id], 'telecom', row)" placement="top">
                         <span class="table-isp-pill font-mono" :class="getPingClass(speedtests[row.id].telecom_latency_ms)">
                           电: {{ formatCarrierDisplay(speedtests[row.id].telecom_route, speedtests[row.id].telecom_latency_ms) }}
                         </span>
                       </el-tooltip>
-                      <el-tooltip raw-content :content="getISPTooltip(speedtests[row.id], 'unicom')" placement="top">
+                      <el-tooltip raw-content :content="getISPTooltip(speedtests[row.id], 'unicom', row)" placement="top">
                         <span class="table-isp-pill font-mono" :class="getPingClass(speedtests[row.id].unicom_latency_ms)">
                           联: {{ formatCarrierDisplay(speedtests[row.id].unicom_route, speedtests[row.id].unicom_latency_ms) }}
                         </span>
                       </el-tooltip>
-                      <el-tooltip raw-content :content="getISPTooltip(speedtests[row.id], 'mobile')" placement="top">
+                      <el-tooltip raw-content :content="getISPTooltip(speedtests[row.id], 'mobile', row)" placement="top">
                         <span class="table-isp-pill font-mono" :class="getPingClass(speedtests[row.id].mobile_latency_ms)">
                           移: {{ formatCarrierDisplay(speedtests[row.id].mobile_route, speedtests[row.id].mobile_latency_ms) }}
                         </span>
@@ -1458,10 +1519,13 @@ onBeforeUnmount(() => {
               </template>
             </el-table-column>
 
-            <el-table-column label="操作" width="150" fixed="right">
+            <el-table-column label="操作" width="190" fixed="right">
               <template #default="{ row }">
                 <el-button v-if="canWrite && row.online" link type="primary" size="small" @click="runSpeedtest(row)">
                   测速
+                </el-button>
+                <el-button v-if="canWrite && row.online" link type="primary" size="small" @click="openMTRDialog(row)">
+                  排障
                 </el-button>
                 <el-button v-if="canWrite" link type="primary" size="small" @click="openEdit(row)">
                   配置
@@ -1547,6 +1611,159 @@ onBeforeUnmount(() => {
       <template #footer>
         <el-button @click="editDialog = false">取消</el-button>
         <el-button type="primary" :loading="editSaving" @click="saveEdit">保存配置</el-button>
+      </template>
+    </el-dialog>
+
+    <!-- 逐跳丢包排障 (MTR) 弹窗 -->
+    <el-dialog
+      v-model="mtrDialogVisible"
+      :title="`链路逐跳丢包排障 - ${mtrTargetNode?.name || ''}`"
+      width="840px"
+      class="mtr-dialog"
+      destroy-on-close
+    >
+      <div class="mtr-dialog-body">
+        <!-- 控制表单栏 -->
+        <div class="mtr-ctrl-bar">
+          <div class="mtr-ctrl-item">
+            <span class="ctrl-label">诊断目标：</span>
+            <el-select v-model="mtrTargetType" style="width: 250px">
+              <el-option
+                v-for="opt in mtrTargetOptions"
+                :key="opt.value"
+                :label="opt.label"
+                :value="opt.value"
+              />
+            </el-select>
+          </div>
+          <div v-if="mtrTargetType === 'custom'" class="mtr-ctrl-item" style="flex: 1">
+            <el-input v-model="mtrCustomTarget" placeholder="输入目标 IP 或域名 (如 1.1.1.1)" clearable />
+          </div>
+          <div class="mtr-ctrl-item">
+            <span class="ctrl-label">采样次数：</span>
+            <el-select v-model="mtrCount" style="width: 95px">
+              <el-option :value="10" label="10 次" />
+              <el-option :value="15" label="15 次" />
+              <el-option :value="20" label="20 次" />
+            </el-select>
+          </div>
+          <el-button
+            type="primary"
+            :loading="mtrLoading"
+            :icon="Aim"
+            @click="startMTRDiagnose"
+          >
+            {{ mtrLoading ? '逐跳采样中...' : '开始诊断' }}
+          </el-button>
+        </div>
+
+        <div v-if="mtrLoading" class="mtr-loading-box">
+          <el-icon class="is-loading" :size="32"><Loading /></el-icon>
+          <div class="loading-tip">正在从节点发起多轮 ICMP/UDP 探测，分析各骨干跃点丢包与抖动，请稍候...</div>
+        </div>
+
+        <!-- 诊断结果区 -->
+        <div v-else-if="mtrReport" class="mtr-result-box">
+          <!-- 诊断概览摘要卡片 -->
+          <div class="mtr-summary-card" :class="{ 'has-real-drop': mtrReport.real_drop_hops > 0 }">
+            <div class="summary-header">
+              <div class="summary-target">
+                <span class="summary-label">探测目标：</span>
+                <span class="summary-val font-mono">{{ mtrReport.target }}</span>
+                <span class="summary-tool font-mono">({{ mtrReport.tool }})</span>
+              </div>
+              <div class="summary-badges">
+                <span class="metric-pill">
+                  目标端丢包：<b :style="{ color: getLossColor(mtrReport.summary_loss) }">{{ mtrReport.summary_loss }}%</b>
+                </span>
+                <span class="metric-pill">
+                  平均时延：<b>{{ mtrReport.summary_avg_ms ? mtrReport.summary_avg_ms.toFixed(1) + ' ms' : '-' }}</b>
+                </span>
+              </div>
+            </div>
+            <div class="summary-diagnosis">
+              <el-icon :size="16"><InfoFilled /></el-icon>
+              <span>{{ mtrReport.diagnosis }}</span>
+            </div>
+          </div>
+
+          <!-- 跃点明细表 -->
+          <div class="mtr-table-wrap">
+            <el-table :data="mtrReport.hops || []" size="small" stripe border style="width: 100%">
+              <el-table-column prop="count" label="#" width="45" align="center" />
+              <el-table-column label="跃点路由与归属" min-width="210">
+                <template #default="{ row }">
+                  <div class="hop-host-cell">
+                    <span class="hop-ip font-mono">{{ row.ip || '???' }}</span>
+                    <span v-if="row.host && row.host !== row.ip" class="hop-hostname">{{ row.host }}</span>
+                    <span v-if="row.location" class="hop-loc">{{ row.location }}</span>
+                  </div>
+                </template>
+              </el-table-column>
+              <el-table-column label="丢包率 (Loss%)" width="200">
+                <template #default="{ row }">
+                  <div class="loss-cell">
+                    <span class="loss-val font-mono" :style="{ color: getLossColor(row.loss_percent) }">
+                      {{ row.loss_percent }}%
+                    </span>
+                    <el-tooltip
+                      v-if="row.is_rate_limit"
+                      content="该骨干路由 CPU 限制了 ICMP 响应频率，但后续跃点通信正常，数据包已完整穿透，非真实业务丢包。"
+                      placement="top"
+                    >
+                      <span class="pill-rate-limit">ICMP限速(正常)</span>
+                    </el-tooltip>
+                    <el-tooltip
+                      v-else-if="row.loss_percent > 0"
+                      content="丢包已向下游跃点持续传递，属于真实链路拥塞或物理丢包，会影响业务流量！"
+                      placement="top"
+                    >
+                      <span class="pill-real-drop">真实丢包</span>
+                    </el-tooltip>
+                    <span v-else class="pill-perfect">0%</span>
+                  </div>
+                </template>
+              </el-table-column>
+              <el-table-column prop="avg_rtt_ms" label="平均时延" width="95" align="right">
+                <template #default="{ row }">
+                  <span class="font-mono">{{ row.avg_rtt_ms ? row.avg_rtt_ms.toFixed(1) + ' ms' : '-' }}</span>
+                </template>
+              </el-table-column>
+              <el-table-column label="最优 / 最差" width="130" align="right">
+                <template #default="{ row }">
+                  <span class="font-mono text-muted">
+                    {{ row.best_rtt_ms ? row.best_rtt_ms.toFixed(1) : '-' }} / {{ row.worst_rtt_ms ? row.worst_rtt_ms.toFixed(1) : '-' }} ms
+                  </span>
+                </template>
+              </el-table-column>
+              <el-table-column prop="stdev_ms" label="抖动 (StDev)" width="105" align="right">
+                <template #default="{ row }">
+                  <span class="font-mono text-muted">{{ row.stdev_ms ? row.stdev_ms.toFixed(1) + ' ms' : '-' }}</span>
+                </template>
+              </el-table-column>
+            </el-table>
+          </div>
+
+          <!-- 原始输出折叠 -->
+          <div v-if="mtrReport.raw_output" class="mtr-raw-toggle">
+            <el-button link type="primary" size="small" @click="mtrShowRaw = !mtrShowRaw">
+              {{ mtrShowRaw ? '收起终端原始输出' : '展开查看终端原始输出 (Raw Output)' }}
+            </el-button>
+            <pre v-if="mtrShowRaw" class="mtr-raw-terminal font-mono"><code>{{ mtrReport.raw_output }}</code></pre>
+          </div>
+        </div>
+
+        <!-- 初始空状态 -->
+        <div v-else class="mtr-empty-placeholder">
+          <el-icon :size="48" style="color: var(--sb-border)"><Aim /></el-icon>
+          <div class="empty-text">选择目标线路或输入自定义目标，点击「开始诊断」发起链路逐跳丢包排查</div>
+          <div class="empty-sub">支持智能识别骨干路由 CPU 的 ICMP 限速丢包与下游真实丢包</div>
+        </div>
+      </div>
+
+      <template #footer>
+        <el-button @click="mtrDialogVisible = false">关闭</el-button>
+        <el-button v-if="mtrReport" type="primary" :loading="mtrLoading" @click="startMTRDiagnose">重新测试</el-button>
       </template>
     </el-dialog>
   </div>
@@ -2427,6 +2644,193 @@ onBeforeUnmount(() => {
   font-weight: 600;
   color: var(--sb-text-1);
   margin-bottom: 2px;
+}
+
+/* ── 逐跳丢包排障 (MTR) 样式 ───────────────────────── */
+.mtr-ctrl-bar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 16px;
+  background: var(--sb-surface-muted, rgba(148, 163, 184, 0.05));
+  border: 1px solid var(--sb-line);
+  border-radius: var(--sb-radius-sm, 8px);
+  margin-bottom: 16px;
+  flex-wrap: wrap;
+}
+.mtr-ctrl-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.ctrl-label {
+  font-size: 13px;
+  color: var(--sb-text-2);
+  white-space: nowrap;
+}
+.mtr-loading-box {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 48px 16px;
+  gap: 14px;
+  color: var(--sb-accent, #38bdf8);
+}
+.loading-tip {
+  font-size: 13px;
+  color: var(--sb-text-2);
+}
+.mtr-summary-card {
+  padding: 14px 16px;
+  background: var(--sb-panel, rgba(23, 33, 54, 0.5));
+  border: 1px solid var(--sb-line);
+  border-left: 4px solid var(--sb-success, #10b981);
+  border-radius: var(--sb-radius-sm, 8px);
+  margin-bottom: 16px;
+}
+.mtr-summary-card.has-real-drop {
+  border-left-color: var(--sb-danger, #ef4444);
+}
+.summary-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 8px;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.summary-target {
+  font-size: 13px;
+}
+.summary-label {
+  color: var(--sb-text-2);
+}
+.summary-val {
+  font-weight: 600;
+  color: var(--sb-text-1);
+}
+.summary-tool {
+  color: var(--sb-muted);
+  font-size: 11px;
+  margin-left: 6px;
+}
+.summary-badges {
+  display: flex;
+  gap: 8px;
+}
+.metric-pill {
+  font-size: 12px;
+  padding: 2px 8px;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid var(--sb-line);
+  border-radius: 4px;
+  color: var(--sb-text-2);
+}
+.metric-pill b {
+  color: var(--sb-text-1);
+}
+.summary-diagnosis {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--sb-text-2);
+  line-height: 1.5;
+}
+.hop-host-cell {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.hop-ip {
+  font-weight: 600;
+  color: var(--sb-text-1);
+  font-size: 12px;
+}
+.hop-hostname {
+  font-size: 11px;
+  color: var(--sb-muted);
+}
+.hop-loc {
+  font-size: 11px;
+  color: #38bdf8;
+}
+.loss-cell {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.loss-val {
+  font-weight: 700;
+  font-size: 13px;
+  min-width: 44px;
+}
+.pill-rate-limit {
+  font-size: 10px;
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: rgba(245, 158, 11, 0.12);
+  color: #f59e0b;
+  border: 1px solid rgba(245, 158, 11, 0.3);
+  cursor: help;
+  white-space: nowrap;
+}
+.pill-real-drop {
+  font-size: 10px;
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: rgba(239, 68, 68, 0.15);
+  color: #ef4444;
+  border: 1px solid rgba(239, 68, 68, 0.35);
+  cursor: help;
+  font-weight: 600;
+  white-space: nowrap;
+}
+.pill-perfect {
+  font-size: 10px;
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: rgba(16, 185, 129, 0.1);
+  color: #10b981;
+}
+.text-muted {
+  color: var(--sb-text-2);
+}
+.mtr-raw-toggle {
+  margin-top: 12px;
+}
+.mtr-raw-terminal {
+  margin-top: 8px;
+  padding: 12px;
+  background: #090d16;
+  border: 1px solid var(--sb-line);
+  border-radius: 6px;
+  color: #7dd3fc;
+  font-size: 11px;
+  line-height: 1.5;
+  max-height: 240px;
+  overflow-y: auto;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+.mtr-empty-placeholder {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 48px 16px;
+  gap: 10px;
+  text-align: center;
+}
+.empty-text {
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--sb-text-1);
+}
+.empty-sub {
+  font-size: 12px;
+  color: var(--sb-muted);
 }
 
 :deep(.el-popper) {

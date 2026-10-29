@@ -1379,7 +1379,7 @@ func (s *Store) CreateTask(ctx context.Context, task Task) (Task, error) {
 	}
 	// Network protection asks its questions over the session directly and stores
 	// nothing, so its kinds are deliberately absent here. See Server.AskNode.
-	if task.Kind != "singbox.apply_config" && task.Kind != "singbox.install" && task.Kind != "singbox.upgrade" && task.Kind != "nginx.apply_config" && task.Kind != "outbound.test" && task.Kind != "agent.upgrade" {
+	if task.Kind != "singbox.apply_config" && task.Kind != "singbox.install" && task.Kind != "singbox.upgrade" && task.Kind != "nginx.apply_config" && task.Kind != "outbound.test" && task.Kind != "agent.upgrade" && task.Kind != "dns.update" {
 		return Task{}, errors.New("unsupported task kind")
 	}
 	if task.OperatorID != "" {

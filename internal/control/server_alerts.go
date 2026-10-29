@@ -207,6 +207,65 @@ func (s *Server) handleRunNodeSpeedtest(w http.ResponseWriter, r *http.Request) 
 	writeJSON(w, http.StatusOK, map[string]any{"result": st, "speedtest": st})
 }
 
+func (s *Server) handleRunNodeMTR(w http.ResponseWriter, r *http.Request) {
+	op, err := s.operator(r, false)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	if op.Role != "admin" && op.Role != "operator" {
+		writeError(w, ErrForbidden)
+		return
+	}
+
+	nodeID := r.PathValue("id")
+	if nodeID == "" {
+		writeError(w, errors.New("缺少节点 ID"))
+		return
+	}
+
+	node, err := s.store.GetNode(r.Context(), nodeID)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	if !node.Online {
+		writeError(w, errors.New("服务器当前处于离线状态，无法进行路由排障诊断"))
+		return
+	}
+
+	var req struct {
+		Target string `json:"target"`
+		Count  int    `json:"count"`
+		Label  string `json:"label"`
+	}
+	_ = json.NewDecoder(r.Body).Decode(&req)
+	if req.Target == "" {
+		req.Target = "202.96.209.133"
+		if req.Label == "" {
+			req.Label = "上海电信"
+		}
+	}
+	if req.Count <= 0 || req.Count > 30 {
+		req.Count = 10
+	}
+
+	payloadBytes, _ := json.Marshal(req)
+	data, err := s.AskNode(r.Context(), nodeID, "diagnose.mtr", string(payloadBytes))
+	if err != nil {
+		writeError(w, fmt.Errorf("执行 MTR 逐跳丢包排障失败: %w", err))
+		return
+	}
+
+	var report map[string]any
+	if err := json.Unmarshal([]byte(data), &report); err != nil {
+		writeJSON(w, http.StatusOK, map[string]any{"raw": data})
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{"report": report, "result": report})
+}
+
 func (s *Server) handleGetNodeSpeedtestLatest(w http.ResponseWriter, r *http.Request) {
 	if _, err := s.operator(r, false); err != nil {
 		writeError(w, err)

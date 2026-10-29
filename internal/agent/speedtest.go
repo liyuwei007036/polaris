@@ -467,15 +467,15 @@ func runSpeedtest(ctx context.Context, task Task) TaskResult {
 	mobileRoute := analyzeMobileRoute(mobileHops, mobileLatency)
 
 	telecomTracePath := wire.BuildTracePath(telecomHops, "上海电信")
-	if telecomTracePath == "" {
+	if telecomTracePath == "" && telecomLatency > 0 {
 		telecomTracePath = wire.BuildTracePathFallback(telecomRoute, "上海电信")
 	}
 	unicomTracePath := wire.BuildTracePath(unicomHops, "上海联通")
-	if unicomTracePath == "" {
+	if unicomTracePath == "" && unicomLatency > 0 {
 		unicomTracePath = wire.BuildTracePathFallback(unicomRoute, "上海联通")
 	}
 	mobileTracePath := wire.BuildTracePath(mobileHops, "广州移动")
-	if mobileTracePath == "" {
+	if mobileTracePath == "" && mobileLatency > 0 {
 		mobileTracePath = wire.BuildTracePathFallback(mobileRoute, "广州移动")
 	}
 

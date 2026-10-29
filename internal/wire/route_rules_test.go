@@ -149,4 +149,48 @@ func TestBuildTracePathDeduplication(t *testing.T) {
 	if path != expected {
 		t.Fatalf("expected %q, got %q", expected, path)
 	}
+
+	// Singapore traceroute:
+	hopsSG := []string{
+		"223.120.6.1",  // AS58453 (CMI Singapore)
+		"221.183.92.1", // AS9808 (CMNet Shanghai)
+		"120.196.165.24",
+	}
+	pathSG := BuildTracePath(hopsSG, "广州移动")
+	expectedSG := "AS58453 (移动CMI·新加坡) ➔ AS9808 (移动骨干·上海) ➔ 广州移动"
+	if pathSG != expectedSG {
+		t.Fatalf("expected %q, got %q", expectedSG, pathSG)
+	}
+}
+
+func TestBuildRealInboundTracePath(t *testing.T) {
+	// Probe in Shenzhen Telecom AS4134, dest is Tokyo
+	p1 := BuildRealInboundTracePath("深圳", 4134, "电信", "目标节点 (日本东京 · AS13335)", nil)
+	expected1 := "AS4134 (电信163·深圳) ➔ 目标节点 (日本东京 · AS13335)"
+	if p1 != expected1 {
+		t.Fatalf("expected %q, got %q", expected1, p1)
+	}
+
+	// Probe in Beijing Unicom AS4837
+	p2 := BuildRealInboundTracePath("北京", 4837, "联通", "目标机房 (美西洛杉矶)", nil)
+	expected2 := "AS4837 (联通169·北京) ➔ 目标机房 (美西洛杉矶)"
+	if p2 != expected2 {
+		t.Fatalf("expected %q, got %q", expected2, p2)
+	}
+
+	// Dynamic hops provided from traceroute
+	realHops := []string{"202.97.12.1", "59.43.18.2"}
+	p3 := BuildRealInboundTracePath("上海", 4809, "电信", "目标机房", realHops)
+	expected3 := "AS4134 (电信163·广州) ➔ AS4809 (电信CN2·广州) ➔ 目标机房"
+	if p3 != expected3 {
+		t.Fatalf("expected %q, got %q", expected3, p3)
+	}
+}
+
+func TestBuildTracePathFallback(t *testing.T) {
+	p := BuildTracePathFallback("电信 163 骨干", "上海电信")
+	expected := "节点 ➔ 上海电信 (骨干跃点未回显)"
+	if p != expected {
+		t.Fatalf("expected %q, got %q", expected, p)
+	}
 }

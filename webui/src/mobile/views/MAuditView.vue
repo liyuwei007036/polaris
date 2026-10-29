@@ -23,6 +23,7 @@ const taskKinds = {
   'singbox.apply_config': '更新连接服务配置',
   'singbox.install': '安装连接服务',
   'singbox.upgrade': '升级连接服务',
+  'dns.update': '刷新域名解析',
   'firewall.query': '读取访问限制',
   'firewall.mutate': '修改访问限制',
   'fail2ban.query': '读取自动封禁设置',

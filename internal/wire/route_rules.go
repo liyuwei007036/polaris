@@ -583,62 +583,65 @@ func BuildTracePath(hops []string, targetName string) string {
 	return strings.Join(seq, " ➔ ")
 }
 
-// BuildTracePathFallback returns a clean line trajectory with concrete ASN and location hops.
+// BuildTracePathFallback returns the genuine endpoint trajectory without fabricating unverified intermediate hops.
 func BuildTracePathFallback(route, targetName string) string {
-	origin := "AS174 (Cogent·美西洛杉矶)"
-	if strings.Contains(route, "9929") || strings.Contains(route, "CUII") {
-		if strings.Contains(route, "电信") {
-			return fmt.Sprintf("%s ➔ AS10099 (联通CUG·中国香港) ➔ AS9929 (联通A网·上海) ➔ AS4134 (电信163·上海) ➔ %s", origin, targetName)
-		}
-		return fmt.Sprintf("%s ➔ AS10099 (联通CUG·中国香港) ➔ AS9929 (联通A网·上海) ➔ %s", origin, targetName)
+	if targetName == "" {
+		return ""
 	}
-	if strings.Contains(route, "CMIN2") || strings.Contains(route, "58807") {
-		return fmt.Sprintf("%s ➔ AS58807 (移动CMIN2·美西洛杉矶) ➔ AS9808 (移动骨干·上海) ➔ %s", origin, targetName)
-	}
-	if strings.Contains(route, "CN2 GIA") {
-		return fmt.Sprintf("%s ➔ AS4809 (电信CN2·美西洛杉矶) ➔ AS4809 (电信CN2·上海) ➔ %s", origin, targetName)
-	}
-	if strings.Contains(route, "CN2 GT") {
-		return fmt.Sprintf("%s ➔ AS4809 (电信CN2·美西洛杉矶) ➔ AS4134 (电信163·上海) ➔ %s", origin, targetName)
-	}
-	if strings.Contains(route, "CTGNet") {
-		return fmt.Sprintf("%s ➔ AS23764 (电信CTGNet·中国香港) ➔ AS4134 (电信163·广州) ➔ %s", origin, targetName)
-	}
-	if strings.Contains(route, "4837") {
-		return fmt.Sprintf("%s ➔ AS4837 (联通169·美西洛杉矶) ➔ AS4837 (联通169·上海) ➔ %s", origin, targetName)
-	}
-	if strings.Contains(route, "CMI") {
-		return fmt.Sprintf("%s ➔ AS58453 (移动CMI·中国香港) ➔ AS9808 (移动骨干·广州) ➔ %s", origin, targetName)
-	}
-	if strings.Contains(route, "163") {
-		return fmt.Sprintf("%s ➔ AS4134 (电信163·美西洛杉矶) ➔ AS4134 (电信163·上海) ➔ %s", origin, targetName)
-	}
-	return fmt.Sprintf("%s ➔ %s", origin, targetName)
+	return fmt.Sprintf("节点 ➔ %s (骨干跃点未回显)", targetName)
 }
 
-// BuildInboundTracePath constructs an inbound trajectory from domestic source to the target node with concrete regions and ASNs.
+// BuildRealInboundTracePath constructs a genuine inbound trajectory from real domestic probe source metadata
+// (city, ASN, carrier) to the destination node. When real intermediate hops are provided, it dynamically evaluates
+// every IP hop via BuildTracePath; when hops are not available, it strictly connects the verified probe origin
+// with the destination node, never fabricating intermediate hops.
+func BuildRealInboundTracePath(probeCity string, probeASN int, carrier, destName string, hops []string) string {
+	targetLabel := destName
+	if targetLabel == "" {
+		targetLabel = "境外节点"
+	}
+
+	// 1. If intermediate hops exist, dynamically parse them based on real IPs
+	if len(hops) > 0 {
+		if path := BuildTracePath(hops, targetLabel); path != "" {
+			return path
+		}
+	}
+
+	// 2. Build genuine source label strictly from verified probe metadata
+	srcLabel := ""
+	if probeASN > 0 {
+		asnStr := fmt.Sprintf("AS%d", probeASN)
+		srcLabel = ASNToNameWithLocation(asnStr, probeCity)
+		if srcLabel == "" {
+			if probeCity != "" {
+				srcLabel = fmt.Sprintf("AS%d (%s·%s)", probeASN, carrier, probeCity)
+			} else {
+				srcLabel = fmt.Sprintf("AS%d (%s)", probeASN, carrier)
+			}
+		}
+	} else if probeCity != "" {
+		srcLabel = fmt.Sprintf("%s%s探针", probeCity, carrier)
+	} else if carrier != "" {
+		srcLabel = fmt.Sprintf("国内%s探针", carrier)
+	}
+
+	if srcLabel == "" {
+		return targetLabel
+	}
+	return fmt.Sprintf("%s ➔ %s", srcLabel, targetLabel)
+}
+
+// BuildInboundTracePath constructs an inbound trajectory from domestic source to the target node.
+// It strictly respects genuine endpoints and never fabricates unverified intermediate hops.
 func BuildInboundTracePath(route, carrier, destName string) string {
-	targetLabel := "AS174 (Cogent·美西洛杉矶)"
+	targetLabel := "境外节点"
 	if destName != "" && destName != "目标机房" && destName != "海外骨干" && destName != "服务器节点" {
 		targetLabel = destName
 	}
-	if strings.Contains(route, "CN2 GIA") || strings.Contains(route, "4809") {
-		return fmt.Sprintf("AS4809 (电信CN2·上海) ➔ AS4809 (电信CN2·美西洛杉矶) ➔ %s", targetLabel)
+	srcLabel := carrier
+	if srcLabel == "" {
+		srcLabel = "国内探针"
 	}
-	if strings.Contains(route, "9929") || strings.Contains(route, "CUII") {
-		return fmt.Sprintf("AS9929 (联通A网·上海) ➔ AS10099 (联通CUG·中国香港) ➔ %s", targetLabel)
-	}
-	if strings.Contains(route, "CMIN2") || strings.Contains(route, "58807") {
-		return fmt.Sprintf("AS58807 (移动CMIN2·上海) ➔ AS58807 (移动CMIN2·美西洛杉矶) ➔ %s", targetLabel)
-	}
-	if carrier == "电信" || strings.Contains(route, "163") {
-		return fmt.Sprintf("AS4134 (电信163·上海) ➔ AS4134 (电信163·美西洛杉矶) ➔ %s", targetLabel)
-	}
-	if carrier == "联通" || strings.Contains(route, "4837") {
-		return fmt.Sprintf("AS4837 (联通169·上海) ➔ AS4837 (联通169·美西洛杉矶) ➔ %s", targetLabel)
-	}
-	if carrier == "移动" || strings.Contains(route, "CMI") {
-		return fmt.Sprintf("AS9808 (移动骨干·广州) ➔ AS58453 (移动CMI·中国香港) ➔ %s", targetLabel)
-	}
-	return fmt.Sprintf("AS4134 (电信163·上海) ➔ %s", targetLabel)
+	return fmt.Sprintf("%s ➔ %s", srcLabel, targetLabel)
 }

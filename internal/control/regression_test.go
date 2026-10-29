@@ -14,7 +14,13 @@ func newTestNode(t *testing.T, store *Store, name, key string) string {
 	if err != nil {
 		t.Fatal(err)
 	}
-	token, err := store.CreateRegistrationToken(t.Context(), operator.ID, time.Hour)
+	operatorID := operator.ID
+	if operatorID == "" {
+		if err := store.db.QueryRowContext(t.Context(), `SELECT id FROM operators LIMIT 1`).Scan(&operatorID); err != nil {
+			t.Fatal(err)
+		}
+	}
+	token, err := store.CreateRegistrationToken(t.Context(), operatorID, time.Hour)
 	if err != nil {
 		t.Fatal(err)
 	}

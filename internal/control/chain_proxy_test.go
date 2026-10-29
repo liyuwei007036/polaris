@@ -561,3 +561,148 @@ func TestChainProxyCompileVLESSHTTPUpgradeAndGRPC(t *testing.T) {
 	}
 }
 
+func TestChainProxyTargetNATNodeObservedIPAndDDNS(t *testing.T) {
+	ctx := t.Context()
+	store := createTestStore(t)
+
+	node1ID := createTestNode(t, store, "node1-relay", "198.51.100.1")
+	node2ID := createTestNode(t, store, "node2-nat", "203.0.113.2")
+
+	// Enable DDNS on node2 (NAT node) and set observed IP
+	ddnsEnabled := true
+	recordID := "rec-nat-999"
+	ddnsDomain := "nat-node.example.com"
+	if err := store.UpdateNodeWithDDNS(ctx, node2ID, "node2-nat", "nat-node.example.com", &ddnsEnabled, &recordID, &ddnsDomain); err != nil {
+		t.Fatalf("UpdateNodeWithDDNS: %v", err)
+	}
+	if err := store.SetNodeLastObservedIP(ctx, node2ID, "203.0.113.88"); err != nil {
+		t.Fatalf("SetNodeLastObservedIP: %v", err)
+	}
+
+	listener2, err := store.CreateListener(ctx, Listener{
+		NodeID:     node2ID,
+		Name:       "node2-vless",
+		Domain:     "cf-cdn.example.com", // e.g. Domain proxied by Cloudflare CDN
+		Port:       443,
+		ListenAddr: "0.0.0.0",
+		Enabled:    true,
+		Spec: ProtocolSpec{
+			Protocol:  "vless",
+			Network:   "tcp",
+			TLS:       TLSOptions{Enabled: true},
+			Transport: TransportOptions{Type: "httpupgrade", Path: "/chat"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("create listener on node2: %v", err)
+	}
+
+	user2, err := store.CreateEndpoint(ctx, Endpoint{
+		ListenerID: listener2.ID,
+		Name:       "user2",
+		Enabled:    true,
+	}, EndpointCredentials{
+		UUID: "aaaaaaaa-2222-cccc-dddd-eeeeeeeeeeee",
+	})
+	if err != nil {
+		t.Fatalf("create endpoint on node2: %v", err)
+	}
+
+	listener1, err := store.CreateListener(ctx, Listener{
+		NodeID:     node1ID,
+		Name:       "node1-entry",
+		Domain:     "entry.example.com",
+		Port:       8443,
+		ListenAddr: "0.0.0.0",
+		Enabled:    true,
+		Spec: ProtocolSpec{
+			Protocol:  "vless",
+			Network:   "tcp",
+			TLS:       TLSOptions{Enabled: true},
+			Transport: TransportOptions{Type: "httpupgrade", Path: "/entry"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("create listener on node1: %v", err)
+	}
+
+	_, err = store.CreateEndpoint(ctx, Endpoint{
+		ListenerID: listener1.ID,
+		Name:       "user1",
+		Enabled:    true,
+		OutboundID: "chain:" + user2.ID,
+	}, EndpointCredentials{
+		UUID: "11111111-2222-3333-4444-555555555555",
+	})
+	if err != nil {
+		t.Fatalf("create chained endpoint on node1: %v", err)
+	}
+
+	// 1. Outbound server MUST use the domain name, strictly prohibited from using raw IP
+	configJSON, _, err := store.CompileNodeConfig(ctx, node1ID)
+	if err != nil {
+		t.Fatalf("compile config: %v", err)
+	}
+	var parsed struct {
+		Outbounds []map[string]any `json:"outbounds"`
+	}
+	if err := json.Unmarshal([]byte(configJSON), &parsed); err != nil {
+		t.Fatalf("unmarshal config: %v", err)
+	}
+	var chainOb map[string]any
+	for _, ob := range parsed.Outbounds {
+		if ob["tag"] == "chain-"+user2.ID {
+			chainOb = ob
+			break
+		}
+	}
+	if chainOb == nil {
+		t.Fatalf("missing chain outbound")
+	}
+	// Must strictly be the domain name
+	if chainOb["server"] != "cf-cdn.example.com" {
+		t.Errorf("expected server domain cf-cdn.example.com, got %v", chainOb["server"])
+	}
+	tls, _ := chainOb["tls"].(map[string]any)
+	if tls["server_name"] != "cf-cdn.example.com" {
+		t.Errorf("expected TLS SNI cf-cdn.example.com preserved, got %v", tls["server_name"])
+	}
+	transport, _ := chainOb["transport"].(map[string]any)
+	headers, _ := transport["headers"].(map[string]any)
+	if headers["Host"] != "cf-cdn.example.com" {
+		t.Errorf("expected Host header cf-cdn.example.com preserved, got %v", headers["Host"])
+	}
+
+	// 2. When listener domain is empty, it falls back to the node's ddns_domain
+	_, err = store.db.Exec(`UPDATE listeners SET connection_domain = '' WHERE id = ?`, listener2.ID)
+	if err != nil {
+		t.Fatalf("clear listener domain: %v", err)
+	}
+	configJSON2, _, err := store.CompileNodeConfig(ctx, node1ID)
+	if err != nil {
+		t.Fatalf("compile config 2: %v", err)
+	}
+	var parsed2 struct {
+		Outbounds []map[string]any `json:"outbounds"`
+	}
+	_ = json.Unmarshal([]byte(configJSON2), &parsed2)
+	for _, ob := range parsed2.Outbounds {
+		if ob["tag"] == "chain-"+user2.ID {
+			if ob["server"] != "nat-node.example.com" {
+				t.Errorf("expected server to fall back to ddns_domain nat-node.example.com, got %v", ob["server"])
+			}
+			break
+		}
+	}
+
+	// 3. Verify NodeChainedNodeIDs query detects node1 as chained to node2
+	chainedNodes, err := store.NodeChainedNodeIDs(ctx, node2ID)
+	if err != nil {
+		t.Fatalf("NodeChainedNodeIDs failed: %v", err)
+	}
+	if len(chainedNodes) != 1 || chainedNodes[0] != node1ID {
+		t.Fatalf("expected chainedNodes=[%s], got %v", node1ID, chainedNodes)
+	}
+}
+
+

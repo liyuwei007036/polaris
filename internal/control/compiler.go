@@ -85,6 +85,19 @@ func (s *Store) CompileNodeConfig(ctx context.Context, nodeID string) (string, s
 			}
 		}
 	}
+	for _, listener := range listeners {
+		if listener.Enabled && IsChainOutbound(listener.OutboundID) {
+			if _, ok := outboundTags[listener.OutboundID]; !ok {
+				targetEndpointID := ChainTargetEndpointID(listener.OutboundID)
+				tag := "chain-" + targetEndpointID
+				chainOutbound, err := s.compileChainOutbound(ctx, targetEndpointID, tag)
+				if err == nil {
+					outbounds = append(outbounds, chainOutbound)
+					outboundTags[listener.OutboundID] = tag
+				}
+			}
+		}
+	}
 	compiledRules := make([]map[string]any, 0, len(rules))
 	for _, rule := range rules {
 		if !rule.Enabled {
@@ -406,27 +419,32 @@ func compileUser(spec ProtocolSpec, endpoint endpointWithCredentials) (map[strin
 
 func (s *Store) compileChainOutbound(ctx context.Context, targetEndpointID, tag string) (map[string]any, error) {
 	var (
-		encrypted     []byte
-		targetEnabled bool
-		listenerID    string
-		listenerName  string
-		domain        string
-		port          uint16
-		specJSON      string
-		listEnabled   bool
-		nodeID        string
-		nodeName      string
-		clientAddress string
-		revokedAt     sql.NullInt64
+		encrypted      []byte
+		targetEnabled  bool
+		listenerID     string
+		listenerName   string
+		domain         string
+		port           uint16
+		specJSON       string
+		listEnabled    bool
+		nodeID         string
+		nodeName       string
+		clientAddress  string
+		revokedAt      sql.NullInt64
+		ddnsEnabled    int
+		ddnsDomain     string
+		lastObservedIP string
 	)
 	err := s.db.QueryRowContext(ctx, `SELECT e.credentials, e.enabled,
 		l.id, l.name, l.connection_domain, l.port, l.spec, l.enabled,
-		n.id, n.name, n.client_address, n.revoked_at
+		n.id, n.name, n.client_address, n.revoked_at,
+		COALESCE(n.ddns_enabled, 0), COALESCE(n.ddns_domain, ''), COALESCE(n.last_observed_ip, '')
 		FROM endpoints e
 		JOIN listeners l ON l.id = e.listener_id
 		JOIN nodes n ON n.id = l.node_id
 		WHERE e.id = ?`, targetEndpointID).
-		Scan(&encrypted, &targetEnabled, &listenerID, &listenerName, &domain, &port, &specJSON, &listEnabled, &nodeID, &nodeName, &clientAddress, &revokedAt)
+		Scan(&encrypted, &targetEnabled, &listenerID, &listenerName, &domain, &port, &specJSON, &listEnabled, &nodeID, &nodeName, &clientAddress, &revokedAt,
+			&ddnsEnabled, &ddnsDomain, &lastObservedIP)
 	if err != nil {
 		return nil, fmt.Errorf("load target endpoint %s: %w", targetEndpointID, err)
 	}
@@ -450,7 +468,11 @@ func (s *Store) compileChainOutbound(ctx context.Context, targetEndpointID, tag 
 
 	server := strings.TrimSpace(domain)
 	if server == "" {
-		server = strings.TrimSpace(clientAddress)
+		if ddnsEnabled == 1 && strings.TrimSpace(ddnsDomain) != "" {
+			server = strings.TrimSpace(ddnsDomain)
+		} else {
+			server = strings.TrimSpace(clientAddress)
+		}
 	}
 	if server == "" {
 		return nil, fmt.Errorf("node %s has no connection address", nodeName)
@@ -497,8 +519,12 @@ func (s *Store) compileChainOutbound(ctx context.Context, targetEndpointID, tag 
 				"enabled":  true,
 				"insecure": true,
 			}
-			if domain != "" {
-				tlsConfig["server_name"] = domain
+			sni := strings.TrimSpace(domain)
+			if sni == "" {
+				sni = strings.TrimSpace(ddnsDomain)
+			}
+			if sni != "" {
+				tlsConfig["server_name"] = sni
 			}
 			if len(spec.TLS.ALPN) > 0 {
 				tlsConfig["alpn"] = spec.TLS.ALPN
@@ -514,6 +540,9 @@ func (s *Store) compileChainOutbound(ctx context.Context, targetEndpointID, tag 
 			host := strings.TrimSpace(spec.Transport.Host)
 			if host == "" {
 				host = strings.TrimSpace(domain)
+			}
+			if host == "" {
+				host = strings.TrimSpace(ddnsDomain)
 			}
 			if host != "" {
 				upgradeConfig["host"] = host
@@ -534,8 +563,12 @@ func (s *Store) compileChainOutbound(ctx context.Context, targetEndpointID, tag 
 			"insecure": true,
 			"alpn":     []string{"h3"},
 		}
-		if domain != "" {
-			tlsConfig["server_name"] = domain
+		sni := strings.TrimSpace(domain)
+		if sni == "" {
+			sni = strings.TrimSpace(ddnsDomain)
+		}
+		if sni != "" {
+			tlsConfig["server_name"] = sni
 		}
 		outbound := map[string]any{
 			"type":        "hysteria2",
