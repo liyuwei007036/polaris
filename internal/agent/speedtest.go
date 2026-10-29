@@ -293,9 +293,9 @@ func traceRoute(ctx context.Context, targetHost string) traceRouteResult {
 
 	hops, latency := extractHopsFromOutput(targetHost, outStr)
 
-	// Combine local kernel routing table evidence
+	// Prepend local kernel routing table evidence (first hops leaving the machine)
 	if localHops := inspectLocalRouteQuery(ctx, targetHost); len(localHops) > 0 {
-		hops = append(hops, localHops...)
+		hops = append(localHops, hops...)
 	}
 
 	lowerOut := strings.ToLower(outStr)

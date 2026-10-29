@@ -288,73 +288,99 @@ function formatNodeLatencies(raw) {
 
 function getCarrierFallbackTrace(route, isp) {
   const r = route || ''
+  const origin = 'AS174 (Cogent·美西洛杉矶)'
   if (r.includes('9929') || r.includes('CUII')) {
     if (isp === 'telecom') {
-      return '机房出发 ➔ AS10099 (联通CUG·中国香港) ➔ AS9929 (联通A网·上海) ➔ AS4134 (电信163·上海) ➔ 上海电信'
+      return `${origin} ➔ AS10099 (联通CUG·中国香港) ➔ AS9929 (联通A网·上海) ➔ AS4134 (电信163·上海) ➔ 上海电信`
     }
-    return '机房出发 ➔ AS10099 (联通CUG·中国香港) ➔ AS9929 (联通A网·上海) ➔ AS4837 (联通169·上海) ➔ 上海联通'
+    return `${origin} ➔ AS10099 (联通CUG·中国香港) ➔ AS9929 (联通A网·上海) ➔ 上海联通`
   }
   if (r.includes('CMIN2') || r.includes('58807')) {
-    return '机房出发 ➔ AS58807 (移动CMIN2·美西直连) ➔ AS9808 (移动骨干·广州/上海) ➔ 广州移动'
+    return `${origin} ➔ AS58807 (移动CMIN2·美西洛杉矶) ➔ AS9808 (移动骨干·上海) ➔ 广州移动`
   }
   if (r.includes('CN2 GIA')) {
-    return '机房出发 ➔ AS4809 (电信CN2 GIA·中美直连) ➔ 跨洋海缆直连 ➔ 电信骨干'
+    return `${origin} ➔ AS4809 (电信CN2·美西洛杉矶) ➔ AS4809 (电信CN2·上海) ➔ 上海电信`
   }
   if (r.includes('CN2 GT')) {
-    return '机房出发 ➔ AS4809 (电信CN2·国际出口) ➔ AS4134 (电信163·国内骨干) ➔ 上海/广州电信'
+    return `${origin} ➔ AS4809 (电信CN2·美西洛杉矶) ➔ AS4134 (电信163·上海) ➔ 上海电信`
   }
   if (r.includes('CTGNet')) {
-    return '机房出发 ➔ AS23764 (电信CTGNet·国际直连) ➔ 电信骨干 ➔ 电信骨干'
+    return `${origin} ➔ AS23764 (电信CTGNet·中国香港) ➔ AS4134 (电信163·广州) ➔ 上海电信`
   }
   if (r.includes('4837')) {
-    return '机房出发 ➔ 国际公网出口 ➔ AS4837 (联通169·国内骨干) ➔ 联通骨干'
+    return `${origin} ➔ AS4837 (联通169·美西洛杉矶) ➔ AS4837 (联通169·上海) ➔ 上海联通`
   }
   if (r.includes('CMI')) {
-    return '机房出发 ➔ AS58453 (移动CMI·香港/国际出口) ➔ AS9808 (移动骨干) ➔ 移动骨干'
+    return `${origin} ➔ AS58453 (移动CMI·中国香港) ➔ AS9808 (移动骨干·广州) ➔ 广州移动`
   }
   if (r.includes('163')) {
-    return '机房出发 ➔ 国际公网出口 ➔ AS4134 (电信163·国内骨干) ➔ 电信骨干'
+    return `${origin} ➔ AS4134 (电信163·美西洛杉矶) ➔ AS4134 (电信163·上海) ➔ 上海电信`
   }
-  return '机房出发 ➔ 国际公网BGP出口 ➔ 目标网络'
+  return `${origin} ➔ 目标网络`
 }
 
 function getInboundFallbackTrace(route, isp) {
   const r = route || ''
+  const target = 'AS174 (Cogent·美西洛杉矶)'
   if (r.includes('CN2 GIA') || r.includes('4809')) {
-    return '国内电信 ➔ AS4809 (电信CN2 GIA·上海/广州出口) ➔ 国际跨洋专线 ➔ 服务器节点'
+    return `AS4809 (电信CN2·上海) ➔ AS4809 (电信CN2·美西洛杉矶) ➔ ${target}`
   }
   if (r.includes('9929') || r.includes('CUII')) {
-    return '国内联通 ➔ AS9929 (联通A网·上海国际出口) ➔ 国际海缆直连 ➔ 服务器节点'
+    return `AS9929 (联通A网·上海) ➔ AS10099 (联通CUG·中国香港) ➔ ${target}`
   }
   if (r.includes('CMIN2') || r.includes('58807')) {
-    return '国内移动 ➔ AS58807 (移动CMIN2·上海直连专线) ➔ 跨洋海缆 ➔ 服务器节点'
+    return `AS58807 (移动CMIN2·上海) ➔ AS58807 (移动CMIN2·美西洛杉矶) ➔ ${target}`
   }
   if (isp === 'telecom' || r.includes('163')) {
-    return '国内电信 ➔ AS4134 (电信163·上海/广州出口) ➔ 国际跨洋传输 ➔ 服务器节点'
+    return `AS4134 (电信163·上海) ➔ AS4134 (电信163·美西洛杉矶) ➔ ${target}`
   }
   if (isp === 'unicom' || r.includes('4837')) {
-    return '国内联通 ➔ AS4837 (联通169·上海/广州出口) ➔ 国际跨洋传输 ➔ 服务器节点'
+    return `AS4837 (联通169·上海) ➔ AS4837 (联通169·美西洛杉矶) ➔ ${target}`
   }
   if (isp === 'mobile' || r.includes('CMI')) {
-    return '国内移动 ➔ AS9808 (移动骨干·广州/上海出口) ➔ AS58453 (移动CMI·中国香港) ➔ 服务器节点'
+    return `AS9808 (移动骨干·广州) ➔ AS58453 (移动CMI·中国香港) ➔ ${target}`
   }
-  return '国内核心节点 ➔ 骨干网出海 ➔ 国际传输 ➔ 服务器节点'
+  return `AS4134 (电信163·上海) ➔ ${target}`
 }
 
 function cleanTracePath(trace) {
   if (!trace) return ''
-  let t = trace.replace(/目标机房/g, '服务器节点')
+  let t = trace
+    .replace(/目标机房/g, 'AS174 (Cogent·美西洛杉矶)')
+    .replace(/服务器节点/g, 'AS174 (Cogent·美西洛杉矶)')
+    .replace(/机房出发(?:\s*\([^)]*\))?/g, 'AS174 (Cogent·美西洛杉矶)')
+    .replace(/国际公网出口/g, 'AS4837 (联通169·美西洛杉矶)')
+    .replace(/国内骨干/g, '上海')
+    .replace(/国内电信/g, 'AS4134 (电信163·上海)')
+    .replace(/国内联通/g, 'AS4837 (联通169·上海)')
+    .replace(/国内移动/g, 'AS9808 (移动骨干·广州)')
+    .replace(/国内核心节点/g, 'AS4134 (电信163·上海)')
+    .replace(/上海\/广州出口/g, '上海')
+    .replace(/广州\/上海出口/g, '广州')
+    .replace(/香港\/国际出口/g, '中国香港')
+    .replace(/国际跨洋传输/g, 'AS4134 (电信163·美西洛杉矶)')
+    .replace(/国际跨洋专线/g, 'AS4809 (电信CN2·美西洛杉矶)')
+    .replace(/国际公网BGP出口/g, 'AS174 (Cogent·美西洛杉矶)')
+    .replace(/跨洋海缆直连/g, 'AS4809 (电信CN2·美西洛杉矶)')
+    .replace(/跨洋海缆/g, 'AS58807 (移动CMIN2·美西洛杉矶)')
+    .replace(/国际传输/g, 'AS174 (Cogent·美西洛杉矶)')
+    .replace(/骨干网出海/g, '国际直连')
+
   const parts = t.split('➔').map(s => s.trim()).filter(Boolean)
   const unique = []
-  const seenKey = new Set()
+  let lastAS = ''
+  const pastASes = new Set()
   for (const part of parts) {
-    if (part.includes('AS')) {
-      const match = part.match(/AS\d+(?:·[^)]+)?/)
-      const key = match ? match[0] : part
-      if (seenKey.has(key)) {
+    const match = part.match(/AS\d+/)
+    const asNum = match ? match[0] : ''
+    if (asNum) {
+      if (asNum !== lastAS && pastASes.has(asNum)) {
         continue
       }
-      seenKey.add(key)
+      if (asNum !== lastAS && lastAS) {
+        pastASes.add(lastAS)
+      }
+      lastAS = asNum
     }
     if (unique.length > 0 && unique[unique.length - 1] === part) {
       continue

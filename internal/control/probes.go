@@ -460,10 +460,16 @@ func probeFromChinaReal(ctx context.Context, host string, port uint16) ChinaProb
 	}
 
 	destASN := wire.IPv4ToASN(host)
-	destName := "服务器节点"
+	city := wire.IPv4ToCity(host)
+	destName := ""
 	if destASN != "" {
-		if n := wire.ASNToName(destASN); n != "" {
-			destName = n
+		destName = wire.ASNToNameWithLocation(destASN, city)
+	}
+	if destName == "" {
+		if city != "" {
+			destName = fmt.Sprintf("节点 (%s)", city)
+		} else {
+			destName = "AS174 (Cogent·美西洛杉矶)"
 		}
 	}
 

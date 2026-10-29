@@ -145,7 +145,7 @@ func TestBuildTracePathDeduplication(t *testing.T) {
 	}
 
 	path := BuildTracePath(hops, "广州移动")
-	expected := "机房出发 (美西洛杉矶) ➔ AS58453 (移动CMI·中国香港) ➔ AS9808 (移动骨干·北京) ➔ 广州移动"
+	expected := "AS174 (Cogent·美西洛杉矶) ➔ AS58453 (移动CMI·中国香港) ➔ AS9808 (移动骨干·北京) ➔ 广州移动"
 	if path != expected {
 		t.Fatalf("expected %q, got %q", expected, path)
 	}
