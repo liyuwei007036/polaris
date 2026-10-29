@@ -181,6 +181,7 @@ func serveMaster(ctx context.Context, configuration masterConfig) error {
 	server.StartMaintenance(ctx)
 	server.StartTrafficAggregation(ctx)
 	server.StartProber(ctx)
+	server.StartMasterDDNS(ctx)
 	agentAddress := portAddress(configuration.AgentPort)
 	agentListener, err := net.Listen("tcp", agentAddress)
 	if err != nil {

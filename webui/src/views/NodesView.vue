@@ -841,15 +841,18 @@ function openMTRDialog(node) {
 async function startMTRDiagnose() {
   if (!mtrTargetNode.value) return
   let target = ''
+  let label = ''
   if (mtrTargetType.value === 'custom') {
     target = mtrCustomTarget.value.trim()
     if (!target) {
       ElMessage.warning('请输入自定义目标 IP 或域名')
       return
     }
+    label = target
   } else {
     const opt = mtrTargetOptions.find((o) => o.value === mtrTargetType.value)
     target = opt ? opt.ip : '202.97.108.1'
+    label = opt ? opt.label : target
   }
 
   mtrLoading.value = true
@@ -857,9 +860,14 @@ async function startMTRDiagnose() {
   try {
     const res = await post(`/nodes/${mtrTargetNode.value.id}/diagnose/mtr`, {
       target,
+      label,
       count: Number(mtrCount.value) || 10,
     })
-    mtrReport.value = res
+    const data = res?.report || res?.result || res
+    mtrReport.value = data
+    if (!data?.hops || data.hops.length === 0) {
+      mtrShowRaw.value = true
+    }
   } catch (error) {
     ElMessage.error(error instanceof Error ? error.message : '链路诊断失败，请检查节点网络连接')
   } finally {
@@ -1665,56 +1673,65 @@ onBeforeUnmount(() => {
         <!-- 诊断结果区 -->
         <div v-else-if="mtrReport" class="mtr-result-box">
           <!-- 诊断概览摘要卡片 -->
-          <div class="mtr-summary-card" :class="{ 'has-real-drop': mtrReport.real_drop_hops > 0 }">
+          <div class="mtr-summary-card" :class="{ 'has-real-drop': (mtrReport.real_drop_hops || 0) > 0 || (mtrReport.summary_loss || mtrReport.end_to_end_loss || 0) > 0 }">
             <div class="summary-header">
               <div class="summary-target">
                 <span class="summary-label">探测目标：</span>
-                <span class="summary-val font-mono">{{ mtrReport.target }}</span>
-                <span class="summary-tool font-mono">({{ mtrReport.tool }})</span>
+                <span class="summary-val font-mono">{{ mtrReport.target || mtrReport.target_host || '-' }}</span>
+                <span v-if="mtrReport.target_label" class="summary-label-sub" style="margin-left: 6px; color: #38bdf8; font-size: 12px">
+                  ({{ mtrReport.target_label }})
+                </span>
+                <span class="summary-tool font-mono">({{ mtrReport.tool || 'mtr' }})</span>
               </div>
               <div class="summary-badges">
                 <span class="metric-pill">
-                  目标端丢包：<b :style="{ color: getLossColor(mtrReport.summary_loss) }">{{ mtrReport.summary_loss }}%</b>
+                  目标端丢包：<b :style="{ color: getLossColor(mtrReport.summary_loss ?? mtrReport.end_to_end_loss ?? 0) }">{{ mtrReport.summary_loss ?? mtrReport.end_to_end_loss ?? 0 }}%</b>
                 </span>
                 <span class="metric-pill">
-                  平均时延：<b>{{ mtrReport.summary_avg_ms ? mtrReport.summary_avg_ms.toFixed(1) + ' ms' : '-' }}</b>
+                  平均时延：<b>{{ (mtrReport.summary_avg_ms ?? mtrReport.end_to_end_avg_ms) != null ? (mtrReport.summary_avg_ms ?? mtrReport.end_to_end_avg_ms).toFixed(1) + ' ms' : '-' }}</b>
                 </span>
               </div>
             </div>
             <div class="summary-diagnosis">
               <el-icon :size="16"><InfoFilled /></el-icon>
-              <span>{{ mtrReport.diagnosis }}</span>
+              <span>{{ mtrReport.diagnosis || mtrReport.summary || '链路排查完成' }}</span>
             </div>
           </div>
 
           <!-- 跃点明细表 -->
           <div class="mtr-table-wrap">
             <el-table :data="mtrReport.hops || []" size="small" stripe border style="width: 100%">
-              <el-table-column prop="count" label="#" width="45" align="center" />
+              <el-table-column label="#" width="48" align="center">
+                <template #default="{ row }">
+                  <span class="font-mono">{{ row.count ?? row.hop ?? '' }}</span>
+                </template>
+              </el-table-column>
               <el-table-column label="跃点路由与归属" min-width="210">
                 <template #default="{ row }">
                   <div class="hop-host-cell">
-                    <span class="hop-ip font-mono">{{ row.ip || '???' }}</span>
+                    <span class="hop-ip font-mono">{{ row.ip || row.host || '???' }}</span>
                     <span v-if="row.host && row.host !== row.ip" class="hop-hostname">{{ row.host }}</span>
-                    <span v-if="row.location" class="hop-loc">{{ row.location }}</span>
+                    <span v-if="row.location || row.node_name || row.city" class="hop-loc">
+                      {{ row.location || row.node_name || (row.city ? (row.asn ? row.asn + ' ' + row.city : row.city) : '') }}
+                    </span>
                   </div>
                 </template>
               </el-table-column>
               <el-table-column label="丢包率 (Loss%)" width="200">
                 <template #default="{ row }">
                   <div class="loss-cell">
-                    <span class="loss-val font-mono" :style="{ color: getLossColor(row.loss_percent) }">
-                      {{ row.loss_percent }}%
+                    <span class="loss-val font-mono" :style="{ color: getLossColor(row.loss_percent ?? row.loss_pct ?? 0) }">
+                      {{ row.loss_percent ?? row.loss_pct ?? 0 }}%
                     </span>
                     <el-tooltip
-                      v-if="row.is_rate_limit"
+                      v-if="row.is_rate_limit || row.is_rate_limited"
                       content="该骨干路由 CPU 限制了 ICMP 响应频率，但后续跃点通信正常，数据包已完整穿透，非真实业务丢包。"
                       placement="top"
                     >
                       <span class="pill-rate-limit">ICMP限速(正常)</span>
                     </el-tooltip>
                     <el-tooltip
-                      v-else-if="row.loss_percent > 0"
+                      v-else-if="(row.loss_percent ?? row.loss_pct ?? 0) > 0"
                       content="丢包已向下游跃点持续传递，属于真实链路拥塞或物理丢包，会影响业务流量！"
                       placement="top"
                     >
@@ -1724,24 +1741,30 @@ onBeforeUnmount(() => {
                   </div>
                 </template>
               </el-table-column>
-              <el-table-column prop="avg_rtt_ms" label="平均时延" width="95" align="right">
+              <el-table-column label="平均时延" width="95" align="right">
                 <template #default="{ row }">
-                  <span class="font-mono">{{ row.avg_rtt_ms ? row.avg_rtt_ms.toFixed(1) + ' ms' : '-' }}</span>
+                  <span class="font-mono">{{ (row.avg_rtt_ms ?? row.avg_ms) != null ? (row.avg_rtt_ms ?? row.avg_ms).toFixed(1) + ' ms' : '-' }}</span>
                 </template>
               </el-table-column>
               <el-table-column label="最优 / 最差" width="130" align="right">
                 <template #default="{ row }">
                   <span class="font-mono text-muted">
-                    {{ row.best_rtt_ms ? row.best_rtt_ms.toFixed(1) : '-' }} / {{ row.worst_rtt_ms ? row.worst_rtt_ms.toFixed(1) : '-' }} ms
+                    {{ (row.best_rtt_ms ?? row.best_ms) != null ? (row.best_rtt_ms ?? row.best_ms).toFixed(1) : '-' }} / {{ (row.worst_rtt_ms ?? row.worst_ms) != null ? (row.worst_rtt_ms ?? row.worst_ms).toFixed(1) : '-' }} ms
                   </span>
                 </template>
               </el-table-column>
-              <el-table-column prop="stdev_ms" label="抖动 (StDev)" width="105" align="right">
+              <el-table-column label="抖动 (StDev)" width="105" align="right">
                 <template #default="{ row }">
-                  <span class="font-mono text-muted">{{ row.stdev_ms ? row.stdev_ms.toFixed(1) + ' ms' : '-' }}</span>
+                  <span class="font-mono text-muted">{{ row.stdev_ms != null ? (row.stdev_ms).toFixed(1) + ' ms' : '-' }}</span>
                 </template>
               </el-table-column>
             </el-table>
+          </div>
+
+          <!-- 无跃点告警提示 -->
+          <div v-if="!mtrReport.hops || mtrReport.hops.length === 0" style="margin-top: 12px; padding: 10px 14px; background: rgba(239, 68, 68, 0.1); border: 1px solid rgba(239, 68, 68, 0.3); border-radius: 6px; color: #fb7185; font-size: 12px;">
+            <el-icon style="margin-right: 6px; vertical-align: -2px"><InfoFilled /></el-icon>
+            {{ mtrReport.summary || mtrReport.diagnosis || '未能获取到跃点数据，已自动展开下方终端回显供排查' }}
           </div>
 
           <!-- 原始输出折叠 -->

@@ -259,11 +259,17 @@ func (s *Server) handleRunNodeMTR(w http.ResponseWriter, r *http.Request) {
 
 	var report map[string]any
 	if err := json.Unmarshal([]byte(data), &report); err != nil {
-		writeJSON(w, http.StatusOK, map[string]any{"raw": data})
+		writeJSON(w, http.StatusOK, map[string]any{"raw": data, "summary": data, "raw_output": data})
 		return
 	}
 
-	writeJSON(w, http.StatusOK, map[string]any{"report": report, "result": report})
+	response := make(map[string]any)
+	for k, v := range report {
+		response[k] = v
+	}
+	response["report"] = report
+	response["result"] = report
+	writeJSON(w, http.StatusOK, response)
 }
 
 func (s *Server) handleGetNodeSpeedtestLatest(w http.ResponseWriter, r *http.Request) {

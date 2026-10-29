@@ -217,10 +217,24 @@ func RunSession(ctx context.Context, conn *wire.Conn, handler TaskHandler, heart
 	if singBoxVersion == "" {
 		singBoxVersion = detectSingBoxVersion(ctx)
 	}
+	// Master sends wire.MsgKeepalive every 20s. If we receive nothing from the master
+	// for masterSilenceTimeout, consider the connection dead (e.g. master changed IP or
+	// network dropped) so the agent exits this session and reconnects via fresh DNS resolution.
+	masterSilenceTimeout := 60 * time.Second
+	if heartbeatInterval > 0 && heartbeatInterval < 20*time.Second {
+		if 3*heartbeatInterval < masterSilenceTimeout {
+			masterSilenceTimeout = 3 * heartbeatInterval
+		}
+	} else if 2*heartbeatInterval > masterSilenceTimeout {
+		masterSilenceTimeout = 2 * heartbeatInterval
+	}
+	const writeTimeout = 15 * time.Second
+
 	incoming := make(chan wireInboundMessage, 8)
 	readErr := make(chan error, 1)
 	go func() {
 		for {
+			_ = conn.SetReadDeadline(time.Now().Add(masterSilenceTimeout))
 			msgType, body, err := conn.ReadMessage()
 			if err != nil {
 				readErr <- err
@@ -239,6 +253,7 @@ func RunSession(ctx context.Context, conn *wire.Conn, handler TaskHandler, heart
 		if err != nil {
 			return err
 		}
+		_ = conn.SetWriteDeadline(time.Now().Add(writeTimeout))
 		return conn.WriteMessage(wire.MsgStatus, body)
 	}
 	// Report until told otherwise: a master too old to send WatchState never
@@ -254,6 +269,7 @@ func RunSession(ctx context.Context, conn *wire.Conn, handler TaskHandler, heart
 		if encodeErr != nil {
 			return encodeErr
 		}
+		_ = conn.SetWriteDeadline(time.Now().Add(writeTimeout))
 		return conn.WriteMessage(wire.MsgConnections, body)
 	}
 
@@ -324,6 +340,7 @@ func RunSession(ctx context.Context, conn *wire.Conn, handler TaskHandler, heart
 			if err != nil {
 				return err
 			}
+			_ = conn.SetWriteDeadline(time.Now().Add(writeTimeout))
 			if err := conn.WriteMessage(wire.MsgTaskResult, resBody); err != nil {
 				return err
 			}

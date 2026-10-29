@@ -466,6 +466,16 @@ func (e *AlertEngine) NotifyDDNSUpdated(nodeID, nodeName, oldIP, currentIP, doma
 	}
 }
 
+// NotifyMasterDDNSUpdated sends an alert when Master's public IP changes and multiple DDNS domains are updated.
+func (e *AlertEngine) NotifyMasterDDNSUpdated(oldIP, currentIP string, domains []string) {
+	alertKey := "master_ddns:" + currentIP
+	if e.canAlert(alertKey, 1) {
+		body := fmt.Sprintf("• 主控节点 (Master) 公网 IP 发生变更\n• 原公网 IP: %s\n• 新公网 IP: %s\n• 自动同步域名: %s\n• 状态说明: Cloudflare DNS 记录已全部更新 (TTL: 60s)\n🕒 变更时间: %s",
+			e.formatIP(oldIP), e.formatIP(currentIP), strings.Join(domains, ", "), NowAlertTime())
+		e.sendAlert(context.Background(), "👑 [Polaris] Master 主控 IP 变更与多域名 DDNS 自动更新", body, "Polaris-Master监控", "active", "bell.caf", "")
+	}
+}
+
 // NotifyChainedDNSHealing sends an alert when chained nodes are signaled to refresh DNS and heal connections.
 func (e *AlertEngine) NotifyChainedDNSHealing(targetNodeName string, chainedCount int, domains []string, targetIP string) {
 	alertKey := "dns_healing:" + targetNodeName + ":" + targetIP

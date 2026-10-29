@@ -178,6 +178,7 @@ func serveCombined(ctx context.Context, masterConfiguration masterConfig, agentC
 	server.StartMaintenance(combinedContext)
 	server.StartTrafficAggregation(combinedContext)
 	server.StartProber(combinedContext)
+	server.StartMasterDDNS(combinedContext)
 	go func() {
 		<-combinedContext.Done()
 		_ = agentListener.Close()

@@ -368,6 +368,19 @@ func (s *Store) cloudflareBindingIndex(ctx context.Context) (map[string][]Cloudf
 			}
 		}
 	}
+	var masterEnabled int
+	var masterDomainsJSON string
+	if err := s.db.QueryRowContext(ctx, `SELECT enabled, domains FROM master_ddns_settings WHERE id = 1`).Scan(&masterEnabled, &masterDomainsJSON); err == nil && masterEnabled == 1 {
+		var masterDomains []string
+		if json.Unmarshal([]byte(masterDomainsJSON), &masterDomains) == nil {
+			for _, d := range masterDomains {
+				d = strings.ToLower(strings.TrimSpace(d))
+				if d != "" {
+					byDomain[d] = append(byDomain[d], CloudflareBinding{NodeName: "Master 主控 (DDNS)"})
+				}
+			}
+		}
+	}
 	byAddress := map[string][]string{}
 	addressRows, err := s.db.QueryContext(ctx, `SELECT LOWER(client_address), name FROM nodes
 		WHERE client_address <> '' AND revoked_at IS NULL ORDER BY name, id`)

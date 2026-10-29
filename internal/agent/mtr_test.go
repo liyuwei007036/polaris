@@ -66,3 +66,27 @@ HOST: test-vps                    Loss%   Snt   Last   Avg  Best  Wrst StDev
 		t.Errorf("expected hop 2 to be marked as rate-limited")
 	}
 }
+
+func TestParseMTRJSONWithStringFields(t *testing.T) {
+	// Some versions of mtr format numbers as JSON strings
+	jsonSample := `{
+		"report": {
+			"hubs": [
+				{"count": "1", "host": "10.0.0.1", "Loss%": "0.0%", "Snt": "10", "Avg": "1.5", "Best": "1.0", "Wrst": "2.0", "StDev": "0.2"},
+				{"count": "2", "host": "202.97.108.1", "Loss%": "0.0", "Snt": "10", "Avg": "15.0", "Best": "14.0", "Wrst": "16.0", "StDev": "0.5"}
+			]
+		}
+	}`
+
+	hops := parseMTRJSONOutput([]byte(jsonSample), 10)
+	if len(hops) != 2 {
+		t.Fatalf("expected 2 hops, got %d", len(hops))
+	}
+	if hops[0].Hop != 1 || hops[0].LossPct != 0.0 || hops[0].AvgMs != 1.5 {
+		t.Errorf("unexpected hop 0: %+v", hops[0])
+	}
+	if hops[1].Hop != 2 || hops[1].IP != "202.97.108.1" || hops[1].AvgMs != 15.0 {
+		t.Errorf("unexpected hop 1: %+v", hops[1])
+	}
+}
+

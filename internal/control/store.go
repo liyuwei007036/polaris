@@ -2538,6 +2538,15 @@ CREATE TABLE IF NOT EXISTS node_speedtests (
 );
 CREATE INDEX IF NOT EXISTS idx_node_speedtests_node_tested ON node_speedtests(node_id, tested_at DESC);
 INSERT OR IGNORE INTO alert_settings (id, updated_at) VALUES (1, unixepoch());
+CREATE TABLE IF NOT EXISTS master_ddns_settings (
+  id INTEGER PRIMARY KEY CHECK (id = 1),
+  enabled INTEGER NOT NULL DEFAULT 0,
+  record_ids TEXT NOT NULL DEFAULT '[]',
+  domains TEXT NOT NULL DEFAULT '[]',
+  last_observed_ip TEXT NOT NULL DEFAULT '',
+  updated_at INTEGER NOT NULL DEFAULT 0
+);
+INSERT OR IGNORE INTO master_ddns_settings (id, enabled, record_ids, domains, last_observed_ip, updated_at) VALUES (1, 0, '[]', '[]', '', unixepoch());
 `)
 	if err != nil {
 		return fmt.Errorf("migrate database: %w", err)
