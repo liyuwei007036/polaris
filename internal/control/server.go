@@ -121,6 +121,7 @@ func NewServer(store *Store, secureCookies bool) (*Server, error) {
 	if err != nil {
 		return nil, fmt.Errorf("load IP location database: %w", err)
 	}
+	wire.CityResolver = ipLocator.LocateCity
 	server := &Server{
 		store: store, noiseKeypair: keypair, agentPort: defaultAgentPort, secureCookies: secureCookies,
 		controls: make(map[string]*controlSession), autoInstallChecked: make(map[string]bool),
@@ -332,7 +333,6 @@ func (s *Server) registerBrowserRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/v1/firewall/rules", s.listFirewall)
 	mux.HandleFunc("GET /api/v1/nodes/{id}/firewall/rules", s.listFirewall)
 	mux.HandleFunc("POST /api/v1/nodes/{id}/firewall/rules", s.changeFirewallRule)
-	mux.HandleFunc("POST /api/v1/nodes/{id}/firewall/scanners", s.toggleScannerProtection)
 	mux.HandleFunc("GET /api/v1/fail2ban/jails", s.listFail2Ban)
 	mux.HandleFunc("GET /api/v1/nodes/{id}/fail2ban/jails", s.listFail2Ban)
 	mux.HandleFunc("POST /api/v1/nodes/{id}/fail2ban/jails", s.changeFail2BanJail)
@@ -399,6 +399,7 @@ func (s *Server) registerBrowserRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/v1/probes/run-gfw-check", s.handleRunGFWCheck)
 	mux.HandleFunc("POST /api/v1/nodes/{id}/speedtest", s.handleRunNodeSpeedtest)
 	mux.HandleFunc("POST /api/v1/nodes/{id}/diagnose/mtr", s.handleRunNodeMTR)
+	mux.HandleFunc("GET /api/v1/diagnose/mtr/targets", s.handleGetMTRTargets)
 	mux.HandleFunc("GET /api/v1/nodes/{id}/speedtest/latest", s.handleGetNodeSpeedtestLatest)
 	mux.HandleFunc("GET /api/v1/nodes/speedtests/latest", s.handleListNodeSpeedtestsLatest)
 	mux.HandleFunc("POST /api/v1/tools/reality-check", s.handleCheckRealityCandidate)

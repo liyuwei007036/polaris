@@ -35,30 +35,42 @@ type SpeedtestResult struct {
 	MobileTracePath      string  `json:"mobile_trace_path,omitempty"`
 }
 
-// 权威三网骨干测试节点 (南京核心节点与备用端点)
-// 电信: 南京电信核心 (218.2.135.1), 南京电信备用 (58.213.1.1), 南京电信汇聚 (221.226.1.1)
-// 联通: 南京联通核心 (58.240.23.1), 南京联通备用 (221.6.4.66), 南京联通核心 (112.80.248.75)
-// 移动: 南京移动核心 (112.4.0.1), 南京移动备用 (36.152.44.95), 南京移动汇聚 (183.207.95.1)
+// 权威三网骨干测试节点池 (覆盖华东、华南、华北、西南、华中等核心国际互联出口与主干交换局)
 type TargetEndpoint struct {
-	City string
-	Host string
+	City string `json:"city"`
+	Host string `json:"host"`
+}
+
+type SpeedtestTaskPayload struct {
+	TelecomEndpoints []TargetEndpoint `json:"telecom_endpoints,omitempty"`
+	UnicomEndpoints  []TargetEndpoint `json:"unicom_endpoints,omitempty"`
+	MobileEndpoints  []TargetEndpoint `json:"mobile_endpoints,omitempty"`
 }
 
 var (
 	TelecomEndpoints = []TargetEndpoint{
-		{City: "南京电信", Host: "218.2.135.1"},
-		{City: "南京电信备用", Host: "58.213.1.1"},
-		{City: "南京电信核心", Host: "221.226.1.1"},
+		{City: "上海电信", Host: "202.96.209.133"},
+		{City: "广州电信", Host: "58.60.188.222"},
+		{City: "北京电信", Host: "219.141.140.10"},
+		{City: "成都电信", Host: "61.139.2.69"},
+		{City: "全国电信DNS", Host: "114.114.114.114"},
+		{City: "武汉电信", Host: "202.103.24.68"},
 	}
 	UnicomEndpoints = []TargetEndpoint{
-		{City: "南京联通", Host: "58.240.23.1"},
-		{City: "南京联通备用", Host: "221.6.4.66"},
-		{City: "南京联通核心", Host: "112.80.248.75"},
+		{City: "上海联通", Host: "210.22.97.1"},
+		{City: "广州联通", Host: "210.21.196.6"},
+		{City: "北京联通", Host: "202.106.195.68"},
+		{City: "成都联通", Host: "119.6.6.6"},
+		{City: "全国联通DNS", Host: "116.116.116.116"},
+		{City: "武汉联通", Host: "58.19.190.1"},
 	}
 	MobileEndpoints = []TargetEndpoint{
-		{City: "南京移动", Host: "112.4.0.1"},
-		{City: "南京移动备用", Host: "36.152.44.95"},
-		{City: "南京移动核心", Host: "183.207.95.1"},
+		{City: "广州移动", Host: "120.196.165.24"},
+		{City: "上海移动", Host: "211.136.112.200"},
+		{City: "北京移动", Host: "221.179.155.161"},
+		{City: "成都移动", Host: "211.137.96.205"},
+		{City: "全国移动网关", Host: "120.196.165.1"},
+		{City: "武汉移动", Host: "111.175.220.1"},
 	}
 )
 
@@ -250,14 +262,14 @@ func traceRoute(ctx context.Context, targetHost string) traceRouteResult {
 	var outStr string
 
 	if runtime.GOOS == "windows" {
-		traceCtx, cancel := context.WithTimeout(ctx, 6*time.Second)
-		out, _ := exec.CommandContext(traceCtx, "tracert", "-d", "-h", "20", "-w", "500", targetHost).CombinedOutput()
+		traceCtx, cancel := context.WithTimeout(ctx, 12*time.Second)
+		out, _ := exec.CommandContext(traceCtx, "tracert", "-d", "-h", "25", "-w", "500", targetHost).CombinedOutput()
 		cancel()
 		outStr = string(out)
 	} else if commandExists("traceroute") {
-		// 1. Try ICMP traceroute (-I) with 20 max hops (-m 20 -q 1 -w 1)
-		traceCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-		out, _ := exec.CommandContext(traceCtx, "traceroute", "-I", "-n", "-m", "20", "-q", "1", "-w", "1", targetHost).CombinedOutput()
+		// 1. Try ICMP traceroute (-I) with 25 max hops (-m 25 -q 1 -w 1)
+		traceCtx, cancel := context.WithTimeout(ctx, 12*time.Second)
+		out, _ := exec.CommandContext(traceCtx, "traceroute", "-I", "-n", "-m", "25", "-q", "1", "-w", "1", targetHost).CombinedOutput()
 		cancel()
 
 		hops, lat := extractHopsFromOutput(targetHost, string(out))
@@ -265,8 +277,8 @@ func traceRoute(ctx context.Context, targetHost string) traceRouteResult {
 			outStr = string(out)
 		} else {
 			// 2. If ICMP produced 0 hops (e.g. non-root or firewall drop), try standard UDP traceroute
-			traceCtx2, cancel2 := context.WithTimeout(ctx, 5*time.Second)
-			out2, _ := exec.CommandContext(traceCtx2, "traceroute", "-n", "-m", "20", "-q", "1", "-w", "1", targetHost).CombinedOutput()
+			traceCtx2, cancel2 := context.WithTimeout(ctx, 10*time.Second)
+			out2, _ := exec.CommandContext(traceCtx2, "traceroute", "-n", "-m", "25", "-q", "1", "-w", "1", targetHost).CombinedOutput()
 			cancel2()
 
 			hops2, _ := extractHopsFromOutput(targetHost, string(out2))
@@ -274,16 +286,16 @@ func traceRoute(ctx context.Context, targetHost string) traceRouteResult {
 				outStr = string(out2)
 			} else {
 				// 3. Fallback to TCP SYN traceroute (-T -p 80)
-				traceCtx3, cancel3 := context.WithTimeout(ctx, 5*time.Second)
-				out3, _ := exec.CommandContext(traceCtx3, "traceroute", "-T", "-p", "80", "-n", "-m", "20", "-q", "1", "-w", "1", targetHost).CombinedOutput()
+				traceCtx3, cancel3 := context.WithTimeout(ctx, 10*time.Second)
+				out3, _ := exec.CommandContext(traceCtx3, "traceroute", "-T", "-p", "80", "-n", "-m", "25", "-q", "1", "-w", "1", targetHost).CombinedOutput()
 				cancel3()
 				outStr = string(out3)
 			}
 		}
 		_ = lat
 	} else if commandExists("tracepath") {
-		traceCtx, cancel := context.WithTimeout(ctx, 6*time.Second)
-		out, _ := exec.CommandContext(traceCtx, "tracepath", "-n", "-m", "20", targetHost).CombinedOutput()
+		traceCtx, cancel := context.WithTimeout(ctx, 12*time.Second)
+		out, _ := exec.CommandContext(traceCtx, "tracepath", "-n", "-m", "25", targetHost).CombinedOutput()
 		cancel()
 		outStr = string(out)
 	}
@@ -328,23 +340,42 @@ func analyzeMobileRoute(hops []string, latencyMs int) string {
 }
 
 func runSpeedtest(ctx context.Context, task Task) TaskResult {
-	timeoutCtx, cancel := context.WithTimeout(ctx, 35*time.Second)
+	timeoutCtx, cancel := context.WithTimeout(ctx, 45*time.Second)
 	defer cancel()
 
 	// 确保基础网络测试工具已就绪，缺失时自动安装
 	EnsureNetworkTools(timeoutCtx)
 
-	measureEndpoints := func(endpoints []TargetEndpoint) ([]string, int) {
+	var payload SpeedtestTaskPayload
+	if task.Payload != "" && task.Payload != "{}" {
+		_ = json.Unmarshal([]byte(task.Payload), &payload)
+	}
+
+	telecomEps := payload.TelecomEndpoints
+	if len(telecomEps) == 0 {
+		telecomEps = TelecomEndpoints
+	}
+	unicomEps := payload.UnicomEndpoints
+	if len(unicomEps) == 0 {
+		unicomEps = UnicomEndpoints
+	}
+	mobileEps := payload.MobileEndpoints
+	if len(mobileEps) == 0 {
+		mobileEps = MobileEndpoints
+	}
+
+	measureEndpoints := func(endpoints []TargetEndpoint) ([]string, int, string, string) {
 		type epRes struct {
 			index   int
 			city    string
+			host    string
 			latency int
 		}
 		ch := make(chan epRes, len(endpoints))
 		for i, ep := range endpoints {
 			go func(idx int, target TargetEndpoint) {
 				l := measureLatency(timeoutCtx, target.Host)
-				ch <- epRes{index: idx, city: target.City, latency: l}
+				ch <- epRes{index: idx, city: target.City, host: target.Host, latency: l}
 			}(i, ep)
 		}
 		items := make([]epRes, len(endpoints))
@@ -354,37 +385,47 @@ func runSpeedtest(ctx context.Context, task Task) TaskResult {
 		}
 		var list []string
 		minLat := 0
+		bestCity := ""
+		bestHost := ""
 		for _, r := range items {
 			if r.latency > 0 {
 				list = append(list, fmt.Sprintf("%s: %dms", r.city, r.latency))
 				if minLat <= 0 || r.latency < minLat {
 					minLat = r.latency
+					bestCity = r.city
+					bestHost = r.host
 				}
 			} else {
 				list = append(list, fmt.Sprintf("%s: 超时", r.city))
 			}
 		}
-		return list, minLat
+		if bestCity == "" && len(endpoints) > 0 {
+			bestCity = endpoints[0].City
+			bestHost = endpoints[0].Host
+		}
+		return list, minLat, bestCity, bestHost
 	}
 
 	var telecomLatency, unicomLatency, mobileLatency int
 	var telecomLatList, unicomLatList, mobileLatList []string
+	var telecomBestCity, unicomBestCity, mobileBestCity string
+	var telecomBestHost, unicomBestHost, mobileBestHost string
 	var latencyWg sync.WaitGroup
 	latencyWg.Add(3)
 
 	go func() {
 		defer latencyWg.Done()
-		telecomLatList, telecomLatency = measureEndpoints(TelecomEndpoints)
+		telecomLatList, telecomLatency, telecomBestCity, telecomBestHost = measureEndpoints(telecomEps)
 	}()
 
 	go func() {
 		defer latencyWg.Done()
-		unicomLatList, unicomLatency = measureEndpoints(UnicomEndpoints)
+		unicomLatList, unicomLatency, unicomBestCity, unicomBestHost = measureEndpoints(unicomEps)
 	}()
 
 	go func() {
 		defer latencyWg.Done()
-		mobileLatList, mobileLatency = measureEndpoints(MobileEndpoints)
+		mobileLatList, mobileLatency, mobileBestCity, mobileBestHost = measureEndpoints(mobileEps)
 	}()
 
 	latencyWg.Wait()
@@ -394,64 +435,88 @@ func runSpeedtest(ctx context.Context, task Task) TaskResult {
 	var traceWg sync.WaitGroup
 	traceWg.Add(3)
 
-	// 电信路由探测 (先测核心南京节点，若已确认精品线路则提前结束，否则测试备用节点)
+	// 电信路由探测：优先测试测速最优的健康节点，确保真实捕获骨干跃点
 	go func() {
 		defer traceWg.Done()
-		for i, ep := range TelecomEndpoints {
-			if i >= 3 && len(telecomHops) > 0 {
-				break
-			}
-			res := traceRoute(timeoutCtx, ep.Host)
+		if telecomBestHost != "" {
+			res := traceRoute(timeoutCtx, telecomBestHost)
 			if len(res.Hops) > 0 {
 				telecomHops = append(telecomHops, res.Hops...)
-				if telecomLatency <= 0 && res.LatencyMs > 0 {
-					telecomLatency = res.LatencyMs
+			}
+		}
+		if len(telecomHops) == 0 {
+			attempts := 0
+			for _, ep := range telecomEps {
+				if timeoutCtx.Err() != nil || attempts >= 2 {
+					break
 				}
-				rName := wire.AnalyzeTelecomRoute(telecomHops, telecomLatency)
-				if rName == "电信 CN2 GIA" || rName == "电信 CN2 GT" || rName == "电信 CTGNet" || rName == "电信 9929" || rName == "电信 CMIN2" {
-					return
+				if ep.Host == telecomBestHost {
+					continue
+				}
+				attempts++
+				res := traceRoute(timeoutCtx, ep.Host)
+				if len(res.Hops) > 0 {
+					telecomHops = append(telecomHops, res.Hops...)
+					telecomBestCity = ep.City
+					break
 				}
 			}
 		}
 	}()
 
-	// 联通路由探测 (先测核心南京节点，若已确认 9929/CUG 精品线路则提前结束，否则测试备用节点)
+	// 联通路由探测：优先测试测速最优的健康节点，若已确认 9929/CUG 精品线路则提前结束
 	go func() {
 		defer traceWg.Done()
-		for i, ep := range UnicomEndpoints {
-			if i >= 3 && len(unicomHops) > 0 {
-				break
-			}
-			res := traceRoute(timeoutCtx, ep.Host)
+		if unicomBestHost != "" {
+			res := traceRoute(timeoutCtx, unicomBestHost)
 			if len(res.Hops) > 0 {
 				unicomHops = append(unicomHops, res.Hops...)
-				if unicomLatency <= 0 && res.LatencyMs > 0 {
-					unicomLatency = res.LatencyMs
+			}
+		}
+		if len(unicomHops) == 0 {
+			attempts := 0
+			for _, ep := range unicomEps {
+				if timeoutCtx.Err() != nil || attempts >= 2 {
+					break
 				}
-				uName := wire.AnalyzeUnicomRoute(unicomHops, unicomLatency)
-				if uName == "联通 9929" || uName == "联通 CN2 GIA" || uName == "联通 CMIN2" {
-					return
+				if ep.Host == unicomBestHost {
+					continue
+				}
+				attempts++
+				res := traceRoute(timeoutCtx, ep.Host)
+				if len(res.Hops) > 0 {
+					unicomHops = append(unicomHops, res.Hops...)
+					unicomBestCity = ep.City
+					break
 				}
 			}
 		}
 	}()
 
-	// 移动路由探测 (先测核心南京节点，若已确认 CMIN2 精品线路则提前结束，否则测试备用节点)
+	// 移动路由探测：优先测试测速最优的健康节点，若已确认 CMIN2 精品线路则提前结束
 	go func() {
 		defer traceWg.Done()
-		for i, ep := range MobileEndpoints {
-			if i >= 3 && len(mobileHops) > 0 {
-				break
-			}
-			res := traceRoute(timeoutCtx, ep.Host)
+		if mobileBestHost != "" {
+			res := traceRoute(timeoutCtx, mobileBestHost)
 			if len(res.Hops) > 0 {
 				mobileHops = append(mobileHops, res.Hops...)
-				if mobileLatency <= 0 && res.LatencyMs > 0 {
-					mobileLatency = res.LatencyMs
+			}
+		}
+		if len(mobileHops) == 0 {
+			attempts := 0
+			for _, ep := range mobileEps {
+				if timeoutCtx.Err() != nil || attempts >= 2 {
+					break
 				}
-				mName := wire.AnalyzeMobileRoute(mobileHops, mobileLatency)
-				if mName == "移动 CMIN2" || mName == "移动 CN2 GIA" || mName == "移动 9929" {
-					return
+				if ep.Host == mobileBestHost {
+					continue
+				}
+				attempts++
+				res := traceRoute(timeoutCtx, ep.Host)
+				if len(res.Hops) > 0 {
+					mobileHops = append(mobileHops, res.Hops...)
+					mobileBestCity = ep.City
+					break
 				}
 			}
 		}
@@ -463,17 +528,27 @@ func runSpeedtest(ctx context.Context, task Task) TaskResult {
 	unicomRoute := analyzeUnicomRoute(unicomHops, unicomLatency)
 	mobileRoute := analyzeMobileRoute(mobileHops, mobileLatency)
 
-	telecomTracePath := wire.BuildTracePath(telecomHops, "南京电信")
+	if telecomBestCity == "" {
+		telecomBestCity = "上海电信"
+	}
+	if unicomBestCity == "" {
+		unicomBestCity = "上海联通"
+	}
+	if mobileBestCity == "" {
+		mobileBestCity = "广州移动"
+	}
+
+	telecomTracePath := wire.BuildTracePath(telecomHops, telecomBestCity)
 	if telecomTracePath == "" && telecomLatency > 0 {
-		telecomTracePath = wire.BuildTracePathFallback(telecomRoute, "南京电信")
+		telecomTracePath = wire.BuildTracePathFallback(telecomRoute, telecomBestCity)
 	}
-	unicomTracePath := wire.BuildTracePath(unicomHops, "南京联通")
+	unicomTracePath := wire.BuildTracePath(unicomHops, unicomBestCity)
 	if unicomTracePath == "" && unicomLatency > 0 {
-		unicomTracePath = wire.BuildTracePathFallback(unicomRoute, "南京联通")
+		unicomTracePath = wire.BuildTracePathFallback(unicomRoute, unicomBestCity)
 	}
-	mobileTracePath := wire.BuildTracePath(mobileHops, "南京移动")
+	mobileTracePath := wire.BuildTracePath(mobileHops, mobileBestCity)
 	if mobileTracePath == "" && mobileLatency > 0 {
-		mobileTracePath = wire.BuildTracePathFallback(mobileRoute, "南京移动")
+		mobileTracePath = wire.BuildTracePathFallback(mobileRoute, mobileBestCity)
 	}
 
 	result := SpeedtestResult{

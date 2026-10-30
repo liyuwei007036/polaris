@@ -46,8 +46,6 @@ const pending = ref([])
 const metrics = ref({})
 const speedtests = ref({})
 const speedtesting = reactive({})
-const scanners = ref({})
-const togglingScanner = reactive({})
 
 // 视图模式：cards (默认精美卡片) 或 table (传统表格)
 const viewMode = ref(window.localStorage.getItem(VIEW_MODE_KEY) || 'cards')
@@ -73,7 +71,6 @@ const editNode = ref(null)
 const editForm = ref({
   name: '',
   client_address: '',
-  scanner_protection: false,
   ddns_enabled: false,
   ddns_record_id: '',
   ddns_domain: '',
@@ -88,17 +85,29 @@ const editSaving = ref(false)
 const mtrDialogVisible = ref(false)
 const mtrTargetNode = ref(null)
 const mtrLoading = ref(false)
-const mtrTargetType = ref('telecom')
+const mtrTargetType = ref('sh_telecom')
 const mtrCustomTarget = ref('')
 const mtrCount = ref(10)
 const mtrReport = ref(null)
 const mtrShowRaw = ref(false)
-const mtrTargetOptions = [
-  { label: '南京电信 (AS4134 骨干核心)', value: 'telecom', ip: '218.2.135.1' },
-  { label: '南京联通 (AS4837 骨干核心)', value: 'unicom', ip: '58.240.23.1' },
-  { label: '南京移动 (AS9808 骨干核心)', value: 'mobile', ip: '112.4.0.1' },
+const mtrTargetOptions = ref([
+  { label: '上海电信 (AS4134 华东核心)', value: 'sh_telecom', ip: '202.96.209.133' },
+  { label: '广州电信 (AS4134 华南核心)', value: 'gz_telecom', ip: '58.60.188.222' },
+  { label: '北京电信 (AS4134 华北核心)', value: 'bj_telecom', ip: '219.141.140.10' },
+  { label: '成都电信 (AS4134 西南核心)', value: 'cd_telecom', ip: '61.139.2.69' },
+  { label: '全国电信公共网关 (114.114.114.114)', value: 'dns_telecom', ip: '114.114.114.114' },
+  { label: '上海联通 (AS4837 华东核心)', value: 'sh_unicom', ip: '210.22.97.1' },
+  { label: '广州联通 (AS4837 华南核心)', value: 'gz_unicom', ip: '210.21.196.6' },
+  { label: '北京联通 (AS4837 华北核心)', value: 'bj_unicom', ip: '202.106.195.68' },
+  { label: '成都联通 (AS4837 西南核心)', value: 'cd_unicom', ip: '119.6.6.6' },
+  { label: '全国联通公共网关 (116.116.116.116)', value: 'dns_unicom', ip: '116.116.116.116' },
+  { label: '广州移动 (AS9808 华南核心)', value: 'gz_mobile', ip: '120.196.165.24' },
+  { label: '上海移动 (AS9808 华东核心)', value: 'sh_mobile', ip: '211.136.112.200' },
+  { label: '北京移动 (AS9808 华北核心)', value: 'bj_mobile', ip: '221.179.155.161' },
+  { label: '成都移动 (AS9808 西南核心)', value: 'cd_mobile', ip: '211.137.96.205' },
+  { label: '全国移动核心网关 (120.196.165.1)', value: 'gw_mobile', ip: '120.196.165.1' },
   { label: '自定义 IP / 域名', value: 'custom', ip: '' },
-]
+])
 
 // 架构 -> 官方最新 sing-box 版本号
 const singBoxLatest = ref({})
@@ -174,7 +183,6 @@ const stats = computed(() => {
   let totalDownRate = 0
   let totalUpRate = 0
   let gfwBlockedCount = 0
-  let scannerProtectedCount = 0
 
   for (const node of appState.nodes) {
     const snap = live.value.get(node.id)
@@ -188,9 +196,6 @@ const stats = computed(() => {
     if (isNodeGFWBlocked(speedtests.value[node.id])) {
       gfwBlockedCount++
     }
-    if (scanners.value[node.id]) {
-      scannerProtectedCount++
-    }
   }
 
   return {
@@ -201,7 +206,6 @@ const stats = computed(() => {
     totalDownRate,
     totalUpRate,
     gfwBlockedCount,
-    scannerProtectedCount,
   }
 })
 
@@ -224,37 +228,6 @@ async function load(silent = false) {
     refreshing.value = false
   }
   loadSingBoxLatest().catch(() => {})
-  loadScanners().catch(() => {})
-}
-
-async function loadScanners() {
-  if (!isAdmin.value) return
-  try {
-    const res = await api('/firewall/rules').catch(() => ({ nodes: [] }))
-    if (res?.nodes) {
-      const map = {}
-      for (const n of res.nodes) {
-        if (n && n.node_id) {
-          map[n.node_id] = Boolean(n.scanner_protection)
-        }
-      }
-      scanners.value = map
-    }
-  } catch (_) {}
-}
-
-async function toggleScannerDirect(node) {
-  const current = Boolean(scanners.value[node.id])
-  togglingScanner[node.id] = true
-  try {
-    const updated = await post(`/nodes/${node.id}/firewall/scanners`, { enabled: !current })
-    scanners.value[node.id] = Boolean(updated.scanner_protection)
-    ElMessage.success(`“${node.name}”测绘防御已${!current ? '开启' : '关闭'}`)
-  } catch (error) {
-    ElMessage.error(error instanceof Error ? error.message : '切换失败')
-  } finally {
-    togglingScanner[node.id] = false
-  }
 }
 
 async function runSpeedtest(node) {
@@ -334,71 +307,40 @@ function getNodeLocationLabel(node) {
 
 function getCarrierFallbackTrace(route, isp, node) {
   const origin = getNodeLocationLabel(node)
-  const targetMap = { telecom: '南京电信', unicom: '南京联通', mobile: '南京移动' }
+  const targetMap = { telecom: '上海电信', unicom: '上海联通', mobile: '广州移动' }
   const target = targetMap[isp] || '国内骨干'
-  return `${origin} ➔ ${target}`
+  return `${origin} ➔ 国际骨干直连 (骨干跃点未回显) ➔ ${target}`
 }
 
 function getInboundFallbackTrace(route, isp, node) {
   const target = getNodeLocationLabel(node)
-  const srcMap = { telecom: '南京电信探针', unicom: '南京联通探针', mobile: '南京移动探针' }
-  const src = srcMap[isp] || '南京探针'
-  return `${src} ➔ ${target}`
+  const srcMap = { telecom: '国内电信探针', unicom: '国内联通探针', mobile: '国内移动探针' }
+  const src = srcMap[isp] || '国内多线探针'
+  return `${src} ➔ 骨干网出海 ➔ ${target}`
 }
 
 function cleanTracePath(trace, node) {
   if (!trace) return ''
   const loc = getNodeLocationLabel(node)
   let t = trace
-    .replace(/^节点\s*➔/g, `${loc} ➔`)
-    .replace(/^本地节点\s*➔/g, `${loc} ➔`)
-    .replace(/^服务器节点\s*➔/g, `${loc} ➔`)
-    .replace(/目标机房/g, loc)
-    .replace(/服务器节点/g, loc)
-    .replace(/境外节点/g, loc)
-    .replace(/机房出发(?:\s*\([^)]*\))?/g, loc)
-    .replace(/➔\s*目标\b/g, `➔ ${loc}`)
-    .replace(/➔\s*目标网络/g, `➔ 国内骨干`)
-    .replace(/境外节点/g, loc)
-    .replace(/机房出发(?:\s*\([^)]*\))?/g, loc)
-    .replace(/国际公网出口/g, '')
-    .replace(/国际公网BGP出口/g, '')
-    .replace(/国内骨干/g, '')
-    .replace(/上海\/广州出口/g, '上海')
-    .replace(/广州\/上海出口/g, '广州')
-    .replace(/香港\/国际出口/g, '中国香港')
-    .replace(/国际跨洋传输/g, '')
-    .replace(/国际跨洋专线/g, '')
-    .replace(/跨洋海缆直连/g, '')
-    .replace(/跨洋海缆/g, '')
-    .replace(/国际传输/g, '')
-    .replace(/骨干网出海/g, '')
-
-  // Fix any previously cached erroneous AS174 string for non-US nodes
-  if (loc !== '美西洛杉矶' && loc !== '本地节点') {
-    t = t.replace(/AS174 \(Cogent·美西洛杉矶\)/g, loc)
+  if (t.startsWith('节点 ➔') || t.startsWith('本地节点 ➔') || t.startsWith('服务器节点 ➔')) {
+    t = t.replace(/^(节点|本地节点|服务器节点)\s*➔\s*/, `${loc} ➔ `)
+  } else if (!t.includes(loc) && !t.startsWith('国内') && !t.includes('探针')) {
+    t = `${loc} ➔ ${t}`
   }
+  t = t.replace(/➔\s*(境外节点|服务器节点|本地节点|目标机房)$/, `➔ ${loc}`)
 
+  // Remove any legacy erroneous AS174 string if present
+  t = t.replace(/AS174 \(Cogent·美西洛杉矶\)\s*➔\s*/g, '')
+
+  // Clean duplicate consecutive hops
   const parts = t.split('➔').map(s => s.trim()).filter(Boolean)
   const unique = []
-  let lastAS = ''
-  const pastASes = new Set()
-  for (const part of parts) {
-    const match = part.match(/AS\d+/)
-    const asNum = match ? match[0] : ''
-    if (asNum) {
-      if (asNum !== lastAS && pastASes.has(asNum)) {
-        continue
-      }
-      if (asNum !== lastAS && lastAS) {
-        pastASes.add(lastAS)
-      }
-      lastAS = asNum
-    }
-    if (unique.length > 0 && unique[unique.length - 1] === part) {
+  for (let i = 0; i < parts.length; i++) {
+    if (unique.length > 0 && unique[unique.length - 1] === parts[i]) {
       continue
     }
-    unique.push(part)
+    unique.push(parts[i])
   }
   return unique.join(' ➔ ')
 }
@@ -471,11 +413,11 @@ function getISPTooltip(st, isp, node) {
 
 function getInboundSummary(st) {
   if (!st) return '待探测'
-  if (isNodeGFWBlocked(st)) return '0/6 超时 · GFW 阻断'
+  if (isNodeGFWBlocked(st)) return '探针全超时 · GFW 阻断'
   if (st.domestic_latency_ms) {
-    return `6/6 畅通 · 均值 ${st.domestic_latency_ms}ms`
+    return `国内探针畅通 · 均值 ${st.domestic_latency_ms}ms`
   }
-  return '6探针畅通'
+  return '国内探针畅通'
 }
 
 function getInboundProbeTooltip(st) {
@@ -781,14 +723,6 @@ async function triggerManualDDNS(node) {
 
 async function openEdit(node) {
   editNode.value = node
-  let isProtected = Boolean(scanners.value[node.id])
-  if (scanners.value[node.id] === undefined && node.online && isAdmin.value) {
-    const res = await api(`/nodes/${node.id}/firewall/rules`).catch(() => null)
-    if (res?.scanner_protection !== undefined) {
-      isProtected = Boolean(res.scanner_protection)
-      scanners.value[node.id] = isProtected
-    }
-  }
 
   const recordIds = (node.ddns_record_ids && node.ddns_record_ids.length)
     ? [...node.ddns_record_ids]
@@ -800,7 +734,6 @@ async function openEdit(node) {
   editForm.value = {
     name: node.name,
     client_address: node.client_address || '',
-    scanner_protection: isProtected,
     ddns_enabled: Boolean(node.ddns_enabled),
     ddns_record_id: node.ddns_record_id || '',
     ddns_domain: node.ddns_domain || '',
@@ -824,16 +757,6 @@ async function saveEdit() {
       ddns_record_ids: editForm.value.ddns_record_ids,
       ddns_domains: editForm.value.ddns_domains,
     })
-    if (
-      isAdmin.value &&
-      editNode.value.online &&
-      editForm.value.scanner_protection !== Boolean(scanners.value[editNode.value.id])
-    ) {
-      const updated = await post(`/nodes/${editNode.value.id}/firewall/scanners`, {
-        enabled: editForm.value.scanner_protection,
-      })
-      scanners.value[editNode.value.id] = Boolean(updated.scanner_protection)
-    }
     ElMessage.success('服务器信息已保存')
     editDialog.value = false
     await load()
@@ -844,11 +767,19 @@ async function saveEdit() {
   }
 }
 
-function openMTRDialog(node) {
+async function openMTRDialog(node) {
   mtrTargetNode.value = node
   mtrReport.value = null
   mtrShowRaw.value = false
   mtrDialogVisible.value = true
+  try {
+    const res = await get('/diagnose/mtr/targets')
+    if (res?.targets?.length) {
+      mtrTargetOptions.value = res.targets
+    }
+  } catch (_) {
+    // Keep fallback defaults
+  }
 }
 
 async function startMTRDiagnose() {
@@ -863,8 +794,8 @@ async function startMTRDiagnose() {
     }
     label = target
   } else {
-    const opt = mtrTargetOptions.find((o) => o.value === mtrTargetType.value)
-    target = opt ? opt.ip : '202.97.108.1'
+    const opt = mtrTargetOptions.value.find((o) => o.value === mtrTargetType.value)
+    target = opt ? opt.ip : '202.96.209.133'
     label = opt ? opt.label : target
   }
 
@@ -995,7 +926,7 @@ onBeforeUnmount(() => {
               </span>
             </div>
             <div class="kpi-footnote">
-              {{ stats.scannerProtectedCount }} 台已开启公网主动测绘防御
+              国内探针多节点实时监测
             </div>
           </div>
         </div>
@@ -1306,7 +1237,7 @@ onBeforeUnmount(() => {
                 <el-tooltip v-if="isNodeGFWBlocked(speedtests[node.id])" raw-content :content="getInboundProbeTooltip(speedtests[node.id])" placement="top">
                   <div class="gfw-alert-capsule">
                     <span class="gfw-alert-dot" />
-                    <span class="gfw-alert-txt font-mono">GFW 阻断 · 0/6 探针超时</span>
+                    <span class="gfw-alert-txt font-mono">GFW 阻断 · 国内探针全超时</span>
                   </div>
                 </el-tooltip>
                 <!-- 去程正常线路 -->
@@ -1354,31 +1285,13 @@ onBeforeUnmount(() => {
               </div>
             </div>
 
-            <!-- 4. 底栏：活跃时间、运行天数、防测绘开关 -->
+            <!-- 4. 底栏：活跃时间、运行天数 -->
             <div class="card-footer-clean">
               <div class="footer-time-info font-mono">
                 <el-icon :size="12"><Clock /></el-icon>
                 <span>{{ formatFriendlyTime(node.last_seen_at) }}</span>
                 <span class="time-sep">·</span>
                 <span>{{ formatUptimeText(metrics[node.id]?.host?.uptime_seconds) }}</span>
-              </div>
-
-              <div class="footer-defense-switch">
-                <el-tooltip content="自动拦截 Shodan、Censys、ZoomEye 等公网扫描引擎，隐蔽服务器特征" placement="top">
-                  <div class="defense-toggle-inline">
-                    <svg class="defense-shield-icon" :class="{ active: Boolean(scanners[node.id]) }" viewBox="0 0 24 24" fill="none" stroke="currentColor">
-                      <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
-                    </svg>
-                    <span class="defense-lbl">防测绘</span>
-                    <el-switch
-                      :model-value="Boolean(scanners[node.id])"
-                      :loading="Boolean(togglingScanner[node.id])"
-                      :disabled="!isAdmin || !node.online"
-                      size="small"
-                      @change="toggleScannerDirect(node)"
-                    />
-                  </div>
-                </el-tooltip>
               </div>
             </div>
           </div>
@@ -1465,7 +1378,7 @@ onBeforeUnmount(() => {
                   <div class="table-net-row">
                     <span class="table-dir-badge in">去程</span>
                     <div v-if="isNodeGFWBlocked(speedtests[row.id])" class="table-gfw-text font-mono">
-                      🚨 GFW 阻断 (0/6 超时)
+                      🚨 GFW 阻断 (国内探针超时)
                     </div>
                     <div v-else class="table-isp-pills">
                       <el-tooltip raw-content :content="getInboundCarrierTooltip(speedtests[row.id], 'telecom', row)" placement="top">
@@ -1518,21 +1431,6 @@ onBeforeUnmount(() => {
                     测速
                   </button>
                 </div>
-              </template>
-            </el-table-column>
-
-            <el-table-column label="测绘防御" width="110" align="center">
-              <template #default="{ row }">
-                <el-switch
-                  :model-value="Boolean(scanners[row.id])"
-                  :loading="Boolean(togglingScanner[row.id])"
-                  :disabled="!isAdmin || !row.online"
-                  size="small"
-                  active-text="开"
-                  inactive-text="关"
-                  inline-prompt
-                  @change="toggleScannerDirect(row)"
-                />
               </template>
             </el-table-column>
 
@@ -1592,24 +1490,10 @@ onBeforeUnmount(() => {
           <el-input v-model="editForm.client_address" placeholder="例如：hk.example.com 或 1.2.3.4" />
         </el-form-item>
 
-        <el-form-item label="主动测绘防御 (反扫描防护)">
-          <div class="scanner-edit-box">
-            <div class="scanner-edit-text">
-              <div class="scanner-edit-heading">主动丢弃扫描引擎探测</div>
-              <div class="subtle">丢弃来自 Shodan、Censys、ZoomEye 等扫描引擎探测包，隐蔽服务特征。</div>
-            </div>
-            <el-switch
-              v-model="editForm.scanner_protection"
-              :disabled="!isAdmin || !editNode?.online"
-              size="small"
-            />
-          </div>
-        </el-form-item>
-
         <el-form-item label="Cloudflare 动态域名解析 (DDNS)">
-          <div class="scanner-edit-box">
-            <div class="scanner-edit-text">
-              <div class="scanner-edit-heading">出口 IP 变动自动同步解析</div>
+          <div class="setting-edit-box">
+            <div class="setting-edit-text">
+              <div class="setting-edit-heading">出口 IP 变动自动同步解析</div>
               <div class="subtle">当服务器公网 IP 发生变更时，自动更新绑定的 Cloudflare A / AAAA 记录。</div>
             </div>
             <el-switch
@@ -1664,7 +1548,7 @@ onBeforeUnmount(() => {
         <div class="mtr-ctrl-bar">
           <div class="mtr-ctrl-item">
             <span class="ctrl-label">诊断目标：</span>
-            <el-select v-model="mtrTargetType" style="width: 250px">
+            <el-select v-model="mtrTargetType" style="width: 270px">
               <el-option
                 v-for="opt in mtrTargetOptions"
                 :key="opt.value"
@@ -2592,28 +2476,6 @@ onBeforeUnmount(() => {
 .time-sep {
   opacity: 0.5;
 }
-.footer-defense-switch {
-  display: flex;
-  align-items: center;
-}
-.defense-toggle-inline {
-  display: flex;
-  align-items: center;
-  gap: 5px;
-}
-.defense-shield-icon {
-  width: 12px;
-  height: 12px;
-  color: var(--sb-muted);
-  transition: color 0.2s;
-}
-.defense-shield-icon.active {
-  color: #38bdf8;
-}
-.defense-lbl {
-  font-size: 10px;
-  color: var(--sb-muted);
-}
 
 /* ── 列表表格与辅助 ─────────────────────────────────────── */
 .cards-pagination-bar {
@@ -2677,7 +2539,7 @@ onBeforeUnmount(() => {
   user-select: all;
 }
 
-.scanner-edit-box {
+.setting-edit-box {
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -2688,11 +2550,11 @@ onBeforeUnmount(() => {
   background: var(--sb-surface-muted, rgba(148, 163, 184, 0.05));
   box-sizing: border-box;
 }
-.scanner-edit-text {
+.setting-edit-text {
   flex: 1;
   margin-right: 16px;
 }
-.scanner-edit-heading {
+.setting-edit-heading {
   font-weight: 600;
   color: var(--sb-text-1);
   margin-bottom: 2px;

@@ -2810,6 +2810,14 @@ INSERT OR IGNORE INTO alert_settings (id, updated_at) VALUES (1, unixepoch());
 	if _, err := s.db.ExecContext(ctx, `UPDATE node_speedtests SET gfw_blocked = 0, gfw_status = 'normal', inbound_telecom_route = '', inbound_unicom_route = '', inbound_mobile_route = '' WHERE gfw_blocked = 1 AND domestic_latency_ms = 0 AND (domestic_source LIKE '%400%' OR domestic_source LIKE '%国内探针全超时%' OR domestic_source = '' OR domestic_source IS NULL)`); err != nil {
 		return fmt.Errorf("cleanup legacy false-positive gfw blocked states: %w", err)
 	}
+	_, _ = s.db.ExecContext(ctx, `UPDATE node_speedtests SET 
+		inbound_telecom_trace_path = REPLACE(inbound_telecom_trace_path, 'AS174 (Cogent·美西洛杉矶) ➔ ', ''),
+		inbound_unicom_trace_path = REPLACE(inbound_unicom_trace_path, 'AS174 (Cogent·美西洛杉矶) ➔ ', ''),
+		inbound_mobile_trace_path = REPLACE(inbound_mobile_trace_path, 'AS174 (Cogent·美西洛杉矶) ➔ ', ''),
+		telecom_trace_path = REPLACE(telecom_trace_path, 'AS174 (Cogent·美西洛杉矶) ➔ ', ''),
+		unicom_trace_path = REPLACE(unicom_trace_path, 'AS174 (Cogent·美西洛杉矶) ➔ ', ''),
+		mobile_trace_path = REPLACE(mobile_trace_path, 'AS174 (Cogent·美西洛杉矶) ➔ ', '')
+		WHERE inbound_telecom_trace_path LIKE '%AS174%' OR telecom_trace_path LIKE '%AS174%'`)
 	return nil
 }
 

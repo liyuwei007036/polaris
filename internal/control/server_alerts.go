@@ -241,9 +241,9 @@ func (s *Server) handleRunNodeMTR(w http.ResponseWriter, r *http.Request) {
 	}
 	_ = json.NewDecoder(r.Body).Decode(&req)
 	if req.Target == "" {
-		req.Target = "218.2.135.1"
+		req.Target = "202.96.209.133"
 		if req.Label == "" {
-			req.Label = "南京电信"
+			req.Label = "上海电信"
 		}
 	}
 	if req.Count <= 0 || req.Count > 30 {
@@ -270,6 +270,41 @@ func (s *Server) handleRunNodeMTR(w http.ResponseWriter, r *http.Request) {
 	response["report"] = report
 	response["result"] = report
 	writeJSON(w, http.StatusOK, response)
+}
+
+type MTRTargetOption struct {
+	Label string `json:"label"`
+	Value string `json:"value"`
+	IP    string `json:"ip"`
+}
+
+func (s *Server) GetMTRTargets() []MTRTargetOption {
+	return []MTRTargetOption{
+		{Label: "上海电信 (AS4134 华东核心)", Value: "sh_telecom", IP: "202.96.209.133"},
+		{Label: "广州电信 (AS4134 华南核心)", Value: "gz_telecom", IP: "58.60.188.222"},
+		{Label: "北京电信 (AS4134 华北核心)", Value: "bj_telecom", IP: "219.141.140.10"},
+		{Label: "成都电信 (AS4134 西南核心)", Value: "cd_telecom", IP: "61.139.2.69"},
+		{Label: "全国电信公共网关 (114.114.114.114)", Value: "dns_telecom", IP: "114.114.114.114"},
+		{Label: "上海联通 (AS4837 华东核心)", Value: "sh_unicom", IP: "210.22.97.1"},
+		{Label: "广州联通 (AS4837 华南核心)", Value: "gz_unicom", IP: "210.21.196.6"},
+		{Label: "北京联通 (AS4837 华北核心)", Value: "bj_unicom", IP: "202.106.195.68"},
+		{Label: "成都联通 (AS4837 西南核心)", Value: "cd_unicom", IP: "119.6.6.6"},
+		{Label: "全国联通公共网关 (116.116.116.116)", Value: "dns_unicom", IP: "116.116.116.116"},
+		{Label: "广州移动 (AS9808 华南核心)", Value: "gz_mobile", IP: "120.196.165.24"},
+		{Label: "上海移动 (AS9808 华东核心)", Value: "sh_mobile", IP: "211.136.112.200"},
+		{Label: "北京移动 (AS9808 华北核心)", Value: "bj_mobile", IP: "221.179.155.161"},
+		{Label: "成都移动 (AS9808 西南核心)", Value: "cd_mobile", IP: "211.137.96.205"},
+		{Label: "全国移动核心网关 (120.196.165.1)", Value: "gw_mobile", IP: "120.196.165.1"},
+		{Label: "自定义 IP / 域名", Value: "custom", IP: ""},
+	}
+}
+
+func (s *Server) handleGetMTRTargets(w http.ResponseWriter, r *http.Request) {
+	if _, err := s.operator(r, false); err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"targets": s.GetMTRTargets()})
 }
 
 func (s *Server) handleGetNodeSpeedtestLatest(w http.ResponseWriter, r *http.Request) {

@@ -93,19 +93,34 @@ func IPv4ToASN(ip string) string {
 	if strings.Contains(lower, "as174") || strings.Contains(lower, "cogent") {
 		return "AS174"
 	}
+	if strings.Contains(lower, "as45090") || strings.Contains(lower, "tencent") {
+		return "AS45090"
+	}
+	if strings.Contains(lower, "as37963") || strings.Contains(lower, "alibaba") || strings.Contains(lower, "aliyun") {
+		return "AS37963"
+	}
+	if strings.Contains(lower, "as13335") || strings.Contains(lower, "cloudflare") {
+		return "AS13335"
+	}
+	if strings.Contains(lower, "as16509") || strings.Contains(lower, "amazon") || strings.Contains(lower, "aws") {
+		return "AS16509"
+	}
+	if strings.Contains(lower, "as24940") || strings.Contains(lower, "hetzner") {
+		return "AS24940"
+	}
 
-	// Authoritative IP prefix lookup
+	// Authoritative IP prefix lookup (Core Carrier BGP Backbones only)
 	switch {
-	// Cogent (AS174)
-	case strings.HasPrefix(raw, "38.") || strings.HasPrefix(raw, "154."):
+	// Cogent (AS174 - ARIN 38.0.0.0/8)
+	case strings.HasPrefix(raw, "38."):
 		return "AS174"
 
 	// 电信 CN2 (AS4809)
 	case strings.HasPrefix(raw, "59.43."):
 		return "AS4809"
 
-	// 电信 163 (AS4134)
-	case strings.HasPrefix(raw, "202.97.") || strings.HasPrefix(raw, "218.2.135.") || strings.HasPrefix(raw, "58.213.") || strings.HasPrefix(raw, "221.226."):
+	// 电信 163 骨干 (AS4134)
+	case strings.HasPrefix(raw, "202.97."):
 		return "AS4134"
 
 	// 电信 CTGNet (AS23764)
@@ -127,9 +142,8 @@ func IPv4ToASN(ip string) string {
 		strings.HasPrefix(raw, "210.209."):
 		return "AS10099"
 
-	// 联通 169 普通网 (AS4837)
-	case strings.HasPrefix(raw, "219.158.") || strings.HasPrefix(raw, "221.192.") || strings.HasPrefix(raw, "221.194.") ||
-		strings.HasPrefix(raw, "58.240.23.") || strings.HasPrefix(raw, "221.6.4.") || strings.HasPrefix(raw, "112.80.248."):
+	// 联通 169 普通骨干 (AS4837)
+	case strings.HasPrefix(raw, "219.158.") || strings.HasPrefix(raw, "221.192.") || strings.HasPrefix(raw, "221.194."):
 		return "AS4837"
 
 	// 移动 CMIN2 精品网 (AS58807)
@@ -142,8 +156,7 @@ func IPv4ToASN(ip string) string {
 		return "AS58453"
 
 	// 移动 CMNET 骨干网 (AS9808)
-	case strings.HasPrefix(raw, "221.183.") || strings.HasPrefix(raw, "111.24.") ||
-		strings.HasPrefix(raw, "112.4.0.") || strings.HasPrefix(raw, "36.152.44."):
+	case strings.HasPrefix(raw, "221.183.") || strings.HasPrefix(raw, "111.24."):
 		return "AS9808"
 
 	default:
@@ -335,11 +348,26 @@ func AnalyzeMobileRoute(hops []string, latencyMs int) string {
 	return "移动超时"
 }
 
+// CityResolver is a dynamic hook (set by the control plane using ip2region or remote IP database)
+// to resolve IP addresses to their true geographic city/region without relying on hardcoded IP prefixes.
+var CityResolver func(ip string) string
+
 // IPv4ToCity extracts the geographic city or international region for intermediate carrier hops.
 func IPv4ToCity(ip string) string {
 	raw := strings.TrimSpace(ip)
-	lower := strings.ToLower(raw)
+	if raw == "" {
+		return ""
+	}
 
+	// 1. Dynamic IP resolution via authoritative database (e.g. ip2region)
+	if CityResolver != nil {
+		if c := CityResolver(raw); c != "" {
+			return c
+		}
+	}
+
+	// 2. Carrier router rDNS IATA city codes (e.g. lax-xx, can-xx, sha-xx)
+	lower := strings.ToLower(raw)
 	switch {
 	case strings.Contains(lower, "lax") || strings.Contains(lower, "losangeles"):
 		return "洛杉矶"
@@ -363,130 +391,14 @@ func IPv4ToCity(ip string) string {
 		return "北京"
 	case strings.Contains(lower, "nkg") || strings.Contains(lower, "nanjing"):
 		return "南京"
-	}
-
-	switch {
-	// Nanjing Nodes
-	case strings.HasPrefix(raw, "218.2.135.") || strings.HasPrefix(raw, "58.213.") || strings.HasPrefix(raw, "221.226."):
-		return "南京"
-	case strings.HasPrefix(raw, "58.240.23.") || strings.HasPrefix(raw, "221.6.4.") || strings.HasPrefix(raw, "112.80.248."):
-		return "南京"
-	case strings.HasPrefix(raw, "112.4.0.") || strings.HasPrefix(raw, "36.152.44."):
-		return "南京"
-	// Cogent US West
-	case strings.HasPrefix(raw, "38.244.") || strings.HasPrefix(raw, "154."):
-		return "美西洛杉矶"
-
-	// Telecom CN2 (AS4809)
-	case strings.HasPrefix(raw, "59.43.247.") || strings.HasPrefix(raw, "59.43.182."):
-		return "美西洛杉矶"
-	case strings.HasPrefix(raw, "59.43.248."):
-		return "日本东京"
-	case strings.HasPrefix(raw, "59.43.250."):
-		return "新加坡"
-	case strings.HasPrefix(raw, "59.43.249."):
-		return "德国法兰克福"
-	case strings.HasPrefix(raw, "59.43.251."):
-		return "英国伦敦"
-	case strings.HasPrefix(raw, "59.43.244."):
-		return "中国香港"
-	case strings.HasPrefix(raw, "59.43.187.") || strings.HasPrefix(raw, "59.43.130.") || strings.HasPrefix(raw, "59.43.39."):
-		return "上海"
-	case strings.HasPrefix(raw, "59.43.18.") || strings.HasPrefix(raw, "59.43.246."):
-		return "广州"
-	case strings.HasPrefix(raw, "59.43.138.") || strings.HasPrefix(raw, "59.43.245."):
-		return "北京"
-
-	// Telecom 163 (AS4134)
-	case strings.HasPrefix(raw, "202.97.50.") || strings.HasPrefix(raw, "202.97.51.") || strings.HasPrefix(raw, "202.97.90."):
-		return "美西洛杉矶"
-	case strings.HasPrefix(raw, "202.97.58."):
-		return "美西圣何塞"
-	case strings.HasPrefix(raw, "202.97.60."):
-		return "中国香港"
-	case strings.HasPrefix(raw, "202.97.61."):
-		return "日本东京"
-	case strings.HasPrefix(raw, "202.97.88."):
-		return "新加坡"
-	case strings.HasPrefix(raw, "202.97.81.") || strings.HasPrefix(raw, "202.97.87.") || strings.HasPrefix(raw, "202.97.62.") || strings.HasPrefix(raw, "202.97.33."):
-		return "上海"
-	case strings.HasPrefix(raw, "202.97.94.") || strings.HasPrefix(raw, "202.97.91.") || strings.HasPrefix(raw, "202.97.67."):
-		return "广州"
-	case strings.HasPrefix(raw, "202.97.63.") || strings.HasPrefix(raw, "202.97.53.") || strings.HasPrefix(raw, "202.97.24."):
-		return "北京"
-	case strings.HasPrefix(raw, "202.97.45.") || strings.HasPrefix(raw, "202.97.46."):
+	case strings.Contains(lower, "ctu") || strings.Contains(lower, "chengdu"):
 		return "成都"
-
-	// Unicom 9929 / CUII
-	case strings.HasPrefix(raw, "218.105.2.174") || strings.HasPrefix(raw, "218.105.2.170"):
-		return "美西洛杉矶"
-	case strings.HasPrefix(raw, "218.105.2.198"):
-		return "中国香港"
-	case strings.HasPrefix(raw, "218.105.2.150") || strings.HasPrefix(raw, "218.105.2.152"):
-		return "上海"
-	case strings.HasPrefix(raw, "218.105.2.154"):
-		return "广州"
-	case strings.HasPrefix(raw, "218.105.2.146"):
-		return "北京"
-
-	// Unicom CUG (AS10099)
-	case strings.HasPrefix(raw, "203.160.75.") || strings.HasPrefix(raw, "203.160.") || strings.HasPrefix(raw, "202.77."):
-		return "中国香港"
-	case strings.HasPrefix(raw, "38.69."):
-		return "美西洛杉矶"
-
-	// Unicom 169 (AS4837)
-	case strings.HasPrefix(raw, "219.158.102."):
-		return "美西洛杉矶"
-	case strings.HasPrefix(raw, "219.158.103."):
-		return "美西圣何塞"
-	case strings.HasPrefix(raw, "219.158.104."):
-		return "德国法兰克福"
-	case strings.HasPrefix(raw, "219.158.105."):
-		return "日本东京"
-	case strings.HasPrefix(raw, "219.158.10."):
-		return "中国香港"
-	case strings.HasPrefix(raw, "219.158.9."):
-		return "上海"
-	case strings.HasPrefix(raw, "219.158.11.") || strings.HasPrefix(raw, "219.158.24."):
-		return "广州"
-	case strings.HasPrefix(raw, "219.158.3.") || strings.HasPrefix(raw, "219.158.21."):
-		return "北京"
-
-	// Mobile CMIN2 (AS58807)
-	case strings.HasPrefix(raw, "223.120.161.5"):
-		return "美西洛杉矶"
-	case strings.HasPrefix(raw, "223.120.16."):
-		return "中国香港"
-	case strings.HasPrefix(raw, "223.120.17."):
-		return "上海"
-
-	// Mobile CMI (AS58453)
-	case strings.HasPrefix(raw, "223.120.161."):
-		return "美西洛杉矶"
-	case strings.HasPrefix(raw, "223.120.162."):
-		return "美西圣何塞"
-	case strings.HasPrefix(raw, "223.120.2."):
-		return "中国香港"
-	case strings.HasPrefix(raw, "223.120.6."):
-		return "新加坡"
-	case strings.HasPrefix(raw, "223.120.12."):
-		return "日本东京"
-	case strings.HasPrefix(raw, "223.120.14."):
-		return "德国法兰克福"
-	case strings.HasPrefix(raw, "223.120.15."):
-		return "英国伦敦"
-
-	// Mobile CMNet (AS9808)
-	case strings.HasPrefix(raw, "221.183.18."):
-		return "中国香港"
-	case strings.HasPrefix(raw, "221.183.92.") || strings.HasPrefix(raw, "221.183.89."):
-		return "上海"
-	case strings.HasPrefix(raw, "221.183.116.") || strings.HasPrefix(raw, "221.183.125."):
-		return "广州"
-	case strings.HasPrefix(raw, "221.183.25.") || strings.HasPrefix(raw, "221.183.26."):
-		return "北京"
+	case strings.Contains(lower, "wuh") || strings.Contains(lower, "wuhan"):
+		return "武汉"
+	case strings.Contains(lower, "szx") || strings.Contains(lower, "shenzhen"):
+		return "深圳"
 	}
+
 	return ""
 }
 
@@ -514,6 +426,24 @@ func ASNToNameWithLocation(asn, city string) string {
 		base = "AS9808 (移动骨干"
 	case "AS174":
 		base = "AS174 (Cogent"
+	case "AS45090":
+		base = "AS45090 (腾讯云"
+	case "AS37963":
+		base = "AS37963 (阿里云"
+	case "AS13335":
+		base = "AS13335 (Cloudflare"
+	case "AS16509":
+		base = "AS16509 (AWS"
+	case "AS24940":
+		base = "AS24940 (Hetzner"
+	case "AS8075":
+		base = "AS8075 (Azure"
+	case "AS2914":
+		base = "AS2914 (NTT"
+	case "AS1299":
+		base = "AS1299 (Arelion"
+	case "AS6939":
+		base = "AS6939 (HE"
 	default:
 		return ""
 	}

@@ -54,7 +54,6 @@ type nodeFirewall struct {
 	PortRules         []PortRule `json:"port_rules"`
 	Truncated         bool       `json:"truncated,omitempty"`
 	Error             string     `json:"error,omitempty"`
-	ScannerProtection bool       `json:"scanner_protection"`
 }
 
 // LiveFail2BanJail is one automatic-banning rule a node reports as configured,
@@ -97,7 +96,6 @@ type agentFirewall struct {
 	PortRules         *[]PortRule `json:"port_rules"`
 	Truncated         bool        `json:"truncated"`
 	Error             string      `json:"error"`
-	ScannerProtection bool        `json:"scanner_protection"`
 }
 
 type agentFail2Ban struct {
@@ -215,40 +213,6 @@ func (s *Server) changeFirewallRule(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, s.decodeNodeFirewall(nodeID, liveAnswer{data: data}))
 }
 
-// toggleScannerProtection enables or disables blocking of known scanner CIDRs (Shodan, Censys) on a node.
-func (s *Server) toggleScannerProtection(w http.ResponseWriter, r *http.Request) {
-	operator, err := s.admin(r)
-	if err != nil {
-		writeError(w, err)
-		return
-	}
-	var input struct {
-		Enabled bool `json:"enabled"`
-	}
-	if !decodeJSON(w, r, &input) {
-		return
-	}
-	payload, err := json.Marshal(input)
-	if err != nil {
-		writeError(w, err)
-		return
-	}
-	nodeID := r.PathValue("id")
-	data, err := s.AskNode(r.Context(), nodeID, "firewall.toggle_scanners", string(payload))
-	if err != nil {
-		writeError(w, err)
-		return
-	}
-	action := "firewall.scanners_disabled"
-	if input.Enabled {
-		action = "firewall.scanners_enabled"
-	}
-	if err := s.store.AppendAudit(r.Context(), operator.ID, action, "node", nodeID, "scanner protection toggled"); err != nil {
-		writeError(w, err)
-		return
-	}
-	writeJSON(w, http.StatusOK, s.decodeNodeFirewall(nodeID, liveAnswer{data: data}))
-}
 
 func (s *Server) listFail2Ban(w http.ResponseWriter, r *http.Request) {
 	if _, err := s.operator(r, false); err != nil {
@@ -433,7 +397,6 @@ func (s *Server) decodeNodeFirewall(nodeID string, answer liveAnswer) nodeFirewa
 	}
 	node.Available, node.Tool, node.Truncated, node.Error = reported.Available, reported.Tool, reported.Truncated, reported.Error
 	node.Manager, node.DefaultIncoming = reported.Manager, reported.DefaultIncoming
-	node.ScannerProtection = reported.ScannerProtection
 	if reported.PortRules == nil {
 		node.Available = false
 		node.Error = "服务器上的探针版本太旧，读不出端口规则，请先升级探针"

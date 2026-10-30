@@ -4,6 +4,27 @@ import (
 	"testing"
 )
 
+func init() {
+	CityResolver = func(ip string) string {
+		switch {
+		case ip == "38.244.30.254":
+			return "美西洛杉矶"
+		case ip == "223.120.2.1":
+			return "中国香港"
+		case ip == "221.183.25.1":
+			return "北京"
+		case ip == "223.120.6.1":
+			return "新加坡"
+		case ip == "221.183.92.1":
+			return "上海"
+		case ip == "202.97.12.1" || ip == "59.43.18.2":
+			return "广州"
+		default:
+			return ""
+		}
+	}
+}
+
 func TestIPv4ToASN(t *testing.T) {
 	tests := []struct {
 		ip       string

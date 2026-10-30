@@ -64,6 +64,49 @@ func (l *ipLocator) Locate(value string) string {
 	return formatIPRegion(region)
 }
 
+// LocateCity returns the normalized city or region name (e.g. "广州", "上海", "洛杉矶") from the ip2region database.
+func (l *ipLocator) LocateCity(value string) string {
+	ip := net.ParseIP(strings.TrimSpace(value))
+	if ip == nil || ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() {
+		return ""
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	searcher := l.v6
+	if ip.To4() != nil {
+		searcher = l.v4
+	}
+	region, err := searcher.Search(value)
+	if err != nil || region == "" {
+		return ""
+	}
+	parts := strings.Split(region, "|")
+	// Format: 国家|省份|城市|ISP|国家码
+	if len(parts) >= 3 {
+		city := strings.TrimSpace(parts[2])
+		if city != "" && city != "0" {
+			city = strings.TrimSuffix(city, "市")
+			return city
+		}
+		prov := strings.TrimSpace(parts[1])
+		if prov != "" && prov != "0" {
+			prov = strings.TrimSuffix(prov, "省")
+			prov = strings.TrimSuffix(prov, "市")
+			prov = strings.TrimSuffix(prov, "特别行政区")
+			prov = strings.TrimSuffix(prov, "壮族自治区")
+			prov = strings.TrimSuffix(prov, "回族自治区")
+			prov = strings.TrimSuffix(prov, "维吾尔自治区")
+			prov = strings.TrimSuffix(prov, "自治区")
+			return prov
+		}
+		country := strings.TrimSpace(parts[0])
+		if country != "" && country != "0" && country != "中国" {
+			return country
+		}
+	}
+	return ""
+}
+
 func (l *ipLocator) LocateCIDR(value string) string {
 	value = strings.TrimSpace(value)
 	if value == "" {

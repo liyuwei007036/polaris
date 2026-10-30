@@ -46,3 +46,19 @@ func TestIPLocatorLocatesFirewallCIDRs(t *testing.T) {
 		}
 	}
 }
+
+func TestIPLocatorLocateCity(t *testing.T) {
+	locator, err := newIPLocator()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if city := locator.LocateCity("202.96.209.133"); city != "上海" {
+		t.Fatalf("expected 上海, got %q", city)
+	}
+	if city := locator.LocateCity("58.60.188.222"); city != "深圳" {
+		t.Fatalf("expected 深圳, got %q", city)
+	}
+	if city := locator.LocateCity("8.8.8.8"); city != "California" {
+		t.Fatalf("expected California, got %q", city)
+	}
+}

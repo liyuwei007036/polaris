@@ -413,9 +413,12 @@ func probeFromChinaReal(ctx context.Context, host string, port uint16) ChinaProb
 	var totalRTT float64
 	var validRTTCount int
 
-	var telecomCities, unicomCities, mobileCities []string
+	var telecomCities, unicomCities, mobileCities, bgpCities []string
 	var telecomProbeCity, unicomProbeCity, mobileProbeCity string
 	var telecomProbeASN, unicomProbeASN, mobileProbeASN int
+	var bestBgpCity string
+	var bestBgpASN, bestBgpRTT int
+
 	for _, item := range lastRes.Results {
 		if item.Result.Status == "in-progress" {
 			continue
@@ -475,6 +478,17 @@ func probeFromChinaReal(ctx context.Context, host string, port uint16) ChinaProb
 				mobileProbeCity = cityName
 				mobileProbeASN = asn
 			}
+		} else {
+			// 国内腾讯云、阿里云等高质量多线探针
+			netName := formatProbeNetwork(item.Probe.Network)
+			if probeRTT > 0 {
+				bgpCities = append(bgpCities, fmt.Sprintf("%s%s: %dms", cityName, netName, probeRTT))
+				if bestBgpRTT == 0 || probeRTT < bestBgpRTT {
+					bestBgpRTT = probeRTT
+					bestBgpCity = cityName
+					bestBgpASN = asn
+				}
+			}
 		}
 	}
 
@@ -487,6 +501,20 @@ func probeFromChinaReal(ctx context.Context, host string, port uint16) ChinaProb
 	avgRTT := 0
 	if validRTTCount > 0 {
 		avgRTT = int(totalRTT / float64(validRTTCount))
+	}
+
+	// 若某运营商缺乏单线探针，采用国内最佳多线探针进行基准兜底，避免去程延迟报 0
+	if res.InboundTelecomLatencyMs == 0 && bestBgpRTT > 0 {
+		res.InboundTelecomLatencyMs = bestBgpRTT
+		res.InboundTelecomRoute = wire.AnalyzeTelecomRoute([]string{host}, bestBgpRTT)
+	}
+	if res.InboundUnicomLatencyMs == 0 && bestBgpRTT > 0 {
+		res.InboundUnicomLatencyMs = bestBgpRTT
+		res.InboundUnicomRoute = wire.AnalyzeUnicomRoute([]string{host}, bestBgpRTT)
+	}
+	if res.InboundMobileLatencyMs == 0 && bestBgpRTT > 0 {
+		res.InboundMobileLatencyMs = bestBgpRTT
+		res.InboundMobileRoute = wire.AnalyzeMobileRoute([]string{host}, bestBgpRTT)
 	}
 
 	destASN := wire.IPv4ToASN(host)
@@ -514,19 +542,26 @@ func probeFromChinaReal(ctx context.Context, host string, port uint16) ChinaProb
 		res.OK = true
 		res.LatencyMs = avgRTT
 		res.PacketLoss = int(float64(failCount) / float64(totalEvaluated) * 100)
-		hasNanjing := false
+
+		var cityList []string
+		citySet := make(map[string]bool)
 		for _, item := range lastRes.Results {
-			c := strings.ToLower(item.Probe.City)
-			if strings.Contains(c, "nanjing") || strings.Contains(c, "南京") {
-				hasNanjing = true
-				break
+			c := formatProbeCity(item.Probe.City)
+			if c != "" && !citySet[c] {
+				citySet[c] = true
+				cityList = append(cityList, c)
 			}
 		}
-		if hasNanjing {
-			res.Source = fmt.Sprintf("南京探针 (%d/%d 畅通 · %dms)", successCount, totalEvaluated, avgRTT)
+		summaryCity := strings.Join(cityList, "/")
+		if len(cityList) > 3 {
+			summaryCity = strings.Join(cityList[:3], "/") + "等"
+		}
+		if summaryCity != "" {
+			res.Source = fmt.Sprintf("国内探针 (%s %d/%d 畅通 · %dms)", summaryCity, successCount, totalEvaluated, avgRTT)
 		} else {
 			res.Source = fmt.Sprintf("国内探针 (%d/%d 畅通 · %dms)", successCount, totalEvaluated, avgRTT)
 		}
+
 		if res.InboundTelecomRoute == "" {
 			res.InboundTelecomRoute = "电信直连"
 		}
@@ -536,19 +571,46 @@ func probeFromChinaReal(ctx context.Context, host string, port uint16) ChinaProb
 		if res.InboundMobileRoute == "" {
 			res.InboundMobileRoute = "移动直连"
 		}
+
+		if len(telecomCities) == 0 && len(bgpCities) > 0 {
+			telecomCities = append(telecomCities, bgpCities...)
+		}
+		if len(unicomCities) == 0 && len(bgpCities) > 0 {
+			unicomCities = append(unicomCities, bgpCities...)
+		}
+		if len(mobileCities) == 0 && len(bgpCities) > 0 {
+			mobileCities = append(mobileCities, bgpCities...)
+		}
+
 		res.InboundTelecomNodeLatencies = strings.Join(telecomCities, " | ")
 		res.InboundUnicomNodeLatencies = strings.Join(unicomCities, " | ")
 		res.InboundMobileNodeLatencies = strings.Join(mobileCities, " | ")
 
 		if telecomProbeCity == "" {
-			telecomProbeCity = "国内节点"
+			if bestBgpCity != "" {
+				telecomProbeCity = bestBgpCity
+				telecomProbeASN = bestBgpASN
+			} else {
+				telecomProbeCity = "国内节点"
+			}
 		}
 		if unicomProbeCity == "" {
-			unicomProbeCity = "国内节点"
+			if bestBgpCity != "" {
+				unicomProbeCity = bestBgpCity
+				unicomProbeASN = bestBgpASN
+			} else {
+				unicomProbeCity = "国内节点"
+			}
 		}
 		if mobileProbeCity == "" {
-			mobileProbeCity = "国内节点"
+			if bestBgpCity != "" {
+				mobileProbeCity = bestBgpCity
+				mobileProbeASN = bestBgpASN
+			} else {
+				mobileProbeCity = "国内节点"
+			}
 		}
+
 		res.InboundTelecomTracePath = wire.BuildRealInboundTracePath(telecomProbeCity, telecomProbeASN, "电信", destName, nil)
 		res.InboundUnicomTracePath = wire.BuildRealInboundTracePath(unicomProbeCity, unicomProbeASN, "联通", destName, nil)
 		res.InboundMobileTracePath = wire.BuildRealInboundTracePath(mobileProbeCity, mobileProbeASN, "移动", destName, nil)
@@ -910,7 +972,8 @@ func (s *Server) ExecuteNodeSpeedtest(ctx context.Context, nodeID string) (*Node
 
 	// 并发执行 A：海外 Agent 测三大运营商出站回程与 BGP 路由
 	go func() {
-		data, err := s.AskNode(ctx, nodeID, "speedtest.run", "{}")
+		payloadBytes, _ := json.Marshal(s.GetSpeedtestEndpoints())
+		data, err := s.AskNode(ctx, nodeID, "speedtest.run", string(payloadBytes))
 		agentCh <- agentResult{data: data, err: err}
 	}()
 
@@ -952,14 +1015,20 @@ func (s *Server) ExecuteNodeSpeedtest(ctx context.Context, nodeID string) (*Node
 
 	resB := <-probeCh
 
-	enrichOutboundTrace := func(trace, defaultTarget string) string {
+	enrichOutboundTrace := func(trace, defaultTarget string, latency int) string {
 		if trace == "" {
+			if latency <= 0 {
+				return ""
+			}
 			return fmt.Sprintf("%s ➔ %s (骨干跃点未回显)", nodeLoc, defaultTarget)
 		}
 		t := strings.Replace(trace, "节点 ➔", nodeLoc+" ➔", 1)
 		t = strings.Replace(t, "本地节点 ➔", nodeLoc+" ➔", 1)
 		t = strings.Replace(t, "服务器节点 ➔", nodeLoc+" ➔", 1)
 		t = strings.Replace(t, "➔ 目标", "➔ "+defaultTarget, 1)
+		if !strings.HasPrefix(t, nodeLoc) && !strings.Contains(t, nodeLoc) {
+			t = fmt.Sprintf("%s ➔ %s", nodeLoc, t)
+		}
 		return t
 	}
 
@@ -969,17 +1038,17 @@ func (s *Server) ExecuteNodeSpeedtest(ctx context.Context, nodeID string) (*Node
 		TelecomSpeedMbps:            res.TelecomSpeedMbps,
 		TelecomRoute:                res.TelecomRoute,
 		TelecomNodeLatencies:        res.TelecomNodeLatencies,
-		TelecomTracePath:            enrichOutboundTrace(res.TelecomTracePath, "南京电信"),
+		TelecomTracePath:            enrichOutboundTrace(res.TelecomTracePath, "上海电信", res.TelecomLatencyMs),
 		UnicomLatencyMs:             res.UnicomLatencyMs,
 		UnicomSpeedMbps:             res.UnicomSpeedMbps,
 		UnicomRoute:                 res.UnicomRoute,
 		UnicomNodeLatencies:         res.UnicomNodeLatencies,
-		UnicomTracePath:             enrichOutboundTrace(res.UnicomTracePath, "南京联通"),
+		UnicomTracePath:             enrichOutboundTrace(res.UnicomTracePath, "上海联通", res.UnicomLatencyMs),
 		MobileLatencyMs:             res.MobileLatencyMs,
 		MobileSpeedMbps:             res.MobileSpeedMbps,
 		MobileRoute:                 res.MobileRoute,
 		MobileNodeLatencies:         res.MobileNodeLatencies,
-		MobileTracePath:             enrichOutboundTrace(res.MobileTracePath, "南京移动"),
+		MobileTracePath:             enrichOutboundTrace(res.MobileTracePath, "广州移动", res.MobileLatencyMs),
 		InboundTelecomRoute:         resB.item.InboundTelecomRoute,
 		InboundTelecomLatencyMs:     resB.item.InboundTelecomLatencyMs,
 		InboundTelecomNodeLatencies: resB.item.InboundTelecomNodeLatencies,
@@ -1039,4 +1108,48 @@ func (s *Server) ExecuteNodeSpeedtest(ctx context.Context, nodeID string) (*Node
 		return latest, nil
 	}
 	return &st, nil
+}
+
+type SpeedtestEndpoint struct {
+	City string `json:"city"`
+	Host string `json:"host"`
+}
+
+type SpeedtestEndpointsPayload struct {
+	TelecomEndpoints []SpeedtestEndpoint `json:"telecom_endpoints"`
+	UnicomEndpoints  []SpeedtestEndpoint `json:"unicom_endpoints"`
+	MobileEndpoints  []SpeedtestEndpoint `json:"mobile_endpoints"`
+}
+
+func DefaultSpeedtestEndpoints() SpeedtestEndpointsPayload {
+	return SpeedtestEndpointsPayload{
+		TelecomEndpoints: []SpeedtestEndpoint{
+			{City: "上海电信", Host: "202.96.209.133"},
+			{City: "广州电信", Host: "58.60.188.222"},
+			{City: "北京电信", Host: "219.141.140.10"},
+			{City: "成都电信", Host: "61.139.2.69"},
+			{City: "全国电信DNS", Host: "114.114.114.114"},
+			{City: "武汉电信", Host: "202.103.24.68"},
+		},
+		UnicomEndpoints: []SpeedtestEndpoint{
+			{City: "上海联通", Host: "210.22.97.1"},
+			{City: "广州联通", Host: "210.21.196.6"},
+			{City: "北京联通", Host: "202.106.195.68"},
+			{City: "成都联通", Host: "119.6.6.6"},
+			{City: "全国联通DNS", Host: "116.116.116.116"},
+			{City: "武汉联通", Host: "58.19.190.1"},
+		},
+		MobileEndpoints: []SpeedtestEndpoint{
+			{City: "广州移动", Host: "120.196.165.24"},
+			{City: "上海移动", Host: "211.136.112.200"},
+			{City: "北京移动", Host: "221.179.155.161"},
+			{City: "成都移动", Host: "211.137.96.205"},
+			{City: "全国移动网关", Host: "120.196.165.1"},
+			{City: "武汉移动", Host: "111.175.220.1"},
+		},
+	}
+}
+
+func (s *Server) GetSpeedtestEndpoints() SpeedtestEndpointsPayload {
+	return DefaultSpeedtestEndpoints()
 }

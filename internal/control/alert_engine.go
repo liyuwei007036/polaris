@@ -420,7 +420,7 @@ func (e *AlertEngine) CheckConnectionsTelemetry(nodeID, nodeName string, downloa
 				cooldown = 15
 			}
 			if e.canAlert(alertKey, cooldown) {
-				body := fmt.Sprintf("• 服务器: %s\n• 来源 IP: %s\n• 扫描特征: %s\n• 探测详情: %s\n• 安全建议: 疑似端口扫描或漏洞测绘行为，请排查该来源 IP 或前往安全防护添加阻断规则\n🕒 发现时间: %s",
+				body := fmt.Sprintf("• 服务器: %s\n• 来源 IP: %s\n• 扫描特征: %s\n• 探测详情: %s\n• 安全建议: 疑似端口扫描或异常嗅探行为，请排查该来源 IP 或前往安全防护添加阻断规则\n🕒 发现时间: %s",
 					nodeName, e.formatIP(clientIP), triggerReason, triggerDetails, timeStr)
 				e.sendAlert(context.Background(), "🚨 [Polaris] 检测到异常网络扫描", body, "Polaris-安全警报", "active", "alarm.caf", "")
 			}

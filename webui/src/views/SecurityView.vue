@@ -23,7 +23,6 @@ const fail2banNodes = ref([])
 const banned = ref([])
 const selectedNode = ref('')
 const keyword = ref('')
-const togglingScanner = reactive({})
 
 const nodeNames = computed(() => Object.fromEntries(appState.nodes.map((node) => [node.id, node.name])))
 const nodeName = (nodeID) => nodeNames.value[nodeID] || nodeID
@@ -185,19 +184,6 @@ async function saveFirewall() {
   if (applied) firewallOpen.value = false
 }
 
-async function toggleScanners(node) {
-  const current = Boolean(node.scanner_protection)
-  togglingScanner[node.node_id] = true
-  try {
-    const updated = await post(`/nodes/${node.node_id}/firewall/scanners`, { enabled: !current })
-    firewallNodes.value = firewallNodes.value.map((n) => (n.node_id === node.node_id ? updated : n))
-    ElMessage.success(`“${nodeName(node.node_id)}”扫描器阻断已${!current ? '开启' : '关闭'}`)
-  } catch (error) {
-    ElMessage.error(error instanceof Error ? error.message : '切换失败')
-  } finally {
-    togglingScanner[node.node_id] = false
-  }
-}
 
 // Removing a rule states the port to withdraw, which is how ufw and firewalld
 // name it, and where the rule sits, which is what a server without either of
@@ -319,29 +305,6 @@ onMounted(load)
       <div class="table-panel">
         <el-tabs v-model="tab" class="panel-tabs">
           <el-tab-pane :label="`访问限制（${portRules.length}）`" name="ports">
-            <div v-if="firewallNodes.length" class="scanner-protection-bar">
-              <div class="scanner-title">
-                <el-icon class="scanner-icon"><Lock /></el-icon>
-                <div>
-                  <strong>主动网络测绘防御</strong>
-                  <div class="subtle">自动阻断 Shodan、Censys 等公网扫描引擎的扫描探测网段，隐藏服务特征</div>
-                </div>
-              </div>
-              <div class="scanner-nodes">
-                <div v-for="node in firewallNodes" :key="node.node_id" class="scanner-node-item">
-                  <span class="scanner-node-name">{{ nodeName(node.node_id) }}:</span>
-                  <el-switch
-                    :model-value="Boolean(node.scanner_protection)"
-                    :loading="Boolean(togglingScanner[node.node_id])"
-                    :disabled="!isAdmin || !node.available"
-                    active-text="已拦截扫描"
-                    inactive-text="未开启"
-                    inline-prompt
-                    @change="toggleScanners(node)"
-                  />
-                </div>
-              </div>
-            </div>
             <div class="tab-actions"><el-button v-if="isAdmin" type="primary" :icon="Plus" :disabled="!appState.nodes.length" @click="addFirewall">添加</el-button></div>
             <PagedTable :rows="portRules" :loading="loading" empty-text="服务器防火墙没有针对任何端口的规则">
               <el-table-column label="服务器" min-width="130" show-overflow-tooltip><template #default="{ row }">{{ nodeName(row.node_id) }}</template></el-table-column>
@@ -488,42 +451,3 @@ onMounted(load)
   </div>
 </template>
 
-<style scoped>
-.scanner-protection-bar {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  flex-wrap: wrap;
-  gap: 16px;
-  margin: 16px 16px 12px;
-  padding: 12px 18px;
-  background: rgba(148, 163, 184, .06);
-  border: 1px solid var(--sb-line);
-  border-radius: var(--sb-radius-sm);
-}
-.scanner-title {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-}
-.scanner-icon {
-  font-size: 20px;
-  color: var(--sb-primary, #3b82f6);
-}
-.scanner-nodes {
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 16px;
-}
-.scanner-node-item {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  font-size: 13px;
-}
-.scanner-node-name {
-  font-weight: 500;
-  color: var(--sb-text);
-}
-</style>
