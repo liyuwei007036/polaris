@@ -408,12 +408,9 @@ EOF
     fi
   fi
 
-  log "优化内核网络协议栈与 UDP 缓冲区 (BBR + 8MB UDP Buffer)..."
-  modprobe tcp_bbr >/dev/null 2>&1 || true
+  log "优化网络连接与 UDP 缓冲区参数 (8MB UDP 缓存 / 队列扩容)..."
   mkdir -p /etc/sysctl.d
   cat <<'EOF' >/etc/sysctl.d/99-polaris-tuning.conf
-net.core.default_qdisc = fq
-net.ipv4.tcp_congestion_control = bbr
 net.core.rmem_max = 8388608
 net.core.wmem_max = 8388608
 net.ipv4.udp_rmem_min = 16384
