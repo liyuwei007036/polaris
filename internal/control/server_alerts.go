@@ -241,9 +241,9 @@ func (s *Server) handleRunNodeMTR(w http.ResponseWriter, r *http.Request) {
 	}
 	_ = json.NewDecoder(r.Body).Decode(&req)
 	if req.Target == "" {
-		req.Target = "202.96.209.133"
+		req.Target = "218.2.135.1"
 		if req.Label == "" {
-			req.Label = "上海电信"
+			req.Label = "南京电信"
 		}
 	}
 	if req.Count <= 0 || req.Count > 30 {

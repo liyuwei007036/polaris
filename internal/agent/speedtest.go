@@ -35,10 +35,10 @@ type SpeedtestResult struct {
 	MobileTracePath      string  `json:"mobile_trace_path,omitempty"`
 }
 
-// 权威三网骨干测试节点 (与开源工具 backtrace / nexttrace / zhanghanyun 行业标杆对齐)
-// 电信: 上海电信核心 (202.96.209.133), 广州电信 (58.60.188.222), 北京电信 (219.141.140.10), 成都电信 (61.139.2.69)
-// 联通: 上海联通核心 (210.22.97.1), 广州联通 (210.21.196.6), 北京联通 (202.106.195.68), 成都联通 (119.6.6.6)
-// 移动: 广州移动核心 (120.196.165.24), 上海移动 (211.136.112.200), 北京移动 (221.179.155.161), 成都移动 (211.137.96.205)
+// 权威三网骨干测试节点 (南京核心节点与备用端点)
+// 电信: 南京电信核心 (218.2.135.1), 南京电信备用 (58.213.1.1), 南京电信汇聚 (221.226.1.1)
+// 联通: 南京联通核心 (58.240.23.1), 南京联通备用 (221.6.4.66), 南京联通核心 (112.80.248.75)
+// 移动: 南京移动核心 (112.4.0.1), 南京移动备用 (36.152.44.95), 南京移动汇聚 (183.207.95.1)
 type TargetEndpoint struct {
 	City string
 	Host string
@@ -46,22 +46,19 @@ type TargetEndpoint struct {
 
 var (
 	TelecomEndpoints = []TargetEndpoint{
-		{City: "上海电信", Host: "202.96.209.133"},
-		{City: "广州电信", Host: "58.60.188.222"},
-		{City: "北京电信", Host: "219.141.140.10"},
-		{City: "成都电信", Host: "61.139.2.69"},
+		{City: "南京电信", Host: "218.2.135.1"},
+		{City: "南京电信备用", Host: "58.213.1.1"},
+		{City: "南京电信核心", Host: "221.226.1.1"},
 	}
 	UnicomEndpoints = []TargetEndpoint{
-		{City: "上海联通", Host: "210.22.97.1"},
-		{City: "广州联通", Host: "210.21.196.6"},
-		{City: "北京联通", Host: "202.106.195.68"},
-		{City: "成都联通", Host: "119.6.6.6"},
+		{City: "南京联通", Host: "58.240.23.1"},
+		{City: "南京联通备用", Host: "221.6.4.66"},
+		{City: "南京联通核心", Host: "112.80.248.75"},
 	}
 	MobileEndpoints = []TargetEndpoint{
-		{City: "广州移动", Host: "120.196.165.24"},
-		{City: "上海移动", Host: "211.136.112.200"},
-		{City: "北京移动", Host: "221.179.155.161"},
-		{City: "成都移动", Host: "211.137.96.205"},
+		{City: "南京移动", Host: "112.4.0.1"},
+		{City: "南京移动备用", Host: "36.152.44.95"},
+		{City: "南京移动核心", Host: "183.207.95.1"},
 	}
 )
 
@@ -397,7 +394,7 @@ func runSpeedtest(ctx context.Context, task Task) TaskResult {
 	var traceWg sync.WaitGroup
 	traceWg.Add(3)
 
-	// 电信路由探测 (先测核心上海节点，若已确认精品线路则提前结束，否则测试广州、北京节点)
+	// 电信路由探测 (先测核心南京节点，若已确认精品线路则提前结束，否则测试备用节点)
 	go func() {
 		defer traceWg.Done()
 		for i, ep := range TelecomEndpoints {
@@ -418,7 +415,7 @@ func runSpeedtest(ctx context.Context, task Task) TaskResult {
 		}
 	}()
 
-	// 联通路由探测 (先测核心上海节点，若已确认 9929/CUG 精品线路则提前结束，否则测试广州、北京节点)
+	// 联通路由探测 (先测核心南京节点，若已确认 9929/CUG 精品线路则提前结束，否则测试备用节点)
 	go func() {
 		defer traceWg.Done()
 		for i, ep := range UnicomEndpoints {
@@ -439,7 +436,7 @@ func runSpeedtest(ctx context.Context, task Task) TaskResult {
 		}
 	}()
 
-	// 移动路由探测 (先测广州核心节点，若已确认 CMIN2 精品线路则提前结束，否则测试上海、北京节点)
+	// 移动路由探测 (先测核心南京节点，若已确认 CMIN2 精品线路则提前结束，否则测试备用节点)
 	go func() {
 		defer traceWg.Done()
 		for i, ep := range MobileEndpoints {
@@ -466,17 +463,17 @@ func runSpeedtest(ctx context.Context, task Task) TaskResult {
 	unicomRoute := analyzeUnicomRoute(unicomHops, unicomLatency)
 	mobileRoute := analyzeMobileRoute(mobileHops, mobileLatency)
 
-	telecomTracePath := wire.BuildTracePath(telecomHops, "上海电信")
+	telecomTracePath := wire.BuildTracePath(telecomHops, "南京电信")
 	if telecomTracePath == "" && telecomLatency > 0 {
-		telecomTracePath = wire.BuildTracePathFallback(telecomRoute, "上海电信")
+		telecomTracePath = wire.BuildTracePathFallback(telecomRoute, "南京电信")
 	}
-	unicomTracePath := wire.BuildTracePath(unicomHops, "上海联通")
+	unicomTracePath := wire.BuildTracePath(unicomHops, "南京联通")
 	if unicomTracePath == "" && unicomLatency > 0 {
-		unicomTracePath = wire.BuildTracePathFallback(unicomRoute, "上海联通")
+		unicomTracePath = wire.BuildTracePathFallback(unicomRoute, "南京联通")
 	}
-	mobileTracePath := wire.BuildTracePath(mobileHops, "广州移动")
+	mobileTracePath := wire.BuildTracePath(mobileHops, "南京移动")
 	if mobileTracePath == "" && mobileLatency > 0 {
-		mobileTracePath = wire.BuildTracePathFallback(mobileRoute, "广州移动")
+		mobileTracePath = wire.BuildTracePathFallback(mobileRoute, "南京移动")
 	}
 
 	result := SpeedtestResult{

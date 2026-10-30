@@ -532,7 +532,7 @@ onMounted(load)
           :closable="false"
           show-icon
           title="真机国内视角跨墙探测"
-          description="探测请求由国内真实探针（北京/深圳/上海等国内核心 BGP 机房）向境外目标端口发起 TCP 握手，跨越 GFW 防火墙检测连通性与时延，杜绝境外控制机误判。"
+          description="探测请求由国内真实探针（南京/华东等国内核心机房）向境外目标端口发起 TCP 握手，跨越 GFW 防火墙检测连通性与时延，杜绝境外控制机误判。"
         />
       </div>
       <el-table :data="gfwResults" style="width: 100%" stripe empty-text="未获取到探测数据">

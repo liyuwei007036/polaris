@@ -126,56 +126,7 @@ func readMemInfo() (total, used uint64, ok bool) {
 	}
 	defer file.Close()
 
-	var memTotal, memFree, memAvailable, buffers, cached uint64
-	hasAvailable := false
-
-	scanner := bufio.NewScanner(file)
-	for scanner.Scan() {
-		line := scanner.Text()
-		parts := strings.SplitN(line, ":", 2)
-		if len(parts) != 2 {
-			continue
-		}
-		key := strings.TrimSpace(parts[0])
-		fields := strings.Fields(parts[1])
-		if len(fields) == 0 {
-			continue
-		}
-		val, err := strconv.ParseUint(fields[0], 10, 64)
-		if err != nil {
-			continue
-		}
-		valBytes := val * 1024 // kB -> bytes
-
-		switch key {
-		case "MemTotal":
-			memTotal = valBytes
-		case "MemFree":
-			memFree = valBytes
-		case "MemAvailable":
-			memAvailable = valBytes
-			hasAvailable = true
-		case "Buffers":
-			buffers = valBytes
-		case "Cached":
-			cached = valBytes
-		}
-	}
-
-	if memTotal == 0 {
-		return 0, 0, false
-	}
-
-	if hasAvailable {
-		if memTotal >= memAvailable {
-			used = memTotal - memAvailable
-		} else {
-			used = 0
-		}
-	} else {
-		used = memTotal - memFree - buffers - cached
-	}
-	return memTotal, used, true
+	return parseMemInfo(file)
 }
 
 func readDiskInfo(path string) (total, used uint64, ok bool) {

@@ -274,9 +274,11 @@ func probeFromChinaReal(ctx context.Context, host string, port uint16) ChinaProb
 			"packets":  2,
 		},
 		"locations": []map[string]any{
-			{"country": "CN", "asn": 4134},
-			{"country": "CN", "asn": 4837},
-			{"country": "CN", "asn": 9808},
+			{"country": "CN", "city": "Nanjing", "asn": 4134},
+			{"country": "CN", "city": "Nanjing", "asn": 4837},
+			{"country": "CN", "city": "Nanjing", "asn": 9808},
+			{"country": "CN", "city": "Nanjing"},
+			{"country": "CN", "region": "Eastern China"},
 			{"country": "CN"},
 		},
 		"limit": 6,
@@ -492,7 +494,19 @@ func probeFromChinaReal(ctx context.Context, host string, port uint16) ChinaProb
 		res.OK = true
 		res.LatencyMs = avgRTT
 		res.PacketLoss = int(float64(failCount) / float64(totalCount) * 100)
-		res.Source = fmt.Sprintf("全国 %d 探针 (%d/%d 畅通 · %dms)", totalCount, successCount, totalCount, avgRTT)
+		hasNanjing := false
+		for _, item := range lastRes.Results {
+			c := strings.ToLower(item.Probe.City)
+			if strings.Contains(c, "nanjing") || strings.Contains(c, "南京") {
+				hasNanjing = true
+				break
+			}
+		}
+		if hasNanjing {
+			res.Source = fmt.Sprintf("南京探针 (%d/%d 畅通 · %dms)", successCount, totalCount, avgRTT)
+		} else {
+			res.Source = fmt.Sprintf("国内探针 (%d/%d 畅通 · %dms)", successCount, totalCount, avgRTT)
+		}
 		if res.InboundTelecomRoute == "" {
 			res.InboundTelecomRoute = "电信直连"
 		}
@@ -506,6 +520,15 @@ func probeFromChinaReal(ctx context.Context, host string, port uint16) ChinaProb
 		res.InboundUnicomNodeLatencies = strings.Join(unicomCities, " | ")
 		res.InboundMobileNodeLatencies = strings.Join(mobileCities, " | ")
 
+		if telecomProbeCity == "" {
+			telecomProbeCity = "南京"
+		}
+		if unicomProbeCity == "" {
+			unicomProbeCity = "南京"
+		}
+		if mobileProbeCity == "" {
+			mobileProbeCity = "南京"
+		}
 		res.InboundTelecomTracePath = wire.BuildRealInboundTracePath(telecomProbeCity, telecomProbeASN, "电信", destName, nil)
 		res.InboundUnicomTracePath = wire.BuildRealInboundTracePath(unicomProbeCity, unicomProbeASN, "联通", destName, nil)
 		res.InboundMobileTracePath = wire.BuildRealInboundTracePath(mobileProbeCity, mobileProbeASN, "移动", destName, nil)
@@ -847,17 +870,17 @@ func (s *Server) ExecuteNodeSpeedtest(ctx context.Context, nodeID string) (*Node
 		TelecomSpeedMbps:            res.TelecomSpeedMbps,
 		TelecomRoute:                res.TelecomRoute,
 		TelecomNodeLatencies:        res.TelecomNodeLatencies,
-		TelecomTracePath:            enrichOutboundTrace(res.TelecomTracePath, "上海电信"),
+		TelecomTracePath:            enrichOutboundTrace(res.TelecomTracePath, "南京电信"),
 		UnicomLatencyMs:             res.UnicomLatencyMs,
 		UnicomSpeedMbps:             res.UnicomSpeedMbps,
 		UnicomRoute:                 res.UnicomRoute,
 		UnicomNodeLatencies:         res.UnicomNodeLatencies,
-		UnicomTracePath:             enrichOutboundTrace(res.UnicomTracePath, "上海联通"),
+		UnicomTracePath:             enrichOutboundTrace(res.UnicomTracePath, "南京联通"),
 		MobileLatencyMs:             res.MobileLatencyMs,
 		MobileSpeedMbps:             res.MobileSpeedMbps,
 		MobileRoute:                 res.MobileRoute,
 		MobileNodeLatencies:         res.MobileNodeLatencies,
-		MobileTracePath:             enrichOutboundTrace(res.MobileTracePath, "广州移动"),
+		MobileTracePath:             enrichOutboundTrace(res.MobileTracePath, "南京移动"),
 		InboundTelecomRoute:         resB.item.InboundTelecomRoute,
 		InboundTelecomLatencyMs:     resB.item.InboundTelecomLatencyMs,
 		InboundTelecomNodeLatencies: resB.item.InboundTelecomNodeLatencies,

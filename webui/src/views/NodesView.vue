@@ -94,9 +94,9 @@ const mtrCount = ref(10)
 const mtrReport = ref(null)
 const mtrShowRaw = ref(false)
 const mtrTargetOptions = [
-  { label: '上海电信 (AS4134 骨干出口)', value: 'telecom', ip: '202.97.108.1' },
-  { label: '上海联通 (AS4837 骨干出口)', value: 'unicom', ip: '219.158.113.133' },
-  { label: '广州移动 (AS9808 骨干出口)', value: 'mobile', ip: '183.242.126.1' },
+  { label: '南京电信 (AS4134 骨干核心)', value: 'telecom', ip: '218.2.135.1' },
+  { label: '南京联通 (AS4837 骨干核心)', value: 'unicom', ip: '58.240.23.1' },
+  { label: '南京移动 (AS9808 骨干核心)', value: 'mobile', ip: '112.4.0.1' },
   { label: '自定义 IP / 域名', value: 'custom', ip: '' },
 ]
 
@@ -337,15 +337,15 @@ function getNodeLocationLabel(node) {
 
 function getCarrierFallbackTrace(route, isp, node) {
   const origin = getNodeLocationLabel(node)
-  const targetMap = { telecom: '上海电信', unicom: '上海联通', mobile: '广州移动' }
+  const targetMap = { telecom: '南京电信', unicom: '南京联通', mobile: '南京移动' }
   const target = targetMap[isp] || '国内骨干'
   return `${origin} ➔ ${target}`
 }
 
 function getInboundFallbackTrace(route, isp, node) {
   const target = getNodeLocationLabel(node)
-  const srcMap = { telecom: '国内电信探针', unicom: '国内联通探针', mobile: '国内移动探针' }
-  const src = srcMap[isp] || '国内探针'
+  const srcMap = { telecom: '南京电信探针', unicom: '南京联通探针', mobile: '南京移动探针' }
+  const src = srcMap[isp] || '南京探针'
   return `${src} ➔ ${target}`
 }
 
@@ -596,7 +596,7 @@ function getDiskTooltip(node) {
 
 function getGFWDetailTooltip(st) {
   if (!st) return ''
-  const probe = st.domestic_source || '国内广州/杭州多线探针'
+  const probe = st.domestic_source || '国内南京多线探针'
   return `探针来源: ${probe}\n诊断结果: 国内探针发起的 TCP SYN 握手均超时或被丢弃\n状态: 端口已被长城防火墙阻断，国内客户端无法直连`
 }
 

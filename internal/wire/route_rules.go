@@ -105,7 +105,7 @@ func IPv4ToASN(ip string) string {
 		return "AS4809"
 
 	// 电信 163 (AS4134)
-	case strings.HasPrefix(raw, "202.97."):
+	case strings.HasPrefix(raw, "202.97.") || strings.HasPrefix(raw, "218.2.135.") || strings.HasPrefix(raw, "58.213.") || strings.HasPrefix(raw, "221.226."):
 		return "AS4134"
 
 	// 电信 CTGNet (AS23764)
@@ -128,7 +128,8 @@ func IPv4ToASN(ip string) string {
 		return "AS10099"
 
 	// 联通 169 普通网 (AS4837)
-	case strings.HasPrefix(raw, "219.158.") || strings.HasPrefix(raw, "221.192.") || strings.HasPrefix(raw, "221.194."):
+	case strings.HasPrefix(raw, "219.158.") || strings.HasPrefix(raw, "221.192.") || strings.HasPrefix(raw, "221.194.") ||
+		strings.HasPrefix(raw, "58.240.23.") || strings.HasPrefix(raw, "221.6.4.") || strings.HasPrefix(raw, "112.80.248."):
 		return "AS4837"
 
 	// 移动 CMIN2 精品网 (AS58807)
@@ -141,7 +142,8 @@ func IPv4ToASN(ip string) string {
 		return "AS58453"
 
 	// 移动 CMNET 骨干网 (AS9808)
-	case strings.HasPrefix(raw, "221.183.") || strings.HasPrefix(raw, "111.24."):
+	case strings.HasPrefix(raw, "221.183.") || strings.HasPrefix(raw, "111.24.") ||
+		strings.HasPrefix(raw, "112.4.0.") || strings.HasPrefix(raw, "36.152.44."):
 		return "AS9808"
 
 	default:
@@ -359,9 +361,18 @@ func IPv4ToCity(ip string) string {
 		return "广州"
 	case strings.Contains(lower, "pek") || strings.Contains(lower, "beijing"):
 		return "北京"
+	case strings.Contains(lower, "nkg") || strings.Contains(lower, "nanjing"):
+		return "南京"
 	}
 
 	switch {
+	// Nanjing Nodes
+	case strings.HasPrefix(raw, "218.2.135.") || strings.HasPrefix(raw, "58.213.") || strings.HasPrefix(raw, "221.226."):
+		return "南京"
+	case strings.HasPrefix(raw, "58.240.23.") || strings.HasPrefix(raw, "221.6.4.") || strings.HasPrefix(raw, "112.80.248."):
+		return "南京"
+	case strings.HasPrefix(raw, "112.4.0.") || strings.HasPrefix(raw, "36.152.44."):
+		return "南京"
 	// Cogent US West
 	case strings.HasPrefix(raw, "38.244.") || strings.HasPrefix(raw, "154."):
 		return "美西洛杉矶"
