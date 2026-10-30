@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"net"
 	"strings"
 
 	"github.com/liyuwei007036/polaris/internal/security"
@@ -66,13 +67,24 @@ func (s *Store) CompileNodeConfig(ctx context.Context, nodeID string) (string, s
 		return "", "", err
 	}
 	outbounds := []map[string]any{{"type": "direct", "tag": "direct"}}
-	outboundTags := make(map[string]string, len(managedOutbounds))
+	outboundTags := make(map[string]string, len(managedOutbounds)+2)
+	outboundTags["direct"] = "direct"
 	for _, ob := range managedOutbounds {
 		tag := "outbound-" + ob.ID
 		outbounds = append(outbounds, compileOutbound(ob, tag))
 		outboundTags[ob.ID] = tag
 	}
 	for _, selection := range endpointSelections {
+		if strings.HasPrefix(selection.OutboundID, DirectOutboundPrefix) {
+			if _, ok := outboundTags[selection.OutboundID]; !ok {
+				ipStr := DirectOutboundIP(selection.OutboundID)
+				ob, tag, err := compileDirectIPOutbound(ipStr)
+				if err == nil {
+					outbounds = append(outbounds, ob)
+					outboundTags[selection.OutboundID] = tag
+				}
+			}
+		}
 		if IsChainOutbound(selection.OutboundID) {
 			if _, ok := outboundTags[selection.OutboundID]; !ok {
 				targetEndpointID := ChainTargetEndpointID(selection.OutboundID)
@@ -86,6 +98,16 @@ func (s *Store) CompileNodeConfig(ctx context.Context, nodeID string) (string, s
 		}
 	}
 	for _, listener := range listeners {
+		if listener.Enabled && strings.HasPrefix(listener.OutboundID, DirectOutboundPrefix) {
+			if _, ok := outboundTags[listener.OutboundID]; !ok {
+				ipStr := DirectOutboundIP(listener.OutboundID)
+				ob, tag, err := compileDirectIPOutbound(ipStr)
+				if err == nil {
+					outbounds = append(outbounds, ob)
+					outboundTags[listener.OutboundID] = tag
+				}
+			}
+		}
 		if listener.Enabled && IsChainOutbound(listener.OutboundID) {
 			if _, ok := outboundTags[listener.OutboundID]; !ok {
 				targetEndpointID := ChainTargetEndpointID(listener.OutboundID)
@@ -240,6 +262,27 @@ func compileRouteRule(rule RouteRule) map[string]any {
 		compiled["outbound"] = rule.OutboundTag
 	}
 	return compiled
+}
+
+// compileDirectIPOutbound renders a direct outbound bound to a specific local IP.
+func compileDirectIPOutbound(ipStr string) (map[string]any, string, error) {
+	parsed := net.ParseIP(ipStr)
+	if parsed == nil {
+		return nil, "", fmt.Errorf("invalid direct IP address: %s", ipStr)
+	}
+	tag := "direct-" + ipStr
+	outbound := map[string]any{
+		"type": "direct",
+		"tag":  tag,
+	}
+	if parsed.To4() != nil {
+		outbound["inet4_bind_address"] = ipStr
+		outbound["domain_strategy"] = "prefer_ipv4"
+	} else {
+		outbound["inet6_bind_address"] = ipStr
+		outbound["domain_strategy"] = "prefer_ipv6"
+	}
+	return outbound, tag, nil
 }
 
 // compileOutbound renders a managed outbound as a sing-box outbound object.

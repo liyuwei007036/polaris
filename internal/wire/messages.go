@@ -114,6 +114,9 @@ type Status struct {
 	DiskUsed      uint64
 	UptimeSeconds uint64
 
+	// IPAddresses holds all non-loopback IPv4 and IPv6 addresses on the host interfaces.
+	IPAddresses []string
+
 	// Network protection is deliberately not part of the heartbeat: the console
 	// asks a node for its firewall and jails at the moment it shows them, so it
 	// can never present a rule that has since been changed on the server.

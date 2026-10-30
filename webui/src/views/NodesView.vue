@@ -76,6 +76,7 @@ const editForm = ref({
   ddns_domain: '',
   ddns_record_ids: [],
   ddns_domains: [],
+  ip_aliases: {},
 })
 const cfRecords = ref([])
 const cfLoading = ref(false)
@@ -739,6 +740,7 @@ async function openEdit(node) {
     ddns_domain: node.ddns_domain || '',
     ddns_record_ids: recordIds,
     ddns_domains: domains,
+    ip_aliases: { ...(node.ip_aliases || {}) },
   }
   loadCloudflareRecords()
   editDialog.value = true
@@ -756,6 +758,7 @@ async function saveEdit() {
       ddns_domain: editForm.value.ddns_domain,
       ddns_record_ids: editForm.value.ddns_record_ids,
       ddns_domains: editForm.value.ddns_domains,
+      ip_aliases: editForm.value.ip_aliases || {},
     })
     ElMessage.success('服务器信息已保存')
     editDialog.value = false
@@ -1095,6 +1098,16 @@ onBeforeUnmount(() => {
                   >
                     <span class="chip-ddns">
                       DDNS: {{ node.last_observed_ip || '同步中' }}
+                    </span>
+                  </el-tooltip>
+                  <el-tooltip
+                    v-if="node.ip_addresses && node.ip_addresses.length"
+                    raw-content
+                    :content="`本机网卡检测到的出口 IP (${node.ip_addresses.length} 个):<br/>${node.ip_addresses.map((ip) => ip + (node.ip_aliases && node.ip_aliases[ip] ? ' (' + node.ip_aliases[ip] + ')' : '')).join('<br/>')}`"
+                    placement="top"
+                  >
+                    <span class="chip-ddns" style="cursor: default">
+                      {{ node.ip_addresses.length }} 个出口 IP
                     </span>
                   </el-tooltip>
                 </div>
@@ -1488,6 +1501,49 @@ onBeforeUnmount(() => {
         </el-form-item>
         <el-form-item label="客户端连接域名或 IP">
           <el-input v-model="editForm.client_address" placeholder="例如：hk.example.com 或 1.2.3.4" />
+          <div v-if="editNode?.ip_addresses?.length" style="margin-top: 6px; display: flex; flex-wrap: wrap; gap: 6px; align-items: center">
+            <span class="subtle" style="font-size: 12px">本机检测到的出口 IP：</span>
+            <el-tag
+              v-for="ip in editNode.ip_addresses"
+              :key="ip"
+              size="small"
+              type="info"
+              style="cursor: pointer"
+              @click="editForm.client_address = ip"
+            >
+              {{ editForm.ip_aliases?.[ip] ? `${editForm.ip_aliases[ip]} (${ip})` : ip }}
+            </el-tag>
+          </div>
+        </el-form-item>
+
+        <el-form-item label="本机出口 IP 与别名设置">
+          <div class="subtle" style="font-size: 12px; margin-bottom: 8px">
+            自动从服务器网卡获取并已验证外网连通性的 IP 地址。在此为出口 IP 设置别名，配置节点分流时将优先显示该别名。
+          </div>
+          <div v-if="editNode?.ip_addresses?.length" style="display: flex; flex-direction: column; gap: 8px; width: 100%">
+            <div
+              v-for="ip in editNode.ip_addresses"
+              :key="ip"
+              style="display: flex; align-items: center; gap: 10px; background: var(--bg-subtle, rgba(0,0,0,0.03)); padding: 6px 10px; border-radius: 6px; border: 1px solid var(--border-color, #e4e7ed);"
+            >
+              <el-tag size="small" :type="ip.includes(':') ? 'warning' : 'success'" style="font-family: monospace; font-weight: bold">
+                {{ ip.includes(':') ? 'IPv6' : 'IPv4' }}
+              </el-tag>
+              <span style="font-family: monospace; font-size: 13px; min-width: 130px; word-break: break-all;">
+                {{ ip }}
+              </span>
+              <el-input
+                v-model="editForm.ip_aliases[ip]"
+                size="small"
+                placeholder="出口别名（例如：香港原生、电信出口）"
+                style="flex: 1"
+                clearable
+              />
+            </div>
+          </div>
+          <div v-else class="subtle" style="font-size: 12px">
+            暂未检测到出口 IP（等待服务器连接上报并完成外网探测验证）。
+          </div>
         </el-form-item>
 
         <el-form-item label="Cloudflare 动态域名解析 (DDNS)">

@@ -37,7 +37,87 @@ const accounts = ref([])
 const selectedProfile = computed(() => listenerProfileMap[model.value.profile])
 const showReality = computed(() => model.value.security === 'reality')
 
-const nodeAddress = computed(() => props.nodes.find((node) => node.id === model.value.node_id)?.client_address || '')
+const currentNode = computed(() => props.nodes.find((node) => node.id === model.value.node_id))
+const nodeAddress = computed(() => currentNode.value?.client_address || '')
+
+function getNodeEgressOptions(node) {
+  if (!node) return []
+  const ips = []
+  const seen = new Set()
+  if (Array.isArray(node.ip_addresses)) {
+    for (const ip of node.ip_addresses) {
+      if (ip && typeof ip === 'string') {
+        const trimmed = ip.trim()
+        if (trimmed && !seen.has(trimmed)) {
+          seen.add(trimmed)
+          ips.push(trimmed)
+        }
+      }
+    }
+  }
+  if (!ips.length && node.last_observed_ip) {
+    const trimmed = node.last_observed_ip.trim()
+    if (trimmed && !trimmed.includes('/') && !seen.has(trimmed)) {
+      seen.add(trimmed)
+      ips.push(trimmed)
+    }
+  }
+  const aliases = node.ip_aliases || {}
+  return ips.map((ip) => {
+    const alias = aliases[ip]
+    const ipType = ip.includes(':') ? 'IPv6' : 'IPv4'
+    const label = alias ? `${alias} (${ip})` : `${ip} (${ipType})`
+    return {
+      value: `direct:${ip}`,
+      label,
+      ip,
+      alias,
+      type: ipType,
+    }
+  })
+}
+
+const nodeEgressOptions = computed(() => getNodeEgressOptions(currentNode.value))
+
+function egressOptionsForAccount(account) {
+  const options = [...nodeEgressOptions.value]
+  if (account?.outbound_id?.startsWith('direct:')) {
+    const ip = account.outbound_id.slice(7)
+    if (!options.some((opt) => opt.ip === ip)) {
+      const alias = currentNode.value?.ip_aliases?.[ip]
+      const ipType = ip.includes(':') ? 'IPv6' : 'IPv4'
+      const label = alias ? `${alias} (${ip})` : `${ip} (${ipType})`
+      options.push({
+        value: account.outbound_id,
+        label,
+        ip,
+        alias,
+        type: ipType,
+      })
+    }
+  }
+  if (!options.length) {
+    options.push({
+      value: 'direct',
+      label: '系统默认出口 (待服务器上报 IP)',
+      ip: '',
+      type: '默认',
+    })
+  } else if (!account?.outbound_id || account?.outbound_id === 'direct') {
+    options.push({
+      value: 'direct',
+      label: '默认出口 (兼容历史配置)',
+      ip: '',
+      type: '默认',
+    })
+  }
+  return options
+}
+
+function defaultEgressValue(node) {
+  const opts = getNodeEgressOptions(node || currentNode.value)
+  return opts[0]?.value || 'direct'
+}
 
 const chainTargets = computed(() => {
   const currentNodeID = model.value.node_id
@@ -169,21 +249,38 @@ watch(
     if (!props.listener) model.value.transport_path = randomPath()
     // A copy reuses the source's users as new ones: their IDs are dropped so
     // saving creates fresh accounts with their own credentials.
+    const targetNode = props.nodes.find((n) => n.id === model.value.node_id)
+    const initialDefaultOutbound = defaultEgressValue(targetNode)
     accounts.value = props.listener || props.template
       ? props.endpoints.map((endpoint) => ({
           id: props.listener ? endpoint.id : '',
           name: endpoint.name,
           alias: endpoint.alias || endpoint.name,
           enabled: endpoint.enabled,
-          outbound_id: endpoint.outbound_id || 'direct',
+          outbound_id: endpoint.outbound_id || (props.listener ? 'direct' : initialDefaultOutbound),
         }))
       : []
     if (!accounts.value.length) {
-      accounts.value = [{ id: '', name: randomAccountName(), alias: '', enabled: true, outbound_id: 'direct' }]
+      accounts.value = [{ id: '', name: randomAccountName(), alias: '', enabled: true, outbound_id: initialDefaultOutbound }]
     }
     normalizeProfile()
     await nextTick()
     formRef.value?.clearValidate()
+  },
+)
+
+watch(
+  () => model.value.node_id,
+  (newNodeID) => {
+    const targetNode = props.nodes.find((n) => n.id === newNodeID)
+    if (!targetNode) return
+    const options = getNodeEgressOptions(targetNode)
+    const firstEgress = options[0]?.value || 'direct'
+    for (const account of accounts.value) {
+      if (!account.outbound_id || account.outbound_id === 'direct' || (account.outbound_id.startsWith('direct:') && !options.some((o) => o.value === account.outbound_id))) {
+        account.outbound_id = firstEgress
+      }
+    }
   },
 )
 
@@ -213,7 +310,7 @@ function close() {
 }
 
 function addAccount() {
-  accounts.value.push({ id: '', name: randomAccountName(), alias: '', enabled: true, outbound_id: 'direct' })
+  accounts.value.push({ id: '', name: randomAccountName(), alias: '', enabled: true, outbound_id: defaultEgressValue() })
 }
 
 function removeAccount(index) {
@@ -380,9 +477,19 @@ async function save() {
               <span class="account-index">{{ index + 1 }}</span>
               <el-input v-model="account.name" aria-label="用户名称" placeholder="用户名称" />
               <el-input v-model="account.alias" aria-label="客户端节点别名" maxlength="128" placeholder="客户端节点别名" />
-              <el-select v-model="account.outbound_id" filterable style="width: 100%" placeholder="选择出口或链式用户">
-                <el-option-group label="直连">
-                  <el-option label="服务器直连" value="direct" />
+              <el-select
+                v-model="account.outbound_id"
+                filterable
+                style="width: 100%"
+                placeholder="选择出口或链式用户"
+              >
+                <el-option-group label="出口 IP">
+                  <el-option
+                    v-for="opt in egressOptionsForAccount(account)"
+                    :key="opt.value"
+                    :label="opt.label"
+                    :value="opt.value"
+                  />
                 </el-option-group>
                 <el-option-group v-if="outbounds.filter((item) => item.type !== 'direct').length" label="上网出口">
                   <el-option v-for="outbound in outbounds.filter((item) => item.type !== 'direct')" :key="outbound.id" :label="outbound.name" :value="outbound.id" />

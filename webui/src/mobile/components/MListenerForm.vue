@@ -36,8 +36,53 @@ const expanded = ref(0)
 
 const selectedProfile = computed(() => listenerProfileMap[model.value.profile])
 const showReality = computed(() => model.value.security === 'reality')
-const nodeAddress = computed(() => props.nodes.find((node) => node.id === model.value.node_id)?.client_address || '')
+const currentNode = computed(() => props.nodes.find((node) => node.id === model.value.node_id))
+const nodeAddress = computed(() => currentNode.value?.client_address || '')
 const nodeOptions = computed(() => props.nodes.map((node) => ({ value: node.id, label: node.name, desc: node.client_address || '未填写客户端连接地址' })))
+
+function getNodeEgressOptions(node) {
+  if (!node) return []
+  const ips = []
+  const seen = new Set()
+  if (Array.isArray(node.ip_addresses)) {
+    for (const ip of node.ip_addresses) {
+      if (ip && typeof ip === 'string') {
+        const trimmed = ip.trim()
+        if (trimmed && !seen.has(trimmed)) {
+          seen.add(trimmed)
+          ips.push(trimmed)
+        }
+      }
+    }
+  }
+  if (!ips.length && node.last_observed_ip) {
+    const trimmed = node.last_observed_ip.trim()
+    if (trimmed && !trimmed.includes('/') && !seen.has(trimmed)) {
+      seen.add(trimmed)
+      ips.push(trimmed)
+    }
+  }
+  const aliases = node.ip_aliases || {}
+  return ips.map((ip) => {
+    const alias = aliases[ip]
+    const ipType = ip.includes(':') ? 'IPv6' : 'IPv4'
+    const label = alias ? `${alias} (${ip})` : `${ip} (${ipType})`
+    return {
+      value: `direct:${ip}`,
+      label,
+      ip,
+      alias,
+      type: ipType,
+    }
+  })
+}
+
+const nodeEgressOptions = computed(() => getNodeEgressOptions(currentNode.value))
+
+function defaultEgressValue(node) {
+  const opts = getNodeEgressOptions(node || currentNode.value)
+  return opts[0]?.value || 'direct'
+}
 
 const chainTargets = computed(() => {
   const currentNodeID = model.value.node_id
@@ -60,8 +105,48 @@ const chainTargets = computed(() => {
   })
 })
 
-const outboundOptions = computed(() => {
-  const result = [{ value: 'direct', label: '服务器直连', desc: '经本机网卡直接发出', group: '直连' }]
+function accountOutboundOptions(account) {
+  const result = []
+  const egressOpts = nodeEgressOptions.value
+  if (egressOpts.length > 0) {
+    for (const opt of egressOpts) {
+      result.push({
+        value: opt.value,
+        label: opt.label,
+        desc: opt.alias ? `${opt.type} 本机出口 · ${opt.ip}` : `${opt.type} 本机出口`,
+        group: '出口 IP',
+      })
+    }
+  } else {
+    result.push({
+      value: 'direct',
+      label: '系统默认出口',
+      desc: '等待服务器上报出口 IP',
+      group: '出口 IP',
+    })
+  }
+  if (account?.outbound_id?.startsWith('direct:') && !egressOpts.some((o) => o.value === account.outbound_id)) {
+    const ip = account.outbound_id.slice(7)
+    const alias = currentNode.value?.ip_aliases?.[ip]
+    const ipType = ip.includes(':') ? 'IPv6' : 'IPv4'
+    const label = alias ? `${alias} (${ip})` : `${ip} (${ipType})`
+    result.push({
+      value: account.outbound_id,
+      label,
+      desc: '已脱机出口 IP',
+      group: '出口 IP',
+    })
+  }
+  if (!account?.outbound_id || account?.outbound_id === 'direct') {
+    if (!result.some((o) => o.value === 'direct')) {
+      result.push({
+        value: 'direct',
+        label: '默认出口 (兼容历史配置)',
+        desc: '历史保存的默认直连出站',
+        group: '出口 IP',
+      })
+    }
+  }
   for (const item of props.outbounds.filter((item) => item.type !== 'direct')) {
     result.push({ value: item.id, label: item.name, desc: `${item.type.toUpperCase()} ${item.server}:${item.server_port}`, group: '上网出口' })
   }
@@ -69,7 +154,7 @@ const outboundOptions = computed(() => {
     result.push({ value: item.value, label: item.label, desc: item.desc, group: '链式代理（其他服务器节点用户）' })
   }
   return result
-})
+}
 
 function recordName(record) {
   return String(record.name || '').replace(/\.$/, '')
@@ -150,6 +235,8 @@ watch(() => props.modelValue, (open) => {
   model.value = createListenerModel(props.listener || props.template, props.nodes[0]?.id || '')
   // 编辑保留客户端正在用的路径；新建和复制各自生成新的。
   if (!props.listener) model.value.transport_path = randomPath()
+  const targetNode = props.nodes.find((n) => n.id === model.value.node_id)
+  const initialDefaultOutbound = defaultEgressValue(targetNode)
   // 复制时把原有用户当成新用户带入：去掉 id，保存时会生成各自的新凭据。
   accounts.value = props.listener || props.template
     ? props.endpoints.map((endpoint) => ({
@@ -157,18 +244,30 @@ watch(() => props.modelValue, (open) => {
         name: endpoint.name,
         alias: endpoint.alias || endpoint.name,
         enabled: endpoint.enabled,
-        outbound_id: endpoint.outbound_id || 'direct',
+        outbound_id: endpoint.outbound_id || (props.listener ? 'direct' : initialDefaultOutbound),
       }))
     : []
   if (!accounts.value.length) {
-    accounts.value = [{ id: '', name: randomAccountName(), alias: '', enabled: true, outbound_id: 'direct' }]
+    accounts.value = [{ id: '', name: randomAccountName(), alias: '', enabled: true, outbound_id: initialDefaultOutbound }]
   }
   expanded.value = 0
   normalizeProfile()
 })
 
+watch(() => model.value.node_id, (newNodeID) => {
+  const targetNode = props.nodes.find((n) => n.id === newNodeID)
+  if (!targetNode) return
+  const options = getNodeEgressOptions(targetNode)
+  const firstEgress = options[0]?.value || 'direct'
+  for (const account of accounts.value) {
+    if (!account.outbound_id || account.outbound_id === 'direct' || (account.outbound_id.startsWith('direct:') && !options.some((o) => o.value === account.outbound_id))) {
+      account.outbound_id = firstEgress
+    }
+  }
+})
+
 function addAccount() {
-  accounts.value.push({ id: '', name: randomAccountName(), alias: '', enabled: true, outbound_id: 'direct' })
+  accounts.value.push({ id: '', name: randomAccountName(), alias: '', enabled: true, outbound_id: defaultEgressValue() })
   expanded.value = accounts.value.length - 1
 }
 
@@ -320,7 +419,11 @@ function save() {
           </div>
           <div class="m-field">
             <label class="m-field__label">上网出口与链式代理</label>
-            <MPicker v-model="account.outbound_id" :options="outboundOptions" title="选择出口或链式用户" />
+            <MPicker
+              v-model="account.outbound_id"
+              :options="accountOutboundOptions(account)"
+              title="选择出口或链式用户"
+            />
           </div>
           <div class="m-field m-field--inline">
             <label class="m-field__label">启用该用户</label>

@@ -323,6 +323,7 @@ func (s *Server) registerBrowserRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/v1/nodes/registration-tokens", s.createRegistrationToken)
 	mux.HandleFunc("GET /api/v1/nodes", s.listNodes)
 	mux.HandleFunc("PUT /api/v1/nodes/{id}", s.updateNode)
+	mux.HandleFunc("PUT /api/v1/nodes/{id}/ip-aliases", s.setNodeIPAliases)
 	mux.HandleFunc("POST /api/v1/nodes/{id}/ddns/sync", s.syncNodeDDNS)
 	mux.HandleFunc("PUT /api/v1/nodes/{id}/name", s.setNodeName)
 	mux.HandleFunc("PUT /api/v1/nodes/{id}/client-address", s.setNodeClientAddress)
@@ -1348,13 +1349,14 @@ func (s *Server) updateNode(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var input struct {
-		Name          string   `json:"name"`
-		Address       string   `json:"client_address"`
-		DDNSEnabled   *bool    `json:"ddns_enabled"`
-		DDNSRecordID  *string  `json:"ddns_record_id"`
-		DDNSDomain    *string  `json:"ddns_domain"`
-		DDNSRecordIDs []string `json:"ddns_record_ids"`
-		DDNSDomains   []string `json:"ddns_domains"`
+		Name          string            `json:"name"`
+		Address       string            `json:"client_address"`
+		DDNSEnabled   *bool             `json:"ddns_enabled"`
+		DDNSRecordID  *string           `json:"ddns_record_id"`
+		DDNSDomain    *string           `json:"ddns_domain"`
+		DDNSRecordIDs []string          `json:"ddns_record_ids"`
+		DDNSDomains   []string          `json:"ddns_domains"`
+		IPAliases     map[string]string `json:"ip_aliases"`
 	}
 	if !decodeJSON(w, r, &input) {
 		return
@@ -1363,6 +1365,12 @@ func (s *Server) updateNode(w http.ResponseWriter, r *http.Request) {
 	if err := s.store.UpdateNodeWithDDNS(r.Context(), nodeID, input.Name, input.Address, input.DDNSEnabled, input.DDNSRecordID, input.DDNSDomain, input.DDNSRecordIDs, input.DDNSDomains); err != nil {
 		writeError(w, err)
 		return
+	}
+	if input.IPAliases != nil {
+		if err := s.store.SetNodeIPAliases(r.Context(), nodeID, input.IPAliases); err != nil {
+			writeError(w, err)
+			return
+		}
 	}
 	if err := s.store.AppendAudit(r.Context(), operator.ID, "node.updated", "node", nodeID, "node name, client address, and DDNS settings updated"); err != nil {
 		writeError(w, err)
@@ -1380,6 +1388,31 @@ func (s *Server) updateNode(w http.ResponseWriter, r *http.Request) {
 			currentIP = node.LastObservedIP
 		}
 		go s.triggerNodeDDNS(context.Background(), node.ID, currentIP)
+	}
+	writeJSON(w, http.StatusOK, node)
+}
+
+// setNodeIPAliases updates custom aliases for detected egress IPs of a node.
+func (s *Server) setNodeIPAliases(w http.ResponseWriter, r *http.Request) {
+	operator, err := s.writer(r)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	var input map[string]string
+	if !decodeJSON(w, r, &input) {
+		return
+	}
+	nodeID := r.PathValue("id")
+	if err := s.store.SetNodeIPAliases(r.Context(), nodeID, input); err != nil {
+		writeError(w, err)
+		return
+	}
+	_ = s.store.AppendAudit(r.Context(), operator.ID, "node.ip_aliases.updated", "node", nodeID, "node IP aliases updated")
+	node, err := s.store.GetNode(r.Context(), nodeID)
+	if err != nil {
+		writeError(w, err)
+		return
 	}
 	writeJSON(w, http.StatusOK, node)
 }

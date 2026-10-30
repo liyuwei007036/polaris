@@ -38,7 +38,7 @@ const agentPort = ref(19994)
 
 const editSheet = ref(false)
 const editNode = ref(null)
-const editForm = ref({ name: '', client_address: '', ddns_enabled: false, ddns_record_id: '', ddns_domain: '', ddns_record_ids: [], ddns_domains: [] })
+const editForm = ref({ name: '', client_address: '', ddns_enabled: false, ddns_record_id: '', ddns_domain: '', ddns_record_ids: [], ddns_domains: [], ip_aliases: {} })
 const cfRecords = ref([])
 const cfLoading = ref(false)
 const editSaving = ref(false)
@@ -188,6 +188,7 @@ const details = computed(() => {
     { label: '连接地址', value: addrVal, mono: Boolean(node.client_address) },
     { label: '系统', value: [node.os, node.architecture].filter(Boolean).join(' · ') || '—' },
     { label: '版本', value: 'agent ' + (node.agent_version || '—') + ' · sing-box ' + (node.sing_box_version || '—') },
+    ...(node.ip_addresses && node.ip_addresses.length ? [{ label: '出口 IP', value: node.ip_addresses.map((ip) => (node.ip_aliases?.[ip] ? `${node.ip_aliases[ip]} (${ip})` : ip)).join('、') }] : []),
   ]
   if (host) {
     items.push(
@@ -293,6 +294,7 @@ async function openEdit(node) {
     ddns_domain: node.ddns_domain || '',
     ddns_record_ids: recordIds,
     ddns_domains: domains,
+    ip_aliases: { ...(node.ip_aliases || {}) },
   }
   loadCloudflareRecords()
   editSheet.value = true
@@ -309,6 +311,7 @@ async function saveNode() {
       ddns_domain: editForm.value.ddns_domain,
       ddns_record_ids: editForm.value.ddns_record_ids,
       ddns_domains: editForm.value.ddns_domains,
+      ip_aliases: editForm.value.ip_aliases || {},
     })
     ElMessage.success('服务器信息已保存')
     editSheet.value = false
@@ -405,6 +408,46 @@ onBeforeUnmount(() => {
         <label class="m-field__label">客户端连接域名或 IP 地址</label>
         <el-input v-model="editForm.client_address" aria-label="客户端连接域名或 IP 地址" placeholder="例如：proxy.example.com" />
         <div class="m-field__hint">接入时会自动填入来源 IP。仅填域名或 IP，不含 http://、端口与路径。</div>
+        <div v-if="editNode?.ip_addresses?.length" style="margin-top: 6px; display: flex; flex-wrap: wrap; gap: 6px; align-items: center">
+          <span style="font-size: 12px; color: var(--color-text-subtle, #999)">点击填入：</span>
+          <el-tag
+            v-for="ip in editNode.ip_addresses"
+            :key="ip"
+            size="small"
+            type="info"
+            style="cursor: pointer"
+            @click="editForm.client_address = ip"
+          >
+            {{ editForm.ip_aliases?.[ip] ? `${editForm.ip_aliases[ip]} (${ip})` : ip }}
+          </el-tag>
+        </div>
+      </div>
+      <div class="m-field">
+        <label class="m-field__label">本机出口 IP 与别名设置</label>
+        <div class="m-field__hint">自动从服务器网卡获取并验证具备外网连通性的 IP。可在此为每个出口 IP 设置别名。</div>
+        <div v-if="editNode?.ip_addresses?.length" style="margin-top: 8px; display: flex; flex-direction: column; gap: 8px">
+          <div
+            v-for="ip in editNode.ip_addresses"
+            :key="ip"
+            style="background: var(--color-bg-page, #f8f9fa); padding: 8px 10px; border-radius: 8px; border: 1px solid var(--color-border, #eee)"
+          >
+            <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px">
+              <span style="font-family: monospace; font-size: 12px; font-weight: 600; word-break: break-all">{{ ip }}</span>
+              <el-tag size="small" :type="ip.includes(':') ? 'warning' : 'success'">
+                {{ ip.includes(':') ? 'IPv6' : 'IPv4' }}
+              </el-tag>
+            </div>
+            <el-input
+              v-model="editForm.ip_aliases[ip]"
+              size="small"
+              placeholder="出口别名（例如：电信出口、香港主）"
+              clearable
+            />
+          </div>
+        </div>
+        <div v-else class="m-field__hint" style="margin-top: 6px">
+          暂未检测到出口 IP（等待服务器连接上报并完成外网验证）。
+        </div>
       </div>
       <div class="m-field">
         <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px;">

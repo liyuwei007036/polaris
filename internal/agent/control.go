@@ -25,6 +25,7 @@ type Status struct {
 	NginxConfigHash   string
 	Capabilities      map[string]any
 	Metrics           MetricReport
+	IPAddresses       []string
 }
 
 // MetricReport deliberately separates host-interface counters from
@@ -159,7 +160,8 @@ func DefaultStatus(singBoxVersion, dataDir string) Status {
 		Capabilities: map[string]any{
 			"systemd": runtime.GOOS == "linux", "control_channel": "noise-tcp", "configuration_hashes": true,
 		},
-		Metrics: CollectMetrics(),
+		Metrics:     CollectMetrics(),
+		IPAddresses: CollectLocalIPs(),
 	}
 }
 
@@ -432,6 +434,7 @@ func toWireStatus(local Status) wire.Status {
 		SingBoxService:    local.Metrics.Health.SingBoxService,
 		ClashAPIAvailable: local.Metrics.Health.ClashAPIAvailable,
 		TrafficAvailable:  local.Metrics.Health.TrafficAvailable,
+		IPAddresses:       local.IPAddresses,
 	}
 	if local.Metrics.Node != nil {
 		st.HasNodeTotals = true

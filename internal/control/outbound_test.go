@@ -171,3 +171,137 @@ func TestManagedOutboundCompilation(t *testing.T) {
 		t.Fatalf("route rule did not fall back to direct after outbound deletion: %#v", rules)
 	}
 }
+
+func TestDirectIPOutboundCompilation(t *testing.T) {
+	store, err := control.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	ctx := t.Context()
+
+	nodeID := "node-direct-test"
+	if err := store.ExecForTest(ctx, `INSERT INTO nodes (id, name, public_key, client_address, revoked_at, created_at) VALUES (?, ?, ?, ?, NULL, ?)`,
+		nodeID, "test-node", make([]byte, 32), "198.51.100.1", 1000); err != nil {
+		t.Fatal(err)
+	}
+
+	listener, _, _, err := store.CreateListenerWithAutomaticPortRouting(ctx, control.Listener{
+		NodeID:     nodeID,
+		Name:       "vless-direct",
+		Domain:     "vless.example.com",
+		Port:       8443,
+		Enabled:    true,
+		Spec:       control.ProtocolSpec{Protocol: "vless", Network: "tcp", Transport: control.TransportOptions{Type: "httpupgrade"}},
+		OutboundID: "direct",
+	})
+	if err != nil {
+		t.Fatalf("create listener: %v", err)
+	}
+
+	// Verify invalid direct IP is rejected
+	_, err = store.CreateEndpoint(ctx, control.Endpoint{
+		ListenerID: listener.ID,
+		Name:       "invalid-user",
+		Alias:      "Invalid User",
+		Enabled:    true,
+		OutboundID: "direct:invalid-ip-addr",
+	}, control.EndpointCredentials{UUID: "11111111-1111-1111-1111-111111111111"})
+	if err == nil {
+		t.Fatal("expected error for invalid direct IP, got nil")
+	}
+
+	// Create user with IPv4 direct outbound
+	ipv4User, err := store.CreateEndpoint(ctx, control.Endpoint{
+		ListenerID: listener.ID,
+		Name:       "u-ipv4",
+		Alias:      "IPv4 Node",
+		Enabled:    true,
+		OutboundID: "direct:198.51.100.55",
+	}, control.EndpointCredentials{UUID: "22222222-2222-2222-2222-222222222222"})
+	if err != nil {
+		t.Fatalf("create IPv4 endpoint: %v", err)
+	}
+
+	// Create user with IPv6 direct outbound
+	ipv6User, err := store.CreateEndpoint(ctx, control.Endpoint{
+		ListenerID: listener.ID,
+		Name:       "u-ipv6",
+		Alias:      "IPv6 Node",
+		Enabled:    true,
+		OutboundID: "direct:2001:db8::88",
+	}, control.EndpointCredentials{UUID: "33333333-3333-3333-3333-333333333333"})
+	if err != nil {
+		t.Fatalf("create IPv6 endpoint: %v", err)
+	}
+
+	configJSON, _, err := store.CompileNodeConfig(ctx, nodeID)
+	if err != nil {
+		t.Fatalf("compile node config: %v", err)
+	}
+
+	var parsed struct {
+		Outbounds []map[string]any `json:"outbounds"`
+		Route     struct {
+			Rules []map[string]any `json:"rules"`
+		} `json:"route"`
+	}
+	if err := json.Unmarshal([]byte(configJSON), &parsed); err != nil {
+		t.Fatalf("unmarshal config: %v", err)
+	}
+
+	var foundIPv4, foundIPv6 bool
+	for _, ob := range parsed.Outbounds {
+		tag, _ := ob["tag"].(string)
+		if tag == "direct-198.51.100.55" {
+			foundIPv4 = true
+			if ob["type"] != "direct" {
+				t.Errorf("expected type direct, got %v", ob["type"])
+			}
+			if ob["inet4_bind_address"] != "198.51.100.55" {
+				t.Errorf("expected inet4_bind_address 198.51.100.55, got %v", ob["inet4_bind_address"])
+			}
+			if ob["domain_strategy"] != "prefer_ipv4" {
+				t.Errorf("expected domain_strategy prefer_ipv4, got %v", ob["domain_strategy"])
+			}
+		}
+		if tag == "direct-2001:db8::88" {
+			foundIPv6 = true
+			if ob["type"] != "direct" {
+				t.Errorf("expected type direct, got %v", ob["type"])
+			}
+			if ob["inet6_bind_address"] != "2001:db8::88" {
+				t.Errorf("expected inet6_bind_address 2001:db8::88, got %v", ob["inet6_bind_address"])
+			}
+			if ob["domain_strategy"] != "prefer_ipv6" {
+				t.Errorf("expected domain_strategy prefer_ipv6, got %v", ob["domain_strategy"])
+			}
+		}
+	}
+	if !foundIPv4 {
+		t.Error("outbound direct-198.51.100.55 not found in config")
+	}
+	if !foundIPv6 {
+		t.Error("outbound direct-2001:db8::88 not found in config")
+	}
+
+	var routedIPv4, routedIPv6 bool
+	for _, rule := range parsed.Route.Rules {
+		users, _ := rule["auth_user"].([]any)
+		outbound, _ := rule["outbound"].(string)
+		for _, u := range users {
+			if u == ipv4User.Name && outbound == "direct-198.51.100.55" {
+				routedIPv4 = true
+			}
+			if u == ipv6User.Name && outbound == "direct-2001:db8::88" {
+				routedIPv6 = true
+			}
+		}
+	}
+	if !routedIPv4 {
+		t.Error("route rule for u-ipv4 targeting direct-198.51.100.55 not found")
+	}
+	if !routedIPv6 {
+		t.Error("route rule for u-ipv6 targeting direct-2001:db8::88 not found")
+	}
+}

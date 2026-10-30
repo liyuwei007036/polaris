@@ -68,3 +68,71 @@ func TestUpgradeSingBoxDispatchesSignedUpgradeTask(t *testing.T) {
 		t.Fatalf("unexpected signed manifest: %#v", manifest)
 	}
 }
+
+func TestNodeIdentityIPAddresses(t *testing.T) {
+	store, err := control.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	ctx := t.Context()
+
+	nodeID := "node-ip-test"
+	if err := store.ExecForTest(ctx, `INSERT INTO nodes (id, name, public_key, client_address, revoked_at, created_at) VALUES (?, ?, ?, ?, NULL, ?)`,
+		nodeID, "node-ip-test", make([]byte, 32), "198.51.100.1", 1000); err != nil {
+		t.Fatal(err)
+	}
+
+	testIPs := []string{"198.51.100.2", "198.51.100.3", "2001:db8::1"}
+	if err := store.UpdateNodeIdentityWithIPs(ctx, nodeID, "0.43.0", "linux", "amd64", "1.14.0", "{}", testIPs); err != nil {
+		t.Fatalf("UpdateNodeIdentityWithIPs: %v", err)
+	}
+
+	node, err := store.NodeByID(ctx, nodeID)
+	if err != nil {
+		t.Fatalf("NodeByID: %v", err)
+	}
+	if len(node.IPAddresses) != 3 || node.IPAddresses[0] != "198.51.100.2" || node.IPAddresses[2] != "2001:db8::1" {
+		t.Fatalf("unexpected IPAddresses in NodeByID: %#v", node.IPAddresses)
+	}
+
+	nodes, err := store.ListNodes(ctx)
+	if err != nil {
+		t.Fatalf("ListNodes: %v", err)
+	}
+	if len(nodes) != 1 || len(nodes[0].IPAddresses) != 3 {
+		t.Fatalf("unexpected IPAddresses in ListNodes: %#v", nodes[0].IPAddresses)
+	}
+
+	getNode, err := store.GetNode(ctx, nodeID)
+	if err != nil {
+		t.Fatalf("GetNode: %v", err)
+	}
+	if len(getNode.IPAddresses) != 3 {
+		t.Fatalf("unexpected IPAddresses in GetNode: %#v", getNode.IPAddresses)
+	}
+
+	testAliases := map[string]string{
+		"198.51.100.2": "电信出口",
+		"2001:db8::1":  "IPv6直连",
+	}
+	if err := store.SetNodeIPAliases(ctx, nodeID, testAliases); err != nil {
+		t.Fatalf("SetNodeIPAliases: %v", err)
+	}
+
+	updatedNode, err := store.NodeByID(ctx, nodeID)
+	if err != nil {
+		t.Fatalf("NodeByID after alias: %v", err)
+	}
+	if updatedNode.IPAliases["198.51.100.2"] != "电信出口" || updatedNode.IPAliases["2001:db8::1"] != "IPv6直连" {
+		t.Fatalf("unexpected IPAliases in NodeByID: %#v", updatedNode.IPAliases)
+	}
+
+	updatedNodes, err := store.ListNodes(ctx)
+	if err != nil {
+		t.Fatalf("ListNodes after alias: %v", err)
+	}
+	if updatedNodes[0].IPAliases["198.51.100.2"] != "电信出口" {
+		t.Fatalf("unexpected IPAliases in ListNodes: %#v", updatedNodes[0].IPAliases)
+	}
+}
