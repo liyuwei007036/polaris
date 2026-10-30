@@ -259,6 +259,7 @@ func installSingBox(ctx context.Context, task Task, dataDir string) TaskResult {
 	if err := os.MkdirAll(binaryDirectory, 0o755); err != nil {
 		return TaskResult{Status: "failed", Summary: "create sing-box binary directory: " + err.Error() + permissionHint(err)}
 	}
+	selfupdate.CleanStaleArtifacts(binaryDirectory, ".polaris-sing-box-*")
 	artifact, err := os.CreateTemp(binaryDirectory, ".polaris-sing-box-*")
 	if err != nil {
 		return TaskResult{Status: "failed", Summary: "create temporary sing-box artifact: " + err.Error()}

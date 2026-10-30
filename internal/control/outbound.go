@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"strings"
 	"time"
 
@@ -325,7 +326,14 @@ func (s *Store) encryptOutboundSecret(password string) ([]byte, error) {
 // preventing listeners from referencing a dangling outbound tag. Outbounds
 // are global, so any listener on any node may reference any of them.
 func (s *Store) ensureOutboundExists(ctx context.Context, outboundID string) error {
-	if outboundID == "" {
+	if outboundID == "" || outboundID == "direct" {
+		return nil
+	}
+	if strings.HasPrefix(outboundID, DirectOutboundPrefix) {
+		ipStr := DirectOutboundIP(outboundID)
+		if net.ParseIP(ipStr) == nil {
+			return userErrorf("直连出口指定的 IP 地址无效：%s", ipStr)
+		}
 		return nil
 	}
 	var exists int
@@ -334,6 +342,19 @@ func (s *Store) ensureOutboundExists(ctx context.Context, outboundID string) err
 		return errors.New("selected outbound does not exist")
 	}
 	return err
+}
+
+const DirectOutboundPrefix = "direct:"
+
+func IsDirectOutbound(outboundID string) bool {
+	return outboundID == "direct" || strings.HasPrefix(outboundID, DirectOutboundPrefix)
+}
+
+func DirectOutboundIP(outboundID string) string {
+	if strings.HasPrefix(outboundID, DirectOutboundPrefix) {
+		return strings.TrimSpace(strings.TrimPrefix(outboundID, DirectOutboundPrefix))
+	}
+	return ""
 }
 
 const ChainOutboundPrefix = "chain:"
@@ -348,6 +369,13 @@ func ChainTargetEndpointID(outboundID string) string {
 
 func (s *Store) validateEndpointOutbound(ctx context.Context, outboundID, listenerID, endpointID string) error {
 	if outboundID == "" || outboundID == "direct" {
+		return nil
+	}
+	if strings.HasPrefix(outboundID, DirectOutboundPrefix) {
+		ipStr := DirectOutboundIP(outboundID)
+		if net.ParseIP(ipStr) == nil {
+			return userErrorf("直连出口指定的 IP 地址无效：%s", ipStr)
+		}
 		return nil
 	}
 	if IsChainOutbound(outboundID) {

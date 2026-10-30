@@ -70,6 +70,7 @@ func Apply(ctx context.Context, manifest Manifest, executablePath string, verify
 	}
 
 	binaryDirectory := filepath.Dir(executablePath)
+	CleanStaleArtifacts(binaryDirectory, ".polaris-update-*")
 	artifact, err := os.CreateTemp(binaryDirectory, ".polaris-update-*")
 	if err != nil {
 		return fmt.Errorf("创建临时文件失败（进程可能无权写入 %s）: %w", binaryDirectory, err)
@@ -142,6 +143,17 @@ func RestoreBackup(backup, target string) error {
 		return nil
 	}
 	return copyFile(backup, target, 0o755)
+}
+
+// CleanStaleArtifacts 清理由于异常中断（如掉电、强杀）可能遗留的历史临时文件。
+func CleanStaleArtifacts(directory, pattern string) {
+	matches, err := filepath.Glob(filepath.Join(directory, pattern))
+	if err != nil {
+		return
+	}
+	for _, m := range matches {
+		_ = os.Remove(m)
+	}
 }
 
 func copyFile(src, dst string, mode os.FileMode) error {
