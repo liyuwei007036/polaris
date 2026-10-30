@@ -17,6 +17,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
+	"runtime/debug"
 	"strings"
 	"time"
 )
@@ -94,6 +96,8 @@ func Apply(ctx context.Context, manifest Manifest, executablePath string, verify
 		if extractErr != nil {
 			return fmt.Errorf("解包新版本失败: %w", extractErr)
 		}
+		// 提前清理下载的归档包，立即归还磁盘空间与页缓存
+		_ = os.Remove(artifactPath)
 		defer os.Remove(extractedPath)
 		artifactPath = extractedPath
 	} else if manifest.Archive != "" {
@@ -104,17 +108,40 @@ func Apply(ctx context.Context, manifest Manifest, executablePath string, verify
 	}
 
 	backupPath := executablePath + ".polaris.last-good"
-	if err := copyFile(executablePath, backupPath, 0o755); err != nil && !os.IsNotExist(err) {
+	if err := AtomicBackup(executablePath, backupPath); err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("备份当前版本失败: %w", err)
 	}
 	if err := os.Rename(artifactPath, executablePath); err != nil {
 		return fmt.Errorf("安装新版本失败（进程可能无权写入 %s）: %w", executablePath, err)
 	}
+
+	// 在执行子进程自检前，强制进行GC并向操作系统归还未使用的堆内存
+	runtime.GC()
+	debug.FreeOSMemory()
+
 	if err := verify(ctx, executablePath); err != nil {
-		_ = copyFile(backupPath, executablePath, 0o755)
+		_ = RestoreBackup(backupPath, executablePath)
 		return fmt.Errorf("新版本验证失败，已恢复原版本: %w", err)
 	}
 	return nil
+}
+
+// AtomicBackup 使用硬链接进行秒级备份，避免内存占用与全量磁盘块复制。
+// 若跨文件系统等原因导致硬链接失败，则安全降级为流式复制。
+func AtomicBackup(src, dst string) error {
+	_ = os.Remove(dst)
+	if err := os.Link(src, dst); err == nil {
+		return nil
+	}
+	return copyFile(src, dst, 0o755)
+}
+
+// RestoreBackup 将备份文件原子恢复覆盖回目标路径。
+func RestoreBackup(backup, target string) error {
+	if err := os.Rename(backup, target); err == nil {
+		return nil
+	}
+	return copyFile(backup, target, 0o755)
 }
 
 func copyFile(src, dst string, mode os.FileMode) error {

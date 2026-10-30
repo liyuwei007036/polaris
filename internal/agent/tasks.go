@@ -284,6 +284,7 @@ func installSingBox(ctx context.Context, task Task, dataDir string) TaskResult {
 		if extractErr != nil {
 			return TaskResult{Status: "failed", Summary: "extract sing-box archive: " + extractErr.Error()}
 		}
+		_ = os.Remove(artifactPath)
 		defer os.Remove(extractedPath)
 		artifactPath = extractedPath
 	} else if manifest.Archive != "" {
@@ -294,31 +295,23 @@ func installSingBox(ctx context.Context, task Task, dataDir string) TaskResult {
 	}
 
 	backupPath := binaryPath + ".polaris.last-good"
-	if current, err := os.ReadFile(binaryPath); err == nil {
-		if err := os.WriteFile(backupPath, current, 0o755); err != nil {
-			return TaskResult{Status: "failed", Summary: "backup sing-box binary: " + err.Error()}
-		}
-	} else if !os.IsNotExist(err) {
-		return TaskResult{Status: "failed", Summary: "read sing-box binary: " + err.Error()}
+	if err := selfupdate.AtomicBackup(binaryPath, backupPath); err != nil && !os.IsNotExist(err) {
+		return TaskResult{Status: "failed", Summary: "backup sing-box binary: " + err.Error()}
 	}
 	if err := os.Rename(artifactPath, binaryPath); err != nil {
 		return TaskResult{Status: "failed", Summary: "install sing-box binary: " + err.Error()}
 	}
 	if output, err := exec.CommandContext(ctx, binaryPath, "version").CombinedOutput(); err != nil ||
 		!strings.Contains(string(output), "version "+manifest.Version) {
-		if backup, readErr := os.ReadFile(backupPath); readErr == nil {
-			_ = os.WriteFile(binaryPath, backup, 0o755)
-		}
+		_ = selfupdate.RestoreBackup(backupPath, binaryPath)
 		return TaskResult{Status: "rolled_back", Summary: "sing-box version verification failed; restored prior binary"}
 	}
 	if result := restartSingBox(ctx); result.Status == "succeeded" {
 		return TaskResult{Status: "succeeded", Summary: "sing-box artifact verified, installed, and service is active", SingBoxVersion: manifest.Version}
 	}
-	if backup, err := os.ReadFile(backupPath); err == nil {
-		if os.WriteFile(binaryPath, backup, 0o755) == nil {
-			_ = restartSingBox(ctx)
-			return TaskResult{Status: "rolled_back", Summary: "sing-box service failed after upgrade; restored prior binary"}
-		}
+	if err := selfupdate.RestoreBackup(backupPath, binaryPath); err == nil {
+		_ = restartSingBox(ctx)
+		return TaskResult{Status: "rolled_back", Summary: "sing-box service failed after upgrade; restored prior binary"}
 	}
 	return TaskResult{Status: "failed", Summary: "sing-box service failed after upgrade and rollback did not complete"}
 }
