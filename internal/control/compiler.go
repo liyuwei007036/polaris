@@ -293,10 +293,8 @@ func compileDirectIPOutbound(publicIP, bindIP string) (map[string]any, string, e
 	}
 	if bindParsed.To4() != nil {
 		outbound["inet4_bind_address"] = bindIP
-		outbound["domain_strategy"] = "prefer_ipv4"
 	} else {
 		outbound["inet6_bind_address"] = bindIP
-		outbound["domain_strategy"] = "prefer_ipv6"
 	}
 	return outbound, tag, nil
 }

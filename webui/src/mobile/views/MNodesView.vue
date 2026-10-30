@@ -1,7 +1,7 @@
 <script setup>
 import { computed, inject, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Check, Plus, Search } from '@element-plus/icons-vue'
+import { Check, Delete, Plus, Search } from '@element-plus/icons-vue'
 import { api, post, put } from '../../api'
 import { writeClipboard } from '../../clipboard'
 import { formatBytes, formatDateTime, includesText } from '../../format'
@@ -39,6 +39,52 @@ const agentPort = ref(19994)
 const editSheet = ref(false)
 const editNode = ref(null)
 const editForm = ref({ name: '', client_address: '', ddns_enabled: false, ddns_record_id: '', ddns_domain: '', ddns_record_ids: [], ddns_domains: [], ip_aliases: {} })
+const newCustomEgressIP = ref('')
+
+const editNodeAllIPs = computed(() => {
+  const ips = []
+  const seen = new Set()
+  const add = (ip) => {
+    if (!ip || typeof ip !== 'string') return
+    const trimmed = ip.trim()
+    if (trimmed && !seen.has(trimmed)) {
+      seen.add(trimmed)
+      ips.push(trimmed)
+    }
+  }
+  if (Array.isArray(editNode.value?.ip_addresses)) {
+    for (const ip of editNode.value.ip_addresses) add(ip)
+  }
+  if (editForm.value?.ip_aliases) {
+    for (const ip of Object.keys(editForm.value.ip_aliases)) add(ip)
+  }
+  return ips
+})
+
+function addCustomEgressIP() {
+  const ip = (newCustomEgressIP.value || '').trim()
+  if (!ip) return
+  const ipv4 = /^((25[0-5]|(2[0-4]|1\d|[1-9]|)\d)\.?\b){4}$/
+  const ipv6 = /^([0-9a-fA-F]{0,4}:){2,7}[0-9a-fA-F]{0,4}$/
+  if (!ipv4.test(ip) && !ipv6.test(ip)) {
+    ElMessage.warning('请输入有效的 IPv4 或 IPv6 地址')
+    return
+  }
+  if (!editForm.value.ip_aliases) {
+    editForm.value.ip_aliases = {}
+  }
+  if (editForm.value.ip_aliases[ip] === undefined) {
+    editForm.value.ip_aliases[ip] = ''
+  }
+  newCustomEgressIP.value = ''
+  ElMessage.success(`已添加出口 IP: ${ip}`)
+}
+
+function removeCustomEgressIP(ip) {
+  if (editForm.value.ip_aliases && ip in editForm.value.ip_aliases) {
+    delete editForm.value.ip_aliases[ip]
+  }
+}
 const cfRecords = ref([])
 const cfLoading = ref(false)
 const editSaving = ref(false)
@@ -408,10 +454,10 @@ onBeforeUnmount(() => {
         <label class="m-field__label">客户端连接域名或 IP 地址</label>
         <el-input v-model="editForm.client_address" aria-label="客户端连接域名或 IP 地址" placeholder="例如：proxy.example.com" />
         <div class="m-field__hint">接入时会自动填入来源 IP。仅填域名或 IP，不含 http://、端口与路径。</div>
-        <div v-if="editNode?.ip_addresses?.length" style="margin-top: 6px; display: flex; flex-wrap: wrap; gap: 6px; align-items: center">
+        <div v-if="editNodeAllIPs.length" style="margin-top: 6px; display: flex; flex-wrap: wrap; gap: 6px; align-items: center">
           <span style="font-size: 12px; color: var(--color-text-subtle, #999)">点击填入：</span>
           <el-tag
-            v-for="ip in editNode.ip_addresses"
+            v-for="ip in editNodeAllIPs"
             :key="ip"
             size="small"
             type="info"
@@ -424,18 +470,29 @@ onBeforeUnmount(() => {
       </div>
       <div class="m-field">
         <label class="m-field__label">本机出口 IP 与别名设置</label>
-        <div class="m-field__hint">自动从服务器网卡获取并验证具备外网连通性的 IP。可在此为每个出口 IP 设置别名。</div>
-        <div v-if="editNode?.ip_addresses?.length" style="margin-top: 8px; display: flex; flex-direction: column; gap: 8px">
+        <div class="m-field__hint">自动从服务器网卡获取或手动配置的出口 IP。在此为每个出口 IP 设置别名。</div>
+        <div v-if="editNodeAllIPs.length" style="margin-top: 8px; display: flex; flex-direction: column; gap: 8px">
           <div
-            v-for="ip in editNode.ip_addresses"
+            v-for="ip in editNodeAllIPs"
             :key="ip"
             style="background: var(--color-bg-page, #f8f9fa); padding: 8px 10px; border-radius: 8px; border: 1px solid var(--color-border, #eee)"
           >
             <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px">
               <span style="font-family: monospace; font-size: 12px; font-weight: 600; word-break: break-all">{{ ip }}</span>
-              <el-tag size="small" :type="ip.includes(':') ? 'warning' : 'success'">
-                {{ ip.includes(':') ? 'IPv6' : 'IPv4' }}
-              </el-tag>
+              <div style="display: flex; align-items: center; gap: 6px">
+                <el-tag size="small" :type="ip.includes(':') ? 'warning' : 'success'">
+                  {{ ip.includes(':') ? 'IPv6' : 'IPv4' }}
+                </el-tag>
+                <el-button
+                  v-if="!editNode?.ip_addresses?.includes(ip)"
+                  text
+                  type="danger"
+                  size="small"
+                  :icon="Delete"
+                  title="删除手动添加的出口 IP"
+                  @click="removeCustomEgressIP(ip)"
+                />
+              </div>
             </div>
             <el-input
               v-model="editForm.ip_aliases[ip]"
@@ -446,7 +503,17 @@ onBeforeUnmount(() => {
           </div>
         </div>
         <div v-else class="m-field__hint" style="margin-top: 6px">
-          暂未检测到出口 IP（等待服务器连接上报并完成外网验证）。
+          暂未检测到出口 IP。您可手动输入本服务器的出口 IP 添加管理。
+        </div>
+        <div style="display: flex; gap: 8px; width: 100%; margin-top: 8px">
+          <el-input
+            v-model="newCustomEgressIP"
+            size="small"
+            placeholder="手动添加出口 IP（如：198.51.100.2）"
+            clearable
+            @keydown.enter.prevent="addCustomEgressIP"
+          />
+          <el-button size="small" :icon="Plus" @click="addCustomEgressIP">添加</el-button>
         </div>
       </div>
       <div class="m-field">

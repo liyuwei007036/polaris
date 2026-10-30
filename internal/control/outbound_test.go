@@ -4,6 +4,9 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -261,8 +264,8 @@ func TestDirectIPOutboundCompilation(t *testing.T) {
 			if ob["inet4_bind_address"] != "198.51.100.55" {
 				t.Errorf("expected inet4_bind_address 198.51.100.55, got %v", ob["inet4_bind_address"])
 			}
-			if ob["domain_strategy"] != "prefer_ipv4" {
-				t.Errorf("expected domain_strategy prefer_ipv4, got %v", ob["domain_strategy"])
+			if _, hasStrategy := ob["domain_strategy"]; hasStrategy {
+				t.Errorf("domain_strategy is deprecated and must not be present, got %v", ob["domain_strategy"])
 			}
 		}
 		if tag == "direct-2001:db8::88" {
@@ -273,8 +276,8 @@ func TestDirectIPOutboundCompilation(t *testing.T) {
 			if ob["inet6_bind_address"] != "2001:db8::88" {
 				t.Errorf("expected inet6_bind_address 2001:db8::88, got %v", ob["inet6_bind_address"])
 			}
-			if ob["domain_strategy"] != "prefer_ipv6" {
-				t.Errorf("expected domain_strategy prefer_ipv6, got %v", ob["domain_strategy"])
+			if _, hasStrategy := ob["domain_strategy"]; hasStrategy {
+				t.Errorf("domain_strategy is deprecated and must not be present, got %v", ob["domain_strategy"])
 			}
 		}
 	}
@@ -331,5 +334,22 @@ func TestDirectIPOutboundCompilation(t *testing.T) {
 	}
 	if !natBoundCorrectly {
 		t.Error("expected direct-198.51.100.55 in NAT environment to bind to local IP 10.0.0.121")
+	}
+
+	if binary := os.Getenv("SING_BOX_BIN"); binary != "" {
+		configPath := filepath.Join(t.TempDir(), "sing-box-direct-ip.json")
+		if err := os.WriteFile(configPath, []byte(configJSON), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if output, err := exec.Command(binary, "check", "-c", configPath).CombinedOutput(); err != nil {
+			t.Fatalf("official sing-box rejected direct IP outbound configuration: %v\n%s", err, output)
+		}
+		configNATPath := filepath.Join(t.TempDir(), "sing-box-direct-nat.json")
+		if err := os.WriteFile(configNATPath, []byte(configNAT), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if output, err := exec.Command(binary, "check", "-c", configNATPath).CombinedOutput(); err != nil {
+			t.Fatalf("official sing-box rejected direct NAT outbound configuration: %v\n%s", err, output)
+		}
 	}
 }

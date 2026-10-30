@@ -181,10 +181,14 @@ function openCreate() {
   editing.value = null
   copying.value = null
   copySourceID.value = ''
+  api('/outbounds').then((res) => { if (res.outbounds) outbounds.value = res.outbounds }).catch(() => {})
+  api('/endpoints').then((res) => { if (res.endpoints) allEndpoints.value = res.endpoints }).catch(() => {})
   formOpen.value = true
 }
 
 async function openEdit(listener) {
+  api('/outbounds').then((res) => { if (res.outbounds) outbounds.value = res.outbounds }).catch(() => {})
+  api('/endpoints').then((res) => { if (res.endpoints) allEndpoints.value = res.endpoints }).catch(() => {})
   await loadEndpoints(listener.id)
   editing.value = listener
   copying.value = null
@@ -194,6 +198,8 @@ async function openEdit(listener) {
 
 // 复制只是把表单填好，选定目标服务器并保存之前什么都不会创建。
 async function openCopy(listener) {
+  api('/outbounds').then((res) => { if (res.outbounds) outbounds.value = res.outbounds }).catch(() => {})
+  api('/endpoints').then((res) => { if (res.endpoints) allEndpoints.value = res.endpoints }).catch(() => {})
   await loadEndpoints(listener.id)
   editing.value = null
   copySourceID.value = listener.id

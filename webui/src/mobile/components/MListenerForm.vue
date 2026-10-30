@@ -1,6 +1,6 @@
 <script setup>
 import { computed, ref, watch } from 'vue'
-import { ElMessage } from 'element-plus'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import { Delete, Plus } from '@element-plus/icons-vue'
 import {
   createListenerModel,
@@ -39,29 +39,42 @@ const showReality = computed(() => model.value.security === 'reality')
 const currentNode = computed(() => props.nodes.find((node) => node.id === model.value.node_id))
 const nodeAddress = computed(() => currentNode.value?.client_address || '')
 const nodeOptions = computed(() => props.nodes.map((node) => ({ value: node.id, label: node.name, desc: node.client_address || '未填写客户端连接地址' })))
+const customNodeIPs = ref([])
 
 function getNodeEgressOptions(node) {
   if (!node) return []
   const ips = []
   const seen = new Set()
-  if (Array.isArray(node.ip_addresses)) {
-    for (const ip of node.ip_addresses) {
-      if (ip && typeof ip === 'string') {
-        const trimmed = ip.trim()
-        if (trimmed && !seen.has(trimmed)) {
-          seen.add(trimmed)
-          ips.push(trimmed)
-        }
+
+  const addIP = (ip) => {
+    if (ip && typeof ip === 'string') {
+      const trimmed = ip.trim()
+      if (trimmed && !seen.has(trimmed) && (/^[0-9.]+$/.test(trimmed) || trimmed.includes(':'))) {
+        seen.add(trimmed)
+        ips.push(trimmed)
       }
     }
   }
-  if (!ips.length && node.last_observed_ip) {
-    const trimmed = node.last_observed_ip.trim()
-    if (trimmed && !trimmed.includes('/') && !seen.has(trimmed)) {
-      seen.add(trimmed)
-      ips.push(trimmed)
-    }
+
+  // 1. IP addresses detected by probe
+  if (Array.isArray(node.ip_addresses)) {
+    for (const ip of node.ip_addresses) addIP(ip)
   }
+  // 2. IP aliases configured on this node
+  if (node.ip_aliases && typeof node.ip_aliases === 'object') {
+    for (const ip of Object.keys(node.ip_aliases)) addIP(ip)
+  }
+  // 3. IP mappings on this node
+  if (node.ip_mappings && typeof node.ip_mappings === 'object') {
+    for (const ip of Object.keys(node.ip_mappings)) addIP(ip)
+  }
+  // 4. Node client address
+  addIP(node.client_address)
+  // 5. Last observed IP
+  addIP(node.last_observed_ip)
+  // 6. User manually added custom IPs in this session
+  for (const ip of customNodeIPs.value) addIP(ip)
+
   const aliases = node.ip_aliases || {}
   return ips.map((ip) => {
     const alias = aliases[ip]
@@ -79,9 +92,53 @@ function getNodeEgressOptions(node) {
 
 const nodeEgressOptions = computed(() => getNodeEgressOptions(currentNode.value))
 
-function defaultEgressValue(node) {
-  const opts = getNodeEgressOptions(node || currentNode.value)
-  return opts[0]?.value || 'direct'
+async function promptAddCustomIP(account) {
+  try {
+    const { value } = await ElMessageBox.prompt('请输入服务器可用的出口 IPv4 或 IPv6 地址：', '添加出口 IP', {
+      confirmButtonText: '确定添加',
+      cancelButtonText: '取消',
+      inputPattern: /^((25[0-5]|(2[0-4]|1\d|[1-9]|)\d)\.?\b){4}$|^([0-9a-fA-F]{0,4}:){2,7}[0-9a-fA-F]{0,4}$/,
+      inputErrorMessage: '请输入有效的 IPv4 或 IPv6 地址',
+      inputPlaceholder: '例如：198.51.100.2 或 2001:db8::1',
+    })
+    const trimmed = (value || '').trim()
+    if (trimmed) {
+      if (!customNodeIPs.value.includes(trimmed)) {
+        customNodeIPs.value.push(trimmed)
+      }
+      if (account) {
+        account.outbound_id = `direct:${trimmed}`
+      }
+      ElMessage.success(`已添加出口 IP: ${trimmed}`)
+    }
+  } catch {
+    // User cancelled prompt
+  }
+}
+
+function defaultEgressValue() {
+  return 'direct'
+}
+
+function wouldFormCycle(targetEndpointID, currentNodeID, currentListenerID) {
+  const visited = new Set([targetEndpointID])
+  let currentID = targetEndpointID
+  for (let hop = 0; hop < 16; hop++) {
+    const ep = (props.allEndpoints || []).find((e) => e.id === currentID)
+    if (!ep || !ep.outbound_id || !ep.outbound_id.startsWith('chain:')) break
+    const nextID = ep.outbound_id.slice(6)
+    if (visited.has(nextID)) return true
+    visited.add(nextID)
+    const nextEp = (props.allEndpoints || []).find((e) => e.id === nextID)
+    if (!nextEp) break
+    const nextListener = (props.listeners || []).find((l) => l.id === nextEp.listener_id)
+    if (nextListener) {
+      if (currentListenerID && nextListener.id === currentListenerID) return true
+      if (currentNodeID && nextListener.node_id === currentNodeID) return true
+    }
+    currentID = nextID
+  }
+  return false
 }
 
 const chainTargets = computed(() => {
@@ -94,6 +151,7 @@ const chainTargets = computed(() => {
     if (!listener || !supported.has(listener.spec?.protocol)) return []
     if (currentNodeID && listener.node_id === currentNodeID) return []
     if (!listener.enabled || !endpoint.enabled) return []
+    if (wouldFormCycle(endpoint.id, currentNodeID, currentListenerID)) return []
     const node = (props.nodes || []).find((item) => item.id === listener.node_id)
     const nodeName = node?.name || listener.node_id
     const userLabel = endpoint.alias ? `${endpoint.alias} (${endpoint.name})` : endpoint.name
@@ -107,22 +165,20 @@ const chainTargets = computed(() => {
 
 function accountOutboundOptions(account) {
   const result = []
+  // 1. 直连与出口 IP (普通节点)
+  result.push({
+    value: 'direct',
+    label: '服务器直连 (系统默认出口 / 普通节点)',
+    desc: '使用服务器系统默认路由与网关出站',
+    group: '直连与出口 IP',
+  })
   const egressOpts = nodeEgressOptions.value
-  if (egressOpts.length > 0) {
-    for (const opt of egressOpts) {
-      result.push({
-        value: opt.value,
-        label: opt.label,
-        desc: opt.alias ? `${opt.type} 本机出口 · ${opt.ip}` : `${opt.type} 本机出口`,
-        group: '出口 IP',
-      })
-    }
-  } else {
+  for (const opt of egressOpts) {
     result.push({
-      value: 'direct',
-      label: '系统默认出口',
-      desc: '等待服务器上报出口 IP',
-      group: '出口 IP',
+      value: opt.value,
+      label: opt.label,
+      desc: opt.alias ? `${opt.type} 本机指定出口 · ${opt.ip}` : `${opt.type} 本机指定出口`,
+      group: '直连与出口 IP',
     })
   }
   if (account?.outbound_id?.startsWith('direct:') && !egressOpts.some((o) => o.value === account.outbound_id)) {
@@ -132,26 +188,28 @@ function accountOutboundOptions(account) {
     const label = alias ? `${alias} (${ip})` : `${ip} (${ipType})`
     result.push({
       value: account.outbound_id,
-      label,
-      desc: '已脱机出口 IP',
-      group: '出口 IP',
+      label: `${label} (已脱机)`,
+      desc: '历史保存的出口 IP 已在服务器网卡脱机',
+      group: '直连与出口 IP',
     })
   }
-  if (!account?.outbound_id || account?.outbound_id === 'direct') {
-    if (!result.some((o) => o.value === 'direct')) {
-      result.push({
-        value: 'direct',
-        label: '默认出口 (兼容历史配置)',
-        desc: '历史保存的默认直连出站',
-        group: '出口 IP',
-      })
-    }
+  // 2. 上网出口（配置的出口）
+  for (const item of (props.outbounds || []).filter((item) => item && item.id !== 'direct')) {
+    result.push({
+      value: item.id,
+      label: item.name + (item.type ? ` (${item.type.toUpperCase()})` : '') + (!item.enabled ? ' [已停用]' : ''),
+      desc: item.server ? `${item.type.toUpperCase()} ${item.server}:${item.server_port}` : '配置的上网出口',
+      group: '上网出口（配置的出口）',
+    })
   }
-  for (const item of props.outbounds.filter((item) => item.type !== 'direct')) {
-    result.push({ value: item.id, label: item.name, desc: `${item.type.toUpperCase()} ${item.server}:${item.server_port}`, group: '上网出口' })
-  }
+  // 3. 链式代理（其他服务器节点用户）
   for (const item of chainTargets.value) {
-    result.push({ value: item.value, label: item.label, desc: item.desc, group: '链式代理（其他服务器节点用户）' })
+    result.push({
+      value: item.value,
+      label: item.label,
+      desc: item.desc,
+      group: '链式代理（其他服务器节点用户）',
+    })
   }
   return result
 }
@@ -235,8 +293,6 @@ watch(() => props.modelValue, (open) => {
   model.value = createListenerModel(props.listener || props.template, props.nodes[0]?.id || '')
   // 编辑保留客户端正在用的路径；新建和复制各自生成新的。
   if (!props.listener) model.value.transport_path = randomPath()
-  const targetNode = props.nodes.find((n) => n.id === model.value.node_id)
-  const initialDefaultOutbound = defaultEgressValue(targetNode)
   // 复制时把原有用户当成新用户带入：去掉 id，保存时会生成各自的新凭据。
   accounts.value = props.listener || props.template
     ? props.endpoints.map((endpoint) => ({
@@ -244,11 +300,11 @@ watch(() => props.modelValue, (open) => {
         name: endpoint.name,
         alias: endpoint.alias || endpoint.name,
         enabled: endpoint.enabled,
-        outbound_id: endpoint.outbound_id || (props.listener ? 'direct' : initialDefaultOutbound),
+        outbound_id: endpoint.outbound_id || 'direct',
       }))
     : []
   if (!accounts.value.length) {
-    accounts.value = [{ id: '', name: randomAccountName(), alias: '', enabled: true, outbound_id: initialDefaultOutbound }]
+    accounts.value = [{ id: '', name: randomAccountName(), alias: '', enabled: true, outbound_id: 'direct' }]
   }
   expanded.value = 0
   normalizeProfile()
@@ -258,16 +314,17 @@ watch(() => model.value.node_id, (newNodeID) => {
   const targetNode = props.nodes.find((n) => n.id === newNodeID)
   if (!targetNode) return
   const options = getNodeEgressOptions(targetNode)
-  const firstEgress = options[0]?.value || 'direct'
   for (const account of accounts.value) {
-    if (!account.outbound_id || account.outbound_id === 'direct' || (account.outbound_id.startsWith('direct:') && !options.some((o) => o.value === account.outbound_id))) {
-      account.outbound_id = firstEgress
+    if (!account.outbound_id) {
+      account.outbound_id = 'direct'
+    } else if (account.outbound_id.startsWith('direct:') && !options.some((o) => o.value === account.outbound_id)) {
+      account.outbound_id = 'direct'
     }
   }
 })
 
 function addAccount() {
-  accounts.value.push({ id: '', name: randomAccountName(), alias: '', enabled: true, outbound_id: defaultEgressValue() })
+  accounts.value.push({ id: '', name: randomAccountName(), alias: '', enabled: true, outbound_id: 'direct' })
   expanded.value = accounts.value.length - 1
 }
 
@@ -424,6 +481,11 @@ function save() {
               :options="accountOutboundOptions(account)"
               title="选择出口或链式用户"
             />
+            <div style="margin-top: 6px">
+              <el-button text size="small" type="primary" :icon="Plus" @click="promptAddCustomIP(account)">
+                手动添加出口 IP
+              </el-button>
+            </div>
           </div>
           <div class="m-field m-field--inline">
             <label class="m-field__label">启用该用户</label>

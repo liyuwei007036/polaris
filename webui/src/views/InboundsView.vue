@@ -119,10 +119,14 @@ function openCreate() {
   editing.value = null
   copying.value = null
   copySourceID.value = ''
+  api('/outbounds').then((res) => { if (res.outbounds) outbounds.value = res.outbounds }).catch(() => {})
+  api('/endpoints').then((res) => { if (res.endpoints) allEndpoints.value = res.endpoints }).catch(() => {})
   formOpen.value = true
 }
 
 async function openEdit(listener) {
+  api('/outbounds').then((res) => { if (res.outbounds) outbounds.value = res.outbounds }).catch(() => {})
+  api('/endpoints').then((res) => { if (res.endpoints) allEndpoints.value = res.endpoints }).catch(() => {})
   await loadEndpoints(listener.id)
   editing.value = listener
   copying.value = null
@@ -133,6 +137,8 @@ async function openEdit(listener) {
 // Copying only fills in the form. Nothing is created until the operator picks
 // the target server and saves, so a copy can be adjusted first.
 async function openCopy(listener) {
+  api('/outbounds').then((res) => { if (res.outbounds) outbounds.value = res.outbounds }).catch(() => {})
+  api('/endpoints').then((res) => { if (res.endpoints) allEndpoints.value = res.endpoints }).catch(() => {})
   await loadEndpoints(listener.id)
   editing.value = null
   copySourceID.value = listener.id

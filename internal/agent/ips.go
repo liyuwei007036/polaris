@@ -384,6 +384,20 @@ func CollectLocalIPsAndMappings() ([]string, map[string]string) {
 			}
 
 			// Direct public IPv4 (no NAT):
+			// Check CanAccessInternet directly so that multiple public IPs bound to
+			// host interfaces (e.g. 5 public IPv4 addresses on a server) are all
+			// verified independently and not collapsed by default-gateway SNAT echo.
+			if CanAccessInternet(ctx, localIPStr) {
+				mu.Lock()
+				if !seenPublic[localIPStr] {
+					seenPublic[localIPStr] = true
+					verified = append(verified, localIPStr)
+					mappings[localIPStr] = localIPStr
+				}
+				mu.Unlock()
+				return
+			}
+
 			pubIP, err := ResolvePublicIP(ctx, localIPStr)
 			if err == nil && pubIP != "" {
 				mu.Lock()
@@ -394,16 +408,6 @@ func CollectLocalIPsAndMappings() ([]string, map[string]string) {
 				}
 				mu.Unlock()
 				return
-			}
-
-			if CanAccessInternet(ctx, localIPStr) {
-				mu.Lock()
-				if !seenPublic[localIPStr] {
-					seenPublic[localIPStr] = true
-					verified = append(verified, localIPStr)
-					mappings[localIPStr] = localIPStr
-				}
-				mu.Unlock()
 			}
 		}(cand)
 	}

@@ -78,6 +78,52 @@ const editForm = ref({
   ddns_domains: [],
   ip_aliases: {},
 })
+const newCustomEgressIP = ref('')
+
+const editNodeAllIPs = computed(() => {
+  const ips = []
+  const seen = new Set()
+  const add = (ip) => {
+    if (!ip || typeof ip !== 'string') return
+    const trimmed = ip.trim()
+    if (trimmed && !seen.has(trimmed)) {
+      seen.add(trimmed)
+      ips.push(trimmed)
+    }
+  }
+  if (Array.isArray(editNode.value?.ip_addresses)) {
+    for (const ip of editNode.value.ip_addresses) add(ip)
+  }
+  if (editForm.value?.ip_aliases) {
+    for (const ip of Object.keys(editForm.value.ip_aliases)) add(ip)
+  }
+  return ips
+})
+
+function addCustomEgressIP() {
+  const ip = (newCustomEgressIP.value || '').trim()
+  if (!ip) return
+  const ipv4 = /^((25[0-5]|(2[0-4]|1\d|[1-9]|)\d)\.?\b){4}$/
+  const ipv6 = /^([0-9a-fA-F]{0,4}:){2,7}[0-9a-fA-F]{0,4}$/
+  if (!ipv4.test(ip) && !ipv6.test(ip)) {
+    ElMessage.warning('请输入有效的 IPv4 或 IPv6 地址')
+    return
+  }
+  if (!editForm.value.ip_aliases) {
+    editForm.value.ip_aliases = {}
+  }
+  if (editForm.value.ip_aliases[ip] === undefined) {
+    editForm.value.ip_aliases[ip] = ''
+  }
+  newCustomEgressIP.value = ''
+  ElMessage.success(`已添加出口 IP: ${ip}`)
+}
+
+function removeCustomEgressIP(ip) {
+  if (editForm.value.ip_aliases && ip in editForm.value.ip_aliases) {
+    delete editForm.value.ip_aliases[ip]
+  }
+}
 const cfRecords = ref([])
 const cfLoading = ref(false)
 const syncingDDNS = ref(false)
@@ -1497,10 +1543,10 @@ onBeforeUnmount(() => {
         </el-form-item>
         <el-form-item label="客户端连接域名或 IP">
           <el-input v-model="editForm.client_address" placeholder="例如：hk.example.com 或 1.2.3.4" />
-          <div v-if="editNode?.ip_addresses?.length" style="margin-top: 6px; display: flex; flex-wrap: wrap; gap: 6px; align-items: center">
-            <span class="subtle" style="font-size: 12px">本机检测到的出口 IP：</span>
+          <div v-if="editNodeAllIPs.length" style="margin-top: 6px; display: flex; flex-wrap: wrap; gap: 6px; align-items: center">
+            <span class="subtle" style="font-size: 12px">本机出口 IP：</span>
             <el-tag
-              v-for="ip in editNode.ip_addresses"
+              v-for="ip in editNodeAllIPs"
               :key="ip"
               size="small"
               type="info"
@@ -1514,11 +1560,11 @@ onBeforeUnmount(() => {
 
         <el-form-item label="本机出口 IP 与别名设置">
           <div class="subtle" style="font-size: 12px; margin-bottom: 8px">
-            自动从服务器网卡获取并已验证外网连通性的 IP 地址。在此为出口 IP 设置别名，配置节点分流时将优先显示该别名。
+            自动从服务器网卡获取或手动配置的出口 IP 地址。在此为出口 IP 设置别名，配置用户出口与节点分流时将优先显示该别名。
           </div>
-          <div v-if="editNode?.ip_addresses?.length" style="display: flex; flex-direction: column; gap: 8px; width: 100%">
+          <div v-if="editNodeAllIPs.length" style="display: flex; flex-direction: column; gap: 8px; width: 100%">
             <div
-              v-for="ip in editNode.ip_addresses"
+              v-for="ip in editNodeAllIPs"
               :key="ip"
               style="display: flex; align-items: center; gap: 10px; background: var(--bg-subtle, rgba(0,0,0,0.03)); padding: 6px 10px; border-radius: 6px; border: 1px solid var(--border-color, #e4e7ed);"
             >
@@ -1535,10 +1581,29 @@ onBeforeUnmount(() => {
                 style="flex: 1"
                 clearable
               />
+              <el-button
+                v-if="!editNode?.ip_addresses?.includes(ip)"
+                text
+                type="danger"
+                size="small"
+                :icon="Delete"
+                title="删除手动添加的出口 IP"
+                @click="removeCustomEgressIP(ip)"
+              />
             </div>
           </div>
-          <div v-else class="subtle" style="font-size: 12px">
-            暂未检测到出口 IP（等待服务器连接上报并完成外网探测验证）。
+          <div v-else class="subtle" style="font-size: 12px; margin-bottom: 8px">
+            暂未检测到出口 IP。您可手动输入本服务器的出口 IP 添加管理。
+          </div>
+          <div style="display: flex; gap: 8px; width: 100%; margin-top: 8px">
+            <el-input
+              v-model="newCustomEgressIP"
+              size="small"
+              placeholder="手动添加出口 IP（如：198.51.100.2 或 2001:db8::1）"
+              clearable
+              @keydown.enter.prevent="addCustomEgressIP"
+            />
+            <el-button size="small" :icon="Plus" @click="addCustomEgressIP">添加出口 IP</el-button>
           </div>
         </el-form-item>
 
