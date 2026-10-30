@@ -250,7 +250,7 @@ func EnsureNetworkTools(ctx context.Context) {
 		if commandExists("traceroute") || commandExists("tracepath") {
 			return
 		}
-		installCtx, cancel := context.WithTimeout(ctx, 25*time.Second)
+		installCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 		defer cancel()
 		_ = installPackages(installCtx, "traceroute")
 	})
@@ -262,14 +262,14 @@ func traceRoute(ctx context.Context, targetHost string) traceRouteResult {
 	var outStr string
 
 	if runtime.GOOS == "windows" {
-		traceCtx, cancel := context.WithTimeout(ctx, 12*time.Second)
-		out, _ := exec.CommandContext(traceCtx, "tracert", "-d", "-h", "25", "-w", "500", targetHost).CombinedOutput()
+		traceCtx, cancel := context.WithTimeout(ctx, 6*time.Second)
+		out, _ := exec.CommandContext(traceCtx, "tracert", "-d", "-h", "18", "-w", "300", targetHost).CombinedOutput()
 		cancel()
 		outStr = string(out)
 	} else if commandExists("traceroute") {
-		// 1. Try ICMP traceroute (-I) with 25 max hops (-m 25 -q 1 -w 1)
-		traceCtx, cancel := context.WithTimeout(ctx, 12*time.Second)
-		out, _ := exec.CommandContext(traceCtx, "traceroute", "-I", "-n", "-m", "25", "-q", "1", "-w", "1", targetHost).CombinedOutput()
+		// 1. Try ICMP traceroute (-I) with 18 max hops (-m 18 -q 1 -w 1)
+		traceCtx, cancel := context.WithTimeout(ctx, 6*time.Second)
+		out, _ := exec.CommandContext(traceCtx, "traceroute", "-I", "-n", "-m", "18", "-q", "1", "-w", "1", targetHost).CombinedOutput()
 		cancel()
 
 		hops, lat := extractHopsFromOutput(targetHost, string(out))
@@ -277,8 +277,8 @@ func traceRoute(ctx context.Context, targetHost string) traceRouteResult {
 			outStr = string(out)
 		} else {
 			// 2. If ICMP produced 0 hops (e.g. non-root or firewall drop), try standard UDP traceroute
-			traceCtx2, cancel2 := context.WithTimeout(ctx, 10*time.Second)
-			out2, _ := exec.CommandContext(traceCtx2, "traceroute", "-n", "-m", "25", "-q", "1", "-w", "1", targetHost).CombinedOutput()
+			traceCtx2, cancel2 := context.WithTimeout(ctx, 5*time.Second)
+			out2, _ := exec.CommandContext(traceCtx2, "traceroute", "-n", "-m", "18", "-q", "1", "-w", "1", targetHost).CombinedOutput()
 			cancel2()
 
 			hops2, _ := extractHopsFromOutput(targetHost, string(out2))
@@ -286,16 +286,16 @@ func traceRoute(ctx context.Context, targetHost string) traceRouteResult {
 				outStr = string(out2)
 			} else {
 				// 3. Fallback to TCP SYN traceroute (-T -p 80)
-				traceCtx3, cancel3 := context.WithTimeout(ctx, 10*time.Second)
-				out3, _ := exec.CommandContext(traceCtx3, "traceroute", "-T", "-p", "80", "-n", "-m", "25", "-q", "1", "-w", "1", targetHost).CombinedOutput()
+				traceCtx3, cancel3 := context.WithTimeout(ctx, 5*time.Second)
+				out3, _ := exec.CommandContext(traceCtx3, "traceroute", "-T", "-p", "80", "-n", "-m", "18", "-q", "1", "-w", "1", targetHost).CombinedOutput()
 				cancel3()
 				outStr = string(out3)
 			}
 		}
 		_ = lat
 	} else if commandExists("tracepath") {
-		traceCtx, cancel := context.WithTimeout(ctx, 12*time.Second)
-		out, _ := exec.CommandContext(traceCtx, "tracepath", "-n", "-m", "25", targetHost).CombinedOutput()
+		traceCtx, cancel := context.WithTimeout(ctx, 6*time.Second)
+		out, _ := exec.CommandContext(traceCtx, "tracepath", "-n", "-m", "18", targetHost).CombinedOutput()
 		cancel()
 		outStr = string(out)
 	}

@@ -82,7 +82,7 @@ func (s *Server) AskNode(ctx context.Context, nodeID, kind, payload string) (str
 		if errors.Is(ctx.Err(), context.Canceled) {
 			return "", ctx.Err()
 		}
-		return "", userErrorf("服务器在 %d 秒内没有响应", int(liveTaskTimeout/time.Second))
+		return "", userErrorf("服务器在 %d 秒内没有响应", int(timeout/time.Second))
 	}
 }
 

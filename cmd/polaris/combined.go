@@ -167,9 +167,9 @@ func serveCombined(ctx context.Context, masterConfiguration masterConfig, agentC
 		Addr:              browserAddress,
 		Handler:           server.BrowserHandler(),
 		ReadHeaderTimeout: 10 * time.Second,
-		ReadTimeout:       30 * time.Second,
+		ReadTimeout:       60 * time.Second,
 		WriteTimeout:      0,
-		IdleTimeout:       60 * time.Second,
+		IdleTimeout:       120 * time.Second,
 	}
 	defer browserServer.Close()
 	combinedContext, cancel := context.WithCancel(ctx)
