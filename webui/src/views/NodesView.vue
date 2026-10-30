@@ -361,9 +361,9 @@ function getInboundCarrierTooltip(st, isp, node) {
   const sections = []
   const formattedLats = formatNodeLatencies(lats)
   if (formattedLats) {
-    sections.push(`<b>【不同节点去程延迟】</b><br/>${formattedLats}`)
+    sections.push(`<b>【去程各节点延迟 (中国 ➔ 节点)】</b><br/>${formattedLats}`)
   } else if (ping > 0) {
-    sections.push(`<b>【不同节点去程延迟】</b><br/>• 探针实测: ${ping}ms`)
+    sections.push(`<b>【去程延迟 (中国 ➔ 节点)】</b><br/>• 探针实测: ${ping}ms`)
   }
 
   if (trace) {
@@ -394,13 +394,13 @@ function getISPTooltip(st, isp, node) {
   const sections = []
   const formattedLats = formatNodeLatencies(lats)
   if (formattedLats) {
-    sections.push(`<b>【不同节点回程延迟】</b><br/>${formattedLats}`)
+    sections.push(`<b>【返程各节点延迟 (节点 ➔ 中国)】</b><br/>${formattedLats}`)
   } else if (ping > 0) {
-    sections.push(`<b>【不同节点回程延迟】</b><br/>• 实测延迟: ${ping}ms`)
+    sections.push(`<b>【返程延迟 (节点 ➔ 中国)】</b><br/>• 实测延迟: ${ping}ms`)
   }
 
   if (trace) {
-    sections.push(`<b>【回程线路轨迹】</b><br/>${cleanTracePath(trace, node)}`)
+    sections.push(`<b>【返程线路轨迹】</b><br/>${cleanTracePath(trace, node)}`)
   }
   return sections.join('<br/><br/>')
 }

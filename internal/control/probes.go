@@ -52,9 +52,15 @@ func (s *Server) runGFWCheckAll(ctx context.Context) ([]ProbeResultItem, error) 
 
 	var items []ProbeResultItem
 	for _, node := range nodes {
-		targetHost := strings.TrimSpace(node.ClientAddress)
+		targetHost := getNodePublicIPv4(node)
 		if targetHost == "" {
 			targetHost = strings.TrimSpace(node.LastObservedIP)
+		}
+		if targetHost == "" {
+			targetHost = strings.TrimSpace(node.ClientAddress)
+			if h, _, err := net.SplitHostPort(targetHost); err == nil {
+				targetHost = h
+			}
 		}
 		item := s.probeSingleNode(ctx, node, targetHost, 443)
 		items = append(items, item)
@@ -165,6 +171,33 @@ func (s *Server) getNodeLocationLabel(node Node) string {
 	return "本地节点"
 }
 
+// getNodePublicIPv4 returns the public IPv4 address for a node, prioritizing agent-reported public egress IPs.
+func getNodePublicIPv4(node Node) string {
+	for _, ip := range node.IPAddresses {
+		ip = strings.TrimSpace(ip)
+		if parsed := net.ParseIP(ip); parsed != nil && parsed.To4() != nil {
+			if !parsed.IsPrivate() && !parsed.IsLoopback() && !parsed.IsUnspecified() && !parsed.IsLinkLocalUnicast() {
+				return ip
+			}
+		}
+	}
+	if parsed := net.ParseIP(node.LastObservedIP); parsed != nil && parsed.To4() != nil {
+		if !parsed.IsPrivate() && !parsed.IsLoopback() && !parsed.IsUnspecified() && !parsed.IsLinkLocalUnicast() {
+			return node.LastObservedIP
+		}
+	}
+	host := node.ClientAddress
+	if h, _, err := net.SplitHostPort(host); err == nil {
+		host = h
+	}
+	if parsed := net.ParseIP(host); parsed != nil && parsed.To4() != nil {
+		if !parsed.IsPrivate() && !parsed.IsLoopback() && !parsed.IsUnspecified() && !parsed.IsLinkLocalUnicast() {
+			return host
+		}
+	}
+	return ""
+}
+
 // ExecuteNodeSpeedtest asks an agent to run an autonomous speedtest and reachability check.
 // Master does NOT perform any network probing directly.
 func (s *Server) ExecuteNodeSpeedtest(ctx context.Context, nodeID string) (*NodeSpeedtest, error) {
@@ -178,9 +211,15 @@ func (s *Server) ExecuteNodeSpeedtest(ctx context.Context, nodeID string) (*Node
 
 	nodeLoc := s.getNodeLocationLabel(node)
 
-	targetHost := strings.TrimSpace(node.ClientAddress)
+	targetHost := getNodePublicIPv4(node)
 	if targetHost == "" {
 		targetHost = strings.TrimSpace(node.LastObservedIP)
+	}
+	if targetHost == "" {
+		targetHost = strings.TrimSpace(node.ClientAddress)
+		if h, _, err := net.SplitHostPort(targetHost); err == nil {
+			targetHost = h
+		}
 	}
 	targetPort := uint16(443)
 	if targetHost != "" {
@@ -343,26 +382,14 @@ type SpeedtestEndpointsPayload struct {
 	MobileEndpoints  []SpeedtestEndpoint `json:"mobile_endpoints"`
 }
 
+// GetSpeedtestEndpoints returns authoritative China carrier backbone targets for return route (返程) testing.
+// Zero hardcoded IPs: domain names are resolved dynamically via DNS, and geographic city / carrier metadata
+// are resolved dynamically via ip2region and BGP ASN.
 func (s *Server) GetSpeedtestEndpoints(ctx context.Context, currentNodeID string) SpeedtestEndpointsPayload {
-	var telecom, unicom, mobile []SpeedtestEndpoint
-
-	nodes, err := s.store.ListNodes(ctx)
-	if err == nil {
-		for _, n := range nodes {
-			if n.ID == currentNodeID || !n.Online {
-				continue
-			}
-			ip := strings.TrimSpace(n.LastObservedIP)
-			if ip == "" {
-				ip = strings.TrimSpace(n.ClientAddress)
-			}
-			if ip == "" && len(n.IPAddresses) > 0 {
-				ip = strings.TrimSpace(n.IPAddresses[0])
-			}
-			if ip == "" || net.ParseIP(ip) == nil {
-				continue
-			}
-
+	resolveEndpoint := func(domain string) SpeedtestEndpoint {
+		label := domain
+		if ips, err := net.LookupHost(domain); err == nil && len(ips) > 0 {
+			ip := ips[0]
 			city := ""
 			if s.ipLocator != nil {
 				city = s.ipLocator.LocateCity(ip)
@@ -372,33 +399,35 @@ func (s *Server) GetSpeedtestEndpoints(ctx context.Context, currentNodeID string
 			}
 			asn := wire.IPv4ToASN(ip)
 			carrier := wire.ASNToName(asn)
-
-			label := n.Name
 			if city != "" && carrier != "" {
-				label = fmt.Sprintf("%s (%s·%s)", n.Name, city, carrier)
+				label = fmt.Sprintf("%s%s", city, carrier)
 			} else if city != "" {
-				label = fmt.Sprintf("%s (%s)", n.Name, city)
+				label = city
 			} else if carrier != "" {
-				label = fmt.Sprintf("%s (%s)", n.Name, carrier)
+				label = carrier
 			}
-
-			ep := SpeedtestEndpoint{City: label, Host: ip}
-			switch asn {
-			case "AS4134", "AS4809", "AS23764":
-				telecom = append(telecom, ep)
-			case "AS4837", "AS9929", "AS10099":
-				unicom = append(unicom, ep)
-			case "AS9808", "AS58807", "AS58453":
-				mobile = append(mobile, ep)
-			default:
-				telecom = append(telecom, ep)
-			}
+		}
+		return SpeedtestEndpoint{
+			City: label,
+			Host: domain,
 		}
 	}
 
 	return SpeedtestEndpointsPayload{
-		TelecomEndpoints: telecom,
-		UnicomEndpoints:  unicom,
-		MobileEndpoints:  mobile,
+		TelecomEndpoints: []SpeedtestEndpoint{
+			resolveEndpoint("ipv4.sha-4134.endpoint.nxtrace.org"),
+			resolveEndpoint("ipv4.pek-4134.endpoint.nxtrace.org"),
+			resolveEndpoint("ipv4.can-4134.endpoint.nxtrace.org"),
+		},
+		UnicomEndpoints: []SpeedtestEndpoint{
+			resolveEndpoint("ipv4.sha-4837.endpoint.nxtrace.org"),
+			resolveEndpoint("ipv4.pek-4837.endpoint.nxtrace.org"),
+			resolveEndpoint("ipv4.can-4837.endpoint.nxtrace.org"),
+		},
+		MobileEndpoints: []SpeedtestEndpoint{
+			resolveEndpoint("ipv4.sha-9808.endpoint.nxtrace.org"),
+			resolveEndpoint("ipv4.pek-9808.endpoint.nxtrace.org"),
+			resolveEndpoint("ipv4.can-9808.endpoint.nxtrace.org"),
+		},
 	}
 }

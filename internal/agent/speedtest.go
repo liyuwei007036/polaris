@@ -318,6 +318,25 @@ func analyzeMobileRoute(hops []string, latencyMs int) string {
 	return wire.AnalyzeMobileRoute(hops, latencyMs)
 }
 
+func defaultCarrierEndpoints() (telecom, unicom, mobile []TargetEndpoint) {
+	telecom = []TargetEndpoint{
+		{Host: "ipv4.sha-4134.endpoint.nxtrace.org"},
+		{Host: "ipv4.pek-4134.endpoint.nxtrace.org"},
+		{Host: "ipv4.can-4134.endpoint.nxtrace.org"},
+	}
+	unicom = []TargetEndpoint{
+		{Host: "ipv4.sha-4837.endpoint.nxtrace.org"},
+		{Host: "ipv4.pek-4837.endpoint.nxtrace.org"},
+		{Host: "ipv4.can-4837.endpoint.nxtrace.org"},
+	}
+	mobile = []TargetEndpoint{
+		{Host: "ipv4.sha-9808.endpoint.nxtrace.org"},
+		{Host: "ipv4.pek-9808.endpoint.nxtrace.org"},
+		{Host: "ipv4.can-9808.endpoint.nxtrace.org"},
+	}
+	return
+}
+
 func runSpeedtest(ctx context.Context, task Task) TaskResult {
 	timeoutCtx, cancel := context.WithTimeout(ctx, 45*time.Second)
 	defer cancel()
@@ -330,6 +349,9 @@ func runSpeedtest(ctx context.Context, task Task) TaskResult {
 	telecomEps := payload.TelecomEndpoints
 	unicomEps := payload.UnicomEndpoints
 	mobileEps := payload.MobileEndpoints
+	if len(telecomEps) == 0 && len(unicomEps) == 0 && len(mobileEps) == 0 {
+		telecomEps, unicomEps, mobileEps = defaultCarrierEndpoints()
+	}
 
 	// 1. 并发执行去程与 GFW 连通性检测 (由 Agent 离散发起，Master 0 探测介入)
 	targetHost := strings.TrimSpace(payload.TargetHost)
@@ -350,16 +372,39 @@ func runSpeedtest(ctx context.Context, task Task) TaskResult {
 			return nil, 0, "", ""
 		}
 		type epRes struct {
-			index   int
-			city    string
-			host    string
-			latency int
+			index      int
+			city       string
+			host       string
+			resolvedIP string
+			latency    int
 		}
 		ch := make(chan epRes, len(endpoints))
 		for i, ep := range endpoints {
 			go func(idx int, target TargetEndpoint) {
-				l := measureLatency(timeoutCtx, target.Host)
-				ch <- epRes{index: idx, city: target.City, host: target.Host, latency: l}
+				host := target.Host
+				resolvedIP := host
+				if ips, err := net.LookupHost(host); err == nil && len(ips) > 0 {
+					resolvedIP = ips[0]
+				}
+
+				city := target.City
+				if city == "" || strings.HasSuffix(city, ".org") || strings.HasPrefix(city, "ipv4.") {
+					c := wire.IPv4ToCity(resolvedIP)
+					asn := wire.IPv4ToASN(resolvedIP)
+					carrier := wire.ASNToName(asn)
+					if c != "" && carrier != "" {
+						city = fmt.Sprintf("%s%s", c, carrier)
+					} else if c != "" {
+						city = c
+					} else if carrier != "" {
+						city = carrier
+					} else {
+						city = host
+					}
+				}
+
+				l := measureLatency(timeoutCtx, resolvedIP)
+				ch <- epRes{index: idx, city: city, host: host, resolvedIP: resolvedIP, latency: l}
 			}(i, ep)
 		}
 		items := make([]epRes, len(endpoints))
@@ -372,20 +417,27 @@ func runSpeedtest(ctx context.Context, task Task) TaskResult {
 		bestCity := ""
 		bestHost := ""
 		for _, r := range items {
+			targetAddr := r.resolvedIP
+			if targetAddr == "" {
+				targetAddr = r.host
+			}
 			if r.latency > 0 {
 				list = append(list, fmt.Sprintf("%s: %dms", r.city, r.latency))
 				if minLat <= 0 || r.latency < minLat {
 					minLat = r.latency
 					bestCity = r.city
-					bestHost = r.host
+					bestHost = targetAddr
 				}
 			} else {
 				list = append(list, fmt.Sprintf("%s: 超时", r.city))
 			}
 		}
-		if bestCity == "" && len(endpoints) > 0 {
-			bestCity = endpoints[0].City
-			bestHost = endpoints[0].Host
+		if bestCity == "" && len(items) > 0 {
+			bestCity = items[0].city
+			bestHost = items[0].resolvedIP
+			if bestHost == "" {
+				bestHost = items[0].host
+			}
 		}
 		return list, minLat, bestCity, bestHost
 	}
@@ -642,16 +694,33 @@ func formatProbeNetwork(asn int, netName string) string {
 
 func agentProbeInboundAndGFW(ctx context.Context, host string, port uint16) inboundProbeResult {
 	host = strings.TrimSpace(host)
-	if host == "" {
-		return inboundProbeResult{OK: true, GFWStatus: "normal", Source: "未指定公网目标地址，跳过探针检测"}
-	}
 	if parsedHost, _, err := net.SplitHostPort(host); err == nil {
 		host = parsedHost
 	}
-	if ip := net.ParseIP(host); ip != nil {
-		if ip.IsPrivate() || ip.IsLoopback() || ip.IsUnspecified() || ip.IsLinkLocalUnicast() {
-			return inboundProbeResult{OK: true, GFWStatus: "normal", Source: "目标为本地或私有内网 IP，跳过探针检测"}
+
+	isPrivateOrInvalid := func(h string) bool {
+		if h == "" {
+			return true
 		}
+		ip := net.ParseIP(h)
+		if ip == nil {
+			return false
+		}
+		return ip.IsPrivate() || ip.IsLoopback() || ip.IsUnspecified() || ip.IsLinkLocalUnicast()
+	}
+
+	// 若未指定公网目标或目标为本地/私有地址（如 Master 处于反向代理后），自动调用出口探测获取本机的公网 IPv4
+	if isPrivateOrInvalid(host) {
+		for _, ip := range CollectLocalIPs() {
+			if parsed := net.ParseIP(ip); parsed != nil && parsed.To4() != nil && !isPrivateOrInvalid(ip) {
+				host = ip
+				break
+			}
+		}
+	}
+
+	if isPrivateOrInvalid(host) {
+		return inboundProbeResult{OK: true, GFWStatus: "normal", Source: "本地或私有内网节点，无公网 IP"}
 	}
 
 	probeCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
@@ -714,6 +783,7 @@ func agentProbeInboundAndGFW(ctx context.Context, host string, port uint16) inbo
 			Network string `json:"network"`
 			Country string `json:"country"`
 			ASN     int    `json:"asn"`
+			IP      string `json:"ip"`
 		} `json:"probe"`
 		Result struct {
 			Status    string `json:"status"`
@@ -824,6 +894,11 @@ func agentProbeInboundAndGFW(ctx context.Context, host string, port uint16) inbo
 		asn := item.Probe.ASN
 		upperNet := strings.ToUpper(item.Probe.Network)
 		cityName := formatProbeCity(item.Probe.City)
+		if item.Probe.IP != "" {
+			if c := wire.IPv4ToCity(item.Probe.IP); c != "" {
+				cityName = c
+			}
+		}
 		if cityName == "" {
 			cityName = item.Probe.City
 		}
