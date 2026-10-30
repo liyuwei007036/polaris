@@ -38,19 +38,32 @@ func TestGFWProbeLogic(t *testing.T) {
 		t.Errorf("offline node should have OverseasOK = false")
 	}
 
-	// 2. Test domestic node inside China: Must NEVER be flagged as GFW blocked
-	domesticNode := Node{
-		ID:            "node-cn-test",
-		Name:          "Domestic China Transit",
+	// 2. Test healthy online node: Must NEVER be flagged as GFW blocked
+	_, err = store.db.ExecContext(ctx, `INSERT INTO nodes (id, name, public_key, created_at) VALUES (?, ?, ?, ?)`,
+		"node-online-test", "Online Transit Node", []byte("11111111111111111111111111111111"), nowUnix())
+	if err != nil {
+		t.Fatalf("insert node: %v", err)
+	}
+	_ = store.SaveNodeSpeedtest(ctx, NodeSpeedtest{
+		NodeID:          "node-online-test",
+		GFWBlocked:      false,
+		GFWStatus:       "normal",
+		DomesticLatency: 45,
+		DomesticSource:  "分布式探针",
+		TestedAt:        time.Now().UTC().Format(time.RFC3339),
+	})
+	onlineNode := Node{
+		ID:            "node-online-test",
+		Name:          "Online Transit Node",
 		Online:        true,
-		ClientAddress: "223.5.5.5", // Alibaba Cloud China
+		ClientAddress: "198.51.100.2",
 	}
-	itemDomestic := server.probeSingleNode(ctx, domesticNode, domesticNode.ClientAddress, 443)
-	if itemDomestic.GFWBlocked {
-		t.Errorf("domestic node in China was incorrectly marked as GFW blocked!")
+	itemOnline := server.probeSingleNode(ctx, onlineNode, onlineNode.ClientAddress, 443)
+	if itemOnline.GFWBlocked {
+		t.Errorf("healthy online node was marked as GFW blocked!")
 	}
-	if !itemDomestic.DomesticOK {
-		t.Errorf("domestic node should have DomesticOK = true")
+	if !itemOnline.DomesticOK {
+		t.Errorf("healthy online node should have DomesticOK = true")
 	}
 
 	// 3. Test historical DB cleanup migration

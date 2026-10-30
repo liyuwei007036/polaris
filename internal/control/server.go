@@ -122,6 +122,7 @@ func NewServer(store *Store, secureCookies bool) (*Server, error) {
 		return nil, fmt.Errorf("load IP location database: %w", err)
 	}
 	wire.CityResolver = ipLocator.LocateCity
+	wire.IsDomesticResolver = ipLocator.IsDomestic
 	server := &Server{
 		store: store, noiseKeypair: keypair, agentPort: defaultAgentPort, secureCookies: secureCookies,
 		controls: make(map[string]*controlSession), autoInstallChecked: make(map[string]bool),

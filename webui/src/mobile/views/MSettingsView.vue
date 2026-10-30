@@ -156,7 +156,7 @@ async function triggerGFWCheck() {
     const items = res.nodes || res.results || []
     gfwResults.value = items
     gfwSheet.value = true
-    ElMessage.success('国内探测完成')
+    ElMessage.success('探针探测完成')
   } catch (error) {
     ElMessage.error(error instanceof Error ? error.message : '触发 GFW 探测失败')
   } finally {
@@ -438,7 +438,7 @@ onBeforeUnmount(() => {
           <el-switch v-model="alertSettings.auto_probe_gfw_enabled" active-text="定时探测" />
         </div>
         <div class="m-card__note">
-          定时从国内真实探针探测境外节点连通性、三网延迟与回国路由线路。
+          定时通过分布式真实探针探测节点连通性、三网延迟与网络路由。
         </div>
 
         <div class="m-field" style="margin-top: 14px">
@@ -478,7 +478,7 @@ onBeforeUnmount(() => {
       <!-- GFW 探测结果展示 Sheet -->
       <MSheet v-model="gfwSheet" title="GFW 连通性探测结果">
         <div class="m-notice m-notice--info">
-          由国内真实探针向境外节点发起 TCP 握手跨越防火墙核验连通性与时延。
+          由分布式真实探针向目标端口发起 TCP 握手核验连通性与时延。
         </div>
         <div v-for="item in gfwResults" :key="item.node_id || item.node_name" class="m-item">
           <div class="m-item__hit is-static">
@@ -492,7 +492,7 @@ onBeforeUnmount(() => {
             </div>
             <div class="m-item__stats">
               <span class="m-stat"><b>{{ item.target_port || 443 }}</b><small>端口</small></span>
-              <span class="m-stat"><b>{{ item.domestic_ok ? `${item.latency_ms} ms` : '—' }}</b><small>国内延迟</small></span>
+              <span class="m-stat"><b>{{ item.domestic_ok ? `${item.latency_ms} ms` : '—' }}</b><small>探针延迟</small></span>
               <span class="m-stat"><b>{{ item.packet_loss !== undefined ? `${item.packet_loss}%` : '0%' }}</b><small>丢包率</small></span>
             </div>
             <div v-if="item.probe_source || item.status_desc" class="m-item__note">

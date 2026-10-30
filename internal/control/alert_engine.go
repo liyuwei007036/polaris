@@ -670,17 +670,17 @@ func (e *AlertEngine) NotifyProbeSummary(items []ProbeResultItem) {
 		if isBlocked {
 			src := item.ProbeSource
 			if src == "" {
-				src = "国内真实探针"
+				src = "分布式探针"
 			}
-			blockedList = append(blockedList, fmt.Sprintf("• [%s] 端口 %d 国内全超时 (疑似被 GFW 阻断, 来源: %s)", item.NodeName, port, src))
+			blockedList = append(blockedList, fmt.Sprintf("• [%s] 端口 %d 全超时 (阻断未响应, 来源: %s)", item.NodeName, port, src))
 		} else if item.DomesticOK {
 			src := item.ProbeSource
 			if src == "" {
-				src = "国内真实探针"
+				src = "分布式探针"
 			}
-			normalList = append(normalList, fmt.Sprintf("• [%s] 端口 %d 正常 (国内时延: %d ms, 来源: %s)", item.NodeName, port, item.LatencyMs, src))
+			normalList = append(normalList, fmt.Sprintf("• [%s] 端口 %d 正常 (时延: %d ms, 来源: %s)", item.NodeName, port, item.LatencyMs, src))
 		} else if !item.OverseasOK {
-			normalList = append(normalList, fmt.Sprintf("• [%s] 离线/境外未监听", item.NodeName))
+			normalList = append(normalList, fmt.Sprintf("• [%s] 离线/未监听", item.NodeName))
 		} else {
 			normalList = append(normalList, fmt.Sprintf("• [%s] 探针检测异常 (%s)", item.NodeName, item.StatusDesc))
 		}
@@ -702,7 +702,7 @@ func (e *AlertEngine) NotifyProbeSummary(items []ProbeResultItem) {
 
 	// If no block and user requested always notify on probe
 	if settings.ProbeNotifyAlways && len(items) > 0 {
-		body := strings.Join(normalList, "\n") + fmt.Sprintf("\n🕒 巡检时间: %s (国内探针核验)", nowStr)
+		body := strings.Join(normalList, "\n") + fmt.Sprintf("\n🕒 巡检时间: %s (分布式探针核验)", nowStr)
 		e.sendAlert(context.Background(), "✅ [Polaris 巡检] 全部节点连接通畅", body, "Polaris-巡检报告", "active", "telegraph.caf", "")
 	}
 }
@@ -718,9 +718,9 @@ func (e *AlertEngine) NotifySpeedtestReport(nodeName string, st NodeSpeedtest) {
 	sound := "telegraph.caf"
 	var lines []string
 	if st.GFWBlocked {
-		title = fmt.Sprintf("🚨 [GFW 阻断警报] %s 疑似被墙！", nodeName)
+		title = fmt.Sprintf("🚨 [节点阻断警报] %s 端口疑似被阻断！", nodeName)
 		sound = "alarm.caf"
-		lines = append(lines, fmt.Sprintf("⚠️ 该节点公网端口国内探针全部超时 (疑似被 GFW 阻断, 来源: %s)", st.DomesticSource))
+		lines = append(lines, fmt.Sprintf("⚠️ 该节点公网端口探针全部超时 (阻断未响应, 来源: %s)", st.DomesticSource))
 	}
 	if st.TelecomRoute != "" {
 		lines = append(lines, fmt.Sprintf("• 电信线路: %d ms (%s)", st.TelecomLatencyMs, st.TelecomRoute))

@@ -93,12 +93,13 @@ const mtrReport = ref(null)
 const mtrShowRaw = ref(false)
 const mtrTargetOptions = ref([])
 
-async function loadMTRTargets() {
+async function loadMTRTargets(nodeId) {
   try {
-    const res = await api('/diagnose/mtr/targets')
+    const url = nodeId ? `/diagnose/mtr/targets?node_id=${nodeId}` : '/diagnose/mtr/targets'
+    const res = await api(url)
     if (res?.targets?.length) {
       mtrTargetOptions.value = res.targets
-      if (!mtrTargetType.value) {
+      if (!mtrTargetType.value || !res.targets.some((t) => t.value === mtrTargetType.value)) {
         mtrTargetType.value = res.targets[0]?.value || 'custom'
       }
     }
@@ -300,16 +301,16 @@ function getNodeLocationLabel(node) {
 
 function getCarrierFallbackTrace(route, isp, node) {
   const origin = getNodeLocationLabel(node)
-  const targetMap = { telecom: '上海电信', unicom: '上海联通', mobile: '广州移动' }
-  const target = targetMap[isp] || '国内骨干'
-  return `${origin} ➔ 国际骨干直连 (骨干跃点未回显) ➔ ${target}`
+  const targetMap = { telecom: '电信网络', unicom: '联通网络', mobile: '移动网络' }
+  const target = targetMap[isp] || '目标网络'
+  return `${origin} ➔ 骨干直连 (骨干跃点未回显) ➔ ${target}`
 }
 
 function getInboundFallbackTrace(route, isp, node) {
   const target = getNodeLocationLabel(node)
-  const srcMap = { telecom: '国内电信探针', unicom: '国内联通探针', mobile: '国内移动探针' }
-  const src = srcMap[isp] || '国内多线探针'
-  return `${src} ➔ 骨干网出海 ➔ ${target}`
+  const srcMap = { telecom: '电信探针', unicom: '联通探针', mobile: '移动探针' }
+  const src = srcMap[isp] || '分布式探针'
+  return `${src} ➔ 骨干网 ➔ ${target}`
 }
 
 function cleanTracePath(trace, node) {
@@ -318,10 +319,10 @@ function cleanTracePath(trace, node) {
   let t = trace
   if (t.startsWith('节点 ➔') || t.startsWith('本地节点 ➔') || t.startsWith('服务器节点 ➔')) {
     t = t.replace(/^(节点|本地节点|服务器节点)\s*➔\s*/, `${loc} ➔ `)
-  } else if (!t.includes(loc) && !t.startsWith('国内') && !t.includes('探针')) {
+  } else if (!t.includes(loc) && !t.includes('探针')) {
     t = `${loc} ➔ ${t}`
   }
-  t = t.replace(/➔\s*(境外节点|服务器节点|本地节点|目标机房)$/, `➔ ${loc}`)
+  t = t.replace(/➔\s*(目标节点|服务器节点|本地节点|目标机房)$/, `➔ ${loc}`)
 
   // Remove any legacy erroneous AS174 string if present
   t = t.replace(/AS174 \(Cogent·美西洛杉矶\)\s*➔\s*/g, '')
@@ -406,19 +407,19 @@ function getISPTooltip(st, isp, node) {
 
 function getInboundSummary(st) {
   if (!st) return '待探测'
-  if (isNodeGFWBlocked(st)) return '探针全超时 · GFW 阻断'
+  if (isNodeGFWBlocked(st)) return '探针全超时 · 端口阻断'
   if (st.domestic_latency_ms) {
-    return `国内探针畅通 · 均值 ${st.domestic_latency_ms}ms`
+    return `探针畅通 · 均值 ${st.domestic_latency_ms}ms`
   }
-  return '国内探针畅通'
+  return '探针畅通'
 }
 
 function getInboundProbeTooltip(st) {
   if (!st) return ''
   if (isNodeGFWBlocked(st)) {
-    return '🚨 <b>GFW 阻断</b><br/>国内探针发起的 TCP 端口握手全部超时丢弃'
+    return '🚨 <b>端口阻断</b><br/>探针发起的 TCP 端口握手全部超时丢弃'
   }
-  return `去程正常通行<br/>国内探针 TCP 延迟: ${st.domestic_latency_ms ? st.domestic_latency_ms + 'ms' : '畅通'}`
+  return `网络通畅<br/>探针 TCP 延迟: ${st.domestic_latency_ms ? st.domestic_latency_ms + 'ms' : '畅通'}`
 }
 
 function formatRouteSimple(route) {
@@ -528,8 +529,8 @@ function getDiskTooltip(node) {
 
 function getGFWDetailTooltip(st) {
   if (!st) return ''
-  const probe = st.domestic_source || '国内南京多线探针'
-  return `探针来源: ${probe}\n诊断结果: 国内探针发起的 TCP SYN 握手均超时或被丢弃\n状态: 端口已被长城防火墙阻断，国内客户端无法直连`
+  const probe = st.domestic_source || '分布式多线探针'
+  return `探针来源: ${probe}\n诊断结果: 探针发起的 TCP SYN 握手均超时或被丢弃\n状态: 端口无响应或阻断，无法建立连接`
 }
 
 function getUsageStatusColor(percent) {
@@ -767,9 +768,7 @@ async function openMTRDialog(node) {
   mtrReport.value = null
   mtrShowRaw.value = false
   mtrDialogVisible.value = true
-  if (mtrTargetOptions.value.length === 0) {
-    await loadMTRTargets()
-  }
+  await loadMTRTargets(node?.id)
 }
 
 async function startMTRDiagnose() {
@@ -917,11 +916,11 @@ onBeforeUnmount(() => {
             <div class="kpi-health-row" :class="stats.gfwBlockedCount > 0 ? 'is-danger' : 'is-healthy'">
               <span class="health-pulse-dot" />
               <span class="health-text font-mono">
-                {{ stats.gfwBlockedCount > 0 ? `${stats.gfwBlockedCount} 台受 GFW 阻断` : '国内探针全部畅通' }}
+                {{ stats.gfwBlockedCount > 0 ? `${stats.gfwBlockedCount} 台端口受阻` : '探针全部畅通' }}
               </span>
             </div>
             <div class="kpi-footnote">
-              国内探针多节点实时监测
+              分布式多点实时监测
             </div>
           </div>
         </div>
@@ -1069,10 +1068,10 @@ onBeforeUnmount(() => {
                   <span
                     class="status-indicator-dot"
                     :class="node.online ? (isNodeGFWBlocked(speedtests[node.id]) ? 'blocked' : 'online') : 'offline'"
-                    :title="node.online ? (isNodeGFWBlocked(speedtests[node.id]) ? '国内探针全超时 (GFW 阻断)' : '在线运行中') : '节点已离线'"
+                    :title="node.online ? (isNodeGFWBlocked(speedtests[node.id]) ? '探针全超时 (端口阻断)' : '在线运行中') : '节点已离线'"
                   />
                   <span v-if="isNodeGFWBlocked(speedtests[node.id])" class="pill-gfw-warn">
-                    GFW 阻断
+                    端口阻断
                   </span>
                 </div>
                 <div class="subtitle-row">
@@ -1245,7 +1244,7 @@ onBeforeUnmount(() => {
                 <el-tooltip v-if="isNodeGFWBlocked(speedtests[node.id])" raw-content :content="getInboundProbeTooltip(speedtests[node.id])" placement="top">
                   <div class="gfw-alert-capsule">
                     <span class="gfw-alert-dot" />
-                    <span class="gfw-alert-txt font-mono">GFW 阻断 · 国内探针全超时</span>
+                    <span class="gfw-alert-txt font-mono">端口阻断 · 探针全超时</span>
                   </div>
                 </el-tooltip>
                 <!-- 去程正常线路 -->
@@ -1389,7 +1388,7 @@ onBeforeUnmount(() => {
                   <div class="table-net-row">
                     <span class="table-dir-badge in">去程</span>
                     <div v-if="isNodeGFWBlocked(speedtests[row.id])" class="table-gfw-text font-mono">
-                      🚨 GFW 阻断 (国内探针超时)
+                      🚨 端口阻断 (探针超时)
                     </div>
                     <div v-else class="table-isp-pills">
                       <el-tooltip raw-content :content="getInboundCarrierTooltip(speedtests[row.id], 'telecom', row)" placement="top">

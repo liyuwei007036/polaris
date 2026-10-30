@@ -9,6 +9,8 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/liyuwei007036/polaris/internal/wire"
 )
 
 func (s *Server) getAlertSettings(w http.ResponseWriter, r *http.Request) {
@@ -240,10 +242,29 @@ func (s *Server) handleRunNodeMTR(w http.ResponseWriter, r *http.Request) {
 		Label  string `json:"label"`
 	}
 	_ = json.NewDecoder(r.Body).Decode(&req)
+	req.Target = strings.TrimSpace(req.Target)
 	if req.Target == "" {
-		req.Target = "202.96.209.133"
-		if req.Label == "" {
-			req.Label = "上海电信"
+		writeError(w, errors.New("请指定诊断目标地址"))
+		return
+	}
+	if req.Label == "" {
+		city := ""
+		if s.ipLocator != nil {
+			city = s.ipLocator.LocateCity(req.Target)
+		}
+		if city == "" {
+			city = wire.IPv4ToCity(req.Target)
+		}
+		asn := wire.IPv4ToASN(req.Target)
+		netName := wire.ASNToName(asn)
+		if city != "" && netName != "" {
+			req.Label = city + " · " + netName
+		} else if city != "" {
+			req.Label = city
+		} else if netName != "" {
+			req.Label = netName
+		} else {
+			req.Label = req.Target
 		}
 	}
 	if req.Count <= 0 || req.Count > 30 {
@@ -278,25 +299,54 @@ type MTRTargetOption struct {
 	IP    string `json:"ip"`
 }
 
-func (s *Server) GetMTRTargets() []MTRTargetOption {
-	return []MTRTargetOption{
-		{Label: "上海电信 (AS4134 华东核心)", Value: "sh_telecom", IP: "202.96.209.133"},
-		{Label: "广州电信 (AS4134 华南核心)", Value: "gz_telecom", IP: "58.60.188.222"},
-		{Label: "北京电信 (AS4134 华北核心)", Value: "bj_telecom", IP: "219.141.140.10"},
-		{Label: "成都电信 (AS4134 西南核心)", Value: "cd_telecom", IP: "61.139.2.69"},
-		{Label: "全国电信公共网关 (114.114.114.114)", Value: "dns_telecom", IP: "114.114.114.114"},
-		{Label: "上海联通 (AS4837 华东核心)", Value: "sh_unicom", IP: "210.22.97.1"},
-		{Label: "广州联通 (AS4837 华南核心)", Value: "gz_unicom", IP: "210.21.196.6"},
-		{Label: "北京联通 (AS4837 华北核心)", Value: "bj_unicom", IP: "202.106.195.68"},
-		{Label: "成都联通 (AS4837 西南核心)", Value: "cd_unicom", IP: "119.6.6.6"},
-		{Label: "全国联通公共网关 (116.116.116.116)", Value: "dns_unicom", IP: "116.116.116.116"},
-		{Label: "广州移动 (AS9808 华南核心)", Value: "gz_mobile", IP: "120.196.165.24"},
-		{Label: "上海移动 (AS9808 华东核心)", Value: "sh_mobile", IP: "211.136.112.200"},
-		{Label: "北京移动 (AS9808 华北核心)", Value: "bj_mobile", IP: "221.179.155.161"},
-		{Label: "成都移动 (AS9808 西南核心)", Value: "cd_mobile", IP: "211.137.96.205"},
-		{Label: "全国移动核心网关 (120.196.165.1)", Value: "gw_mobile", IP: "120.196.165.1"},
-		{Label: "自定义 IP / 域名", Value: "custom", IP: ""},
+func (s *Server) GetMTRTargets(ctx context.Context, currentNodeID string) []MTRTargetOption {
+	var targets []MTRTargetOption
+	nodes, err := s.store.ListNodes(ctx)
+	if err == nil {
+		for _, n := range nodes {
+			if n.ID == currentNodeID || !n.Online {
+				continue
+			}
+			ip := strings.TrimSpace(n.LastObservedIP)
+			if ip == "" {
+				ip = strings.TrimSpace(n.ClientAddress)
+			}
+			if ip == "" && len(n.IPAddresses) > 0 {
+				ip = strings.TrimSpace(n.IPAddresses[0])
+			}
+			if ip == "" {
+				continue
+			}
+			city := ""
+			if s.ipLocator != nil {
+				city = s.ipLocator.LocateCity(ip)
+			}
+			if city == "" {
+				city = wire.IPv4ToCity(ip)
+			}
+			asn := wire.IPv4ToASN(ip)
+			netName := wire.ASNToName(asn)
+			label := n.Name
+			if city != "" && netName != "" {
+				label = fmt.Sprintf("%s (%s·%s)", n.Name, city, netName)
+			} else if city != "" {
+				label = fmt.Sprintf("%s (%s)", n.Name, city)
+			} else if netName != "" {
+				label = fmt.Sprintf("%s (%s)", n.Name, netName)
+			}
+			targets = append(targets, MTRTargetOption{
+				Label: label,
+				Value: n.ID,
+				IP:    ip,
+			})
+		}
 	}
+	targets = append(targets, MTRTargetOption{
+		Label: "自定义目标 (IP 或域名)",
+		Value: "custom",
+		IP:    "",
+	})
+	return targets
 }
 
 func (s *Server) handleGetMTRTargets(w http.ResponseWriter, r *http.Request) {
@@ -304,7 +354,8 @@ func (s *Server) handleGetMTRTargets(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"targets": s.GetMTRTargets()})
+	currentNodeID := r.URL.Query().Get("node_id")
+	writeJSON(w, http.StatusOK, map[string]any{"targets": s.GetMTRTargets(r.Context(), currentNodeID)})
 }
 
 func (s *Server) handleGetNodeSpeedtestLatest(w http.ResponseWriter, r *http.Request) {

@@ -119,7 +119,7 @@ async function triggerGFWCheck() {
     const items = res.nodes || res.results || []
     gfwResults.value = items
     gfwResultDialogVisible.value = true
-    ElMessage.success('国内探测完成')
+    ElMessage.success('探针探测完成')
   } catch (error) {
     ElMessage.error(error instanceof Error ? error.message : '触发 GFW 探测失败')
   } finally {
@@ -399,8 +399,8 @@ onMounted(load)
                   <div class="card-title">
                     <el-icon class="card-icon"><Check /></el-icon>
                     <div>
-                      <h3>定时 GFW 阻断探测与三网线路检测</h3>
-                      <p>定时从国内视角探测各节点连通性、三网延迟与回国路由线路，每逢探测必推通知汇报状态。</p>
+                      <h3>定时端口连通性探测与三网线路检测</h3>
+                      <p>定时通过分布式视角探测各节点连通性、三网延迟与网络路由线路，每逢探测必推通知汇报状态。</p>
                     </div>
                   </div>
                   <el-switch v-model="alertSettings.auto_probe_gfw_enabled" active-text="定时探测开启" inactive-text="定时探测关闭" />
@@ -524,36 +524,36 @@ onMounted(load)
     </el-dialog>
     <el-dialog :model-value="dialog === 'operator'" title="新建管理账户" width="540px" @close="dialog = ''"><el-form label-position="top"><el-form-item label="用户名"><el-input v-model="operator.username" placeholder="3 至 64 位，可使用字母、数字、点、下划线和短横线" /></el-form-item><el-form-item label="初始密码"><el-input v-model="operator.password" type="password" show-password /><div class="form-tip">用户首次登录时必须修改此密码。</div></el-form-item><el-form-item label="权限"><el-select v-model="operator.role" style="width: 100%"><el-option label="管理员" value="admin" /><el-option label="运维人员" value="operator" /><el-option label="只读用户" value="viewer" /></el-select></el-form-item></el-form><template #footer><el-button @click="dialog = ''">取消</el-button><el-button type="primary" :disabled="!operator.username || operator.password.length < 12" @click="saveOperator">创建</el-button></template></el-dialog>
 
-    <!-- GFW 真实国内探针检测结果对话框 -->
-    <el-dialog v-model="gfwResultDialogVisible" title="GFW 阻断探测详细报告 (国内真机视角)" width="780px">
+    <!-- 分布式探针检测结果对话框 -->
+    <el-dialog v-model="gfwResultDialogVisible" title="端口连通性探测详细报告 (分布式视角)" width="780px">
       <div style="margin-bottom: 16px">
         <el-alert
           type="info"
           :closable="false"
           show-icon
-          title="真机国内视角跨墙探测"
-          description="探测请求由国内真实探针（南京/华东等国内核心机房）向境外目标端口发起 TCP 握手，跨越 GFW 防火墙检测连通性与时延，杜绝境外控制机误判。"
+          title="分布式多点连通性探测"
+          description="探测请求由分布式真实网络探针向目标端口发起 TCP 握手，检测公网连通性与时延，精准排障。"
         />
       </div>
       <el-table :data="gfwResults" style="width: 100%" stripe empty-text="未获取到探测数据">
         <el-table-column prop="node_name" label="节点名称" min-width="120" />
         <el-table-column prop="target_port" label="端口" width="75" align="center" />
-        <el-table-column label="境外公网" width="95" align="center">
+        <el-table-column label="节点状态" width="95" align="center">
           <template #default="{ row }">
-            <el-tag v-if="row.overseas_ok" type="success" size="small">正常</el-tag>
+            <el-tag v-if="row.overseas_ok" type="success" size="small">在线</el-tag>
             <el-tag v-else type="danger" size="small">离线</el-tag>
           </template>
         </el-table-column>
-        <el-table-column label="国内真机连通" width="145" align="center">
+        <el-table-column label="探针连通性" width="145" align="center">
           <template #default="{ row }">
             <el-tag v-if="row.domestic_ok" type="success" size="small">🟢 通畅 ({{ row.latency_ms }}ms)</el-tag>
-            <el-tag v-else-if="row.gfw_blocked" type="danger" size="small">🚨 疑似被墙</el-tag>
+            <el-tag v-else-if="row.gfw_blocked" type="danger" size="small">🚨 端口阻断</el-tag>
             <el-tag v-else-if="row.error || !row.probe_executed" type="warning" size="small">⚠️ 探测异常</el-tag>
-            <el-tag v-else-if="row.overseas_ok" type="danger" size="small">🚨 疑似被墙</el-tag>
+            <el-tag v-else-if="row.overseas_ok" type="danger" size="small">🚨 端口阻断</el-tag>
             <el-tag v-else type="info" size="small">⚪ 未监听</el-tag>
           </template>
         </el-table-column>
-        <el-table-column prop="probe_source" label="国内探针来源" min-width="170" show-overflow-tooltip />
+        <el-table-column prop="probe_source" label="探针来源" min-width="170" show-overflow-tooltip />
         <el-table-column prop="status_desc" label="判定结论" min-width="150" />
       </el-table>
       <template #footer>

@@ -107,6 +107,28 @@ func (l *ipLocator) LocateCity(value string) string {
 	return ""
 }
 
+// IsDomestic checks whether an IP address is located in Mainland China (excluding HK, MO, TW).
+func (l *ipLocator) IsDomestic(value string) bool {
+	ip := net.ParseIP(strings.TrimSpace(value))
+	if ip == nil || ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() {
+		return false
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	searcher := l.v6
+	if ip.To4() != nil {
+		searcher = l.v4
+	}
+	region, err := searcher.Search(value)
+	if err != nil || region == "" {
+		return false
+	}
+	return strings.HasPrefix(region, "中国|") &&
+		!strings.Contains(region, "香港") &&
+		!strings.Contains(region, "澳门") &&
+		!strings.Contains(region, "台湾")
+}
+
 func (l *ipLocator) LocateCIDR(value string) string {
 	value = strings.TrimSpace(value)
 	if value == "" {

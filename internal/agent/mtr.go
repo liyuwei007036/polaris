@@ -10,7 +10,6 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/liyuwei007036/polaris/internal/wire"
@@ -62,26 +61,8 @@ type MTRReport struct {
 	CreatedAt     string   `json:"created_at"`
 }
 
-var mtrInstallOnce sync.Once
-
-// ensureMTRTool attempts to install the mtr package if not available.
+// ensureMTRTool is a no-op; diagnosis uses installed system utilities or Go fallbacks without modifying the host.
 func ensureMTRTool(ctx context.Context) {
-	mtrInstallOnce.Do(func() {
-		if runtime.GOOS != "linux" {
-			return
-		}
-		if commandExists("mtr") || commandExists("traceroute") || commandExists("tracepath") {
-			return
-		}
-		installCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
-		defer cancel()
-
-		if commandExists("apt-get") {
-			_ = installPackages(installCtx, "mtr-tiny")
-		} else {
-			_ = installPackages(installCtx, "mtr")
-		}
-	})
 }
 
 // runMTRDiagnose executes a deep hop-by-hop packet loss and jitter diagnosis towards target host.
@@ -95,7 +76,7 @@ func runMTRDiagnose(ctx context.Context, task Task) TaskResult {
 
 	target := strings.TrimSpace(payload.Target)
 	if target == "" {
-		target = "202.96.209.133" // default to Shanghai Telecom core
+		return TaskResult{Status: "failed", Summary: "未指定诊断目标地址"}
 	}
 	count := payload.Count
 	if count <= 0 || count > 30 {

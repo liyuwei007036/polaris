@@ -1,11 +1,14 @@
 package agent
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"math"
 	"net"
+	"net/http"
 	"os/exec"
 	"regexp"
 	"runtime"
@@ -33,46 +36,38 @@ type SpeedtestResult struct {
 	MobileRoute          string  `json:"mobile_route"`
 	MobileNodeLatencies  string  `json:"mobile_node_latencies,omitempty"`
 	MobileTracePath      string  `json:"mobile_trace_path,omitempty"`
+
+	// 去程及 GFW 连通性指标 (由 Agent 离散发起分布式国内真机视角检测)
+	InboundTelecomRoute         string `json:"inbound_telecom_route,omitempty"`
+	InboundTelecomLatencyMs     int    `json:"inbound_telecom_latency_ms,omitempty"`
+	InboundTelecomNodeLatencies string `json:"inbound_telecom_node_latencies,omitempty"`
+	InboundTelecomTracePath     string `json:"inbound_telecom_trace_path,omitempty"`
+	InboundUnicomRoute          string `json:"inbound_unicom_route,omitempty"`
+	InboundUnicomLatencyMs      int    `json:"inbound_unicom_latency_ms,omitempty"`
+	InboundUnicomNodeLatencies  string `json:"inbound_unicom_node_latencies,omitempty"`
+	InboundUnicomTracePath      string `json:"inbound_unicom_trace_path,omitempty"`
+	InboundMobileRoute          string `json:"inbound_mobile_route,omitempty"`
+	InboundMobileLatencyMs      int    `json:"inbound_mobile_latency_ms,omitempty"`
+	InboundMobileNodeLatencies  string `json:"inbound_mobile_node_latencies,omitempty"`
+	InboundMobileTracePath      string `json:"inbound_mobile_trace_path,omitempty"`
+	GFWBlocked                  bool   `json:"gfw_blocked"`
+	GFWStatus                   string `json:"gfw_status,omitempty"`
+	DomesticLatency             int    `json:"domestic_latency_ms,omitempty"`
+	DomesticSource              string `json:"domestic_source,omitempty"`
 }
 
-// 权威三网骨干测试节点池 (覆盖华东、华南、华北、西南、华中等核心国际互联出口与主干交换局)
 type TargetEndpoint struct {
 	City string `json:"city"`
 	Host string `json:"host"`
 }
 
 type SpeedtestTaskPayload struct {
+	TargetHost       string           `json:"target_host,omitempty"`
+	TargetPort       uint16           `json:"target_port,omitempty"`
 	TelecomEndpoints []TargetEndpoint `json:"telecom_endpoints,omitempty"`
 	UnicomEndpoints  []TargetEndpoint `json:"unicom_endpoints,omitempty"`
 	MobileEndpoints  []TargetEndpoint `json:"mobile_endpoints,omitempty"`
 }
-
-var (
-	TelecomEndpoints = []TargetEndpoint{
-		{City: "上海电信", Host: "202.96.209.133"},
-		{City: "广州电信", Host: "58.60.188.222"},
-		{City: "北京电信", Host: "219.141.140.10"},
-		{City: "成都电信", Host: "61.139.2.69"},
-		{City: "全国电信DNS", Host: "114.114.114.114"},
-		{City: "武汉电信", Host: "202.103.24.68"},
-	}
-	UnicomEndpoints = []TargetEndpoint{
-		{City: "上海联通", Host: "210.22.97.1"},
-		{City: "广州联通", Host: "210.21.196.6"},
-		{City: "北京联通", Host: "202.106.195.68"},
-		{City: "成都联通", Host: "119.6.6.6"},
-		{City: "全国联通DNS", Host: "116.116.116.116"},
-		{City: "武汉联通", Host: "58.19.190.1"},
-	}
-	MobileEndpoints = []TargetEndpoint{
-		{City: "广州移动", Host: "120.196.165.24"},
-		{City: "上海移动", Host: "211.136.112.200"},
-		{City: "北京移动", Host: "221.179.155.161"},
-		{City: "成都移动", Host: "211.137.96.205"},
-		{City: "全国移动网关", Host: "120.196.165.1"},
-		{City: "武汉移动", Host: "111.175.220.1"},
-	}
-)
 
 func parsePingLatency(output string) int {
 	// 匹配 Linux rtt 统计: rtt min/avg/max/mdev = 141.800/142.150/142.500/0.350 ms
@@ -209,19 +204,19 @@ func extractHopsFromOutput(targetHost, output string) ([]string, int) {
 				hops = append(hops, ip)
 			}
 
-			// Check for text tokens in line (AS9929, CUII, CN2, CMIN2, CUG)
+			// Check for carrier ASN tokens in line (AS9929, CUII, CN2, CMIN2, CUG)
 			lower := strings.ToLower(hopContent)
-			if strings.Contains(lower, "9929") || strings.Contains(lower, "cuii") {
-				hops = append(hops, "9929")
+			if strings.Contains(lower, "as9929") || strings.Contains(lower, "cuii") {
+				hops = append(hops, "AS9929")
 			}
-			if strings.Contains(lower, "10099") || strings.Contains(lower, "cug") {
-				hops = append(hops, "10099")
+			if strings.Contains(lower, "as10099") || strings.Contains(lower, "cug") {
+				hops = append(hops, "AS10099")
 			}
-			if strings.Contains(lower, "59.43.") || strings.Contains(lower, "cn2") {
-				hops = append(hops, "59.43.0.1")
+			if strings.Contains(lower, "cn2") || strings.Contains(lower, "as4809") {
+				hops = append(hops, "AS4809")
 			}
-			if strings.Contains(lower, "cmin2") || strings.Contains(lower, "58807") {
-				hops = append(hops, "58807")
+			if strings.Contains(lower, "cmin2") || strings.Contains(lower, "as58807") {
+				hops = append(hops, "AS58807")
 			}
 
 			// Extract RTT from this hop
@@ -237,24 +232,8 @@ func extractHopsFromOutput(targetHost, output string) ([]string, int) {
 	return hops, latency
 }
 
-var (
-	toolsCheckOnce sync.Once
-)
-
-// EnsureNetworkTools checks and automatically installs missing network diagnosis tools (e.g. traceroute).
-func EnsureNetworkTools(ctx context.Context) {
-	toolsCheckOnce.Do(func() {
-		if runtime.GOOS != "linux" {
-			return
-		}
-		if commandExists("traceroute") || commandExists("tracepath") {
-			return
-		}
-		installCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
-		defer cancel()
-		_ = installPackages(installCtx, "traceroute")
-	})
-}
+// EnsureNetworkTools is a no-op; network diagnosis uses existing host utilities or native Go probes without modifying the system.
+func EnsureNetworkTools(ctx context.Context) {}
 
 // traceRoute extracts intermediate IP hops towards the target using traceroute or tracepath.
 // It uses CombinedOutput and never discards captured hops due to non-zero exit codes.
@@ -308,17 +287,17 @@ func traceRoute(ctx context.Context, targetHost string) traceRouteResult {
 	}
 
 	lowerOut := strings.ToLower(outStr)
-	if strings.Contains(lowerOut, "9929") || strings.Contains(lowerOut, "cuii") {
-		hops = append(hops, "9929")
+	if strings.Contains(lowerOut, "as9929") || strings.Contains(lowerOut, "cuii") {
+		hops = append(hops, "AS9929")
 	}
-	if strings.Contains(lowerOut, "10099") || strings.Contains(lowerOut, "cug") {
-		hops = append(hops, "10099")
+	if strings.Contains(lowerOut, "as10099") || strings.Contains(lowerOut, "cug") {
+		hops = append(hops, "AS10099")
 	}
-	if strings.Contains(lowerOut, "59.43.") || strings.Contains(lowerOut, "cn2") {
-		hops = append(hops, "59.43.0.1")
+	if strings.Contains(lowerOut, "cn2") || strings.Contains(lowerOut, "as4809") {
+		hops = append(hops, "AS4809")
 	}
-	if strings.Contains(lowerOut, "cmin2") || strings.Contains(lowerOut, "58807") {
-		hops = append(hops, "58807")
+	if strings.Contains(lowerOut, "cmin2") || strings.Contains(lowerOut, "as58807") {
+		hops = append(hops, "AS58807")
 	}
 
 	return traceRouteResult{
@@ -343,28 +322,33 @@ func runSpeedtest(ctx context.Context, task Task) TaskResult {
 	timeoutCtx, cancel := context.WithTimeout(ctx, 45*time.Second)
 	defer cancel()
 
-	// 确保基础网络测试工具已就绪，缺失时自动安装
-	EnsureNetworkTools(timeoutCtx)
-
 	var payload SpeedtestTaskPayload
 	if task.Payload != "" && task.Payload != "{}" {
 		_ = json.Unmarshal([]byte(task.Payload), &payload)
 	}
 
 	telecomEps := payload.TelecomEndpoints
-	if len(telecomEps) == 0 {
-		telecomEps = TelecomEndpoints
-	}
 	unicomEps := payload.UnicomEndpoints
-	if len(unicomEps) == 0 {
-		unicomEps = UnicomEndpoints
-	}
 	mobileEps := payload.MobileEndpoints
-	if len(mobileEps) == 0 {
-		mobileEps = MobileEndpoints
+
+	// 1. 并发执行去程与 GFW 连通性检测 (由 Agent 离散发起，Master 0 探测介入)
+	targetHost := strings.TrimSpace(payload.TargetHost)
+	targetPort := payload.TargetPort
+	if targetPort == 0 {
+		targetPort = 443
 	}
+	var inboundRes inboundProbeResult
+	var inboundWg sync.WaitGroup
+	inboundWg.Add(1)
+	go func() {
+		defer inboundWg.Done()
+		inboundRes = agentProbeInboundAndGFW(timeoutCtx, targetHost, targetPort)
+	}()
 
 	measureEndpoints := func(endpoints []TargetEndpoint) ([]string, int, string, string) {
+		if len(endpoints) == 0 {
+			return nil, 0, "", ""
+		}
 		type epRes struct {
 			index   int
 			city    string
@@ -523,47 +507,85 @@ func runSpeedtest(ctx context.Context, task Task) TaskResult {
 	}()
 
 	traceWg.Wait()
+	inboundWg.Wait()
 
 	telecomRoute := analyzeTelecomRoute(telecomHops, telecomLatency)
 	unicomRoute := analyzeUnicomRoute(unicomHops, unicomLatency)
 	mobileRoute := analyzeMobileRoute(mobileHops, mobileLatency)
 
 	if telecomBestCity == "" {
-		telecomBestCity = "上海电信"
+		if len(telecomEps) > 0 {
+			telecomBestCity = telecomEps[0].City
+		} else {
+			telecomBestCity = "电信网络"
+		}
 	}
 	if unicomBestCity == "" {
-		unicomBestCity = "上海联通"
+		if len(unicomEps) > 0 {
+			unicomBestCity = unicomEps[0].City
+		} else {
+			unicomBestCity = "联通网络"
+		}
 	}
 	if mobileBestCity == "" {
-		mobileBestCity = "广州移动"
+		if len(mobileEps) > 0 {
+			mobileBestCity = mobileEps[0].City
+		} else {
+			mobileBestCity = "移动网络"
+		}
 	}
 
-	telecomTracePath := wire.BuildTracePath(telecomHops, telecomBestCity)
-	if telecomTracePath == "" && telecomLatency > 0 {
-		telecomTracePath = wire.BuildTracePathFallback(telecomRoute, telecomBestCity)
+	var telecomTracePath string
+	if telecomLatency > 0 || len(telecomHops) > 0 {
+		telecomTracePath = wire.BuildTracePath(telecomHops, telecomBestCity)
+		if telecomTracePath == "" && telecomLatency > 0 {
+			telecomTracePath = wire.BuildTracePathFallback(telecomRoute, telecomBestCity)
+		}
 	}
-	unicomTracePath := wire.BuildTracePath(unicomHops, unicomBestCity)
-	if unicomTracePath == "" && unicomLatency > 0 {
-		unicomTracePath = wire.BuildTracePathFallback(unicomRoute, unicomBestCity)
+	var unicomTracePath string
+	if unicomLatency > 0 || len(unicomHops) > 0 {
+		unicomTracePath = wire.BuildTracePath(unicomHops, unicomBestCity)
+		if unicomTracePath == "" && unicomLatency > 0 {
+			unicomTracePath = wire.BuildTracePathFallback(unicomRoute, unicomBestCity)
+		}
 	}
-	mobileTracePath := wire.BuildTracePath(mobileHops, mobileBestCity)
-	if mobileTracePath == "" && mobileLatency > 0 {
-		mobileTracePath = wire.BuildTracePathFallback(mobileRoute, mobileBestCity)
+	var mobileTracePath string
+	if mobileLatency > 0 || len(mobileHops) > 0 {
+		mobileTracePath = wire.BuildTracePath(mobileHops, mobileBestCity)
+		if mobileTracePath == "" && mobileLatency > 0 {
+			mobileTracePath = wire.BuildTracePathFallback(mobileRoute, mobileBestCity)
+		}
 	}
 
 	result := SpeedtestResult{
-		TelecomLatencyMs:     telecomLatency,
-		TelecomRoute:         telecomRoute,
-		TelecomNodeLatencies: strings.Join(telecomLatList, " | "),
-		TelecomTracePath:     telecomTracePath,
-		UnicomLatencyMs:      unicomLatency,
-		UnicomRoute:          unicomRoute,
-		UnicomNodeLatencies:  strings.Join(unicomLatList, " | "),
-		UnicomTracePath:      unicomTracePath,
-		MobileLatencyMs:      mobileLatency,
-		MobileRoute:          mobileRoute,
-		MobileNodeLatencies:  strings.Join(mobileLatList, " | "),
-		MobileTracePath:      mobileTracePath,
+		TelecomLatencyMs:            telecomLatency,
+		TelecomRoute:                telecomRoute,
+		TelecomNodeLatencies:        strings.Join(telecomLatList, " | "),
+		TelecomTracePath:            telecomTracePath,
+		UnicomLatencyMs:             unicomLatency,
+		UnicomRoute:                 unicomRoute,
+		UnicomNodeLatencies:         strings.Join(unicomLatList, " | "),
+		UnicomTracePath:             unicomTracePath,
+		MobileLatencyMs:             mobileLatency,
+		MobileRoute:                 mobileRoute,
+		MobileNodeLatencies:         strings.Join(mobileLatList, " | "),
+		MobileTracePath:             mobileTracePath,
+		InboundTelecomRoute:         inboundRes.InboundTelecomRoute,
+		InboundTelecomLatencyMs:     inboundRes.InboundTelecomLatencyMs,
+		InboundTelecomNodeLatencies: inboundRes.InboundTelecomNodeLatencies,
+		InboundTelecomTracePath:     inboundRes.InboundTelecomTracePath,
+		InboundUnicomRoute:          inboundRes.InboundUnicomRoute,
+		InboundUnicomLatencyMs:      inboundRes.InboundUnicomLatencyMs,
+		InboundUnicomNodeLatencies:  inboundRes.InboundUnicomNodeLatencies,
+		InboundUnicomTracePath:      inboundRes.InboundUnicomTracePath,
+		InboundMobileRoute:          inboundRes.InboundMobileRoute,
+		InboundMobileLatencyMs:      inboundRes.InboundMobileLatencyMs,
+		InboundMobileNodeLatencies:  inboundRes.InboundMobileNodeLatencies,
+		InboundMobileTracePath:      inboundRes.InboundMobileTracePath,
+		GFWBlocked:                  inboundRes.GFWBlocked,
+		GFWStatus:                   inboundRes.GFWStatus,
+		DomesticLatency:             inboundRes.LatencyMs,
+		DomesticSource:              inboundRes.Source,
 	}
 
 	encoded, err := json.Marshal(result)
@@ -573,7 +595,398 @@ func runSpeedtest(ctx context.Context, task Task) TaskResult {
 
 	return TaskResult{
 		Status:  "succeeded",
-		Summary: "三网回程延迟与线路检测完成",
+		Summary: "三网测速与连通性检测完成",
 		Data:    string(encoded),
 	}
+}
+
+type inboundProbeResult struct {
+	OK                          bool
+	Executed                    bool
+	LatencyMs                   int
+	PacketLoss                  int
+	Source                      string
+	Error                       string
+	GFWBlocked                  bool
+	GFWStatus                   string
+	InboundTelecomRoute         string
+	InboundTelecomLatencyMs     int
+	InboundTelecomNodeLatencies string
+	InboundTelecomTracePath     string
+	InboundUnicomRoute          string
+	InboundUnicomLatencyMs      int
+	InboundUnicomNodeLatencies  string
+	InboundUnicomTracePath      string
+	InboundMobileRoute          string
+	InboundMobileLatencyMs      int
+	InboundMobileNodeLatencies  string
+	InboundMobileTracePath      string
+}
+
+func formatProbeCity(city string) string {
+	return strings.TrimSpace(city)
+}
+
+func formatProbeNetwork(asn int, netName string) string {
+	if asn > 0 {
+		if name := wire.ASNToName(fmt.Sprintf("AS%d", asn)); name != "" {
+			return name
+		}
+	}
+	netName = strings.TrimSpace(netName)
+	if netName != "" {
+		return netName
+	}
+	return "多线"
+}
+
+func agentProbeInboundAndGFW(ctx context.Context, host string, port uint16) inboundProbeResult {
+	host = strings.TrimSpace(host)
+	if host == "" {
+		return inboundProbeResult{OK: true, GFWStatus: "normal", Source: "未指定公网目标地址，跳过探针检测"}
+	}
+	if parsedHost, _, err := net.SplitHostPort(host); err == nil {
+		host = parsedHost
+	}
+	if ip := net.ParseIP(host); ip != nil {
+		if ip.IsPrivate() || ip.IsLoopback() || ip.IsUnspecified() || ip.IsLinkLocalUnicast() {
+			return inboundProbeResult{OK: true, GFWStatus: "normal", Source: "目标为本地或私有内网 IP，跳过探针检测"}
+		}
+	}
+
+	probeCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
+	defer cancel()
+
+	if port == 0 {
+		port = 443
+	}
+
+	payload := map[string]any{
+		"target": host,
+		"type":   "ping",
+		"measurementOptions": map[string]any{
+			"protocol": "TCP",
+			"port":     int(port),
+			"packets":  2,
+		},
+		"locations": []map[string]any{
+			{"country": "CN"},
+		},
+		"limit": 6,
+	}
+
+	bodyBytes, err := json.Marshal(payload)
+	if err != nil {
+		return inboundProbeResult{OK: true, GFWStatus: "normal", Source: "构造探测请求失败: " + err.Error(), Error: err.Error()}
+	}
+
+	req, err := http.NewRequestWithContext(probeCtx, http.MethodPost, "https://api.globalping.io/v1/measurements", bytes.NewReader(bodyBytes))
+	if err != nil {
+		return inboundProbeResult{OK: true, GFWStatus: "normal", Source: "创建探测请求失败: " + err.Error(), Error: err.Error()}
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("User-Agent", "Polaris-Agent/1.0")
+
+	client := &http.Client{Timeout: 8 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return inboundProbeResult{OK: true, GFWStatus: "normal", Source: "连接探测平台失败: " + err.Error(), Error: err.Error()}
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusAccepted && resp.StatusCode != http.StatusOK {
+		respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
+		return inboundProbeResult{OK: true, GFWStatus: "normal", Source: fmt.Sprintf("探测平台响应错误 (%d): %s", resp.StatusCode, string(respBody)), Error: string(respBody)}
+	}
+
+	var initResp struct {
+		ID string `json:"id"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&initResp); err != nil || initResp.ID == "" {
+		return inboundProbeResult{OK: true, GFWStatus: "normal", Source: "解析探测任务 ID 失败"}
+	}
+
+	resultURL := fmt.Sprintf("https://api.globalping.io/v1/measurements/%s", initResp.ID)
+
+	type probeItem struct {
+		Probe struct {
+			City    string `json:"city"`
+			Network string `json:"network"`
+			Country string `json:"country"`
+			ASN     int    `json:"asn"`
+		} `json:"probe"`
+		Result struct {
+			Status    string `json:"status"`
+			RawOutput string `json:"rawOutput"`
+			Stats     struct {
+				Total int      `json:"total"`
+				Rcv   int      `json:"rcv"`
+				Drop  int      `json:"drop"`
+				Loss  float64  `json:"loss"`
+				Avg   *float64 `json:"avg"`
+			} `json:"stats"`
+			Timings []struct {
+				RTT float64 `json:"rtt"`
+			} `json:"timings"`
+		} `json:"result"`
+	}
+
+	type resultRespType struct {
+		ID      string      `json:"id"`
+		Status  string      `json:"status"`
+		Results []probeItem `json:"results"`
+	}
+
+	var lastRes resultRespType
+	pollStart := time.Now()
+	for {
+		select {
+		case <-probeCtx.Done():
+			return inboundProbeResult{OK: true, GFWStatus: "normal", Source: "等待探针结果超时"}
+		default:
+		}
+
+		time.Sleep(1200 * time.Millisecond)
+
+		pollReq, err := http.NewRequestWithContext(probeCtx, http.MethodGet, resultURL, nil)
+		if err != nil {
+			break
+		}
+		pollReq.Header.Set("User-Agent", "Polaris-Agent/1.0")
+		pollResp, err := client.Do(pollReq)
+		if err != nil {
+			continue
+		}
+
+		err = json.NewDecoder(pollResp.Body).Decode(&lastRes)
+		_ = pollResp.Body.Close()
+		if err != nil {
+			continue
+		}
+
+		if lastRes.Status == "finished" {
+			break
+		}
+		if len(lastRes.Results) > 0 {
+			allDone := true
+			for _, r := range lastRes.Results {
+				if r.Result.Status == "in-progress" {
+					allDone = false
+					break
+				}
+			}
+			if allDone {
+				break
+			}
+		}
+
+		if time.Since(pollStart) >= 15*time.Second {
+			break
+		}
+	}
+
+	if len(lastRes.Results) == 0 {
+		return inboundProbeResult{OK: true, GFWStatus: "normal", Source: "未获取到探针返回数据"}
+	}
+
+	var res inboundProbeResult
+	var successCount, failCount int
+	var totalRTT float64
+	var validRTTCount int
+
+	var telecomCities, unicomCities, mobileCities, bgpCities []string
+	var telecomProbeCity, unicomProbeCity, mobileProbeCity string
+	var telecomProbeASN, unicomProbeASN, mobileProbeASN int
+	var bestBgpCity string
+	var bestBgpASN, bestBgpRTT int
+
+	for _, item := range lastRes.Results {
+		if item.Result.Status == "in-progress" {
+			continue
+		}
+		probeRTT := 0
+		if item.Result.Stats.Avg != nil && *item.Result.Stats.Avg > 0 {
+			probeRTT = int(*item.Result.Stats.Avg)
+		} else if len(item.Result.Timings) > 0 && item.Result.Timings[0].RTT > 0 {
+			probeRTT = int(item.Result.Timings[0].RTT)
+		}
+
+		if item.Result.Stats.Rcv > 0 {
+			successCount++
+			if probeRTT > 0 {
+				totalRTT += float64(probeRTT)
+				validRTTCount++
+			}
+		} else {
+			failCount++
+		}
+
+		asn := item.Probe.ASN
+		upperNet := strings.ToUpper(item.Probe.Network)
+		cityName := formatProbeCity(item.Probe.City)
+		if cityName == "" {
+			cityName = item.Probe.City
+		}
+
+		if asn == 4134 || strings.Contains(upperNet, "CHINANET") || strings.Contains(upperNet, "TELECOM") {
+			if probeRTT > 0 {
+				telecomCities = append(telecomCities, fmt.Sprintf("%s: %dms", cityName, probeRTT))
+			}
+			if (res.InboundTelecomLatencyMs == 0 || (probeRTT > 0 && probeRTT < res.InboundTelecomLatencyMs)) && probeRTT > 0 {
+				res.InboundTelecomLatencyMs = probeRTT
+				res.InboundTelecomRoute = wire.AnalyzeTelecomRoute([]string{host}, probeRTT)
+				telecomProbeCity = cityName
+				telecomProbeASN = asn
+			}
+		} else if asn == 4837 || asn == 9929 || strings.Contains(upperNet, "UNICOM") {
+			if probeRTT > 0 {
+				unicomCities = append(unicomCities, fmt.Sprintf("%s: %dms", cityName, probeRTT))
+			}
+			if (res.InboundUnicomLatencyMs == 0 || (probeRTT > 0 && probeRTT < res.InboundUnicomLatencyMs)) && probeRTT > 0 {
+				res.InboundUnicomLatencyMs = probeRTT
+				res.InboundUnicomRoute = wire.AnalyzeUnicomRoute([]string{host}, probeRTT)
+				unicomProbeCity = cityName
+				unicomProbeASN = asn
+			}
+		} else if asn == 9808 || asn == 58807 || strings.Contains(upperNet, "MOBILE") {
+			if probeRTT > 0 {
+				mobileCities = append(mobileCities, fmt.Sprintf("%s: %dms", cityName, probeRTT))
+			}
+			if (res.InboundMobileLatencyMs == 0 || (probeRTT > 0 && probeRTT < res.InboundMobileLatencyMs)) && probeRTT > 0 {
+				res.InboundMobileLatencyMs = probeRTT
+				res.InboundMobileRoute = wire.AnalyzeMobileRoute([]string{host}, probeRTT)
+				mobileProbeCity = cityName
+				mobileProbeASN = asn
+			}
+		} else {
+			netName := formatProbeNetwork(item.Probe.ASN, item.Probe.Network)
+			if probeRTT > 0 {
+				bgpCities = append(bgpCities, fmt.Sprintf("%s%s: %dms", cityName, netName, probeRTT))
+				if bestBgpRTT == 0 || probeRTT < bestBgpRTT {
+					bestBgpRTT = probeRTT
+					bestBgpCity = cityName
+					bestBgpASN = asn
+				}
+			}
+		}
+	}
+
+	totalEvaluated := successCount + failCount
+	if totalEvaluated == 0 {
+		return inboundProbeResult{OK: true, GFWStatus: "normal", Source: "探针未在超时前完成测量"}
+	}
+
+	res.Executed = true
+	avgRTT := 0
+	if validRTTCount > 0 {
+		avgRTT = int(totalRTT / float64(validRTTCount))
+	}
+
+	if res.InboundTelecomLatencyMs == 0 && bestBgpRTT > 0 {
+		res.InboundTelecomLatencyMs = bestBgpRTT
+		res.InboundTelecomRoute = wire.AnalyzeTelecomRoute([]string{host}, bestBgpRTT)
+	}
+	if res.InboundUnicomLatencyMs == 0 && bestBgpRTT > 0 {
+		res.InboundUnicomLatencyMs = bestBgpRTT
+		res.InboundUnicomRoute = wire.AnalyzeUnicomRoute([]string{host}, bestBgpRTT)
+	}
+	if res.InboundMobileLatencyMs == 0 && bestBgpRTT > 0 {
+		res.InboundMobileLatencyMs = bestBgpRTT
+		res.InboundMobileRoute = wire.AnalyzeMobileRoute([]string{host}, bestBgpRTT)
+	}
+
+	destASN := wire.IPv4ToASN(host)
+	city := wire.IPv4ToCity(host)
+	destName := ""
+	if destASN != "" {
+		destName = wire.ASNToNameWithLocation(destASN, city)
+	}
+	if destName == "" {
+		if city != "" {
+			destName = fmt.Sprintf("节点 (%s)", city)
+		} else {
+			destName = host
+		}
+	}
+
+	if successCount > 0 {
+		res.OK = true
+		res.GFWBlocked = false
+		res.GFWStatus = "normal"
+		res.LatencyMs = avgRTT
+		res.PacketLoss = int(float64(failCount) / float64(totalEvaluated) * 100)
+
+		var cityList []string
+		citySet := make(map[string]bool)
+		for _, item := range lastRes.Results {
+			c := formatProbeCity(item.Probe.City)
+			if c != "" && !citySet[c] {
+				citySet[c] = true
+				cityList = append(cityList, c)
+			}
+		}
+		summaryCity := strings.Join(cityList, "/")
+		if len(cityList) > 3 {
+			summaryCity = strings.Join(cityList[:3], "/") + "等"
+		}
+		if summaryCity != "" {
+			res.Source = fmt.Sprintf("分布式探针 (%s %d/%d 畅通 · %dms)", summaryCity, successCount, totalEvaluated, avgRTT)
+		} else {
+			res.Source = fmt.Sprintf("分布式探针 (%d/%d 畅通 · %dms)", successCount, totalEvaluated, avgRTT)
+		}
+
+		if res.InboundTelecomRoute == "" {
+			res.InboundTelecomRoute = "电信直连"
+		}
+		if res.InboundUnicomRoute == "" {
+			res.InboundUnicomRoute = "联通直连"
+		}
+		if res.InboundMobileRoute == "" {
+			res.InboundMobileRoute = "移动直连"
+		}
+
+		if len(telecomCities) == 0 && len(bgpCities) > 0 {
+			telecomCities = append(telecomCities, bgpCities...)
+		}
+		if len(unicomCities) == 0 && len(bgpCities) > 0 {
+			unicomCities = append(unicomCities, bgpCities...)
+		}
+		if len(mobileCities) == 0 && len(bgpCities) > 0 {
+			mobileCities = append(mobileCities, bgpCities...)
+		}
+
+		res.InboundTelecomNodeLatencies = strings.Join(telecomCities, " | ")
+		res.InboundUnicomNodeLatencies = strings.Join(unicomCities, " | ")
+		res.InboundMobileNodeLatencies = strings.Join(mobileCities, " | ")
+
+		if telecomProbeCity == "" {
+			telecomProbeCity = bestBgpCity
+			telecomProbeASN = bestBgpASN
+		}
+		if unicomProbeCity == "" {
+			unicomProbeCity = bestBgpCity
+			unicomProbeASN = bestBgpASN
+		}
+		if mobileProbeCity == "" {
+			mobileProbeCity = bestBgpCity
+			mobileProbeASN = bestBgpASN
+		}
+
+		res.InboundTelecomTracePath = wire.BuildRealInboundTracePath(telecomProbeCity, telecomProbeASN, "电信", destName, nil)
+		res.InboundUnicomTracePath = wire.BuildRealInboundTracePath(unicomProbeCity, unicomProbeASN, "联通", destName, nil)
+		res.InboundMobileTracePath = wire.BuildRealInboundTracePath(mobileProbeCity, mobileProbeASN, "移动", destName, nil)
+		return res
+	}
+
+	res.OK = false
+	res.GFWBlocked = true
+	res.GFWStatus = "blocked"
+	res.LatencyMs = 0
+	res.PacketLoss = 100
+	res.Source = fmt.Sprintf("探针全超时 (0/%d 丢弃 · 端口无响应)", totalEvaluated)
+	res.InboundTelecomRoute = "端口阻断"
+	res.InboundUnicomRoute = "端口阻断"
+	res.InboundMobileRoute = "端口阻断"
+	res.Error = "分布式探针 TCP 端口握手均超时或被丢弃"
+	return res
 }
