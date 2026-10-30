@@ -66,7 +66,7 @@ jobs:
 
           go build \
             -trimpath \
-            -ldflags "-X github.com/liyuwei007036/polaris/internal/version.Version=${version}" \
+            -ldflags "-s -w -X github.com/liyuwei007036/polaris/internal/version.Version=${version}" \
             -o "package/${package}/polaris" \
             ./cmd/polaris
 

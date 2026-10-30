@@ -140,6 +140,7 @@ func TestCombinedRunsPreviouslyApprovedAgentInOneProcess(t *testing.T) {
 	go func() { done <- serveCombined(ctx, masterConfiguration, agentConfiguration) }()
 	time.Sleep(800 * time.Millisecond)
 	stopCombinedTest(t, cancel, done)
+	time.Sleep(100 * time.Millisecond)
 	store, err = control.OpenWithDatabase(masterConfiguration.DataDir, masterConfiguration.DatabasePath)
 	if err != nil {
 		t.Fatal(err)

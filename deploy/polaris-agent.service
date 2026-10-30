@@ -19,13 +19,13 @@ IOSchedulingClass=best-effort
 IOSchedulingPriority=7
 
 # Memory limits & OOM protection: agent sacrifices before proxy
-MemoryHigh=150M
-MemoryMax=250M
+MemoryHigh=100M
+MemoryMax=200M
 OOMScoreAdjust=500
 
 # Go runtime resource constraints for low-spec / 512M nodes
-Environment="GOMEMLIMIT=120MiB"
-Environment="GOGC=50"
+Environment="GOMEMLIMIT=50MiB"
+Environment="GOGC=30"
 Environment="GODEBUG=madvdontneed=1"
 Environment="GOMAXPROCS=1"
 LimitNOFILE=1048576

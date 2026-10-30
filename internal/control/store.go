@@ -2286,6 +2286,17 @@ func (s *Store) MarkTaskDispatched(ctx context.Context, taskID, nodeID string) e
 	return nil
 }
 
+// FailInterruptedTasks marks any tasks that were dispatched to a node but not completed
+// as failed when the node unexpectedly disconnects, preventing infinite crash/retry loops.
+func (s *Store) FailInterruptedTasks(ctx context.Context, nodeID string) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE tasks SET status = 'failed', result_summary = '节点在执行任务过程中连接中断，任务已终止', finished_at = ?
+		WHERE node_id = ? AND status = 'dispatched'`, nowUnix(), nodeID)
+	if err != nil {
+		return fmt.Errorf("fail interrupted tasks: %w", err)
+	}
+	return nil
+}
+
 func (s *Store) CompleteTask(ctx context.Context, taskID, nodeID, status, summary string) error {
 	if status != "succeeded" && status != "failed" && status != "rolled_back" {
 		return errors.New("invalid task completion status")

@@ -104,23 +104,34 @@ func Apply(ctx context.Context, manifest Manifest, executablePath string, verify
 	}
 
 	backupPath := executablePath + ".polaris.last-good"
-	if current, err := os.ReadFile(executablePath); err == nil {
-		if err := os.WriteFile(backupPath, current, 0o755); err != nil {
-			return fmt.Errorf("备份当前版本失败: %w", err)
-		}
-	} else if !os.IsNotExist(err) {
-		return fmt.Errorf("读取当前版本失败: %w", err)
+	if err := copyFile(executablePath, backupPath, 0o755); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("备份当前版本失败: %w", err)
 	}
 	if err := os.Rename(artifactPath, executablePath); err != nil {
 		return fmt.Errorf("安装新版本失败（进程可能无权写入 %s）: %w", executablePath, err)
 	}
 	if err := verify(ctx, executablePath); err != nil {
-		if backup, readErr := os.ReadFile(backupPath); readErr == nil {
-			_ = os.WriteFile(executablePath, backup, 0o755)
-		}
+		_ = copyFile(backupPath, executablePath, 0o755)
 		return fmt.Errorf("新版本验证失败，已恢复原版本: %w", err)
 	}
 	return nil
+}
+
+func copyFile(src, dst string, mode os.FileMode) error {
+	in, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+	out, err := os.OpenFile(dst, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, mode)
+	if err != nil {
+		return err
+	}
+	defer out.Close()
+	if _, err = io.Copy(out, in); err != nil {
+		return err
+	}
+	return out.Sync()
 }
 
 // extractBinary pulls the polaris binary out of the release tar.gz, which

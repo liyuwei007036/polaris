@@ -167,6 +167,7 @@ func (s *Server) runAgentSession(ctx context.Context, conn *wire.Conn, node Node
 			delete(s.controls, node.ID)
 		}
 		s.controlMu.Unlock()
+		_ = s.store.FailInterruptedTasks(context.Background(), node.ID)
 		if s.alertEngine != nil && ctx.Err() == nil {
 			s.alertEngine.NotifyNodeOffline(node.ID, node.Name)
 		}
