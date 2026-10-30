@@ -288,10 +288,7 @@ function isNodeGFWBlocked(st) {
   if (!st) return false
   return (
     Boolean(st.gfw_blocked) ||
-    st.gfw_status === 'blocked' ||
-    st.telecom_route === 'GFW 阻断' ||
-    st.unicom_route === 'GFW 阻断' ||
-    st.mobile_route === 'GFW 阻断'
+    st.gfw_status === 'blocked'
   )
 }
 

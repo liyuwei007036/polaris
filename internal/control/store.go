@@ -2807,6 +2807,9 @@ INSERT OR IGNORE INTO alert_settings (id, updated_at) VALUES (1, unixepoch());
 	if _, err := s.db.ExecContext(ctx, `UPDATE node_speedtests SET mobile_route = 'CN2 GIA' WHERE mobile_route LIKE '%移动优化%' OR mobile_route = 'CN2 GIA (移动优化)'; UPDATE node_speedtests SET unicom_route = 'CN2 GIA' WHERE unicom_route LIKE '%联通优化%' OR unicom_route = 'CN2 GIA (联通优化)'`); err != nil {
 		return fmt.Errorf("cleanup legacy forced routes: %w", err)
 	}
+	if _, err := s.db.ExecContext(ctx, `UPDATE node_speedtests SET gfw_blocked = 0, gfw_status = 'normal', inbound_telecom_route = '', inbound_unicom_route = '', inbound_mobile_route = '' WHERE gfw_blocked = 1 AND domestic_latency_ms = 0 AND (domestic_source LIKE '%400%' OR domestic_source LIKE '%国内探针全超时%' OR domestic_source = '' OR domestic_source IS NULL)`); err != nil {
+		return fmt.Errorf("cleanup legacy false-positive gfw blocked states: %w", err)
+	}
 	return nil
 }
 

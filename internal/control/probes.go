@@ -86,7 +86,7 @@ func (p *Prober) tick(parentCtx context.Context) {
 		if p.lastGFWProbe.IsZero() || now.Sub(p.lastGFWProbe) >= interval {
 			p.lastGFWProbe = now
 			go func() {
-				probeCtx, probeCancel := context.WithTimeout(context.Background(), 60*time.Second)
+				probeCtx, probeCancel := context.WithTimeout(context.Background(), 3*time.Minute)
 				defer probeCancel()
 				_, _ = p.server.runGFWCheckAll(probeCtx)
 			}()
@@ -176,6 +176,7 @@ func isMasterOverseas() bool {
 
 type ChinaProbeResult struct {
 	OK                          bool
+	Executed                    bool
 	LatencyMs                   int
 	PacketLoss                  int
 	Source                      string
@@ -258,7 +259,20 @@ func formatProbeNetwork(netName string) string {
 // probeFromChinaReal uses distributed public probe nodes in Mainland China (Beijing, Shenzhen, Shanghai, etc.)
 // to perform real inbound TCP handshakes across the GFW to verify port accessibility.
 func probeFromChinaReal(ctx context.Context, host string, port uint16) ChinaProbeResult {
-	probeCtx, cancel := context.WithTimeout(ctx, 16*time.Second)
+	host = strings.TrimSpace(host)
+	if host == "" {
+		return ChinaProbeResult{Executed: false, Error: "目标主机地址为空"}
+	}
+	if parsedHost, _, err := net.SplitHostPort(host); err == nil {
+		host = parsedHost
+	}
+	if ip := net.ParseIP(host); ip != nil {
+		if ip.IsPrivate() || ip.IsLoopback() || ip.IsUnspecified() || ip.IsLinkLocalUnicast() {
+			return ChinaProbeResult{Executed: false, Error: "目标为本地或私有内网 IP，跳过国内探针检测"}
+		}
+	}
+
+	probeCtx, cancel := context.WithTimeout(ctx, 22*time.Second)
 	defer cancel()
 
 	if port == 0 {
@@ -274,11 +288,6 @@ func probeFromChinaReal(ctx context.Context, host string, port uint16) ChinaProb
 			"packets":  2,
 		},
 		"locations": []map[string]any{
-			{"country": "CN", "city": "Nanjing", "asn": 4134},
-			{"country": "CN", "city": "Nanjing", "asn": 4837},
-			{"country": "CN", "city": "Nanjing", "asn": 9808},
-			{"country": "CN", "city": "Nanjing"},
-			{"country": "CN", "region": "Eastern China"},
 			{"country": "CN"},
 		},
 		"limit": 6,
@@ -286,26 +295,26 @@ func probeFromChinaReal(ctx context.Context, host string, port uint16) ChinaProb
 
 	bodyBytes, err := json.Marshal(payload)
 	if err != nil {
-		return ChinaProbeResult{OK: false, Error: "构造探测请求失败: " + err.Error()}
+		return ChinaProbeResult{Executed: false, Error: "构造探测请求失败: " + err.Error()}
 	}
 
 	req, err := http.NewRequestWithContext(probeCtx, http.MethodPost, "https://api.globalping.io/v1/measurements", bytes.NewReader(bodyBytes))
 	if err != nil {
-		return ChinaProbeResult{OK: false, Error: "创建探测请求失败: " + err.Error()}
+		return ChinaProbeResult{Executed: false, Error: "创建探测请求失败: " + err.Error()}
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("User-Agent", "Polaris-Probe/1.0")
 
-	client := &http.Client{Timeout: 6 * time.Second}
+	client := &http.Client{Timeout: 8 * time.Second}
 	resp, err := client.Do(req)
 	if err != nil {
-		return ChinaProbeResult{OK: false, Error: "连接国内探测平台失败: " + err.Error()}
+		return ChinaProbeResult{Executed: false, Error: "连接国内探测平台失败: " + err.Error()}
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusAccepted && resp.StatusCode != http.StatusOK {
 		respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
-		return ChinaProbeResult{OK: false, Error: fmt.Sprintf("探测平台响应错误 (%d): %s", resp.StatusCode, string(respBody))}
+		return ChinaProbeResult{Executed: false, Error: fmt.Sprintf("探测平台响应错误 (%d): %s", resp.StatusCode, string(respBody))}
 	}
 
 	var initResp struct {
@@ -313,7 +322,7 @@ func probeFromChinaReal(ctx context.Context, host string, port uint16) ChinaProb
 		ProbesCount int    `json:"probesCount"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&initResp); err != nil || initResp.ID == "" {
-		return ChinaProbeResult{OK: false, Error: "解析探测任务 ID 失败"}
+		return ChinaProbeResult{Executed: false, Error: "解析探测任务 ID 失败"}
 	}
 
 	resultURL := fmt.Sprintf("https://api.globalping.io/v1/measurements/%s", initResp.ID)
@@ -352,7 +361,7 @@ func probeFromChinaReal(ctx context.Context, host string, port uint16) ChinaProb
 	for {
 		select {
 		case <-probeCtx.Done():
-			return ChinaProbeResult{OK: false, Error: "等待国内探针结果超时"}
+			return ChinaProbeResult{Executed: false, Error: "等待国内探针结果超时"}
 		default:
 		}
 
@@ -374,7 +383,10 @@ func probeFromChinaReal(ctx context.Context, host string, port uint16) ChinaProb
 			continue
 		}
 
-		if lastRes.Status == "finished" || len(lastRes.Results) > 0 {
+		if lastRes.Status == "finished" {
+			break
+		}
+		if len(lastRes.Results) > 0 {
 			allDone := true
 			for _, r := range lastRes.Results {
 				if r.Result.Status == "in-progress" {
@@ -382,18 +394,18 @@ func probeFromChinaReal(ctx context.Context, host string, port uint16) ChinaProb
 					break
 				}
 			}
-			if allDone || time.Since(pollStart) >= 11*time.Second {
+			if allDone {
 				break
 			}
 		}
 
-		if time.Since(pollStart) >= 12*time.Second {
+		if time.Since(pollStart) >= 16*time.Second {
 			break
 		}
 	}
 
 	if len(lastRes.Results) == 0 {
-		return ChinaProbeResult{OK: false, Error: "未获取到国内探针返回数据"}
+		return ChinaProbeResult{Executed: false, Error: "未获取到国内探针返回数据"}
 	}
 
 	var res ChinaProbeResult
@@ -405,6 +417,9 @@ func probeFromChinaReal(ctx context.Context, host string, port uint16) ChinaProb
 	var telecomProbeCity, unicomProbeCity, mobileProbeCity string
 	var telecomProbeASN, unicomProbeASN, mobileProbeASN int
 	for _, item := range lastRes.Results {
+		if item.Result.Status == "in-progress" {
+			continue
+		}
 		probeRTT := 0
 		if item.Result.Stats.Avg != nil && *item.Result.Stats.Avg > 0 {
 			probeRTT = int(*item.Result.Stats.Avg)
@@ -463,7 +478,12 @@ func probeFromChinaReal(ctx context.Context, host string, port uint16) ChinaProb
 		}
 	}
 
-	totalCount := len(lastRes.Results)
+	totalEvaluated := successCount + failCount
+	if totalEvaluated == 0 {
+		return ChinaProbeResult{Executed: false, Error: "国内探针未在超时前完成测量"}
+	}
+
+	res.Executed = true
 	avgRTT := 0
 	if validRTTCount > 0 {
 		avgRTT = int(totalRTT / float64(validRTTCount))
@@ -493,7 +513,7 @@ func probeFromChinaReal(ctx context.Context, host string, port uint16) ChinaProb
 	if successCount > 0 {
 		res.OK = true
 		res.LatencyMs = avgRTT
-		res.PacketLoss = int(float64(failCount) / float64(totalCount) * 100)
+		res.PacketLoss = int(float64(failCount) / float64(totalEvaluated) * 100)
 		hasNanjing := false
 		for _, item := range lastRes.Results {
 			c := strings.ToLower(item.Probe.City)
@@ -503,9 +523,9 @@ func probeFromChinaReal(ctx context.Context, host string, port uint16) ChinaProb
 			}
 		}
 		if hasNanjing {
-			res.Source = fmt.Sprintf("南京探针 (%d/%d 畅通 · %dms)", successCount, totalCount, avgRTT)
+			res.Source = fmt.Sprintf("南京探针 (%d/%d 畅通 · %dms)", successCount, totalEvaluated, avgRTT)
 		} else {
-			res.Source = fmt.Sprintf("国内探针 (%d/%d 畅通 · %dms)", successCount, totalCount, avgRTT)
+			res.Source = fmt.Sprintf("国内探针 (%d/%d 畅通 · %dms)", successCount, totalEvaluated, avgRTT)
 		}
 		if res.InboundTelecomRoute == "" {
 			res.InboundTelecomRoute = "电信直连"
@@ -521,13 +541,13 @@ func probeFromChinaReal(ctx context.Context, host string, port uint16) ChinaProb
 		res.InboundMobileNodeLatencies = strings.Join(mobileCities, " | ")
 
 		if telecomProbeCity == "" {
-			telecomProbeCity = "南京"
+			telecomProbeCity = "国内节点"
 		}
 		if unicomProbeCity == "" {
-			unicomProbeCity = "南京"
+			unicomProbeCity = "国内节点"
 		}
 		if mobileProbeCity == "" {
-			mobileProbeCity = "南京"
+			mobileProbeCity = "国内节点"
 		}
 		res.InboundTelecomTracePath = wire.BuildRealInboundTracePath(telecomProbeCity, telecomProbeASN, "电信", destName, nil)
 		res.InboundUnicomTracePath = wire.BuildRealInboundTracePath(unicomProbeCity, unicomProbeASN, "联通", destName, nil)
@@ -538,7 +558,7 @@ func probeFromChinaReal(ctx context.Context, host string, port uint16) ChinaProb
 	res.OK = false
 	res.LatencyMs = 0
 	res.PacketLoss = 100
-	res.Source = "国内探针全超时 (GFW 端口阻断)"
+	res.Source = fmt.Sprintf("国内探针全超时 (0/%d 丢弃 · GFW 阻断)", totalEvaluated)
 	res.InboundTelecomRoute = "GFW 阻断"
 	res.InboundUnicomRoute = "GFW 阻断"
 	res.InboundMobileRoute = "GFW 阻断"
@@ -583,7 +603,7 @@ func (s *Server) runGFWCheckAll(ctx context.Context) ([]ProbeResultItem, error) 
 		if st == nil {
 			st = &NodeSpeedtest{NodeID: node.ID}
 		}
-		if !item.DomesticOK {
+		if item.GFWBlocked {
 			st.GFWBlocked = true
 			st.GFWStatus = "blocked"
 			st.DomesticLatency = 0
@@ -591,7 +611,7 @@ func (s *Server) runGFWCheckAll(ctx context.Context) ([]ProbeResultItem, error) 
 			st.InboundTelecomRoute = "GFW 阻断"
 			st.InboundUnicomRoute = "GFW 阻断"
 			st.InboundMobileRoute = "GFW 阻断"
-		} else {
+		} else if item.DomesticOK {
 			st.GFWBlocked = false
 			st.GFWStatus = "normal"
 			st.DomesticLatency = item.LatencyMs
@@ -614,6 +634,31 @@ func (s *Server) runGFWCheckAll(ctx context.Context) ([]ProbeResultItem, error) 
 				st.InboundMobileNodeLatencies = item.InboundMobileNodeLatencies
 				st.InboundMobileTracePath = item.InboundMobileTracePath
 			}
+		} else {
+			// 未阻断（可能是离线、探测平台异常或无需跨墙）
+			st.GFWBlocked = false
+			if !node.Online {
+				st.GFWStatus = "offline"
+			} else if !item.OverseasOK {
+				st.GFWStatus = "unreachable"
+			} else {
+				st.GFWStatus = "error"
+			}
+			if item.ProbeSource != "" {
+				st.DomesticSource = item.ProbeSource
+			} else if item.Error != "" {
+				st.DomesticSource = item.Error
+			}
+			// 清理因历史错误写入的“GFW 阻断”路由标记
+			if st.InboundTelecomRoute == "GFW 阻断" {
+				st.InboundTelecomRoute = ""
+			}
+			if st.InboundUnicomRoute == "GFW 阻断" {
+				st.InboundUnicomRoute = ""
+			}
+			if st.InboundMobileRoute == "GFW 阻断" {
+				st.InboundMobileRoute = ""
+			}
 		}
 		_ = s.store.SaveNodeSpeedtest(ctx, *st)
 	}
@@ -632,6 +677,40 @@ func (s *Server) probeSingleNode(ctx context.Context, node Node, host string, po
 		NodeName:   node.Name,
 		TargetHost: host,
 		TargetPort: port,
+	}
+
+	// 0. 节点离线时直接返回离线状态，不归为 GFW 阻断
+	if !node.Online {
+		item.OverseasOK = false
+		item.DomesticOK = false
+		item.GFWBlocked = false
+		item.ProbeExecuted = false
+		item.StatusDesc = "服务器当前处于离线状态"
+		item.Error = "节点已离线"
+		return item
+	}
+
+	// 1. 国内节点无需过 GFW，不作阻断误判
+	isDomesticNode := false
+	if s.ipLocator != nil {
+		loc := s.ipLocator.Locate(host)
+		if strings.Contains(loc, "中国") && !strings.Contains(loc, "香港") && !strings.Contains(loc, "澳门") && !strings.Contains(loc, "台湾") {
+			isDomesticNode = true
+		}
+	}
+	if !isDomesticNode {
+		asn := wire.IPv4ToASN(host)
+		if asn == "4134" || asn == "4837" || asn == "9808" || asn == "9929" || asn == "58807" {
+			isDomesticNode = true
+		}
+	}
+	if isDomesticNode {
+		item.OverseasOK = true
+		item.DomesticOK = true
+		item.GFWBlocked = false
+		item.ProbeExecuted = true
+		item.StatusDesc = "国内节点 (无需跨墙)"
+		return item
 	}
 
 	masterOverseas := isMasterOverseas()
@@ -656,10 +735,11 @@ func (s *Server) probeSingleNode(ctx context.Context, node Node, host string, po
 				_ = conn.Close()
 			}
 			item.OverseasOK = true
-		} else if node.Online {
-			item.OverseasOK = true
 		} else {
 			item.OverseasOK = false
+			item.DomesticOK = false
+			item.GFWBlocked = false
+			item.ProbeExecuted = false
 			item.Error = "境外公网连接失败: " + err.Error()
 			item.StatusDesc = "服务离线/端口未开放"
 			return item
@@ -667,6 +747,7 @@ func (s *Server) probeSingleNode(ctx context.Context, node Node, host string, po
 
 		// 2. Domestic check (Initiated genuinely from inside Mainland China)
 		domResult := probeFromChinaReal(ctx, host, port)
+		item.ProbeExecuted = domResult.Executed
 		item.DomesticOK = domResult.OK
 		item.ProbeSource = domResult.Source
 		item.LatencyMs = domResult.LatencyMs
@@ -684,18 +765,39 @@ func (s *Server) probeSingleNode(ctx context.Context, node Node, host string, po
 		item.InboundMobileNodeLatencies = domResult.InboundMobileNodeLatencies
 		item.InboundMobileTracePath = domResult.InboundMobileTracePath
 
-		if !item.DomesticOK {
+		if !domResult.Executed {
+			item.GFWBlocked = false
+			item.Error = domResult.Error
+			item.StatusDesc = "国内探针异常: " + domResult.Error
+		} else if item.DomesticOK {
+			item.GFWBlocked = false
+			item.StatusDesc = "正常通行"
+		} else {
+			item.GFWBlocked = true
 			item.StatusDesc = "疑似被 GFW 阻断 (国内探针全超时)"
 			if domResult.Error != "" {
 				item.Error = domResult.Error
 			}
-		} else {
-			item.StatusDesc = "正常通行"
 		}
 	} else {
 		// Master is inside Mainland China:
-		// Run genuine multi-point domestic probes via Globalping from across China
+		// 1. 控制机国内直连探测目标端口
+		dialer := net.Dialer{Timeout: 2 * time.Second}
+		conn, err := dialer.DialContext(ctx, "tcp", address)
+		if err == nil {
+			_ = conn.Close()
+			item.OverseasOK = true
+			item.DomesticOK = true
+			item.GFWBlocked = false
+			item.ProbeExecuted = true
+			item.StatusDesc = "正常通行 (控制机直连通畅)"
+			return item
+		}
+
+		// 2. 控制机本地不通时，通过全国多地公共探针交叉核验
+		item.OverseasOK = node.Online
 		domResult := probeFromChinaReal(ctx, host, port)
+		item.ProbeExecuted = domResult.Executed
 		item.DomesticOK = domResult.OK
 		item.ProbeSource = domResult.Source
 		item.LatencyMs = domResult.LatencyMs
@@ -713,25 +815,22 @@ func (s *Server) probeSingleNode(ctx context.Context, node Node, host string, po
 		item.InboundMobileNodeLatencies = domResult.InboundMobileNodeLatencies
 		item.InboundMobileTracePath = domResult.InboundMobileTracePath
 
-		// Also local dial from Master inside China
-		dialer := net.Dialer{Timeout: 2 * time.Second}
-		conn, err := dialer.DialContext(ctx, "tcp", address)
-		if err == nil {
-			_ = conn.Close()
-			item.DomesticOK = true
-		}
-
-		if node.Online {
-			item.OverseasOK = true
-		}
-
-		if !item.DomesticOK {
+		if !domResult.Executed {
+			item.GFWBlocked = false
+			item.Error = domResult.Error
+			item.StatusDesc = "国内探针异常: " + domResult.Error
+		} else if item.DomesticOK {
+			item.GFWBlocked = false
+			item.StatusDesc = "正常通行"
+		} else if item.OverseasOK {
+			item.GFWBlocked = true
 			item.StatusDesc = "🚨 疑似被 GFW 阻断 (国内探针全超时)"
 			if domResult.Error != "" {
 				item.Error = domResult.Error
 			}
 		} else {
-			item.StatusDesc = "正常通行"
+			item.GFWBlocked = false
+			item.StatusDesc = "服务离线/端口未开放"
 		}
 	}
 
@@ -896,8 +995,7 @@ func (s *Server) ExecuteNodeSpeedtest(ctx context.Context, nodeID string) (*Node
 	}
 
 	if resB.has {
-		// 海外公网端口开放/节点在线，但国内所有探针 TCP 握手均超时丢弃 -> 确系被 GFW 阻断！
-		if !resB.item.DomesticOK {
+		if resB.item.GFWBlocked {
 			st.GFWBlocked = true
 			st.GFWStatus = "blocked"
 			st.DomesticLatency = 0
@@ -905,11 +1003,26 @@ func (s *Server) ExecuteNodeSpeedtest(ctx context.Context, nodeID string) (*Node
 			st.InboundTelecomRoute = "GFW 阻断"
 			st.InboundUnicomRoute = "GFW 阻断"
 			st.InboundMobileRoute = "GFW 阻断"
-		} else {
+		} else if resB.item.DomesticOK {
 			st.GFWBlocked = false
 			st.GFWStatus = "normal"
 			st.DomesticLatency = resB.item.LatencyMs
 			st.DomesticSource = resB.item.ProbeSource
+		} else {
+			st.GFWBlocked = false
+			st.GFWStatus = "normal"
+			if resB.item.Error != "" {
+				st.DomesticSource = resB.item.Error
+			}
+			if st.InboundTelecomRoute == "GFW 阻断" {
+				st.InboundTelecomRoute = ""
+			}
+			if st.InboundUnicomRoute == "GFW 阻断" {
+				st.InboundUnicomRoute = ""
+			}
+			if st.InboundMobileRoute == "GFW 阻断" {
+				st.InboundMobileRoute = ""
+			}
 		}
 	}
 

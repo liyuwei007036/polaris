@@ -547,6 +547,8 @@ onMounted(load)
         <el-table-column label="国内真机连通" width="145" align="center">
           <template #default="{ row }">
             <el-tag v-if="row.domestic_ok" type="success" size="small">🟢 通畅 ({{ row.latency_ms }}ms)</el-tag>
+            <el-tag v-else-if="row.gfw_blocked" type="danger" size="small">🚨 疑似被墙</el-tag>
+            <el-tag v-else-if="row.error || !row.probe_executed" type="warning" size="small">⚠️ 探测异常</el-tag>
             <el-tag v-else-if="row.overseas_ok" type="danger" size="small">🚨 疑似被墙</el-tag>
             <el-tag v-else type="info" size="small">⚪ 未监听</el-tag>
           </template>

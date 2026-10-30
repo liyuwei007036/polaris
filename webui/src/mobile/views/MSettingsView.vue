@@ -484,8 +484,10 @@ onBeforeUnmount(() => {
           <div class="m-item__hit is-static">
             <div class="m-item__head">
               <span class="m-item__title">{{ item.node_name }}</span>
-              <span v-if="item.overseas_ok && !item.domestic_ok" class="m-pill m-pill--danger">疑似阻断</span>
+              <span v-if="item.gfw_blocked" class="m-pill m-pill--danger">疑似阻断</span>
               <span v-else-if="item.domestic_ok" class="m-pill m-pill--success">正常</span>
+              <span v-else-if="item.error || !item.probe_executed" class="m-pill m-pill--warning">探测异常</span>
+              <span v-else-if="item.overseas_ok && !item.domestic_ok" class="m-pill m-pill--danger">疑似阻断</span>
               <span v-else class="m-pill m-pill--info">离线</span>
             </div>
             <div class="m-item__stats">

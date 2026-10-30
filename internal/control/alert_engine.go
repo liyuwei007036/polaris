@@ -629,6 +629,8 @@ type ProbeResultItem struct {
 	TargetPort              uint16 `json:"target_port,omitempty"`
 	OverseasOK              bool   `json:"overseas_ok"`
 	DomesticOK              bool   `json:"domestic_ok"`
+	GFWBlocked              bool   `json:"gfw_blocked"`
+	ProbeExecuted           bool   `json:"probe_executed"`
 	ProbeSource             string `json:"probe_source,omitempty"`
 	PacketLoss              int    `json:"packet_loss"`
 	LatencyMs               int    `json:"latency_ms"`
@@ -663,8 +665,9 @@ func (e *AlertEngine) NotifyProbeSummary(items []ProbeResultItem) {
 		if port == 0 {
 			port = 443
 		}
-		// Overseas reachable but Domestic unreachable -> GFW Blocked!
-		if item.OverseasOK && !item.DomesticOK {
+		// Only alert on GFW blocked if genuinely blocked (overseas reachable + domestic timed out + not a probe error)
+		isBlocked := item.GFWBlocked || (item.OverseasOK && !item.DomesticOK && item.Error == "")
+		if isBlocked {
 			src := item.ProbeSource
 			if src == "" {
 				src = "国内真实探针"
@@ -676,8 +679,10 @@ func (e *AlertEngine) NotifyProbeSummary(items []ProbeResultItem) {
 				src = "国内真实探针"
 			}
 			normalList = append(normalList, fmt.Sprintf("• [%s] 端口 %d 正常 (国内时延: %d ms, 来源: %s)", item.NodeName, port, item.LatencyMs, src))
-		} else {
+		} else if !item.OverseasOK {
 			normalList = append(normalList, fmt.Sprintf("• [%s] 离线/境外未监听", item.NodeName))
+		} else {
+			normalList = append(normalList, fmt.Sprintf("• [%s] 探针检测异常 (%s)", item.NodeName, item.StatusDesc))
 		}
 	}
 
