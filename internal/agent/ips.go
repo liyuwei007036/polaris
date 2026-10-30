@@ -18,10 +18,15 @@ var (
 	ipv6ProbeTargets = []string{
 		"[2606:4700:4700::1111]:53",
 		"[2606:4700:4700::1111]:443",
+		"[2606:4700:4700::1111]:80",
 		"[2001:4860:4860::8888]:53",
 		"[2001:4860:4860::8888]:443",
 		"[2400:3200::1]:53",
 		"[240c::6666]:53",
+		"[2402:4e00::]:53",
+		"[2400:da00::6666]:53",
+		"[2408:8888::8]:53",
+		"[2409:8088::]:53",
 	}
 
 	echoURLsMu       sync.RWMutex
@@ -82,8 +87,10 @@ func getEchoURLs(isIPv4 bool) []string {
 	return []string{
 		"http://api64.ipify.org",
 		"http://icanhazip.com",
+		"https://api64.ipify.org",
 		"https://api-ipv6.ip.sb/ip",
 		"https://ipv6.icanhazip.com",
+		"https://6.ipw.cn",
 	}
 }
 
@@ -153,6 +160,22 @@ func CanAccessInternet(ctx context.Context, localIP string) bool {
 			return true
 		}
 	}
+
+	// For IPv6, if binding to LocalAddr failed (e.g. routing policy or SLAAC source preference),
+	// also try dialing targets without explicit LocalAddr to test if the host has working IPv6 egress.
+	if !isIPv4 {
+		defaultDialer := &net.Dialer{Timeout: 1200 * time.Millisecond}
+		fallbackCtx, fallbackCancel := context.WithTimeout(ctx, 1500*time.Millisecond)
+		defer fallbackCancel()
+		for _, target := range targets {
+			conn, err := defaultDialer.DialContext(fallbackCtx, network, target)
+			if err == nil {
+				_ = conn.Close()
+				return true
+			}
+		}
+	}
+
 	return false
 }
 
@@ -420,10 +443,6 @@ func isIgnoredInterface(name string) bool {
 		"cni",
 		"flannel",
 		"calico",
-		"tun",
-		"tap",
-		"wg",
-		"tailscale",
 		"dummy",
 		"lo",
 		"bond_slave",
@@ -437,8 +456,9 @@ func isIgnoredInterface(name string) bool {
 	return false
 }
 
-// EnumerateHostCandidateIPs returns candidate local IPs on UP physical interfaces.
-// Virtual interfaces (Docker, bridges, veth, wireguard, tunnels) and loopback are excluded.
+// EnumerateHostCandidateIPs returns candidate local IPs on UP interfaces.
+// Virtual container bridges (Docker, bridges, veth) and loopback are excluded.
+// Note: Point-to-Point interfaces (OpenVZ venet0, PPPoE, WARP wgcf, HE tunnel sit1) are preserved.
 func EnumerateHostCandidateIPs() []string {
 	ifaces, err := net.Interfaces()
 	if err != nil {
@@ -447,7 +467,7 @@ func EnumerateHostCandidateIPs() []string {
 	var ips []string
 	seen := make(map[string]bool)
 	for _, iface := range ifaces {
-		if iface.Flags&net.FlagUp == 0 || iface.Flags&net.FlagLoopback != 0 || iface.Flags&net.FlagPointToPoint != 0 {
+		if iface.Flags&net.FlagUp == 0 || iface.Flags&net.FlagLoopback != 0 {
 			continue
 		}
 		if isIgnoredInterface(iface.Name) {
