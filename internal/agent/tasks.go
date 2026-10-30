@@ -1146,9 +1146,63 @@ Restart=on-failure
 RestartSec=2
 LimitNOFILE=1048576
 
+# Priority scheduling and OOM immunity for primary proxy workload
+Nice=-10
+CPUWeight=1000
+OOMScoreAdjust=-900
+
 [Install]
 WantedBy=multi-user.target
 `
+
+const singBoxLogrotateConfig = `/var/log/sing-box/*.log {
+    size 10M
+    rotate 3
+    missingok
+    notifempty
+    compress
+    copytruncate
+}
+`
+
+var managedSingBoxLogrotate = managedSystemPath("/etc/logrotate.d/sing-box")
+
+func ensureSingBoxLogrotate() error {
+	if runtime.GOOS != "linux" {
+		return nil
+	}
+	logrotateDir := filepath.Dir(managedSingBoxLogrotate)
+	if _, err := os.Stat(logrotateDir); err != nil {
+		return nil
+	}
+	if _, err := os.Stat(managedSingBoxLogrotate); err == nil {
+		return nil
+	}
+	return os.WriteFile(managedSingBoxLogrotate, []byte(singBoxLogrotateConfig), 0o644)
+}
+
+const singBoxDropInContents = `[Service]
+Nice=-10
+CPUWeight=1000
+OOMScoreAdjust=-900
+LimitNOFILE=1048576
+`
+
+var managedSingBoxDropIn = managedSystemPath("/etc/systemd/system/sing-box.service.d/10-polaris-priority.conf")
+
+func ensureSingBoxPriorityDropIn() error {
+	if runtime.GOOS != "linux" {
+		return nil
+	}
+	dir := filepath.Dir(managedSingBoxDropIn)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return err
+	}
+	if current, err := os.ReadFile(managedSingBoxDropIn); err == nil && string(current) == singBoxDropInContents {
+		return nil
+	}
+	return os.WriteFile(managedSingBoxDropIn, []byte(singBoxDropInContents), 0o644)
+}
 
 // ensureSingBoxService installs and enables a systemd unit for sing-box the
 // first time one is needed. singbox.install only places the binary; without
@@ -1158,6 +1212,8 @@ WantedBy=multi-user.target
 // service definition. An existing unit (e.g. from the official package) is
 // left untouched.
 func ensureSingBoxService(ctx context.Context) error {
+	_ = ensureSingBoxLogrotate()
+	_ = ensureSingBoxPriorityDropIn()
 	if _, err := os.Stat(managedSingBoxConfig); errors.Is(err, os.ErrNotExist) {
 		if err := os.MkdirAll(filepath.Dir(managedSingBoxConfig), 0o750); err != nil {
 			return errors.New("create sing-box configuration directory: " + err.Error() + permissionHint(err))
@@ -1169,6 +1225,7 @@ func ensureSingBoxService(ctx context.Context) error {
 		return errors.New("read sing-box configuration: " + err.Error() + permissionHint(err))
 	}
 	if exec.CommandContext(ctx, "systemctl", "cat", "sing-box.service").Run() == nil {
+		_ = exec.CommandContext(ctx, "systemctl", "daemon-reload").Run()
 		return nil
 	}
 	if err := os.WriteFile(managedSingBoxUnit, []byte(singBoxUnitContents), 0o644); err != nil {

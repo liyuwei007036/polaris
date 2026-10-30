@@ -31,11 +31,32 @@ SUnreclaim:        22222 kB
 		t.Fatalf("expected total=%d, got=%d", expectedTotal, total)
 	}
 
-	// Entire server memory used = MemTotal - MemFree
-	// 2006764 - 401352 = 1605412 kB (~80%)
-	expectedUsed := uint64(1605412 * 1024)
+	// Server actual memory used = MemTotal - MemAvailable
+	// 2006764 - 1234567 = 772197 kB (~38.5%)
+	expectedUsed := uint64(772197 * 1024)
 	if used != expectedUsed {
 		t.Fatalf("expected used=%d, got=%d", expectedUsed, used)
+	}
+}
+
+func TestParseMemInfo_FallbackWithoutMemAvailable(t *testing.T) {
+	sample := `
+MemTotal:        1000000 kB
+MemFree:          200000 kB
+Buffers:          100000 kB
+Cached:           300000 kB
+`
+	total, used, ok := parseMemInfo(strings.NewReader(sample))
+	if !ok {
+		t.Fatalf("expected ok=true")
+	}
+
+	expectedTotal := uint64(1000000 * 1024)
+	// Fallback used = MemTotal - MemFree - Buffers - Cached
+	// 1000000 - 200000 - 100000 - 300000 = 400000 kB
+	expectedUsed := uint64(400000 * 1024)
+	if total != expectedTotal || used != expectedUsed {
+		t.Fatalf("unexpected values: total=%d (exp %d), used=%d (exp %d)", total, expectedTotal, used, expectedUsed)
 	}
 }
 

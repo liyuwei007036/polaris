@@ -8,14 +8,12 @@ import (
 )
 
 // parseMemInfo parses memory metrics from a /proc/meminfo-formatted reader.
-// It reports the entire server's host memory usage (MemTotal - MemFree),
-// representing all memory allocated by the operating system (including
-// processes, kernel structures, I/O buffers, and page caches), which matches
-// what cloud provider virtualization panels (KVM / QEMU hypervisors, Proxmox,
-// Virtualizor, SolusVM, and cloud vendor host consoles) display as the server's
-// total memory utilization.
+// It reports the server's actual unevictable memory usage (MemTotal - MemAvailable),
+// excluding reclaimable page caches and buffers, which accurately reflects
+// real application and kernel memory footprint.
 func parseMemInfo(r io.Reader) (total, used uint64, ok bool) {
-	var memTotal, memFree uint64
+	var memTotal, memFree, memAvailable, buffers, cached uint64
+	hasAvailable := false
 
 	scanner := bufio.NewScanner(r)
 	for scanner.Scan() {
@@ -40,6 +38,13 @@ func parseMemInfo(r io.Reader) (total, used uint64, ok bool) {
 			memTotal = valBytes
 		case "MemFree":
 			memFree = valBytes
+		case "MemAvailable":
+			memAvailable = valBytes
+			hasAvailable = true
+		case "Buffers":
+			buffers = valBytes
+		case "Cached":
+			cached = valBytes
 		}
 	}
 
@@ -47,10 +52,18 @@ func parseMemInfo(r io.Reader) (total, used uint64, ok bool) {
 		return 0, 0, false
 	}
 
-	if memTotal >= memFree {
-		used = memTotal - memFree
+	if hasAvailable {
+		if memTotal >= memAvailable {
+			used = memTotal - memAvailable
+		} else {
+			used = 0
+		}
 	} else {
-		used = 0
+		if memTotal >= memFree+buffers+cached {
+			used = memTotal - memFree - buffers - cached
+		} else {
+			used = 0
+		}
 	}
 	return memTotal, used, true
 }

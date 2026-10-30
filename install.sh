@@ -321,23 +321,123 @@ ensure_agent_dependencies() {
   if [[ -n "$DESTDIR" ]]; then
     return 0
   fi
-  if ! command -v traceroute >/dev/null 2>&1; then
-    log "安装 Agent 网络检测基础依赖 (traceroute)..."
+  if ! command -v traceroute >/dev/null 2>&1 || ! command -v logrotate >/dev/null 2>&1; then
+    log "安装 Agent 基础依赖 (traceroute, logrotate)..."
     if command -v apt-get >/dev/null 2>&1; then
       DEBIAN_FRONTEND=noninteractive apt-get update -qq && \
-      DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends traceroute iproute2 iputils-ping || true
+      DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends traceroute iproute2 iputils-ping logrotate || true
     elif command -v dnf >/dev/null 2>&1; then
-      dnf install -y traceroute iproute iputils || true
+      dnf install -y traceroute iproute iputils logrotate || true
     elif command -v yum >/dev/null 2>&1; then
-      yum install -y traceroute iproute iputils || true
+      yum install -y traceroute iproute iputils logrotate || true
     elif command -v apk >/dev/null 2>&1; then
-      apk add traceroute iproute2 iputils || true
+      apk add traceroute iproute2 iputils logrotate || true
+    fi
+  fi
+}
+
+configure_node_performance_and_logs() {
+  if [[ -n "$DESTDIR" ]]; then
+    return 0
+  fi
+
+  log "配置系统日志限制 (systemd-journald 内存上限 20MB / 磁盘 50MB)..."
+  mkdir -p /etc/systemd/journald.conf.d
+  cat <<'EOF' >/etc/systemd/journald.conf.d/polaris-journald.conf
+[Journal]
+SystemMaxUse=50M
+RuntimeMaxUse=20M
+MaxRetentionSec=3day
+EOF
+  if command -v journalctl >/dev/null 2>&1; then
+    journalctl --vacuum-size=50M >/dev/null 2>&1 || true
+  fi
+  if command -v systemctl >/dev/null 2>&1 && systemctl is-active --quiet systemd-journald 2>/dev/null; then
+    systemctl restart systemd-journald >/dev/null 2>&1 || true
+  fi
+
+  log "配置 sing-box 业务日志自动轮转与压缩归档 (10MB 自动轮转)..."
+  mkdir -p /etc/logrotate.d
+  cat <<'EOF' >/etc/logrotate.d/sing-box
+/var/log/sing-box/*.log {
+    size 10M
+    rotate 3
+    missingok
+    notifempty
+    compress
+    copytruncate
+}
+EOF
+
+  log "配置 sing-box 进程特权与 OOM 保护 (drop-in 覆盖)..."
+  mkdir -p /etc/systemd/system/sing-box.service.d
+  cat <<'EOF' >/etc/systemd/system/sing-box.service.d/10-polaris-priority.conf
+[Service]
+Nice=-10
+CPUWeight=1000
+OOMScoreAdjust=-900
+LimitNOFILE=1048576
+EOF
+  if command -v systemctl >/dev/null 2>&1; then
+    systemctl daemon-reload >/dev/null 2>&1 || true
+    if systemctl is-active --quiet sing-box.service 2>/dev/null; then
+      systemctl restart sing-box.service >/dev/null 2>&1 || true
+    fi
+  fi
+
+  local mem_total_kb swap_total_kb
+  mem_total_kb=$(awk '$1 == "MemTotal:" { print $2 }' /proc/meminfo 2>/dev/null || echo 0)
+  swap_total_kb=$(awk '$1 == "SwapTotal:" { print $2 }' /proc/meminfo 2>/dev/null || echo 0)
+  if [[ "$mem_total_kb" -gt 0 && "$mem_total_kb" -le 1048576 && "$swap_total_kb" -eq 0 ]]; then
+    if [[ ! -e /swapfile ]]; then
+      log "检测到低内存主机 (<=1GB) 且未配置 Swap，自动初始化 1GB 虚拟 Swap 缓冲垫..."
+      if command -v fallocate >/dev/null 2>&1; then
+        fallocate -l 1G /swapfile 2>/dev/null || dd if=/dev/zero of=/swapfile bs=1M count=1024 status=none 2>/dev/null || true
+      else
+        dd if=/dev/zero of=/swapfile bs=1M count=1024 status=none 2>/dev/null || true
+      fi
+      if [[ -e /swapfile ]]; then
+        chmod 600 /swapfile
+        mkswap /swapfile >/dev/null 2>&1 || true
+        if swapon /swapfile >/dev/null 2>&1; then
+          if ! grep -q '/swapfile' /etc/fstab 2>/dev/null; then
+            echo '/swapfile none swap sw 0 0' >> /etc/fstab
+          fi
+        fi
+      fi
+    fi
+  fi
+
+  log "优化内核网络协议栈与 UDP 缓冲区 (BBR + 8MB UDP Buffer)..."
+  modprobe tcp_bbr >/dev/null 2>&1 || true
+  mkdir -p /etc/sysctl.d
+  cat <<'EOF' >/etc/sysctl.d/99-polaris-tuning.conf
+net.core.default_qdisc = fq
+net.ipv4.tcp_congestion_control = bbr
+net.core.rmem_max = 8388608
+net.core.wmem_max = 8388608
+net.ipv4.udp_rmem_min = 16384
+net.ipv4.udp_wmem_min = 16384
+net.core.somaxconn = 8192
+net.ipv4.tcp_max_syn_backlog = 8192
+net.ipv4.tcp_tw_reuse = 1
+vm.swappiness = 10
+EOF
+  if command -v sysctl >/dev/null 2>&1; then
+    sysctl --system >/dev/null 2>&1 || sysctl -p /etc/sysctl.d/99-polaris-tuning.conf >/dev/null 2>&1 || true
+  fi
+
+  if command -v systemctl >/dev/null 2>&1; then
+    if systemctl is-active --quiet fwupd 2>/dev/null || systemctl is-enabled --quiet fwupd 2>/dev/null; then
+      log "停用云 VPS 冗余高耗内存服务 (fwupd)..."
+      systemctl disable --now fwupd >/dev/null 2>&1 || true
     fi
   fi
 }
 
 configure_agent() {
   ensure_agent_dependencies
+  configure_node_performance_and_logs
   local master_address="$1"
   local master_pubkey="$2"
   install_directory 0700 root root /var/lib/polaris-agent
