@@ -280,20 +280,7 @@ function getNodeLocationLabel(node) {
   if (node.location) return node.location
 
   const name = (node.name || '').trim()
-  const upper = name.toUpperCase()
-
-  if (upper.includes('TW') || upper.includes('台湾') || upper.includes('HINET')) return '中国台湾'
-  if (upper.includes('HK') || upper.includes('香港')) return '中国香港'
-  if (upper.includes('SG') || upper.includes('新加坡') || upper.includes('狮城')) return '新加坡'
-  if (upper.includes('JP') || upper.includes('日本') || upper.includes('东京') || upper.includes('大阪')) return '日本东京'
-  if (upper.includes('KR') || upper.includes('韩国') || upper.includes('首尔')) return '韩国首尔'
-  if (upper.includes('US') || upper.includes('美国') || upper.includes('圣何塞') || upper.includes('洛杉矶') || upper.includes('美西') || upper.includes('西雅图') || upper.includes('纽约')) return '美西洛杉矶'
-  if (upper.includes('DE') || upper.includes('德国') || upper.includes('法兰克福')) return '德国法兰克福'
-  if (upper.includes('GB') || upper.includes('UK') || upper.includes('英国') || upper.includes('伦敦')) return '英国伦敦'
-  if (upper.includes('FR') || upper.includes('法国') || upper.includes('巴黎')) return '法国巴黎'
-  if (upper.includes('RU') || upper.includes('俄罗斯') || upper.includes('莫斯科')) return '俄罗斯莫斯科'
-
-  if (name && !name.includes('http') && name.length <= 15) {
+  if (name && !name.includes('http') && name.length <= 20) {
     return name
   }
   return '本地节点'
@@ -361,9 +348,9 @@ function getInboundCarrierTooltip(st, isp, node) {
   const sections = []
   const formattedLats = formatNodeLatencies(lats)
   if (formattedLats) {
-    sections.push(`<b>【去程各节点延迟 (中国 ➔ 节点)】</b><br/>${formattedLats}`)
+    sections.push(`<b>【去程节点延迟】</b><br/>${formattedLats}`)
   } else if (ping > 0) {
-    sections.push(`<b>【去程延迟 (中国 ➔ 节点)】</b><br/>• 探针实测: ${ping}ms`)
+    sections.push(`<b>【去程延迟】</b><br/>• 探针实测: ${ping}ms`)
   }
 
   if (trace) {
@@ -394,9 +381,9 @@ function getISPTooltip(st, isp, node) {
   const sections = []
   const formattedLats = formatNodeLatencies(lats)
   if (formattedLats) {
-    sections.push(`<b>【返程各节点延迟 (节点 ➔ 中国)】</b><br/>${formattedLats}`)
+    sections.push(`<b>【返程节点延迟】</b><br/>${formattedLats}`)
   } else if (ping > 0) {
-    sections.push(`<b>【返程延迟 (节点 ➔ 中国)】</b><br/>• 实测延迟: ${ping}ms`)
+    sections.push(`<b>【返程延迟】</b><br/>• 实测延迟: ${ping}ms`)
   }
 
   if (trace) {
@@ -439,7 +426,7 @@ function formatRouteSimple(route) {
   if (route.includes('电信')) return '163'
   if (route.includes('联通')) return '4837'
   if (route.includes('移动')) return 'CMI'
-  const clean = route.replace(/中国|骨干|普通/g, '').trim()
+  const clean = route.replace(/骨干|普通/g, '').trim()
   return clean || '163'
 }
 
