@@ -14,8 +14,15 @@ import (
 
 var (
 	probeMu          sync.RWMutex
-	ipv4ProbeTargets = []string{"223.5.5.5:53", "1.1.1.1:53", "8.8.8.8:53", "119.29.29.29:53", "1.1.1.1:80"}
-	ipv6ProbeTargets = []string{"[2400:3200::1]:53", "[2606:4700:4700::1111]:53", "[2001:4860:4860::8888]:53", "[2606:4700:4700::1111]:80"}
+	ipv4ProbeTargets = []string{"223.5.5.5:53", "1.1.1.1:53", "8.8.8.8:53", "119.29.29.29:53", "223.5.5.5:443", "1.1.1.1:80"}
+	ipv6ProbeTargets = []string{
+		"[2606:4700:4700::1111]:53",
+		"[2606:4700:4700::1111]:443",
+		"[2001:4860:4860::8888]:53",
+		"[2001:4860:4860::8888]:443",
+		"[2400:3200::1]:53",
+		"[240c::6666]:53",
+	}
 
 	echoURLsMu       sync.RWMutex
 	ipv4EchoURLsTest []string
@@ -73,10 +80,10 @@ func getEchoURLs(isIPv4 bool) []string {
 		return out
 	}
 	return []string{
-		"http://[2606:4700:4700::1111]/cdn-cgi/trace",
 		"http://api64.ipify.org",
 		"http://icanhazip.com",
 		"https://api-ipv6.ip.sb/ip",
+		"https://ipv6.icanhazip.com",
 	}
 }
 
@@ -97,7 +104,7 @@ func ClearEgressIPCacheForTest() {
 }
 
 // CanAccessInternet verifies that outgoing TCP traffic originating from localIP
-// can connect to at least one external public probe target.
+// can connect to at least one external public probe target in parallel.
 func CanAccessInternet(ctx context.Context, localIP string) bool {
 	ip := net.ParseIP(localIP)
 	if ip == nil {
@@ -114,14 +121,51 @@ func CanAccessInternet(ctx context.Context, localIP string) bool {
 		Timeout:   1200 * time.Millisecond,
 	}
 
+	probeCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	successCh := make(chan bool, len(targets))
+	var wg sync.WaitGroup
+
 	for _, target := range targets {
-		conn, err := dialer.DialContext(ctx, network, target)
-		if err == nil {
-			_ = conn.Close()
+		wg.Add(1)
+		go func(t string) {
+			defer wg.Done()
+			conn, err := dialer.DialContext(probeCtx, network, t)
+			if err == nil {
+				_ = conn.Close()
+				select {
+				case successCh <- true:
+					cancel()
+				default:
+				}
+			}
+		}(target)
+	}
+
+	go func() {
+		wg.Wait()
+		close(successCh)
+	}()
+
+	for ok := range successCh {
+		if ok {
 			return true
 		}
 	}
 	return false
+}
+
+// isPublicIPv6 checks if an IPv6 address is a global routable unicast public IP
+// (excluding loopback, link-local fe80::, unspecified, and private ULA fc00::/7).
+func isPublicIPv6(ip net.IP) bool {
+	if ip == nil || ip.To4() != nil {
+		return false
+	}
+	if ip.IsLoopback() || ip.IsUnspecified() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() || ip.IsMulticast() || ip.IsPrivate() {
+		return false
+	}
+	return true
 }
 
 // ResolvePublicIP queries external echo endpoints originating from localIP in parallel.
@@ -137,21 +181,28 @@ func ResolvePublicIP(ctx context.Context, localIP string) (string, error) {
 		return "", errors.New("no echo URLs configured")
 	}
 
+	dialNetwork := "tcp6"
+	if isIPv4 {
+		dialNetwork = "tcp4"
+	}
+
 	dialer := &net.Dialer{
 		LocalAddr: &net.TCPAddr{IP: ip},
-		Timeout:   600 * time.Millisecond,
+		Timeout:   1200 * time.Millisecond,
 	}
 	transport := &http.Transport{
-		DialContext:         dialer.DialContext,
+		DialContext: func(ctx context.Context, _, addr string) (net.Conn, error) {
+			return dialer.DialContext(ctx, dialNetwork, addr)
+		},
 		DisableKeepAlives:   true,
-		TLSHandshakeTimeout: 600 * time.Millisecond,
+		TLSHandshakeTimeout: 1000 * time.Millisecond,
 	}
 	client := &http.Client{
 		Transport: transport,
-		Timeout:   900 * time.Millisecond,
+		Timeout:   1500 * time.Millisecond,
 	}
 
-	reqCtx, cancel := context.WithTimeout(ctx, 900*time.Millisecond)
+	reqCtx, cancel := context.WithTimeout(ctx, 1500*time.Millisecond)
 	defer cancel()
 
 	resultCh := make(chan string, len(urls))
@@ -227,7 +278,7 @@ func CollectLocalIPMappings() map[string]string {
 // respective local bind IP address mapping (publicIP -> localBindIP).
 func CollectLocalIPsAndMappings() ([]string, map[string]string) {
 	egressCacheMu.RLock()
-	if time.Now().Before(egressCacheExpires) && len(egressCachePublic) > 0 {
+	if time.Now().Before(egressCacheExpires) {
 		cachedIPs := make([]string, len(egressCachePublic))
 		copy(cachedIPs, egressCachePublic)
 		cachedMappings := make(map[string]string, len(egressCacheMappings))
@@ -244,7 +295,7 @@ func CollectLocalIPsAndMappings() ([]string, map[string]string) {
 		return nil, nil
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 250*time.Millisecond)
+	ctx, cancel := context.WithTimeout(context.Background(), 2500*time.Millisecond)
 	defer cancel()
 
 	var mu sync.Mutex
@@ -258,7 +309,58 @@ func CollectLocalIPsAndMappings() ([]string, map[string]string) {
 		go func(localIPStr string) {
 			defer wg.Done()
 
-			// 1. First attempt to discover the real public IP from this local candidate interface.
+			parsed := net.ParseIP(localIPStr)
+			if parsed == nil {
+				return
+			}
+
+			if parsed.To4() == nil {
+				// IPv6 candidate:
+				// Global IPv6 addresses on VPS are inherently public (no 1:1 NAT).
+				// We confirm internet access directly.
+				if isPublicIPv6(parsed) && CanAccessInternet(ctx, localIPStr) {
+					mu.Lock()
+					if !seenPublic[localIPStr] {
+						seenPublic[localIPStr] = true
+						verified = append(verified, localIPStr)
+						mappings[localIPStr] = localIPStr
+					}
+					mu.Unlock()
+					return
+				}
+
+				// If CanAccessInternet failed (e.g. port blocked), fallback to echo endpoint
+				pubIP, err := ResolvePublicIP(ctx, localIPStr)
+				if err == nil && pubIP != "" {
+					mu.Lock()
+					if !seenPublic[pubIP] {
+						seenPublic[pubIP] = true
+						verified = append(verified, pubIP)
+						mappings[pubIP] = localIPStr
+					}
+					mu.Unlock()
+				}
+				return
+			}
+
+			// IPv4 candidate:
+			if parsed.IsPrivate() {
+				// Cloud VPC private IP (e.g. 10.0.0.121) behind 1:1 NAT:
+				// Must resolve real public IP from external echo endpoints.
+				pubIP, err := ResolvePublicIP(ctx, localIPStr)
+				if err == nil && pubIP != "" {
+					mu.Lock()
+					if !seenPublic[pubIP] {
+						seenPublic[pubIP] = true
+						verified = append(verified, pubIP)
+						mappings[pubIP] = localIPStr
+					}
+					mu.Unlock()
+				}
+				return
+			}
+
+			// Direct public IPv4 (no NAT):
 			pubIP, err := ResolvePublicIP(ctx, localIPStr)
 			if err == nil && pubIP != "" {
 				mu.Lock()
@@ -271,10 +373,7 @@ func CollectLocalIPsAndMappings() ([]string, map[string]string) {
 				return
 			}
 
-			// 2. If ResolvePublicIP fails, but the local IP is already a public non-private IP
-			// and CanAccessInternet succeeds, keep it.
-			parsed := net.ParseIP(localIPStr)
-			if parsed != nil && !parsed.IsPrivate() && CanAccessInternet(ctx, localIPStr) {
+			if CanAccessInternet(ctx, localIPStr) {
 				mu.Lock()
 				if !seenPublic[localIPStr] {
 					seenPublic[localIPStr] = true
@@ -301,7 +400,11 @@ func CollectLocalIPsAndMappings() ([]string, map[string]string) {
 	egressCacheMu.Lock()
 	egressCachePublic = verified
 	egressCacheMappings = mappings
-	egressCacheExpires = time.Now().Add(45 * time.Second)
+	if len(verified) > 0 {
+		egressCacheExpires = time.Now().Add(60 * time.Second)
+	} else {
+		egressCacheExpires = time.Now().Add(15 * time.Second)
+	}
 	egressCacheMu.Unlock()
 
 	return verified, mappings
