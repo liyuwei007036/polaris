@@ -84,7 +84,10 @@ func TestNodeIdentityIPAddresses(t *testing.T) {
 	}
 
 	testIPs := []string{"198.51.100.2", "198.51.100.3", "2001:db8::1"}
-	if err := store.UpdateNodeIdentityWithIPs(ctx, nodeID, "0.43.0", "linux", "amd64", "1.14.0", "{}", testIPs); err != nil {
+	testMappings := map[string]string{
+		"198.51.100.2": "10.0.0.121",
+	}
+	if err := store.UpdateNodeIdentityWithIPs(ctx, nodeID, "0.43.0", "linux", "amd64", "1.14.0", "{}", testIPs, testMappings); err != nil {
 		t.Fatalf("UpdateNodeIdentityWithIPs: %v", err)
 	}
 
@@ -94,6 +97,9 @@ func TestNodeIdentityIPAddresses(t *testing.T) {
 	}
 	if len(node.IPAddresses) != 3 || node.IPAddresses[0] != "198.51.100.2" || node.IPAddresses[2] != "2001:db8::1" {
 		t.Fatalf("unexpected IPAddresses in NodeByID: %#v", node.IPAddresses)
+	}
+	if node.IPMappings["198.51.100.2"] != "10.0.0.121" {
+		t.Fatalf("unexpected IPMappings in NodeByID: %#v", node.IPMappings)
 	}
 
 	nodes, err := store.ListNodes(ctx)

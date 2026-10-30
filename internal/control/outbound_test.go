@@ -304,4 +304,32 @@ func TestDirectIPOutboundCompilation(t *testing.T) {
 	if !routedIPv6 {
 		t.Error("route rule for u-ipv6 targeting direct-2001:db8::88 not found")
 	}
+
+	// Test NAT environment: public IP maps to private local IP
+	if err := store.UpdateNodeIdentityWithIPs(ctx, nodeID, "0.43.0", "linux", "amd64", "1.14.0", "{}",
+		[]string{"198.51.100.55", "2001:db8::88"}, map[string]string{"198.51.100.55": "10.0.0.121"}); err != nil {
+		t.Fatalf("update identity with mapping: %v", err)
+	}
+
+	configNAT, _, err := store.CompileNodeConfig(ctx, nodeID)
+	if err != nil {
+		t.Fatalf("compile NAT config: %v", err)
+	}
+	var parsedNAT struct {
+		Outbounds []map[string]any `json:"outbounds"`
+	}
+	if err := json.Unmarshal([]byte(configNAT), &parsedNAT); err != nil {
+		t.Fatalf("unmarshal NAT config: %v", err)
+	}
+	var natBoundCorrectly bool
+	for _, ob := range parsedNAT.Outbounds {
+		if ob["tag"] == "direct-198.51.100.55" {
+			if ob["inet4_bind_address"] == "10.0.0.121" {
+				natBoundCorrectly = true
+			}
+		}
+	}
+	if !natBoundCorrectly {
+		t.Error("expected direct-198.51.100.55 in NAT environment to bind to local IP 10.0.0.121")
+	}
 }

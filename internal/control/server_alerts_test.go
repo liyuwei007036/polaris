@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -151,5 +152,37 @@ func TestAlertsAndSpeedtestAPIs(t *testing.T) {
 	rec = doRequest("POST", "/api/v1/nodes/"+nodeID+"/diagnose/mtr", map[string]any{"target": "202.96.209.133"})
 	if rec.Code != http.StatusBadRequest {
 		t.Errorf("expected 400 for offline node MTR, got %d %s", rec.Code, rec.Body.String())
+	}
+
+	// 7. GET /api/v1/ip/lookup queries IP database dynamically
+	rec = doRequest("GET", "/api/v1/ip/lookup?ip=8.8.8.8", nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200 for ip lookup, got %d %s", rec.Code, rec.Body.String())
+	}
+	var ipLookupRes struct {
+		IP       string `json:"ip"`
+		Location string `json:"location"`
+		City     string `json:"city"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&ipLookupRes); err != nil {
+		t.Fatal(err)
+	}
+	if ipLookupRes.IP != "8.8.8.8" || !strings.Contains(ipLookupRes.Location, "United States") {
+		t.Errorf("unexpected ip lookup result: %+v", ipLookupRes)
+	}
+
+	// 8. GET /api/v1/nodes enriches nodes with location and city from IP database
+	rec = doRequest("GET", "/api/v1/nodes", nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200 for list nodes, got %d %s", rec.Code, rec.Body.String())
+	}
+	var listNodesRes struct {
+		Nodes []Node `json:"nodes"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&listNodesRes); err != nil {
+		t.Fatal(err)
+	}
+	if len(listNodesRes.Nodes) == 0 {
+		t.Errorf("expected at least 1 node in list, got 0")
 	}
 }

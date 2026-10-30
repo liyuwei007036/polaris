@@ -302,7 +302,7 @@ func (s *Server) handleAgentMessage(ctx context.Context, node Node, msgType byte
 		if err != nil {
 			return false
 		}
-		if err := s.store.UpdateNodeIdentityWithIPs(ctx, node.ID, st.AgentVersion, st.OS, st.Architecture, st.SingBoxVersion, string(capsJSON), st.IPAddresses); err != nil {
+		if err := s.store.UpdateNodeIdentityWithIPs(ctx, node.ID, st.AgentVersion, st.OS, st.Architecture, st.SingBoxVersion, string(capsJSON), st.IPAddresses, st.IPMappings); err != nil {
 			return false
 		}
 		s.maybeInstallSingBox(ctx, node.ID, st.OS, st.Architecture, st.SingBoxVersion)

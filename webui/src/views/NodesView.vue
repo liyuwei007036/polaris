@@ -86,29 +86,26 @@ const editSaving = ref(false)
 const mtrDialogVisible = ref(false)
 const mtrTargetNode = ref(null)
 const mtrLoading = ref(false)
-const mtrTargetType = ref('sh_telecom')
+const mtrTargetType = ref('')
 const mtrCustomTarget = ref('')
 const mtrCount = ref(10)
 const mtrReport = ref(null)
 const mtrShowRaw = ref(false)
-const mtrTargetOptions = ref([
-  { label: '上海电信 (AS4134 华东核心)', value: 'sh_telecom', ip: '202.96.209.133' },
-  { label: '广州电信 (AS4134 华南核心)', value: 'gz_telecom', ip: '58.60.188.222' },
-  { label: '北京电信 (AS4134 华北核心)', value: 'bj_telecom', ip: '219.141.140.10' },
-  { label: '成都电信 (AS4134 西南核心)', value: 'cd_telecom', ip: '61.139.2.69' },
-  { label: '全国电信公共网关 (114.114.114.114)', value: 'dns_telecom', ip: '114.114.114.114' },
-  { label: '上海联通 (AS4837 华东核心)', value: 'sh_unicom', ip: '210.22.97.1' },
-  { label: '广州联通 (AS4837 华南核心)', value: 'gz_unicom', ip: '210.21.196.6' },
-  { label: '北京联通 (AS4837 华北核心)', value: 'bj_unicom', ip: '202.106.195.68' },
-  { label: '成都联通 (AS4837 西南核心)', value: 'cd_unicom', ip: '119.6.6.6' },
-  { label: '全国联通公共网关 (116.116.116.116)', value: 'dns_unicom', ip: '116.116.116.116' },
-  { label: '广州移动 (AS9808 华南核心)', value: 'gz_mobile', ip: '120.196.165.24' },
-  { label: '上海移动 (AS9808 华东核心)', value: 'sh_mobile', ip: '211.136.112.200' },
-  { label: '北京移动 (AS9808 华北核心)', value: 'bj_mobile', ip: '221.179.155.161' },
-  { label: '成都移动 (AS9808 西南核心)', value: 'cd_mobile', ip: '211.137.96.205' },
-  { label: '全国移动核心网关 (120.196.165.1)', value: 'gw_mobile', ip: '120.196.165.1' },
-  { label: '自定义 IP / 域名', value: 'custom', ip: '' },
-])
+const mtrTargetOptions = ref([])
+
+async function loadMTRTargets() {
+  try {
+    const res = await api('/diagnose/mtr/targets')
+    if (res?.targets?.length) {
+      mtrTargetOptions.value = res.targets
+      if (!mtrTargetType.value) {
+        mtrTargetType.value = res.targets[0]?.value || 'custom'
+      }
+    }
+  } catch (_) {
+    // Keep empty or user custom
+  }
+}
 
 // 架构 -> 官方最新 sing-box 版本号
 const singBoxLatest = ref({})
@@ -278,6 +275,9 @@ function formatNodeLatencies(raw) {
 
 function getNodeLocationLabel(node) {
   if (!node) return '本地节点'
+  if (node.city) return node.city
+  if (node.location) return node.location
+
   const name = (node.name || '').trim()
   const upper = name.toUpperCase()
 
@@ -291,14 +291,6 @@ function getNodeLocationLabel(node) {
   if (upper.includes('GB') || upper.includes('UK') || upper.includes('英国') || upper.includes('伦敦')) return '英国伦敦'
   if (upper.includes('FR') || upper.includes('法国') || upper.includes('巴黎')) return '法国巴黎'
   if (upper.includes('RU') || upper.includes('俄罗斯') || upper.includes('莫斯科')) return '俄罗斯莫斯科'
-
-  const ip = (node.last_observed_ip || node.client_address || '').trim()
-  if (ip) {
-    if (ip.startsWith('38.') || ip.startsWith('154.')) return '美西洛杉矶'
-    if (ip.startsWith('223.118.') || ip.startsWith('223.119.') || ip.startsWith('223.120.')) return '中国香港'
-    if (ip.startsWith('203.160.') || ip.startsWith('202.77.')) return '中国香港'
-    if (ip.startsWith('210.140.') || ip.startsWith('133.')) return '日本东京'
-  }
 
   if (name && !name.includes('http') && name.length <= 15) {
     return name
@@ -775,13 +767,8 @@ async function openMTRDialog(node) {
   mtrReport.value = null
   mtrShowRaw.value = false
   mtrDialogVisible.value = true
-  try {
-    const res = await get('/diagnose/mtr/targets')
-    if (res?.targets?.length) {
-      mtrTargetOptions.value = res.targets
-    }
-  } catch (_) {
-    // Keep fallback defaults
+  if (mtrTargetOptions.value.length === 0) {
+    await loadMTRTargets()
   }
 }
 
@@ -798,8 +785,12 @@ async function startMTRDiagnose() {
     label = target
   } else {
     const opt = mtrTargetOptions.value.find((o) => o.value === mtrTargetType.value)
-    target = opt ? opt.ip : '202.96.209.133'
-    label = opt ? opt.label : target
+    if (!opt || !opt.ip) {
+      ElMessage.warning('请选择有效的诊断目标')
+      return
+    }
+    target = opt.ip
+    label = opt.label || target
   }
 
   mtrLoading.value = true
@@ -839,6 +830,7 @@ function handleCardCommand(node, command) {
 
 onMounted(() => {
   load()
+  loadMTRTargets().catch(() => {})
   stopConnections = subscribeConnections(() => {})
   stopLive = subscribeLive((event) => {
     if (event.kind === 'node') load(true).catch(() => {})
@@ -1086,6 +1078,9 @@ onBeforeUnmount(() => {
                 <div class="subtitle-row">
                   <span class="sub-os-arch">{{ node.os || 'linux' }}/{{ node.architecture || 'amd64' }}</span>
                   <span class="sub-ver">v{{ node.agent_version || '—' }}</span>
+                  <span v-if="node.city || node.location" class="sub-os-arch" :title="node.location || node.city">
+                    {{ node.city || node.location }}
+                  </span>
                   <span v-if="node.client_address" class="sub-ip font-mono" :title="'点击复制: ' + node.client_address" @click="copyAddress(node.client_address)">
                     {{ node.client_address }}
                     <el-icon class="copy-icon"><CopyDocument /></el-icon>
@@ -1357,6 +1352,9 @@ onBeforeUnmount(() => {
               <template #default="{ row }">
                 <div v-if="row.client_address" class="mono" style="cursor: pointer" @click="copyAddress(row.client_address)">
                   {{ row.client_address }}
+                  <span v-if="row.city || row.location" class="sub-os-arch" style="margin-left: 6px" :title="row.location || row.city">
+                    {{ row.city || row.location }}
+                  </span>
                   <el-tooltip
                     v-if="row.ddns_enabled"
                     raw-content
@@ -1481,6 +1479,18 @@ onBeforeUnmount(() => {
 
     <!-- 添加节点 Token 弹窗 -->
     <el-dialog v-model="tokenDialog" title="接入新服务器" width="560px">
+      <div style="margin-bottom: 14px">
+        <div style="font-size: 13px; font-weight: 500; margin-bottom: 6px; color: var(--sb-text-1)">
+          Master 地址（Agent 拨号连接的主机或 IP）
+        </div>
+        <el-input v-model="masterHost" placeholder="例如：161.118.209.69 或 polaris.example.com">
+          <template #append>:{{ agentPort }}</template>
+        </el-input>
+        <div class="subtle" style="font-size: 12px; margin-top: 4px">
+          默认按当前控制台访问地址填入。若 Agent 需通过其他公网 IP 或域名回连，请在此修改，安装命令将自动联动更新并记住。
+        </div>
+      </div>
+
       <p style="margin-top: 0; color: var(--sb-text-2)">
         在目标 Linux 服务器上执行以下安装命令，即可自动配置并建立双向安全加密隧道接入平台：
       </p>

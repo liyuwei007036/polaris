@@ -401,6 +401,7 @@ func (s *Server) registerBrowserRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/v1/nodes/{id}/speedtest", s.handleRunNodeSpeedtest)
 	mux.HandleFunc("POST /api/v1/nodes/{id}/diagnose/mtr", s.handleRunNodeMTR)
 	mux.HandleFunc("GET /api/v1/diagnose/mtr/targets", s.handleGetMTRTargets)
+	mux.HandleFunc("GET /api/v1/ip/lookup", s.handleIPLookup)
 	mux.HandleFunc("GET /api/v1/nodes/{id}/speedtest/latest", s.handleGetNodeSpeedtestLatest)
 	mux.HandleFunc("GET /api/v1/nodes/speedtests/latest", s.handleListNodeSpeedtestsLatest)
 	mux.HandleFunc("POST /api/v1/tools/reality-check", s.handleCheckRealityCandidate)
@@ -1290,6 +1291,61 @@ func (s *Server) clientSubscriptionContent(w http.ResponseWriter, r *http.Reques
 	_, _ = w.Write([]byte(content))
 }
 
+func (s *Server) enrichNodeLocation(node *Node) {
+	if s.ipLocator == nil || node == nil {
+		return
+	}
+	candidates := make([]string, 0, len(node.IPAddresses)+2)
+	if node.LastObservedIP != "" {
+		candidates = append(candidates, node.LastObservedIP)
+	}
+	if node.ClientAddress != "" {
+		candidates = append(candidates, node.ClientAddress)
+	}
+	candidates = append(candidates, node.IPAddresses...)
+
+	for _, cand := range candidates {
+		ipStr := addressIP(cand)
+		if ipStr == "" {
+			ipStr = strings.TrimSpace(cand)
+		}
+		parsed := net.ParseIP(ipStr)
+		if parsed == nil || parsed.IsLoopback() || parsed.IsPrivate() || parsed.IsLinkLocalUnicast() || parsed.IsUnspecified() {
+			continue
+		}
+		loc := s.ipLocator.Locate(ipStr)
+		city := s.ipLocator.LocateCity(ipStr)
+		if loc != "" && loc != "未知" {
+			node.Location = loc
+			node.City = city
+			return
+		}
+	}
+}
+
+func (s *Server) handleIPLookup(w http.ResponseWriter, r *http.Request) {
+	if _, err := s.operator(r, false); err != nil {
+		writeError(w, err)
+		return
+	}
+	ipStr := strings.TrimSpace(r.URL.Query().Get("ip"))
+	if ipStr == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "ip parameter required"})
+		return
+	}
+	location := ""
+	city := ""
+	if s.ipLocator != nil {
+		location = s.ipLocator.Locate(ipStr)
+		city = s.ipLocator.LocateCity(ipStr)
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ip":       ipStr,
+		"location": location,
+		"city":     city,
+	})
+}
+
 func (s *Server) listNodes(w http.ResponseWriter, r *http.Request) {
 	if _, err := s.operator(r, false); err != nil {
 		writeError(w, err)
@@ -1307,6 +1363,7 @@ func (s *Server) listNodes(w http.ResponseWriter, r *http.Request) {
 				nodes[i].LastObservedIP = session.remoteAddr
 			}
 		}
+		s.enrichNodeLocation(&nodes[i])
 	}
 	s.controlMu.Unlock()
 	writeJSON(w, http.StatusOK, map[string]any{"nodes": nodes})
@@ -1338,6 +1395,7 @@ func (s *Server) setNodeClientAddress(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
+	s.enrichNodeLocation(&node)
 	writeJSON(w, http.StatusOK, node)
 }
 
@@ -1389,6 +1447,7 @@ func (s *Server) updateNode(w http.ResponseWriter, r *http.Request) {
 		}
 		go s.triggerNodeDDNS(context.Background(), node.ID, currentIP)
 	}
+	s.enrichNodeLocation(&node)
 	writeJSON(w, http.StatusOK, node)
 }
 
@@ -1414,6 +1473,7 @@ func (s *Server) setNodeIPAliases(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
+	s.enrichNodeLocation(&node)
 	writeJSON(w, http.StatusOK, node)
 }
 
@@ -1452,6 +1512,7 @@ func (s *Server) setNodeName(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
+	s.enrichNodeLocation(&node)
 	writeJSON(w, http.StatusOK, node)
 }
 

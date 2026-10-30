@@ -26,6 +26,7 @@ type Status struct {
 	Capabilities      map[string]any
 	Metrics           MetricReport
 	IPAddresses       []string
+	IPMappings        map[string]string
 }
 
 // MetricReport deliberately separates host-interface counters from
@@ -150,6 +151,7 @@ func DefaultStatus(singBoxVersion, dataDir string) Status {
 	if singBoxConfigHash == "" {
 		singBoxConfigHash, _ = configurationFileHash(managedSingBoxConfig)
 	}
+	publicIPs, ipMappings := CollectLocalIPsAndMappings()
 	return Status{
 		AgentVersion:      version.Version,
 		OS:                runtime.GOOS,
@@ -161,7 +163,8 @@ func DefaultStatus(singBoxVersion, dataDir string) Status {
 			"systemd": runtime.GOOS == "linux", "control_channel": "noise-tcp", "configuration_hashes": true,
 		},
 		Metrics:     CollectMetrics(),
-		IPAddresses: CollectLocalIPs(),
+		IPAddresses: publicIPs,
+		IPMappings:  ipMappings,
 	}
 }
 
@@ -435,6 +438,7 @@ func toWireStatus(local Status) wire.Status {
 		ClashAPIAvailable: local.Metrics.Health.ClashAPIAvailable,
 		TrafficAvailable:  local.Metrics.Health.TrafficAvailable,
 		IPAddresses:       local.IPAddresses,
+		IPMappings:        local.IPMappings,
 	}
 	if local.Metrics.Node != nil {
 		st.HasNodeTotals = true

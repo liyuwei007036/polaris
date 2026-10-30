@@ -124,6 +124,9 @@ type Node struct {
 	LastObservedIP string            `json:"last_observed_ip"`
 	IPAddresses    []string          `json:"ip_addresses"`
 	IPAliases      map[string]string `json:"ip_aliases"`
+	IPMappings     map[string]string `json:"ip_mappings"`
+	Location       string            `json:"location,omitempty"`
+	City           string            `json:"city,omitempty"`
 }
 
 type AgentStatus struct {
@@ -1024,14 +1027,14 @@ func parseJSONStringMap(raw string) map[string]string {
 func (s *Store) NodeForPublicKey(ctx context.Context, publicKey []byte) (Node, error) {
 	var node Node
 	var ddnsEnabled int
-	var rawRecIDs, rawDomains, rawIPs, rawAliases string
+	var rawRecIDs, rawDomains, rawIPs, rawAliases, rawMappings string
 	err := s.db.QueryRowContext(ctx, `SELECT id, name, client_address, agent_version, os, architecture, sing_box_version,
 		COALESCE(capabilities, ''), last_seen_at, COALESCE(ddns_enabled, 0), COALESCE(ddns_record_id, ''), COALESCE(ddns_domain, ''),
 		COALESCE(ddns_record_ids, '[]'), COALESCE(ddns_domains, '[]'), COALESCE(last_observed_ip, ''), COALESCE(ip_addresses, '[]'),
-		COALESCE(ip_aliases, '{}')
+		COALESCE(ip_aliases, '{}'), COALESCE(ip_mappings, '{}')
 		FROM nodes WHERE public_key = ? AND revoked_at IS NULL`, publicKey).
 		Scan(&node.ID, &node.Name, &node.ClientAddress, &node.AgentVersion, &node.OS, &node.Architecture, &node.SingBox, &node.Capabilities, new(sql.NullInt64),
-			&ddnsEnabled, &node.DDNSRecordID, &node.DDNSDomain, &rawRecIDs, &rawDomains, &node.LastObservedIP, &rawIPs, &rawAliases)
+			&ddnsEnabled, &node.DDNSRecordID, &node.DDNSDomain, &rawRecIDs, &rawDomains, &node.LastObservedIP, &rawIPs, &rawAliases, &rawMappings)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Node{}, ErrUnauthorized
 	}
@@ -1043,6 +1046,7 @@ func (s *Store) NodeForPublicKey(ctx context.Context, publicKey []byte) (Node, e
 	node.DDNSDomains = parseJSONStringSlice(rawDomains)
 	node.IPAddresses = parseJSONStringSlice(rawIPs)
 	node.IPAliases = parseJSONStringMap(rawAliases)
+	node.IPMappings = parseJSONStringMap(rawMappings)
 	if len(node.DDNSRecordIDs) == 0 && node.DDNSRecordID != "" {
 		node.DDNSRecordIDs = []string{node.DDNSRecordID}
 	}
@@ -1073,17 +1077,24 @@ func (s *Store) UpdateAgentStatus(ctx context.Context, nodeID string, status Age
 // updates metrics on its own, much more often than identity ever changes,
 // and must not clobber these fields back to empty in between heartbeats.
 func (s *Store) UpdateNodeIdentity(ctx context.Context, nodeID, agentVersion, os, architecture, singBox, capabilities string) error {
-	return s.UpdateNodeIdentityWithIPs(ctx, nodeID, agentVersion, os, architecture, singBox, capabilities, nil)
+	return s.UpdateNodeIdentityWithIPs(ctx, nodeID, agentVersion, os, architecture, singBox, capabilities, nil, nil)
 }
 
-func (s *Store) UpdateNodeIdentityWithIPs(ctx context.Context, nodeID, agentVersion, os, architecture, singBox, capabilities string, ipAddresses []string) error {
+func (s *Store) UpdateNodeIdentityWithIPs(ctx context.Context, nodeID, agentVersion, os, architecture, singBox, capabilities string, ipAddresses []string, ipMappings map[string]string) error {
 	var query string
 	var args []any
-	if ipAddresses != nil {
+	if ipAddresses != nil || ipMappings != nil {
 		rawIPs, _ := json.Marshal(ipAddresses)
-		query = `UPDATE nodes SET agent_version = ?, os = ?, architecture = ?, sing_box_version = ?, capabilities = ?, ip_addresses = ?, last_seen_at = ?
+		rawMappings, _ := json.Marshal(ipMappings)
+		if ipAddresses == nil {
+			rawIPs = []byte("[]")
+		}
+		if ipMappings == nil {
+			rawMappings = []byte("{}")
+		}
+		query = `UPDATE nodes SET agent_version = ?, os = ?, architecture = ?, sing_box_version = ?, capabilities = ?, ip_addresses = ?, ip_mappings = ?, last_seen_at = ?
 			WHERE id = ? AND revoked_at IS NULL`
-		args = []any{agentVersion, os, architecture, singBox, capabilities, string(rawIPs), nowUnix(), nodeID}
+		args = []any{agentVersion, os, architecture, singBox, capabilities, string(rawIPs), string(rawMappings), nowUnix(), nodeID}
 	} else {
 		query = `UPDATE nodes SET agent_version = ?, os = ?, architecture = ?, sing_box_version = ?, capabilities = ?, last_seen_at = ?
 			WHERE id = ? AND revoked_at IS NULL`
@@ -1163,7 +1174,7 @@ func (s *Store) ListNodes(ctx context.Context) ([]Node, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT id, name, client_address, agent_version, os, architecture, sing_box_version,
 		COALESCE(capabilities, ''), last_seen_at, COALESCE(ddns_enabled, 0), COALESCE(ddns_record_id, ''), COALESCE(ddns_domain, ''),
 		COALESCE(ddns_record_ids, '[]'), COALESCE(ddns_domains, '[]'), COALESCE(last_observed_ip, ''), COALESCE(ip_addresses, '[]'),
-		COALESCE(ip_aliases, '{}')
+		COALESCE(ip_aliases, '{}'), COALESCE(ip_mappings, '{}')
 		FROM nodes WHERE revoked_at IS NULL ORDER BY name, id`)
 	if err != nil {
 		return nil, fmt.Errorf("list nodes: %w", err)
@@ -1175,9 +1186,9 @@ func (s *Store) ListNodes(ctx context.Context) ([]Node, error) {
 		var node Node
 		var lastSeen sql.NullInt64
 		var ddnsEnabled int
-		var rawRecIDs, rawDomains, rawIPs, rawAliases string
+		var rawRecIDs, rawDomains, rawIPs, rawAliases, rawMappings string
 		if err := rows.Scan(&node.ID, &node.Name, &node.ClientAddress, &node.AgentVersion, &node.OS, &node.Architecture, &node.SingBox, &node.Capabilities, &lastSeen,
-			&ddnsEnabled, &node.DDNSRecordID, &node.DDNSDomain, &rawRecIDs, &rawDomains, &node.LastObservedIP, &rawIPs, &rawAliases); err != nil {
+			&ddnsEnabled, &node.DDNSRecordID, &node.DDNSDomain, &rawRecIDs, &rawDomains, &node.LastObservedIP, &rawIPs, &rawAliases, &rawMappings); err != nil {
 			return nil, fmt.Errorf("read node: %w", err)
 		}
 		node.DDNSEnabled = ddnsEnabled == 1
@@ -1185,6 +1196,7 @@ func (s *Store) ListNodes(ctx context.Context) ([]Node, error) {
 		node.DDNSDomains = parseJSONStringSlice(rawDomains)
 		node.IPAddresses = parseJSONStringSlice(rawIPs)
 		node.IPAliases = parseJSONStringMap(rawAliases)
+		node.IPMappings = parseJSONStringMap(rawMappings)
 		if len(node.DDNSRecordIDs) == 0 && node.DDNSRecordID != "" {
 			node.DDNSRecordIDs = []string{node.DDNSRecordID}
 		}
@@ -1207,14 +1219,14 @@ func (s *Store) NodeByID(ctx context.Context, nodeID string) (Node, error) {
 	var node Node
 	var lastSeen sql.NullInt64
 	var ddnsEnabled int
-	var rawRecIDs, rawDomains, rawIPs, rawAliases string
+	var rawRecIDs, rawDomains, rawIPs, rawAliases, rawMappings string
 	row := s.db.QueryRowContext(ctx, `SELECT id, name, client_address, agent_version, os, architecture, sing_box_version,
 		COALESCE(capabilities, ''), last_seen_at, COALESCE(ddns_enabled, 0), COALESCE(ddns_record_id, ''), COALESCE(ddns_domain, ''),
 		COALESCE(ddns_record_ids, '[]'), COALESCE(ddns_domains, '[]'), COALESCE(last_observed_ip, ''), COALESCE(ip_addresses, '[]'),
-		COALESCE(ip_aliases, '{}')
+		COALESCE(ip_aliases, '{}'), COALESCE(ip_mappings, '{}')
 		FROM nodes WHERE id = ? AND revoked_at IS NULL`, nodeID)
 	if err := row.Scan(&node.ID, &node.Name, &node.ClientAddress, &node.AgentVersion, &node.OS, &node.Architecture, &node.SingBox, &node.Capabilities, &lastSeen,
-		&ddnsEnabled, &node.DDNSRecordID, &node.DDNSDomain, &rawRecIDs, &rawDomains, &node.LastObservedIP, &rawIPs, &rawAliases); err != nil {
+		&ddnsEnabled, &node.DDNSRecordID, &node.DDNSDomain, &rawRecIDs, &rawDomains, &node.LastObservedIP, &rawIPs, &rawAliases, &rawMappings); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return Node{}, ErrNotFound
 		}
@@ -1225,6 +1237,7 @@ func (s *Store) NodeByID(ctx context.Context, nodeID string) (Node, error) {
 	node.DDNSDomains = parseJSONStringSlice(rawDomains)
 	node.IPAddresses = parseJSONStringSlice(rawIPs)
 	node.IPAliases = parseJSONStringMap(rawAliases)
+	node.IPMappings = parseJSONStringMap(rawMappings)
 	if len(node.DDNSRecordIDs) == 0 && node.DDNSRecordID != "" {
 		node.DDNSRecordIDs = []string{node.DDNSRecordID}
 	}
@@ -1265,14 +1278,14 @@ func (s *Store) GetNode(ctx context.Context, nodeID string) (Node, error) {
 	var node Node
 	var lastSeen sql.NullInt64
 	var ddnsEnabled int
-	var rawRecIDs, rawDomains, rawIPs, rawAliases string
+	var rawRecIDs, rawDomains, rawIPs, rawAliases, rawMappings string
 	err := s.db.QueryRowContext(ctx, `SELECT id, name, client_address, agent_version, os, architecture, sing_box_version,
 		COALESCE(capabilities, ''), last_seen_at, COALESCE(ddns_enabled, 0), COALESCE(ddns_record_id, ''), COALESCE(ddns_domain, ''),
 		COALESCE(ddns_record_ids, '[]'), COALESCE(ddns_domains, '[]'), COALESCE(last_observed_ip, ''), COALESCE(ip_addresses, '[]'),
-		COALESCE(ip_aliases, '{}')
+		COALESCE(ip_aliases, '{}'), COALESCE(ip_mappings, '{}')
 		FROM nodes WHERE id = ? AND revoked_at IS NULL`, nodeID).
 		Scan(&node.ID, &node.Name, &node.ClientAddress, &node.AgentVersion, &node.OS, &node.Architecture, &node.SingBox, &node.Capabilities, &lastSeen,
-			&ddnsEnabled, &node.DDNSRecordID, &node.DDNSDomain, &rawRecIDs, &rawDomains, &node.LastObservedIP, &rawIPs, &rawAliases)
+			&ddnsEnabled, &node.DDNSRecordID, &node.DDNSDomain, &rawRecIDs, &rawDomains, &node.LastObservedIP, &rawIPs, &rawAliases, &rawMappings)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Node{}, ErrNotFound
 	}
@@ -1284,6 +1297,7 @@ func (s *Store) GetNode(ctx context.Context, nodeID string) (Node, error) {
 	node.DDNSDomains = parseJSONStringSlice(rawDomains)
 	node.IPAddresses = parseJSONStringSlice(rawIPs)
 	node.IPAliases = parseJSONStringMap(rawAliases)
+	node.IPMappings = parseJSONStringMap(rawMappings)
 	if len(node.DDNSRecordIDs) == 0 && node.DDNSRecordID != "" {
 		node.DDNSRecordIDs = []string{node.DDNSRecordID}
 	}
@@ -2492,6 +2506,7 @@ CREATE TABLE IF NOT EXISTS nodes (
   ddns_domains TEXT NOT NULL DEFAULT '[]', last_observed_ip TEXT NOT NULL DEFAULT '',
   ip_addresses TEXT NOT NULL DEFAULT '[]',
   ip_aliases TEXT NOT NULL DEFAULT '{}',
+  ip_mappings TEXT NOT NULL DEFAULT '{}',
   revoked_at INTEGER, created_at INTEGER NOT NULL
 );
 CREATE TABLE IF NOT EXISTS audit_events (
@@ -2762,6 +2777,7 @@ INSERT OR IGNORE INTO alert_settings (id, updated_at) VALUES (1, unixepoch());
 		"ddns_domain TEXT NOT NULL DEFAULT ''", "ddns_record_ids TEXT NOT NULL DEFAULT '[]'",
 		"ddns_domains TEXT NOT NULL DEFAULT '[]'", "last_observed_ip TEXT NOT NULL DEFAULT ''",
 		"ip_addresses TEXT NOT NULL DEFAULT '[]'", "ip_aliases TEXT NOT NULL DEFAULT '{}'",
+		"ip_mappings TEXT NOT NULL DEFAULT '{}'",
 	} {
 		if err := s.addNodeColumn(ctx, column); err != nil {
 			return err

@@ -60,6 +60,15 @@ func (s *Store) CompileNodeConfig(ctx context.Context, nodeID string) (string, s
 		return "", "", err
 	}
 	sortRouteRules(rules)
+	targetNode, _ := s.GetNode(ctx, nodeID)
+	lookupBindIP := func(ip string) string {
+		if targetNode.IPMappings != nil {
+			if mapped, ok := targetNode.IPMappings[ip]; ok && mapped != "" {
+				return mapped
+			}
+		}
+		return ip
+	}
 	// Managed outbounds: a built-in "direct" plus any enabled SOCKS5/HTTP proxies.
 	// Outbounds are global, so every node's config carries the same egress set.
 	managedOutbounds, err := s.loadEnabledOutbounds(ctx)
@@ -78,7 +87,7 @@ func (s *Store) CompileNodeConfig(ctx context.Context, nodeID string) (string, s
 		if strings.HasPrefix(selection.OutboundID, DirectOutboundPrefix) {
 			if _, ok := outboundTags[selection.OutboundID]; !ok {
 				ipStr := DirectOutboundIP(selection.OutboundID)
-				ob, tag, err := compileDirectIPOutbound(ipStr)
+				ob, tag, err := compileDirectIPOutbound(ipStr, lookupBindIP(ipStr))
 				if err == nil {
 					outbounds = append(outbounds, ob)
 					outboundTags[selection.OutboundID] = tag
@@ -101,7 +110,7 @@ func (s *Store) CompileNodeConfig(ctx context.Context, nodeID string) (string, s
 		if listener.Enabled && strings.HasPrefix(listener.OutboundID, DirectOutboundPrefix) {
 			if _, ok := outboundTags[listener.OutboundID]; !ok {
 				ipStr := DirectOutboundIP(listener.OutboundID)
-				ob, tag, err := compileDirectIPOutbound(ipStr)
+				ob, tag, err := compileDirectIPOutbound(ipStr, lookupBindIP(ipStr))
 				if err == nil {
 					outbounds = append(outbounds, ob)
 					outboundTags[listener.OutboundID] = tag
@@ -265,21 +274,28 @@ func compileRouteRule(rule RouteRule) map[string]any {
 }
 
 // compileDirectIPOutbound renders a direct outbound bound to a specific local IP.
-func compileDirectIPOutbound(ipStr string) (map[string]any, string, error) {
-	parsed := net.ParseIP(ipStr)
-	if parsed == nil {
-		return nil, "", fmt.Errorf("invalid direct IP address: %s", ipStr)
-	}
-	tag := "direct-" + ipStr
+func compileDirectIPOutbound(publicIP, bindIP string) (map[string]any, string, error) {
+	tag := "direct-" + publicIP
 	outbound := map[string]any{
 		"type": "direct",
 		"tag":  tag,
 	}
-	if parsed.To4() != nil {
-		outbound["inet4_bind_address"] = ipStr
+	if bindIP == "" {
+		bindIP = publicIP
+	}
+	bindParsed := net.ParseIP(bindIP)
+	if bindParsed == nil {
+		bindParsed = net.ParseIP(publicIP)
+		bindIP = publicIP
+	}
+	if bindParsed == nil {
+		return nil, "", fmt.Errorf("invalid direct IP address: %s", publicIP)
+	}
+	if bindParsed.To4() != nil {
+		outbound["inet4_bind_address"] = bindIP
 		outbound["domain_strategy"] = "prefer_ipv4"
 	} else {
-		outbound["inet6_bind_address"] = ipStr
+		outbound["inet6_bind_address"] = bindIP
 		outbound["domain_strategy"] = "prefer_ipv6"
 	}
 	return outbound, tag, nil
