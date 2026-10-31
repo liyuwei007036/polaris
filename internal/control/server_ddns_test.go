@@ -67,6 +67,18 @@ func TestUpdateNodeWithDDNSStore(t *testing.T) {
 	}
 }
 
+func waitForDDNS(t *testing.T, condition func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if condition() {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("timed out waiting for DDNS reconciliation")
+}
+
 func TestServerDDNSAutoUpdateAndManualSync(t *testing.T) {
 	var mu sync.Mutex
 	recordContent := "10.0.0.1"
@@ -242,7 +254,11 @@ func TestServerDDNSAutoUpdateAndManualSync(t *testing.T) {
 
 	// Agent reports status -> reconcileNodeDDNS runs
 	server.reconcileNodeDDNS(t.Context(), nodeID)
-	time.Sleep(100 * time.Millisecond)
+	waitForDDNS(t, func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return recordContent == "203.0.113.200" && patchCalls == 5
+	})
 
 	mu.Lock()
 	if recordContent != "203.0.113.200" {
@@ -275,7 +291,11 @@ func TestServerDDNSAutoUpdateAndManualSync(t *testing.T) {
 	server.ddnsReconcileMu.Unlock()
 
 	server.reconcileNodeDDNS(t.Context(), nodeID)
-	time.Sleep(100 * time.Millisecond)
+	waitForDDNS(t, func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return recordContent == "203.0.113.200" && patchCalls == 6
+	})
 
 	mu.Lock()
 	if recordContent != "203.0.113.200" {
@@ -373,7 +393,12 @@ func TestServerDDNSContinuousReconciliationBackoffRetry(t *testing.T) {
 
 	// 1. First status report arrives while Cloudflare is failing
 	server.reconcileNodeDDNS(t.Context(), nodeID)
-	time.Sleep(100 * time.Millisecond)
+	waitForDDNS(t, func() bool {
+		server.ddnsReconcileMu.Lock()
+		defer server.ddnsReconcileMu.Unlock()
+		state := server.ddnsReconcileState[nodeID]
+		return state != nil && state.failures == 1 && !state.nextRetryAt.IsZero()
+	})
 
 	server.ddnsReconcileMu.Lock()
 	state := server.ddnsReconcileState[nodeID]
@@ -406,7 +431,11 @@ func TestServerDDNSContinuousReconciliationBackoffRetry(t *testing.T) {
 
 	// Agent's next status report arrives -> automatically retries and heals!
 	server.reconcileNodeDDNS(t.Context(), nodeID)
-	time.Sleep(100 * time.Millisecond)
+	waitForDDNS(t, func() bool {
+		server.ddnsReconcileMu.Lock()
+		defer server.ddnsReconcileMu.Unlock()
+		return state.failures == 0 && state.lastIP == "203.0.113.77"
+	})
 
 	mu.Lock()
 	if recordContent != "203.0.113.77" {
@@ -766,5 +795,3 @@ func TestNodeDDNSMultiDomainAndMasterDetection(t *testing.T) {
 		t.Fatalf("expected LastObservedIP 203.0.113.88, got %s", updatedNode.LastObservedIP)
 	}
 }
-
-
