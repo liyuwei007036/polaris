@@ -66,9 +66,44 @@ func planNodePlacement(ctx context.Context, configuration string, names map[stri
 		occupied[record.Port] = true
 	}
 	reserved := map[uint16]bool{}
-	return planListenerPlacement(configuration, names, occupied, func() (uint16, bool) {
+	existing := existingSingBoxBackendPorts(managedSingBoxConfig)
+	return planListenerPlacementWithExisting(configuration, names, occupied, existing, func() (uint16, bool) {
 		return freeLoopbackPortFrom(singBoxBackendPortFirst, singBoxBackendPortLast, sockets, reserved)
 	})
+}
+
+func existingSingBoxBackendPorts(path string) map[string]uint16 {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil
+	}
+	var parsed struct {
+		Inbounds []map[string]any `json:"inbounds"`
+	}
+	if err := json.Unmarshal(data, &parsed); err != nil {
+		return nil
+	}
+	ports := make(map[string]uint16)
+	for _, raw := range parsed.Inbounds {
+		tag, _ := raw["tag"].(string)
+		listen, _ := raw["listen"].(string)
+		if tag == "" || (listen != "127.0.0.1" && listen != "::1") {
+			continue
+		}
+		var port uint16
+		switch v := raw["listen_port"].(type) {
+		case float64:
+			port = uint16(v)
+		case json.Number:
+			if n, err := strconv.ParseUint(v.String(), 10, 16); err == nil {
+				port = uint16(n)
+			}
+		}
+		if port >= singBoxBackendPortFirst && port < singBoxBackendPortLast {
+			ports[tag] = port
+		}
+	}
+	return ports
 }
 
 // Backends for services behind the router are handed out below the range the
@@ -105,6 +140,10 @@ type inboundBinding struct {
 // allocate hands out a free loopback port; it is a parameter so the decision
 // can be exercised without touching the host.
 func planListenerPlacement(configuration string, names map[string]string, occupied map[uint16]bool, allocate func() (uint16, bool)) (placementPlan, error) {
+	return planListenerPlacementWithExisting(configuration, names, occupied, nil, allocate)
+}
+
+func planListenerPlacementWithExisting(configuration string, names map[string]string, occupied map[uint16]bool, existing map[string]uint16, allocate func() (uint16, bool)) (placementPlan, error) {
 	decoder := json.NewDecoder(strings.NewReader(configuration))
 	// Numbers stay exactly as the control plane wrote them; re-encoding through
 	// float64 would rewrite anything large into scientific notation.
@@ -133,6 +172,7 @@ func planListenerPlacement(configuration string, names map[string]string, occupi
 	sort.Slice(ports, func(i, j int) bool { return ports[i] < ports[j] })
 
 	plan := placementPlan{directPorts: map[uint16]bool{}}
+	reservedPorts := map[uint16]bool{}
 	for _, port := range ports {
 		group := byPort[port]
 		if len(group) == 1 && !occupied[port] {
@@ -151,9 +191,17 @@ func planListenerPlacement(configuration string, names map[string]string, occupi
 		}
 		defaultAssigned := false
 		for _, binding := range group {
-			backendPort, ok := allocate()
-			if !ok {
-				return placementPlan{}, errors.New("没有可用的本机端口用于共用 " + strconv.Itoa(int(port)) + " 端口")
+			var backendPort uint16
+			if existingPort := existing[binding.tag]; existingPort >= singBoxBackendPortFirst && existingPort < singBoxBackendPortLast && !reservedPorts[existingPort] {
+				backendPort = existingPort
+				reservedPorts[existingPort] = true
+			} else {
+				p, ok := allocate()
+				if !ok {
+					return placementPlan{}, errors.New("没有可用的本机端口用于共用 " + strconv.Itoa(int(port)) + " 端口")
+				}
+				backendPort = p
+				reservedPorts[backendPort] = true
 			}
 			binding.inbound["listen"] = "127.0.0.1"
 			binding.inbound["listen_port"] = json.Number(strconv.Itoa(int(backendPort)))

@@ -975,10 +975,14 @@ func applySingBoxConfig(ctx context.Context, task Task, dataDir string, passthro
 	if digestErr != nil {
 		return TaskResult{Status: "failed", Summary: "生成 Nginx 分流配置失败：" + digestErr.Error()}
 	}
-	if strings.EqualFold(reportedSingBoxConfigurationHash(dataDir), task.ExpectedHash) && singBoxServiceActive(ctx) {
+	currentConfig, err := os.ReadFile(managedSingBoxConfig)
+	if err == nil && strings.TrimSpace(string(currentConfig)) == strings.TrimSpace(plan.configuration) && singBoxServiceActive(ctx) {
 		router := applyNginxConfiguration(ctx, routerConfiguration, dataDir, passthrough)
 		if router.Status == "failed" {
 			return TaskResult{Status: "failed", Summary: "Nginx 分流未能应用：" + router.Summary}
+		}
+		if err := saveSingBoxConfigurationState(dataDir, task.ExpectedHash); err != nil {
+			return TaskResult{Status: "failed", Summary: "记录配置状态失败：" + err.Error()}
 		}
 		summary := "requested sing-box configuration is already active"
 		if len(plan.summaries) > 0 {

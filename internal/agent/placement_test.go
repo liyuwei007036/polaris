@@ -79,6 +79,31 @@ func TestPlanRoutesOnlyTheContendedTCPPort(t *testing.T) {
 	}
 }
 
+func TestPlanListenerPlacementPreservesExistingPorts(t *testing.T) {
+	existing := map[string]uint16{
+		"a": 20050,
+		"b": 20051,
+	}
+	plan, err := planListenerPlacementWithExisting(twoOn443, twoOn443Names, map[uint16]bool{}, existing, testAllocator(20000))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if address, port := inboundListen(t, plan.configuration, "a"); address != "127.0.0.1" || port != 20050 {
+		t.Fatalf("first service should preserve existing port, got %s:%d", address, port)
+	}
+	if address, port := inboundListen(t, plan.configuration, "b"); address != "127.0.0.1" || port != 20051 {
+		t.Fatalf("second service should preserve existing port, got %s:%d", address, port)
+	}
+	for _, route := range plan.routes {
+		if route.SNI == "a.example.com" && route.BackendPort != 20050 {
+			t.Fatalf("route for a should have port 20050, got %d", route.BackendPort)
+		}
+		if route.SNI == "b.example.com" && route.BackendPort != 20051 {
+			t.Fatalf("route for b should have port 20051, got %d", route.BackendPort)
+		}
+	}
+}
+
 const soleOn443 = `{"inbounds": [{"type": "vless", "tag": "sole", "listen": "0.0.0.0", "listen_port": 443,
 	"tls": {"enabled": true}}]}`
 
