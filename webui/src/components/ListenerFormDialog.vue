@@ -513,7 +513,9 @@ async function save() {
                     :key="outbound.id"
                     :label="outbound.name + (outbound.type ? ` (${outbound.type.toUpperCase()})` : '') + (!outbound.enabled ? ' [已停用]' : '')"
                     :value="outbound.id"
-                  />
+                  >
+                    {{ outbound.name }}{{ outbound.type ? ` (${outbound.type.toUpperCase()})` : '' }}{{ !outbound.enabled ? ' [已停用]' : '' }}
+                  </el-option>
                 </el-option-group>
                 <el-option-group
                   v-for="group in chainTargetGroups"
