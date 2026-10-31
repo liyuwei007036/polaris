@@ -39,6 +39,15 @@ const agentPort = ref(19994)
 const editSheet = ref(false)
 const editNode = ref(null)
 const editForm = ref({ name: '', client_address: '', ddns_enabled: false, ddns_record_id: '', ddns_domain: '', ddns_record_ids: [], ddns_domains: [], ip_aliases: {} })
+const flagOptions = [
+  ['🇭🇰', '香港'], ['🇹🇼', '台湾'], ['🇸🇬', '新加坡'], ['🇯🇵', '日本'], ['🇰🇷', '韩国'],
+  ['🇺🇸', '美国'], ['🇬🇧', '英国'], ['🇩🇪', '德国'], ['🇫🇷', '法国'], ['🇳🇱', '荷兰'],
+  ['🇨🇦', '加拿大'], ['🇦🇺', '澳大利亚'], ['🇷🇺', '俄罗斯'], ['🇮🇳', '印度'], ['🇹🇷', '土耳其'],
+]
+function prependFlag(flag) {
+  const name = editForm.value.name.trim()
+  editForm.value.name = name.startsWith(flag) ? name : `${flag} ${name}`
+}
 const newCustomEgressIP = ref('')
 
 const editNodeAllIPs = computed(() => {
@@ -449,6 +458,9 @@ onBeforeUnmount(() => {
       <div class="m-field">
         <label class="m-field__label">服务器名称 <em>*</em></label>
         <el-input v-model="editForm.name" maxlength="128" aria-label="服务器名称" placeholder="例如：香港节点 01" />
+        <div class="flag-shortcuts" aria-label="国旗快捷选择">
+          <button v-for="[flag, country] in flagOptions" :key="flag" type="button" class="flag-shortcut" :aria-label="`添加${country}国旗`" @click="prependFlag(flag)">{{ flag }}</button>
+        </div>
       </div>
       <div class="m-field">
         <label class="m-field__label">客户端连接域名或 IP 地址</label>
@@ -589,6 +601,8 @@ onBeforeUnmount(() => {
 </template>
 
 <style scoped>
+.flag-shortcuts { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+.flag-shortcut { min-width: 38px; min-height: 38px; border: 1px solid var(--sb-line); border-radius: 8px; background: var(--sb-surface); font-size: 20px; }
 /* 命令很长，横向滚动比换行成六七行好读，也方便长按整段选中。 */
 .command {
   margin: 0;

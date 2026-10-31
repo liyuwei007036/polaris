@@ -78,6 +78,15 @@ const editForm = ref({
   ddns_domains: [],
   ip_aliases: {},
 })
+const flagOptions = [
+  ['🇭🇰', '香港'], ['🇹🇼', '台湾'], ['🇸🇬', '新加坡'], ['🇯🇵', '日本'], ['🇰🇷', '韩国'],
+  ['🇺🇸', '美国'], ['🇬🇧', '英国'], ['🇩🇪', '德国'], ['🇫🇷', '法国'], ['🇳🇱', '荷兰'],
+  ['🇨🇦', '加拿大'], ['🇦🇺', '澳大利亚'], ['🇷🇺', '俄罗斯'], ['🇮🇳', '印度'], ['🇹🇷', '土耳其'],
+]
+function prependFlag(flag) {
+  const name = editForm.value.name.trim()
+  editForm.value.name = name.startsWith(flag) ? name : `${flag} ${name}`
+}
 const newCustomEgressIP = ref('')
 
 const editNodeAllIPs = computed(() => {
@@ -1543,6 +1552,11 @@ onBeforeUnmount(() => {
       <el-form label-position="top">
         <el-form-item label="服务器名称">
           <el-input v-model="editForm.name" placeholder="请输入服务器名称" />
+          <div class="flag-shortcuts" aria-label="国旗快捷选择">
+            <el-tooltip v-for="[flag, country] in flagOptions" :key="flag" :content="`添加${country}国旗`">
+              <button type="button" class="flag-shortcut" :aria-label="`添加${country}国旗`" @click="prependFlag(flag)">{{ flag }}</button>
+            </el-tooltip>
+          </div>
         </el-form-item>
         <el-form-item label="客户端连接域名或 IP">
           <el-input v-model="editForm.client_address" placeholder="例如：hk.example.com 或 1.2.3.4" />
@@ -1824,6 +1838,12 @@ onBeforeUnmount(() => {
     </el-dialog>
   </div>
 </template>
+
+<style scoped>
+.flag-shortcuts { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 8px; }
+.flag-shortcut { border: 1px solid var(--el-border-color); border-radius: 6px; background: var(--el-fill-color-blank); padding: 3px 6px; font-size: 18px; cursor: pointer; }
+.flag-shortcut:hover { border-color: var(--el-color-primary); background: var(--el-fill-color-light); }
+</style>
 
 <style scoped>
 :global(.el-popper) {

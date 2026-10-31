@@ -591,7 +591,7 @@ onMounted(() => { load(); loadAccess() })
               </div>
               <el-button :icon="Plus" class="add-rule" @click="addRule">添加</el-button>
             </template>
-            <el-input v-else v-model="form.raw_rules" type="textarea" :rows="10" aria-label="高级规则文本" placeholder="RULE-SET,供应商名称,代理组&#10;DOMAIN-SUFFIX,example.com,代理组&#10;MATCH,DIRECT" />
+            <el-input v-else v-model="form.raw_rules" class="raw-config-editor" type="textarea" :rows="24" aria-label="高级规则文本" placeholder="RULE-SET,供应商名称,代理组&#10;DOMAIN-SUFFIX,example.com,代理组&#10;MATCH,DIRECT" />
           </section>
 
           <section v-else-if="activeSection === 'access'">
@@ -687,7 +687,7 @@ onMounted(() => { load(); loadAccess() })
               </template>
             </template>
             <template v-else>
-              <el-input v-model="form.raw_dns" type="textarea" :rows="12" aria-label="高级 DNS 文本" placeholder="enable: true&#10;enhanced-mode: fake-ip&#10;nameserver:&#10;  - https://223.5.5.5/dns-query" />
+              <el-input v-model="form.raw_dns" class="raw-config-editor" type="textarea" :rows="24" aria-label="高级 DNS 文本" placeholder="enable: true&#10;enhanced-mode: fake-ip&#10;nameserver:&#10;  - https://223.5.5.5/dns-query" />
               <div class="subtle" style="margin-top: 6px">按 Mihomo 的 dns 段格式书写，内容会原样写入订阅；留空则订阅不含 dns 段。</div>
             </template>
           </section>
@@ -728,7 +728,19 @@ onMounted(() => { load(); loadAccess() })
 .form-nav__label { display: flex; align-items: center; gap: 8px; font-size: 14px; font-weight: 550; }
 .form-nav__hint { font-size: 12px; line-height: 1.4; opacity: .75; }
 .form-body { flex: 1 1 auto; min-width: 0; overflow: auto; }
-.form-body__inner { max-width: 1120px; }
+.form-body__inner { width: 100%; max-width: none; }
+.raw-config-editor { display: block; width: 100%; }
+:deep(.raw-config-editor .el-textarea__inner) {
+  min-height: clamp(360px, calc(100vh - 250px), 900px) !important;
+  padding: 18px 20px;
+  border-radius: 10px;
+  background: #0b111c;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 14px;
+  line-height: 1.7;
+  tab-size: 2;
+  resize: vertical;
+}
 
 .section-heading { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 14px; }
 .section-heading h3 { margin: 0 0 3px; font-size: 16px; }
