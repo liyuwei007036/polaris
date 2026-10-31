@@ -12,23 +12,20 @@ import {
   Grid,
   InfoFilled,
   Loading,
-  Lock,
   Management,
   Monitor,
   MoreFilled,
-  Odometer,
   Plus,
   Refresh,
   RemoveFilled,
   Search,
   Tickets,
   Top,
-  TrendCharts,
 } from '@element-plus/icons-vue'
 import { api, post, put } from '../api'
 import { formatBytes, formatDateTime, includesText } from '../format'
 import { subscribeLive } from '../live'
-import { connectionSnapshots, fleetTotals, subscribeConnections, subscribeFleetTotals } from '../connections'
+import { connectionSnapshots, subscribeConnections } from '../connections'
 import PageHeader from '../components/PageHeader.vue'
 import PagedTable from '../components/PagedTable.vue'
 
@@ -159,7 +156,6 @@ async function loadMTRTargets(nodeId) {
 const singBoxLatest = ref({})
 let stopLive
 let stopConnections
-let stopTotals
 let lastSingBoxCheckTime = 0
 
 // 卡片分页
@@ -221,37 +217,16 @@ const filteredPending = computed(() =>
 // 实时快照
 const live = computed(() => connectionSnapshots.value)
 
-// 统计概览
+// 状态筛选计数
 const stats = computed(() => {
   const total = appState.nodes.length
   const online = appState.nodes.filter((n) => n.online).length
-  const offline = total - online
-  let activeConns = 0
-  let totalDownRate = 0
-  let totalUpRate = 0
   let gfwBlockedCount = 0
-
-  for (const node of appState.nodes) {
-    const snap = live.value.get(node.id)
-    if (snap) {
-      activeConns += Number(snap.connection_count || 0)
-      if (snap.has_rates) {
-        totalDownRate += Number(snap.received_rate || 0)
-        totalUpRate += Number(snap.sent_rate || 0)
-      }
-    }
-    if (isNodeGFWBlocked(speedtests.value[node.id])) {
-      gfwBlockedCount++
-    }
-  }
-
+  for (const node of appState.nodes) if (isNodeGFWBlocked(speedtests.value[node.id])) gfwBlockedCount++
   return {
     total,
     online,
-    offline,
-    activeConns: fleetTotals.value?.connection_count !== undefined ? Number(fleetTotals.value.connection_count || 0) : activeConns,
-    totalDownRate: fleetTotals.value?.download_rate !== undefined ? Number(fleetTotals.value.download_rate || 0) : totalDownRate,
-    totalUpRate: fleetTotals.value?.upload_rate !== undefined ? Number(fleetTotals.value.upload_rate || 0) : totalUpRate,
+    offline: total - online,
     gfwBlockedCount,
   }
 })
@@ -870,7 +845,6 @@ onMounted(() => {
   load()
   loadMTRTargets().catch(() => {})
   stopConnections = subscribeConnections(() => {})
-  stopTotals = subscribeFleetTotals(() => {})
   stopLive = subscribeLive((event) => {
     if (event.kind === 'node') load(true).catch(() => {})
   })
@@ -879,7 +853,6 @@ onMounted(() => {
 onBeforeUnmount(() => {
   stopLive?.()
   stopConnections?.()
-  stopTotals?.()
 })
 </script>
 
@@ -891,83 +864,6 @@ onBeforeUnmount(() => {
     </PageHeader>
 
     <main v-loading="loading" class="page-content page-content--tight">
-      <!-- 1. 顶层全景指标舱 (Top Executive Metric Strip) -->
-      <section class="nodes-kpi-strip">
-        <!-- KPI 1: 节点总数与状态 -->
-        <div class="kpi-card" :class="{ 'has-alert': stats.gfwBlockedCount > 0 }">
-          <div class="kpi-card__top">
-            <span class="kpi-label">服务器总数</span>
-            <span class="status-indicator online pulse-sm" />
-          </div>
-          <div class="kpi-card__main">
-            <div class="kpi-val-row">
-              <span class="kpi-value font-mono">{{ stats.total }}</span>
-              <span class="kpi-unit">台</span>
-            </div>
-            <div class="kpi-sub-badges">
-              <span class="sub-pill pill-online">{{ stats.online }} 在线</span>
-              <span v-if="stats.offline > 0" class="sub-pill pill-offline">{{ stats.offline }} 离线</span>
-              <span v-if="stats.gfwBlockedCount > 0" class="sub-pill pill-blocked">🚨 {{ stats.gfwBlockedCount }} 被墙</span>
-            </div>
-          </div>
-        </div>
-
-        <!-- KPI 2: 实时吞吐带宽 -->
-        <div class="kpi-card">
-          <div class="kpi-card__top">
-            <span class="kpi-label">全网实时速率</span>
-            <el-icon class="kpi-icon"><TrendCharts /></el-icon>
-          </div>
-          <div class="kpi-card__main">
-            <div class="kpi-rate-row font-mono">
-              <span class="kpi-rate down">
-                <span class="rate-symbol">↓</span>{{ formatBytes(stats.totalDownRate, '/s') }}
-              </span>
-              <span class="kpi-rate-sep">/</span>
-              <span class="kpi-rate up">
-                <span class="rate-symbol">↑</span>{{ formatBytes(stats.totalUpRate, '/s') }}
-              </span>
-            </div>
-            <div class="kpi-footnote">实时汇聚出入站传输流量</div>
-          </div>
-        </div>
-
-        <!-- KPI 3: 活动连接 -->
-        <div class="kpi-card">
-          <div class="kpi-card__top">
-            <span class="kpi-label">活跃会话</span>
-            <el-icon class="kpi-icon"><Connection /></el-icon>
-          </div>
-          <div class="kpi-card__main">
-            <div class="kpi-val-row">
-              <span class="kpi-value font-mono text-cyan">{{ stats.activeConns }}</span>
-              <span class="kpi-unit">Conns</span>
-            </div>
-            <div class="kpi-footnote">当前代理转发的 TCP / UDP 链路</div>
-          </div>
-        </div>
-
-        <!-- KPI 4: 节点健康与防御 -->
-        <div class="kpi-card">
-          <div class="kpi-card__top">
-            <span class="kpi-label">线路状态与防御</span>
-            <el-icon class="kpi-icon"><Lock /></el-icon>
-          </div>
-          <div class="kpi-card__main">
-            <div class="kpi-health-row" :class="stats.gfwBlockedCount > 0 ? 'is-danger' : 'is-healthy'">
-              <span class="health-pulse-dot" />
-              <span class="health-text font-mono">
-                {{ stats.gfwBlockedCount > 0 ? `${stats.gfwBlockedCount} 台端口受阻` : '探针全部畅通' }}
-              </span>
-            </div>
-            <div class="kpi-footnote">
-              分布式多点实时监测
-            </div>
-          </div>
-        </div>
-      </section>
-
-      <!-- 2. 现代浮动控制台工具栏 (Floating Control Bar) -->
       <div class="nodes-toolbar">
         <div class="toolbar-left">
           <el-input
@@ -1911,168 +1807,7 @@ onBeforeUnmount(() => {
   100% { transform: scale(0.9); opacity: 0; }
 }
 
-/* ── 1. 顶层全景指标舱 (Top Executive Metric Strip) ───────── */
-.nodes-kpi-strip {
-  display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 14px;
-  margin-bottom: 18px;
-}
-.kpi-card {
-  position: relative;
-  display: flex;
-  flex-direction: column;
-  justify-content: space-between;
-  padding: 14px 16px;
-  background: var(--sb-panel, linear-gradient(180deg, rgba(23, 33, 54, 0.82), rgba(12, 19, 33, 0.82)));
-  border: 1px solid var(--sb-line);
-  border-radius: var(--sb-radius, 12px);
-  box-shadow: var(--sb-shadow);
-  overflow: hidden;
-  backdrop-filter: blur(12px);
-  transition: transform 0.2s, border-color 0.2s;
-}
-.kpi-card::before {
-  content: '';
-  position: absolute;
-  left: 0;
-  right: 0;
-  top: 0;
-  height: 2px;
-  background: linear-gradient(90deg, var(--sb-accent), rgba(99, 102, 241, 0.55) 45%, transparent);
-}
-.kpi-card.has-alert::before {
-  background: linear-gradient(90deg, #f43f5e, rgba(251, 113, 133, 0.6) 45%, transparent);
-}
-.kpi-card:hover {
-  transform: translateY(-2px);
-  border-color: rgba(56, 189, 248, 0.3);
-}
-.kpi-card__top {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  margin-bottom: 8px;
-}
-.kpi-label {
-  font-size: 12px;
-  font-weight: 600;
-  color: var(--sb-muted);
-  letter-spacing: 0.3px;
-  text-transform: uppercase;
-}
-.kpi-icon {
-  font-size: 16px;
-  color: var(--sb-muted);
-  opacity: 0.7;
-}
-.kpi-val-row {
-  display: flex;
-  align-items: baseline;
-  gap: 6px;
-  margin-bottom: 6px;
-}
-.kpi-value {
-  font-size: 24px;
-  font-weight: 700;
-  color: #fff;
-  line-height: 1.15;
-}
-.kpi-unit {
-  font-size: 12px;
-  color: var(--sb-muted);
-}
-.text-cyan {
-  color: #38bdf8;
-}
-.kpi-sub-badges {
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 6px;
-}
-.sub-pill {
-  font-size: 11px;
-  font-weight: 600;
-  padding: 1px 6px;
-  border-radius: 4px;
-}
-.sub-pill.pill-online {
-  background: rgba(16, 185, 129, 0.14);
-  color: #34d399;
-  border: 1px solid rgba(16, 185, 129, 0.3);
-}
-.sub-pill.pill-offline {
-  background: rgba(100, 116, 139, 0.15);
-  color: #94a3b8;
-  border: 1px solid rgba(100, 116, 139, 0.3);
-}
-.sub-pill.pill-blocked {
-  background: rgba(244, 63, 94, 0.18);
-  color: #fb7185;
-  border: 1px solid rgba(244, 63, 94, 0.4);
-}
-.kpi-rate-row {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  margin-bottom: 6px;
-  font-size: 16px;
-  font-weight: 700;
-}
-.kpi-rate.down { color: #34d399; }
-.kpi-rate.up { color: #38bdf8; }
-.rate-symbol { font-size: 13px; margin-right: 2px; }
-.kpi-rate-sep { color: var(--sb-muted); opacity: 0.4; }
-.kpi-footnote {
-  font-size: 11px;
-  color: var(--sb-muted);
-  opacity: 0.85;
-}
-.kpi-health-row {
-  display: flex;
-  align-items: center;
-  gap: 7px;
-  margin-bottom: 6px;
-}
-.health-pulse-dot {
-  width: 7px;
-  height: 7px;
-  border-radius: 50%;
-  flex-shrink: 0;
-}
-.is-healthy .health-pulse-dot {
-  background: #10b981;
-  box-shadow: 0 0 6px #10b981;
-}
-.is-healthy .health-text {
-  font-size: 14px;
-  font-weight: 700;
-  color: #34d399;
-}
-.is-danger .health-pulse-dot {
-  background: #f43f5e;
-  box-shadow: 0 0 8px #f43f5e;
-  animation: pulseLight 1.5s infinite;
-}
-.is-danger .health-text {
-  font-size: 14px;
-  font-weight: 700;
-  color: #fb7185;
-}
-
-@media (max-width: 1180px) {
-  .nodes-kpi-strip {
-    grid-template-columns: repeat(2, 1fr);
-  }
-}
-@media (max-width: 640px) {
-  .nodes-kpi-strip {
-    grid-template-columns: 1fr;
-  }
-}
-
-/* ── 2. 工具栏 (Toolbar) ─────────────────────────────────── */
+/* ── 工具栏 ─────────────────────────────────────────────── */
 .nodes-toolbar {
   display: flex;
   align-items: center;
@@ -2215,22 +1950,27 @@ onBeforeUnmount(() => {
 /* ── 4. 顶级服务器卡片网格 (Server Cards Grid - 极简现代化架构) ──── */
 .node-cards-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(360px, 1fr));
-  gap: 16px;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 20px;
   margin-bottom: 24px;
+}
+@media (max-width: 1180px) {
+  .node-cards-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+@media (max-width: 700px) {
+  .node-cards-grid { grid-template-columns: minmax(0, 1fr); gap: 14px; }
 }
 
 .node-card {
   position: relative;
   display: flex;
   flex-direction: column;
-  gap: 9px;
-  background: linear-gradient(180deg, rgba(16, 24, 42, 0.85) 0%, rgba(9, 14, 26, 0.96) 100%);
-  border: 1px solid rgba(255, 255, 255, 0.08);
-  border-radius: 14px;
-  padding: 12px 14px 10px;
-  box-shadow: 0 8px 24px -4px rgba(0, 0, 0, 0.6), inset 0 1px 0 rgba(255, 255, 255, 0.08);
-  backdrop-filter: blur(14px);
+  gap: 12px;
+  background: linear-gradient(155deg, rgba(17, 30, 49, 0.98) 0%, rgba(10, 18, 32, 0.99) 100%);
+  border: 1px solid rgba(120, 153, 190, 0.2);
+  border-radius: 16px;
+  padding: 17px 18px 15px;
+  box-shadow: 0 10px 26px rgba(0, 0, 0, 0.25), inset 0 1px 0 rgba(255, 255, 255, 0.035);
   overflow: hidden;
   transition: transform 0.22s cubic-bezier(0.4, 0, 0.2, 1),
               border-color 0.22s cubic-bezier(0.4, 0, 0.2, 1),
@@ -2239,13 +1979,12 @@ onBeforeUnmount(() => {
 
 .node-card:hover {
   transform: translateY(-2px);
-  border-color: rgba(56, 189, 248, 0.38);
-  box-shadow: 0 16px 36px -6px rgba(0, 0, 0, 0.75), 0 0 20px rgba(56, 189, 248, 0.12), inset 0 1px 0 rgba(255, 255, 255, 0.15);
+  border-color: rgba(56, 189, 248, 0.48);
+  box-shadow: 0 14px 32px rgba(0, 0, 0, 0.34), 0 0 22px rgba(56, 189, 248, 0.08);
 }
 
 .node-card.is-offline {
-  opacity: 0.65;
-  filter: grayscale(0.5);
+  opacity: 0.78;
 }
 .node-card.has-gfw-block {
   border-color: rgba(244, 63, 94, 0.35);
@@ -2284,7 +2023,7 @@ onBeforeUnmount(() => {
 .title-row {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 9px;
   flex-wrap: wrap;
 }
 .flag-icon {
@@ -2333,8 +2072,8 @@ onBeforeUnmount(() => {
   display: flex;
   align-items: center;
   gap: 8px;
-  margin-top: 4px;
-  font-size: 11px;
+  margin-top: 7px;
+  font-size: 12px;
   color: var(--sb-muted);
   flex-wrap: wrap;
 }
@@ -2342,19 +2081,19 @@ onBeforeUnmount(() => {
   display: flex;
   align-items: center;
   flex-wrap: wrap;
-  gap: 3px 8px;
-  min-height: 16px;
-  margin-top: 2px;
+  gap: 7px 12px;
+  min-height: 22px;
+  margin-top: 6px;
   color: var(--sb-muted, #94a3b8);
-  font-size: 11px;
-  line-height: 1.45;
+  font-size: 12px;
+  line-height: 1.6;
 }
 .hosting-provider { color: #7dd3fc; font-weight: 600; text-decoration: none; }
 .hosting-provider[href]:hover { color: #bae6fd; text-decoration: underline; }
 .sub-os-arch {
-  background: rgba(255, 255, 255, 0.05);
-  padding: 1px 5px;
-  border-radius: 3px;
+  background: rgba(148, 163, 184, 0.09);
+  padding: 3px 7px;
+  border-radius: 5px;
 }
 .sub-ver {
   color: #94a3b8;
@@ -2433,15 +2172,15 @@ onBeforeUnmount(() => {
 .card-telemetry-clean {
   background: rgba(0, 0, 0, 0.18);
   border-radius: 8px;
-  padding: 8px;
+  padding: 12px;
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 10px;
 }
 .hw-grid {
   display: grid;
   grid-template-columns: repeat(3, 1fr);
-  gap: 10px;
+  gap: 16px;
 }
 .hw-item {
   cursor: default;
@@ -2451,7 +2190,7 @@ onBeforeUnmount(() => {
   justify-content: space-between;
   align-items: center;
   font-size: 11px;
-  margin-bottom: 4px;
+  margin-bottom: 7px;
 }
 .hw-lbl {
   color: var(--sb-muted);
@@ -2463,8 +2202,8 @@ onBeforeUnmount(() => {
 }
 .hw-track {
   width: 100%;
-  height: 4px;
-  background: rgba(255, 255, 255, 0.07);
+  height: 5px;
+  background: rgba(148, 163, 184, 0.14);
   border-radius: 2px;
   overflow: hidden;
 }
@@ -2479,12 +2218,12 @@ onBeforeUnmount(() => {
   justify-content: space-between;
   align-items: center;
   font-size: 11px;
-  padding-top: 6px;
-  border-top: 1px solid rgba(255, 255, 255, 0.04);
+  padding-top: 10px;
+  border-top: 1px solid rgba(148, 163, 184, 0.12);
 }
 .rate-group {
   display: flex;
-  gap: 8px;
+  gap: 14px;
 }
 .rate-down {
   color: #34d399;
@@ -2519,11 +2258,11 @@ onBeforeUnmount(() => {
 .route-matrix-box {
   background: rgba(0, 0, 0, 0.18);
   border-radius: 8px;
-  padding: 6px 8px;
+  padding: 10px 12px;
   display: flex;
   flex-direction: column;
-  gap: 6px;
-  border: 1px solid rgba(255, 255, 255, 0.04);
+  gap: 9px;
+  border: 1px solid rgba(120, 153, 190, 0.13);
 }
 .route-matrix-box.is-blocked {
   border-color: rgba(244, 63, 94, 0.25);
@@ -2533,7 +2272,7 @@ onBeforeUnmount(() => {
 .route-line {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 11px;
 }
 .dir-badge {
   font-size: 9px;
@@ -2598,11 +2337,11 @@ onBeforeUnmount(() => {
   display: inline-flex;
   align-items: center;
   gap: 4px;
-  padding: 2px 6px;
-  border-radius: 4px;
-  font-size: 11px;
-  background: rgba(255, 255, 255, 0.03);
-  border: 1px solid rgba(255, 255, 255, 0.06);
+  padding: 4px 8px;
+  border-radius: 6px;
+  font-size: 12px;
+  background: rgba(30, 48, 70, 0.62);
+  border: 1px solid rgba(120, 153, 190, 0.16);
   white-space: nowrap;
   cursor: default;
 }
