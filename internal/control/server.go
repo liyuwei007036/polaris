@@ -73,6 +73,10 @@ type Server struct {
 	listenerNameCache      map[string]listenerNameEntry
 	outboundNameCache      map[string]string
 	outboundNameCachedAt   time.Time
+	fleetIPCache           map[string]string
+	fleetIPCachedAt        time.Time
+	chainTargetCache       map[string]bool
+	chainTargetCachedAt    time.Time
 	connectionsInterval    time.Duration
 	// fleetStreaming is whether nodes should currently be pushing their
 	// real-time connection lists. Guarded by controlMu alongside the sessions

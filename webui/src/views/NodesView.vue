@@ -28,7 +28,7 @@ import {
 import { api, post, put } from '../api'
 import { formatBytes, formatDateTime, includesText } from '../format'
 import { subscribeLive } from '../live'
-import { connectionSnapshots, subscribeConnections } from '../connections'
+import { connectionSnapshots, fleetTotals, subscribeConnections, subscribeFleetTotals } from '../connections'
 import PageHeader from '../components/PageHeader.vue'
 import PagedTable from '../components/PagedTable.vue'
 
@@ -158,6 +158,7 @@ async function loadMTRTargets(nodeId) {
 const singBoxLatest = ref({})
 let stopLive
 let stopConnections
+let stopTotals
 let lastSingBoxCheckTime = 0
 
 // 卡片分页
@@ -247,9 +248,9 @@ const stats = computed(() => {
     total,
     online,
     offline,
-    activeConns,
-    totalDownRate,
-    totalUpRate,
+    activeConns: fleetTotals.value?.connection_count !== undefined ? Number(fleetTotals.value.connection_count || 0) : activeConns,
+    totalDownRate: fleetTotals.value?.download_rate !== undefined ? Number(fleetTotals.value.download_rate || 0) : totalDownRate,
+    totalUpRate: fleetTotals.value?.upload_rate !== undefined ? Number(fleetTotals.value.upload_rate || 0) : totalUpRate,
     gfwBlockedCount,
   }
 })
@@ -864,6 +865,7 @@ onMounted(() => {
   load()
   loadMTRTargets().catch(() => {})
   stopConnections = subscribeConnections(() => {})
+  stopTotals = subscribeFleetTotals(() => {})
   stopLive = subscribeLive((event) => {
     if (event.kind === 'node') load(true).catch(() => {})
   })
@@ -872,6 +874,7 @@ onMounted(() => {
 onBeforeUnmount(() => {
   stopLive?.()
   stopConnections?.()
+  stopTotals?.()
 })
 </script>
 

@@ -2,7 +2,7 @@
 import { computed, inject, onBeforeUnmount, onMounted, ref } from 'vue'
 import { Refresh, Search } from '@element-plus/icons-vue'
 import { formatBytes, formatDateTime, includesText } from '../format'
-import { connectionSnapshots, subscribeConnections } from '../connections'
+import { connectionSnapshots, mergeChainedConnections, subscribeConnections } from '../connections'
 import PageHeader from '../components/PageHeader.vue'
 import PagedTable from '../components/PagedTable.vue'
 
@@ -37,24 +37,27 @@ function entryLabel(connection) {
   return connection.user || connection.listener_name || '—'
 }
 
-const rows = computed(() => [...connectionSnapshots.value.values()].flatMap((result) => {
-  const node = appState.nodes.find((item) => item.id === result.node_id)
-  return (result.connections || []).map((connection) => ({
-    ...connection,
-    node_id: result.node_id,
-    node_name: node?.name || result.node_id,
-    // The master resolves the sing-box outbound tag to the egress an operator
-    // configured; the raw tag is only shown when that lookup found nothing.
-    exit: connection.outbound_name || connection.outbound || connection.chains?.[0] || 'DIRECT',
-    entry: entryLabel(connection),
-    target: targetLabel(connection),
-  }))
-}))
+const rows = computed(() => {
+  const flat = [...connectionSnapshots.value.values()].flatMap((result) => {
+    const node = appState.nodes.find((item) => item.id === result.node_id)
+    return (result.connections || []).map((connection) => ({
+      ...connection,
+      node_id: result.node_id,
+      node_name: node?.name || result.node_id,
+      // The master resolves the sing-box outbound tag to the egress an operator
+      // configured; the raw tag is only shown when that lookup found nothing.
+      exit: connection.outbound_name || connection.outbound || connection.chains?.[0] || 'DIRECT',
+      entry: entryLabel(connection),
+      target: targetLabel(connection),
+    }))
+  })
+  return mergeChainedConnections(flat, appState.nodes)
+})
 const collectedAt = computed(() => [...connectionSnapshots.value.values()].map((result) => result.collected_at).filter(Boolean).sort().at(-1) || '')
 const outboundOptions = computed(() => [...new Set(rows.value.map((row) => row.exit).filter(Boolean))].sort())
 const filteredRows = computed(() => rows.value.filter((row) => {
-  if (selectedNode.value && row.node_id !== selectedNode.value) return false
-  if (selectedOutbound.value && row.exit !== selectedOutbound.value) return false
+  if (selectedNode.value && row.node_id !== selectedNode.value && !row.chain_node_ids?.includes(selectedNode.value)) return false
+  if (selectedOutbound.value && row.exit !== selectedOutbound.value && !row.chain_exit?.includes(selectedOutbound.value) && !row.exit?.includes(selectedOutbound.value)) return false
   return includesText([
     row.node_name, row.source, row.source_ip, row.source_location, row.target,
     row.entry, row.user, row.listener_name, row.exit, row.network,

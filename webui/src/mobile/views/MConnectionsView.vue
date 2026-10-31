@@ -2,7 +2,7 @@
 import { computed, inject, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { Search } from '@element-plus/icons-vue'
 import { formatBytes, formatDateTime, includesText } from '../../format'
-import { connectionSnapshots, subscribeConnections } from '../../connections'
+import { connectionSnapshots, mergeChainedConnections, subscribeConnections } from '../../connections'
 import MPage from '../components/MPage.vue'
 import MPicker from '../components/MPicker.vue'
 import MActionSheet from '../components/MActionSheet.vue'
@@ -45,18 +45,21 @@ function sourceLine(row) {
     .filter(Boolean).join(' · ') || '未知来源'
 }
 
-const rows = computed(() => [...connectionSnapshots.value.values()].flatMap((result) => {
-  const node = appState.nodes.find((item) => item.id === result.node_id)
-  return (result.connections || []).map((connection) => ({
-    ...connection,
-    node_id: result.node_id,
-    node_name: node?.name || result.node_id,
-    // master 会把 sing-box 的出站标签解析成操作者配置的出口，解析不到才显示原始标签。
-    exit: connection.outbound_name || connection.outbound || connection.chains?.[0] || 'DIRECT',
-    entry: entryLabel(connection),
-    target: targetLabel(connection),
-  }))
-}))
+const rows = computed(() => {
+  const flat = [...connectionSnapshots.value.values()].flatMap((result) => {
+    const node = appState.nodes.find((item) => item.id === result.node_id)
+    return (result.connections || []).map((connection) => ({
+      ...connection,
+      node_id: result.node_id,
+      node_name: node?.name || result.node_id,
+      // master 会把 sing-box 的出站标签解析成操作者配置的出口，解析不到才显示原始标签。
+      exit: connection.outbound_name || connection.outbound || connection.chains?.[0] || 'DIRECT',
+      entry: entryLabel(connection),
+      target: targetLabel(connection),
+    }))
+  })
+  return mergeChainedConnections(flat, appState.nodes)
+})
 const collectedAt = computed(() => [...connectionSnapshots.value.values()].map((result) => result.collected_at).filter(Boolean).sort().at(-1) || '')
 const nodeOptions = computed(() => [{ value: '', label: '全部服务器' }, ...appState.nodes.map((node) => ({ value: node.id, label: node.name }))])
 const outboundOptions = computed(() => [
@@ -64,8 +67,8 @@ const outboundOptions = computed(() => [
   ...[...new Set(rows.value.map((row) => row.exit).filter(Boolean))].sort().map((exit) => ({ value: exit, label: exit })),
 ])
 const filteredRows = computed(() => rows.value.filter((row) => {
-  if (selectedNode.value && row.node_id !== selectedNode.value) return false
-  if (selectedOutbound.value && row.exit !== selectedOutbound.value) return false
+  if (selectedNode.value && row.node_id !== selectedNode.value && !row.chain_node_ids?.includes(selectedNode.value)) return false
+  if (selectedOutbound.value && row.exit !== selectedOutbound.value && !row.chain_exit?.includes(selectedOutbound.value) && !row.exit?.includes(selectedOutbound.value)) return false
   return includesText([
     row.node_name, row.source, row.source_ip, row.source_location, row.target,
     row.entry, row.user, row.listener_name, row.exit, row.network,

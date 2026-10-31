@@ -97,7 +97,7 @@ func (r *connectionRecorder) RecordPush(nodeID, nodeName string, connections []s
 	}
 
 	for _, c := range connections {
-		if c.ID == "" {
+		if c.ID == "" || c.IsChainRelay {
 			continue
 		}
 		currentConnIDs[c.ID] = struct{}{}

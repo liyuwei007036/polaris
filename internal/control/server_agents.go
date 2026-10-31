@@ -405,7 +405,8 @@ func (s *Server) handleAgentMessage(ctx context.Context, node Node, msgType byte
 		// node, and a SQLite read-modify-write of the whole metrics blob at
 		// that cadence was the single largest source of load on the master.
 		s.connHub.update(nodeConnectionsSnapshot{
-			NodeID: node.ID, CollectedAt: push.CollectedAt, Connections: connJSON, ConnectionCount: len(connections),
+			NodeID: node.ID, CollectedAt: push.CollectedAt, Connections: connJSON, RawConns: connections,
+			ConnectionCount: len(connections),
 			Protocols: protocolCounts(connections),
 			HasRates:  measured, ReceivedRate: downloadRate, SentRate: uploadRate,
 		})
@@ -653,14 +654,18 @@ type storedConnection struct {
 	// between the two most recent pushes from this connection's node.
 	UploadRate   float64 `json:"upload_rate,omitempty"`
 	DownloadRate float64 `json:"download_rate,omitempty"`
+	// IsChainRelay indicates whether this connection is an internal downstream relay
+	// leg of a chained proxy originating from another server in our fleet.
+	IsChainRelay  bool   `json:"is_chain_relay,omitempty"`
+	ChainedTarget string `json:"chained_target,omitempty"`
 }
-
-
 
 func (s *Server) convertConnections(ctx context.Context, nodeID string, in []wire.ConnectionInfo) []storedConnection {
 	names := s.listenerNames(ctx, nodeID)
 	aliases := s.endpointAliases(ctx, nodeID)
 	egress := s.outboundNames(ctx)
+	fleetIPs := s.fleetNodeIPs(ctx)
+	chainTargets := s.chainTargetUsers(ctx, nodeID)
 	out := make([]storedConnection, 0, len(in))
 	for _, c := range in {
 		ip := addressIP(c.Source)
@@ -672,11 +677,28 @@ func (s *Server) convertConnections(ctx context.Context, nodeID string, in []wir
 		if alias, ok := aliases[listenerID+"\x00"+account]; ok && alias != "" {
 			user = alias
 		}
+
+		var isChainRelay bool
+		var chainedTarget string
+		if strings.HasPrefix(c.Outbound, "chain-") {
+			chainedTarget = strings.TrimPrefix(c.Outbound, "chain-")
+		} else if len(c.Chains) > 0 && strings.HasPrefix(c.Chains[0], "chain-") {
+			chainedTarget = strings.TrimPrefix(c.Chains[0], "chain-")
+		}
+
+		// Detect if this connection arrived on a chain target endpoint from another node in the fleet
+		if chainTargets[listenerID+"\x00"+account] || chainTargets[listenerID] {
+			if fromNodeID, ok := fleetIPs[ip]; ok && fromNodeID != nodeID {
+				isChainRelay = true
+			}
+		}
+
 		out = append(out, storedConnection{
 			ID: c.ID, Inbound: c.Inbound, Network: c.Network, Source: c.Source, Destination: c.Destination,
 			SourceIP: ip, SourceLocation: s.ipLocator.Locate(ip), Host: c.Host, Upload: c.Upload, Download: c.Download,
 			StartedAt: c.StartedAt, Outbound: c.Outbound, Rule: c.Rule, RulePayload: c.RulePayload, Chains: c.Chains,
 			ListenerName: names[listenerID], User: user, OutboundName: outboundDisplayName(c.Outbound, egress),
+			IsChainRelay: isChainRelay, ChainedTarget: chainedTarget,
 		})
 	}
 	return out
@@ -857,6 +879,95 @@ func (s *Server) listenerNames(ctx context.Context, nodeID string) map[string]st
 	s.listenerNameCache[nodeID] = listenerNameEntry{names: names, at: time.Now()}
 	s.listenerNameMu.Unlock()
 	return names
+}
+
+// fleetNodeIPs returns a set of known IP addresses of all servers in the fleet,
+// mapped to their node ID.
+func (s *Server) fleetNodeIPs(ctx context.Context) map[string]string {
+	s.listenerNameMu.Lock()
+	cached, at := s.fleetIPCache, s.fleetIPCachedAt
+	s.listenerNameMu.Unlock()
+	if cached != nil && time.Since(at) < listenerNameCacheTTL {
+		return cached
+	}
+	ips := make(map[string]string)
+	nodes, err := s.store.ListNodes(ctx)
+	if err == nil {
+		for _, n := range nodes {
+			if n.ClientAddress != "" {
+				addr := strings.TrimSpace(n.ClientAddress)
+				if h, _, err := net.SplitHostPort(addr); err == nil {
+					addr = h
+				}
+				if net.ParseIP(addr) != nil {
+					ips[addr] = n.ID
+				}
+			}
+			if n.LastObservedIP != "" {
+				addr := strings.TrimSpace(n.LastObservedIP)
+				if h, _, err := net.SplitHostPort(addr); err == nil {
+					addr = h
+				}
+				if net.ParseIP(addr) != nil {
+					ips[addr] = n.ID
+				}
+			}
+		}
+	}
+	s.controlMu.Lock()
+	for id, session := range s.controls {
+		if session != nil && session.remoteAddr != "" {
+			addr := strings.TrimSpace(session.remoteAddr)
+			if h, _, err := net.SplitHostPort(addr); err == nil {
+				addr = h
+			}
+			if net.ParseIP(addr) != nil {
+				ips[addr] = id
+			}
+		}
+	}
+	s.controlMu.Unlock()
+
+	s.listenerNameMu.Lock()
+	s.fleetIPCache, s.fleetIPCachedAt = ips, time.Now()
+	s.listenerNameMu.Unlock()
+	return ips
+}
+
+// chainTargetUsers returns endpoint keys (listenerID+"\x00"+accountName and listenerID)
+// on nodeID that are targeted by other nodes' chain outbounds.
+func (s *Server) chainTargetUsers(ctx context.Context, nodeID string) map[string]bool {
+	s.listenerNameMu.Lock()
+	cached, at := s.chainTargetCache, s.chainTargetCachedAt
+	s.listenerNameMu.Unlock()
+	if cached != nil && time.Since(at) < listenerNameCacheTTL {
+		return cached
+	}
+	targets := make(map[string]bool)
+	rows, err := s.store.db.QueryContext(ctx, `
+		SELECT e.listener_id, e.name
+		FROM endpoints e
+		JOIN listeners l ON l.id = e.listener_id
+		WHERE l.node_id = ?
+		  AND e.id IN (
+			SELECT SUBSTR(outbound_id, 7) FROM endpoints WHERE outbound_id LIKE 'chain:%'
+			UNION
+			SELECT SUBSTR(outbound_id, 7) FROM listeners WHERE outbound_id LIKE 'chain:%'
+		  )`, nodeID)
+	if err == nil {
+		defer rows.Close()
+		for rows.Next() {
+			var listenerID, name string
+			if err := rows.Scan(&listenerID, &name); err == nil {
+				targets[listenerID+"\x00"+name] = true
+				targets[listenerID] = true
+			}
+		}
+	}
+	s.listenerNameMu.Lock()
+	s.chainTargetCache, s.chainTargetCachedAt = targets, time.Now()
+	s.listenerNameMu.Unlock()
+	return targets
 }
 
 func (s *Server) mergeNodeMetrics(ctx context.Context, nodeID string, mutate func(*storedMetrics)) error {

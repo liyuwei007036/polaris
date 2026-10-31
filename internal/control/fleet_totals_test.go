@@ -191,3 +191,217 @@ func TestUntilNextRoundFallsBackWithoutAnInterval(t *testing.T) {
 		t.Fatalf("wait with no interval = %v, want one bounded round", got)
 	}
 }
+
+// Chained proxy connections across nodes must be merged in fleet totals: a single
+// client connection forwarded through transit node A to exit node B must not be counted
+// as 2 separate connections or double-count throughput.
+func TestFleetTotalsMergesChainedProxyConnectionsAcrossNodes(t *testing.T) {
+	hub := newConnectionsHub()
+	now := time.Now()
+
+	c1 := storedConnection{
+		ID:           "conn-1",
+		Network:      "tcp",
+		SourceIP:     "192.168.1.100",
+		Destination:  "93.184.216.34:443",
+		Host:         "example.com",
+		Outbound:     "chain-user2",
+		HasRates:     true,
+		DownloadRate: 1000,
+		UploadRate:   200,
+	}
+	c2 := storedConnection{
+		ID:           "conn-2",
+		Network:      "tcp",
+		SourceIP:     "198.51.100.1",
+		Destination:  "93.184.216.34:443",
+		Host:         "example.com",
+		Outbound:     "direct",
+		IsChainRelay: true,
+		HasRates:     true,
+		DownloadRate: 1000,
+		UploadRate:   200,
+	}
+
+	hub.update(nodeConnectionsSnapshot{
+		NodeID:          "node-1",
+		RawConns:        []storedConnection{c1},
+		ConnectionCount: 1,
+		Protocols:       protocolCounts([]storedConnection{c1}),
+		HasRates:        true,
+		ReceivedRate:    1000,
+		SentRate:        200,
+	})
+	hub.update(nodeConnectionsSnapshot{
+		NodeID:          "node-2",
+		RawConns:        []storedConnection{c2},
+		ConnectionCount: 0, // IsChainRelay excluded
+		Protocols:       protocolCounts([]storedConnection{c2}),
+		HasRates:        true,
+		ReceivedRate:    1000,
+		SentRate:        200,
+	})
+
+	totals := hub.totals(now, nil)
+	if totals.ConnectionCount != 1 {
+		t.Fatalf("expected merged connection count = 1, got %d", totals.ConnectionCount)
+	}
+	if totals.Protocols["TCP"] != 1 {
+		t.Fatalf("expected merged TCP count = 1, got %d", totals.Protocols["TCP"])
+	}
+	if totals.DownloadRate != 1000 || totals.UploadRate != 200 {
+		t.Fatalf("expected merged rate ↓1000 ↑200, got ↓%v ↑%v", totals.DownloadRate, totals.UploadRate)
+	}
+}
+
+// Multi-hop chained proxies (node-1 -> node-2 -> node-3) must collapse into 1 connection.
+func TestFleetTotalsMergesMultiHopChainedProxyConnections(t *testing.T) {
+	hub := newConnectionsHub()
+	now := time.Now()
+
+	c1 := storedConnection{
+		ID:           "c1",
+		Network:      "tcp",
+		SourceIP:     "10.0.0.5",
+		Destination:  "142.250.190.46:443",
+		Host:         "google.com",
+		Outbound:     "chain-user2",
+		HasRates:     true,
+		DownloadRate: 5000,
+		UploadRate:   500,
+	}
+	c2 := storedConnection{
+		ID:           "c2",
+		Network:      "tcp",
+		SourceIP:     "198.51.100.1",
+		Destination:  "142.250.190.46:443",
+		Host:         "google.com",
+		Outbound:     "chain-user3",
+		IsChainRelay: true,
+		HasRates:     true,
+		DownloadRate: 5000,
+		UploadRate:   500,
+	}
+	c3 := storedConnection{
+		ID:           "c3",
+		Network:      "tcp",
+		SourceIP:     "203.0.113.2",
+		Destination:  "142.250.190.46:443",
+		Host:         "google.com",
+		Outbound:     "direct",
+		IsChainRelay: true,
+		HasRates:     true,
+		DownloadRate: 5000,
+		UploadRate:   500,
+	}
+
+	hub.update(nodeConnectionsSnapshot{
+		NodeID:          "node-1",
+		RawConns:        []storedConnection{c1},
+		ConnectionCount: 1,
+		Protocols:       protocolCounts([]storedConnection{c1}),
+		HasRates:        true,
+		ReceivedRate:    5000,
+		SentRate:        500,
+	})
+	hub.update(nodeConnectionsSnapshot{
+		NodeID:          "node-2",
+		RawConns:        []storedConnection{c2},
+		ConnectionCount: 0,
+		Protocols:       protocolCounts([]storedConnection{c2}),
+		HasRates:        true,
+		ReceivedRate:    5000,
+		SentRate:        500,
+	})
+	hub.update(nodeConnectionsSnapshot{
+		NodeID:          "node-3",
+		RawConns:        []storedConnection{c3},
+		ConnectionCount: 0,
+		Protocols:       protocolCounts([]storedConnection{c3}),
+		HasRates:        true,
+		ReceivedRate:    5000,
+		SentRate:        500,
+	})
+
+	totals := hub.totals(now, nil)
+	if totals.ConnectionCount != 1 {
+		t.Fatalf("expected 3-hop chain to merge to 1, got %d", totals.ConnectionCount)
+	}
+	if totals.Protocols["TCP"] != 1 {
+		t.Fatalf("expected 1 TCP protocol count, got %d", totals.Protocols["TCP"])
+	}
+	if totals.DownloadRate != 5000 || totals.UploadRate != 500 {
+		t.Fatalf("expected rates ↓5000 ↑500, got ↓%v ↑%v", totals.DownloadRate, totals.UploadRate)
+	}
+}
+
+// Mixed connections: 1 chain proxy (node-1 -> node-2) plus 1 independent direct connection on node-2.
+func TestFleetTotalsMixedChainAndDirectConnections(t *testing.T) {
+	hub := newConnectionsHub()
+	now := time.Now()
+
+	chainC1 := storedConnection{
+		ID:           "c1",
+		Network:      "tcp",
+		SourceIP:     "10.0.0.5",
+		Destination:  "example.com:443",
+		Host:         "example.com",
+		Outbound:     "chain-user2",
+		HasRates:     true,
+		DownloadRate: 2000,
+		UploadRate:   200,
+	}
+	chainC2 := storedConnection{
+		ID:           "c2",
+		Network:      "tcp",
+		SourceIP:     "198.51.100.1",
+		Destination:  "example.com:443",
+		Host:         "example.com",
+		Outbound:     "direct",
+		IsChainRelay: true,
+		HasRates:     true,
+		DownloadRate: 2000,
+		UploadRate:   200,
+	}
+	directC := storedConnection{
+		ID:           "direct-1",
+		Network:      "udp",
+		SourceIP:     "114.114.114.114",
+		Destination:  "dns.google:53",
+		Host:         "dns.google",
+		Outbound:     "direct",
+		HasRates:     true,
+		DownloadRate: 300,
+		UploadRate:   100,
+	}
+
+	hub.update(nodeConnectionsSnapshot{
+		NodeID:          "node-1",
+		RawConns:        []storedConnection{chainC1},
+		ConnectionCount: 1,
+		Protocols:       protocolCounts([]storedConnection{chainC1}),
+		HasRates:        true,
+		ReceivedRate:    2000,
+		SentRate:        200,
+	})
+	hub.update(nodeConnectionsSnapshot{
+		NodeID:          "node-2",
+		RawConns:        []storedConnection{chainC2, directC},
+		ConnectionCount: 1, // only directC counted
+		Protocols:       protocolCounts([]storedConnection{chainC2, directC}),
+		HasRates:        true,
+		ReceivedRate:    2300,
+		SentRate:        300,
+	})
+
+	totals := hub.totals(now, nil)
+	if totals.ConnectionCount != 2 {
+		t.Fatalf("expected 2 connections (1 merged chain + 1 direct), got %d", totals.ConnectionCount)
+	}
+	if totals.Protocols["TCP"] != 1 || totals.Protocols["UDP"] != 1 {
+		t.Fatalf("expected 1 TCP and 1 UDP, got %v", totals.Protocols)
+	}
+	if totals.DownloadRate != 2300 || totals.UploadRate != 300 {
+		t.Fatalf("expected rate ↓2300 ↑300, got ↓%v ↑%v", totals.DownloadRate, totals.UploadRate)
+	}
+}

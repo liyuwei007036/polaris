@@ -191,7 +191,7 @@ func (a *nodeActivity) record(nodeID string, connections []storedConnection, now
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	for _, connection := range connections {
-		if connection.ID == "" {
+		if connection.ID == "" || connection.IsChainRelay {
 			continue
 		}
 		key := nodeID + "\x00" + connection.ID
@@ -253,14 +253,15 @@ func (a *nodeActivity) pruneLocked(now time.Time) {
 // would mean a full read-modify-write of the metrics blob every few seconds
 // per node.
 type nodeConnectionsSnapshot struct {
-	NodeID          string          `json:"node_id"`
-	CollectedAt     string          `json:"collected_at"`
-	Connections     json.RawMessage `json:"connections"`
-	ConnectionCount int             `json:"connection_count"`
-	Protocols       map[string]int  `json:"protocols"`
-	HasRates        bool            `json:"has_rates"`
-	ReceivedRate    float64         `json:"received_rate"`
-	SentRate        float64         `json:"sent_rate"`
+	NodeID          string             `json:"node_id"`
+	CollectedAt     string             `json:"collected_at"`
+	Connections     json.RawMessage    `json:"connections"`
+	RawConns        []storedConnection `json:"-"`
+	ConnectionCount int                `json:"connection_count"`
+	Protocols       map[string]int     `json:"protocols"`
+	HasRates        bool               `json:"has_rates"`
+	ReceivedRate    float64            `json:"received_rate"`
+	SentRate        float64            `json:"sent_rate"`
 }
 
 // connectionsHub fans out real-time snapshots from agents to every connected
@@ -331,6 +332,90 @@ func (h *connectionsHub) totals(now time.Time, popular []popularNode) fleetTotal
 		Protocols: map[string]int{}, PopularNodes: popular,
 		PopularWindowMinutes: int(nodeActivityWindow / time.Minute),
 	}
+
+	hasAnyRaw := false
+	for _, s := range h.latest {
+		if len(s.RawConns) > 0 {
+			hasAnyRaw = true
+			break
+		}
+	}
+
+	if hasAnyRaw {
+		type connKey struct {
+			nodeID string
+			id     string
+		}
+		consumedRelays := make(map[connKey]bool)
+
+		type nodeConn struct {
+			nodeID string
+			conn   storedConnection
+		}
+		var all []nodeConn
+		for nodeID, snap := range h.latest {
+			for _, c := range snap.RawConns {
+				all = append(all, nodeConn{nodeID: nodeID, conn: c})
+			}
+		}
+
+		for _, item := range all {
+			c := item.conn
+			if c.IsChainRelay {
+				consumedRelays[connKey{nodeID: item.nodeID, id: c.ID}] = true
+				continue
+			}
+			isEntry := c.ChainedTarget != "" || strings.HasPrefix(c.Outbound, "chain-") ||
+				(len(c.Chains) > 0 && strings.HasPrefix(c.Chains[0], "chain-"))
+			if !isEntry {
+				continue
+			}
+			for _, other := range all {
+				key := connKey{nodeID: other.nodeID, id: other.conn.ID}
+				if other.nodeID == item.nodeID || consumedRelays[key] {
+					continue
+				}
+				oc := other.conn
+				destMatch := (c.Destination != "" && c.Destination == oc.Destination) ||
+					(c.Host != "" && c.Host == oc.Host)
+				if !destMatch {
+					continue
+				}
+				if c.Network != "" && oc.Network != "" && !strings.EqualFold(c.Network, oc.Network) {
+					continue
+				}
+				consumedRelays[key] = true
+				break
+			}
+		}
+
+		for nodeID, snapshot := range h.latest {
+			if snapshot.HasRates {
+				out.Reporting++
+				out.HasRates = true
+			}
+			for _, c := range snapshot.RawConns {
+				if consumedRelays[connKey{nodeID: nodeID, id: c.ID}] || c.IsChainRelay {
+					continue
+				}
+				out.ConnectionCount++
+				switch strings.ToLower(c.Network) {
+				case "tcp":
+					out.Protocols["TCP"]++
+				case "udp":
+					out.Protocols["UDP"]++
+				default:
+					out.Protocols["其他"]++
+				}
+				if snapshot.HasRates && c.HasRates {
+					out.DownloadRate += c.DownloadRate
+					out.UploadRate += c.UploadRate
+				}
+			}
+		}
+		return out
+	}
+
 	for _, snapshot := range h.latest {
 		out.ConnectionCount += snapshot.ConnectionCount
 		for name, count := range snapshot.Protocols {

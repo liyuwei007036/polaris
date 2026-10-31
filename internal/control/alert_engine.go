@@ -178,6 +178,14 @@ func (e *AlertEngine) CheckConnectionsTelemetry(nodeID, nodeName string, downloa
 		return
 	}
 
+	nonRelay := make([]storedConnection, 0, len(connections))
+	for _, c := range connections {
+		if !c.IsChainRelay {
+			nonRelay = append(nonRelay, c)
+		}
+	}
+	connections = nonRelay
+
 	now := time.Now()
 	timeStr := FormatAlertTime(now)
 	totalRateBytes := downloadRate + uploadRate
