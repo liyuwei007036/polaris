@@ -201,31 +201,51 @@ func (l *ipLocator) Lookup(value string) LocationInfo {
 		return cached.(LocationInfo)
 	}
 
-	var res LocationInfo
-	res.IP = ipStr
+	// Dual-engine query:
+	// 1. ip2region (embedded, authoritative for Mainland China provinces, cities, and domestic carriers)
+	ip2regRes := l.lookupIP2Region(ipStr, ip)
 
-	// Primary high-precision path: query MMDB (lock-free read on reader pointer)
+	// 2. MMDB (MaxMind / IPinfo, authoritative for global/international geography, BGP Anycast, and ASN)
 	l.mmdbMu.RLock()
 	mmdbReader := l.mmdb
 	l.mmdbMu.RUnlock()
 
+	var mmdbRes LocationInfo
 	var mmdbMatched bool
 	if mmdbReader != nil {
-		res, mmdbMatched = l.lookupMMDB(mmdbReader, ip)
+		mmdbRes, mmdbMatched = l.lookupMMDB(mmdbReader, ip)
 	}
 
-	// Secondary path: query embedded ip2region if MMDB is not loaded or missing record
-	if !mmdbMatched {
-		res = l.lookupIP2Region(ipStr, ip)
-	}
+	var res LocationInfo
 
-	// For domestic Chinese IPs, enrich with detailed ISP carrier name if available
-	if mmdbMatched && res.IsDomestic && res.ISP == "" {
-		if isp := l.getIP2RegionISP(ipStr, ip); isp != "" {
-			res.ISP = isp
-			if !strings.Contains(res.Location, isp) {
-				res.Location = strings.TrimSpace(res.Location + " " + isp)
+	// Intelligent Domestic / International Dual-Engine Synergy:
+	isDomestic := ip2regRes.IsDomestic || (mmdbMatched && mmdbRes.IsDomestic)
+
+	if isDomestic {
+		// Mainland China: ip2region is the gold standard for domestic provinces, cities, and carriers.
+		res = ip2regRes
+		if mmdbMatched {
+			if res.City == "" && mmdbRes.City != "" {
+				res.City = mmdbRes.City
 			}
+			if res.Province == "" && mmdbRes.Province != "" {
+				res.Province = mmdbRes.Province
+			}
+			if mmdbRes.ASN != "" {
+				res.ASN = mmdbRes.ASN
+			}
+			res.IsAnycast = mmdbRes.IsAnycast
+			res.Source = "ip2region+mmdb"
+		}
+	} else {
+		// International / Overseas: MMDB is the global authority for international geography and Anycast.
+		if mmdbMatched && (mmdbRes.Country != "" || mmdbRes.City != "") {
+			res = mmdbRes
+			if res.ISP == "" && ip2regRes.ISP != "" {
+				res.ISP = ip2regRes.ISP
+			}
+		} else {
+			res = ip2regRes
 		}
 	}
 
@@ -380,27 +400,6 @@ func (l *ipLocator) lookupIP2Region(ipStr string, ip net.IP) LocationInfo {
 		Source:      "ip2region",
 		IsDomestic:  isDomestic,
 	}
-}
-
-func (l *ipLocator) getIP2RegionISP(ipStr string, ip net.IP) string {
-	l.xdbMu.Lock()
-	searcher := l.v6
-	if ip.To4() != nil {
-		searcher = l.v4
-	}
-	region, err := searcher.Search(ipStr)
-	l.xdbMu.Unlock()
-	if err != nil || region == "" {
-		return ""
-	}
-	parts := strings.Split(region, "|")
-	if len(parts) >= 4 {
-		isp := strings.TrimSpace(parts[3])
-		if isp != "" && isp != "0" {
-			return isp
-		}
-	}
-	return ""
 }
 
 func pickLocalizedName(names map[string]string) string {
