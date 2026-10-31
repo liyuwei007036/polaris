@@ -142,7 +142,7 @@ const chainTargets = computed(() => {
     return [{
       value: `chain:${endpoint.id}`,
       nodeName,
-      label: listener.name,
+      label: endpoint.alias || endpoint.name,
     }]
   })
 })
@@ -518,7 +518,7 @@ async function save() {
                 <el-option-group
                   v-for="group in chainTargetGroups"
                   :key="group.nodeName"
-                  :label="`其他服务器 · ${group.nodeName}`"
+                  :label="group.nodeName"
                 >
                   <el-option v-for="target in group.targets" :key="target.value" :label="target.label" :value="target.value" />
                 </el-option-group>

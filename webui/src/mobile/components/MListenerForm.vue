@@ -157,7 +157,7 @@ const chainTargets = computed(() => {
     return [{
       value: `chain:${endpoint.id}`,
       nodeName,
-      label: listener.name,
+      label: endpoint.alias || endpoint.name,
       desc: `${(protocolMap[listener.spec?.protocol]?.label || listener.spec?.protocol).toUpperCase()} · 端口 ${listener.port}`,
     }]
   })
@@ -208,7 +208,7 @@ function accountOutboundOptions(account) {
       value: item.value,
       label: item.label,
       desc: item.desc,
-      group: `其他服务器 · ${item.nodeName}`,
+      group: item.nodeName,
     })
   }
   return result
