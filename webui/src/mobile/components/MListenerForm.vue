@@ -154,10 +154,10 @@ const chainTargets = computed(() => {
     if (wouldFormCycle(endpoint.id, currentNodeID, currentListenerID)) return []
     const node = (props.nodes || []).find((item) => item.id === listener.node_id)
     const nodeName = node?.name || listener.node_id
-    const userLabel = endpoint.alias ? `${endpoint.alias} (${endpoint.name})` : endpoint.name
     return [{
       value: `chain:${endpoint.id}`,
-      label: `${nodeName} · ${listener.name} · ${userLabel}`,
+      nodeName,
+      label: listener.name,
       desc: `${(protocolMap[listener.spec?.protocol]?.label || listener.spec?.protocol).toUpperCase()} · 端口 ${listener.port}`,
     }]
   })
@@ -208,7 +208,7 @@ function accountOutboundOptions(account) {
       value: item.value,
       label: item.label,
       desc: item.desc,
-      group: '链式代理（其他服务器节点用户）',
+      group: `其他服务器 · ${item.nodeName}`,
     })
   }
   return result

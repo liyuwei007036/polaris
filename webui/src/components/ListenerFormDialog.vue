@@ -1,6 +1,6 @@
 <script setup>
 import { computed, nextTick, ref, watch } from 'vue'
-import { ElMessage, ElMessageBox } from 'element-plus'
+import { ElMessage } from 'element-plus'
 import { CircleCheck, Delete, Plus } from '@element-plus/icons-vue'
 import {
   createListenerModel,
@@ -39,7 +39,6 @@ const showReality = computed(() => model.value.security === 'reality')
 
 const currentNode = computed(() => props.nodes.find((node) => node.id === model.value.node_id))
 const nodeAddress = computed(() => currentNode.value?.client_address || '')
-const customNodeIPs = ref([])
 
 function getNodeEgressOptions(node) {
   if (!node) return []
@@ -72,9 +71,6 @@ function getNodeEgressOptions(node) {
   addIP(node.client_address)
   // 5. Last observed IP
   addIP(node.last_observed_ip)
-  // 6. User manually added custom IPs in this session
-  for (const ip of customNodeIPs.value) addIP(ip)
-
   const aliases = node.ip_aliases || {}
   return ips.map((ip) => {
     const alias = aliases[ip]
@@ -92,56 +88,8 @@ function getNodeEgressOptions(node) {
 
 const nodeEgressOptions = computed(() => getNodeEgressOptions(currentNode.value))
 
-async function promptAddCustomIP(account) {
-  try {
-    const { value } = await ElMessageBox.prompt('请输入服务器可用的出口 IPv4 或 IPv6 地址：', '添加出口 IP', {
-      confirmButtonText: '确定添加',
-      cancelButtonText: '取消',
-      inputPattern: /^((25[0-5]|(2[0-4]|1\d|[1-9]|)\d)\.?\b){4}$|^([0-9a-fA-F]{0,4}:){2,7}[0-9a-fA-F]{0,4}$/,
-      inputErrorMessage: '请输入有效的 IPv4 或 IPv6 地址',
-      inputPlaceholder: '例如：198.51.100.2 或 2001:db8::1',
-    })
-    const trimmed = (value || '').trim()
-    if (trimmed) {
-      if (!customNodeIPs.value.includes(trimmed)) {
-        customNodeIPs.value.push(trimmed)
-      }
-      if (account) {
-        account.outbound_id = `direct:${trimmed}`
-      }
-      ElMessage.success(`已添加出口 IP: ${trimmed}`)
-    }
-  } catch {
-    // User cancelled prompt
-  }
-}
-
-function egressOptionsForAccount(account) {
-  const options = [
-    {
-      value: 'direct',
-      label: '服务器直连 (系统默认出口 / 普通节点)',
-      ip: '',
-      type: '默认',
-    },
-    ...nodeEgressOptions.value,
-  ]
-  if (account?.outbound_id?.startsWith('direct:')) {
-    const ip = account.outbound_id.slice(7)
-    if (!options.some((opt) => opt.value === account.outbound_id)) {
-      const alias = currentNode.value?.ip_aliases?.[ip]
-      const ipType = ip.includes(':') ? 'IPv6' : 'IPv4'
-      const label = alias ? `${alias} (${ip})` : `${ip} (${ipType})`
-      options.push({
-        value: account.outbound_id,
-        label: `${label} (自定义/脱机)`,
-        ip,
-        alias,
-        type: ipType,
-      })
-    }
-  }
-  return options
+function egressOptionsForAccount() {
+  return nodeEgressOptions.value
 }
 
 function defaultEgressValue() {
@@ -149,7 +97,12 @@ function defaultEgressValue() {
 }
 
 const configuredOutbounds = computed(() => {
-  return (props.outbounds || []).filter((item) => item && item.id !== 'direct')
+  return (props.outbounds || []).filter((item) => {
+    if (!item || item.id === 'direct') return false
+    if (!item.expires_at) return true
+    const expiry = new Date(item.expires_at).getTime()
+    return Number.isNaN(expiry) || expiry >= Date.now()
+  })
 })
 
 function wouldFormCycle(targetEndpointID, currentNodeID, currentListenerID) {
@@ -186,12 +139,21 @@ const chainTargets = computed(() => {
     if (wouldFormCycle(endpoint.id, currentNodeID, currentListenerID)) return []
     const node = (props.nodes || []).find((item) => item.id === listener.node_id)
     const nodeName = node?.name || listener.node_id
-    const userLabel = endpoint.alias ? `${endpoint.alias} (${endpoint.name})` : endpoint.name
     return [{
       value: `chain:${endpoint.id}`,
-      label: `${nodeName} · ${listener.name} · ${userLabel}`,
+      nodeName,
+      label: listener.name,
     }]
   })
+})
+
+const chainTargetGroups = computed(() => {
+  const groups = new Map()
+  for (const target of chainTargets.value) {
+    if (!groups.has(target.nodeName)) groups.set(target.nodeName, [])
+    groups.get(target.nodeName).push(target)
+  }
+  return Array.from(groups, ([nodeName, targets]) => ({ nodeName, targets }))
 })
 
 function isOrphanChain(outboundID) {
@@ -535,9 +497,9 @@ async function save() {
                 v-model="account.outbound_id"
                 filterable
                 style="width: 100%"
-                placeholder="选择出口或链式用户"
+                placeholder="选择出口或其他服务器"
               >
-                <el-option-group label="直连与出口 IP">
+                <el-option-group v-if="nodeEgressOptions.length" label="出口 IP">
                   <el-option
                     v-for="opt in egressOptionsForAccount(account)"
                     :key="opt.value"
@@ -553,19 +515,16 @@ async function save() {
                     :value="outbound.id"
                   />
                 </el-option-group>
-                <el-option-group v-if="chainTargets.length" label="链式代理（其他服务器节点用户）">
-                  <el-option v-for="target in chainTargets" :key="target.value" :label="target.label" :value="target.value" />
+                <el-option-group
+                  v-for="group in chainTargetGroups"
+                  :key="group.nodeName"
+                  :label="`其他服务器 · ${group.nodeName}`"
+                >
+                  <el-option v-for="target in group.targets" :key="target.value" :label="target.label" :value="target.value" />
                 </el-option-group>
                 <el-option-group v-if="isOrphanChain(account.outbound_id)" label="已失效的链式代理">
                   <el-option :label="orphanChainLabel(account.outbound_id)" :value="account.outbound_id" />
                 </el-option-group>
-                <template #footer>
-                  <div style="padding: 6px 10px; text-align: center; border-top: 1px solid var(--sb-line, #ebeef5)">
-                    <el-button text type="primary" size="small" :icon="Plus" @click="promptAddCustomIP(account)">
-                      手动输入出口 IP
-                    </el-button>
-                  </div>
-                </template>
               </el-select>
               <el-switch v-model="account.enabled" inline-prompt active-text="启用" inactive-text="停用" />
               <el-button text type="danger" :icon="Delete" :disabled="accounts.length === 1" aria-label="删除用户" @click="removeAccount(index)" />
