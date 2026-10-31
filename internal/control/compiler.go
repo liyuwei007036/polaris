@@ -185,7 +185,15 @@ func (s *Store) CompileNodeConfig(ctx context.Context, nodeID string) (string, s
 		// sing-box logs to a file rather than only the journal so Fail2Ban has
 		// a log path to watch; a jail whose logpath does not exist refuses to
 		// start, which previously made the whole feature unusable.
-		"log":       map[string]any{"level": "info", "timestamp": true, "output": singBoxLogPath},
+		"log": map[string]any{"level": "info", "timestamp": true, "output": singBoxLogPath},
+		"dns": map[string]any{
+			"servers": []map[string]any{
+				{
+					"type": "local",
+					"tag":  "local-dns",
+				},
+			},
+		},
 		"inbounds":  inbounds,
 		"outbounds": outbounds,
 		// Loopback-only Clash API: the agent reads current connections from it
@@ -293,8 +301,16 @@ func compileDirectIPOutbound(publicIP, bindIP string) (map[string]any, string, e
 	}
 	if bindParsed.To4() != nil {
 		outbound["inet4_bind_address"] = bindIP
+		outbound["domain_resolver"] = map[string]any{
+			"server":   "local-dns",
+			"strategy": "prefer_ipv4",
+		}
 	} else {
 		outbound["inet6_bind_address"] = bindIP
+		outbound["domain_resolver"] = map[string]any{
+			"server":   "local-dns",
+			"strategy": "prefer_ipv6",
+		}
 	}
 	return outbound, tag, nil
 }

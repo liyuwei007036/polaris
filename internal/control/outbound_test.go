@@ -244,6 +244,9 @@ func TestDirectIPOutboundCompilation(t *testing.T) {
 	}
 
 	var parsed struct {
+		DNS struct {
+			Servers []map[string]any `json:"servers"`
+		} `json:"dns"`
 		Outbounds []map[string]any `json:"outbounds"`
 		Route     struct {
 			Rules []map[string]any `json:"rules"`
@@ -251,6 +254,10 @@ func TestDirectIPOutboundCompilation(t *testing.T) {
 	}
 	if err := json.Unmarshal([]byte(configJSON), &parsed); err != nil {
 		t.Fatalf("unmarshal config: %v", err)
+	}
+
+	if len(parsed.DNS.Servers) == 0 || parsed.DNS.Servers[0]["tag"] != "local-dns" {
+		t.Errorf("expected local-dns server in dns config, got %v", parsed.DNS.Servers)
 	}
 
 	var foundIPv4, foundIPv6 bool
@@ -267,6 +274,9 @@ func TestDirectIPOutboundCompilation(t *testing.T) {
 			if _, hasStrategy := ob["domain_strategy"]; hasStrategy {
 				t.Errorf("domain_strategy is deprecated and must not be present, got %v", ob["domain_strategy"])
 			}
+			if res, ok := ob["domain_resolver"].(map[string]any); !ok || res["strategy"] != "prefer_ipv4" || res["server"] != "local-dns" {
+				t.Errorf("expected domain_resolver prefer_ipv4 with local-dns, got %v", ob["domain_resolver"])
+			}
 		}
 		if tag == "direct-2001:db8::88" {
 			foundIPv6 = true
@@ -278,6 +288,9 @@ func TestDirectIPOutboundCompilation(t *testing.T) {
 			}
 			if _, hasStrategy := ob["domain_strategy"]; hasStrategy {
 				t.Errorf("domain_strategy is deprecated and must not be present, got %v", ob["domain_strategy"])
+			}
+			if res, ok := ob["domain_resolver"].(map[string]any); !ok || res["strategy"] != "prefer_ipv6" || res["server"] != "local-dns" {
+				t.Errorf("expected domain_resolver prefer_ipv6 with local-dns, got %v", ob["domain_resolver"])
 			}
 		}
 	}
