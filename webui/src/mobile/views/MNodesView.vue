@@ -38,16 +38,7 @@ const agentPort = ref(19994)
 
 const editSheet = ref(false)
 const editNode = ref(null)
-const editForm = ref({ name: '', client_address: '', ddns_enabled: false, ddns_record_id: '', ddns_domain: '', ddns_record_ids: [], ddns_domains: [], ip_aliases: {} })
-const flagOptions = [
-  ['🇭🇰', '香港'], ['🇹🇼', '台湾'], ['🇸🇬', '新加坡'], ['🇯🇵', '日本'], ['🇰🇷', '韩国'],
-  ['🇺🇸', '美国'], ['🇬🇧', '英国'], ['🇩🇪', '德国'], ['🇫🇷', '法国'], ['🇳🇱', '荷兰'],
-  ['🇨🇦', '加拿大'], ['🇦🇺', '澳大利亚'], ['🇷🇺', '俄罗斯'], ['🇮🇳', '印度'], ['🇹🇷', '土耳其'],
-]
-function prependFlag(flag) {
-  const name = editForm.value.name.trim()
-  editForm.value.name = name.startsWith(flag) ? name : `${flag} ${name}`
-}
+const editForm = ref({ name: '', client_address: '', ddns_enabled: false, ddns_record_id: '', ddns_domain: '', ddns_record_ids: [], ddns_domains: [], ip_aliases: {}, expires_on: '', price: '', price_period: '', currency: 'USD', provider: '', provider_url: '', traffic_plan: '', bandwidth: '' })
 const newCustomEgressIP = ref('')
 
 const editNodeAllIPs = computed(() => {
@@ -350,6 +341,7 @@ async function openEdit(node) {
     ddns_record_ids: recordIds,
     ddns_domains: domains,
     ip_aliases: { ...(node.ip_aliases || {}) },
+    expires_on: node.expires_on || '', price: node.price || '', price_period: node.price_period || '', currency: node.currency || 'USD', provider: node.provider || '', provider_url: node.provider_url || '', traffic_plan: node.traffic_plan || '', bandwidth: node.bandwidth || '',
   }
   loadCloudflareRecords()
   editSheet.value = true
@@ -367,6 +359,8 @@ async function saveNode() {
       ddns_record_ids: editForm.value.ddns_record_ids,
       ddns_domains: editForm.value.ddns_domains,
       ip_aliases: editForm.value.ip_aliases || {},
+      expires_on: editForm.value.expires_on, price: editForm.value.price, price_period: editForm.value.price_period, currency: editForm.value.currency,
+      provider: editForm.value.provider, provider_url: editForm.value.provider_url, traffic_plan: editForm.value.traffic_plan, bandwidth: editForm.value.bandwidth,
     })
     ElMessage.success('服务器信息已保存')
     editSheet.value = false
@@ -376,6 +370,10 @@ async function saveNode() {
   } finally {
     editSaving.value = false
   }
+}
+
+function openProvider(node) {
+  if (node.provider_url) window.open(node.provider_url, '_blank', 'noopener,noreferrer')
 }
 
 onMounted(() => {
@@ -436,6 +434,10 @@ onBeforeUnmount(() => {
           <span class="m-stat"><b :class="{ 'is-muted': !node.online }">{{ statOf(node, 'connections') }}</b><small>活动连接</small></span>
         </div>
         <div class="m-item__meta">{{ addressText(node) }} · {{ totalText(node) }}</div>
+        <div v-if="node.expires_on || node.provider || node.price_period || node.traffic_plan || node.bandwidth" class="m-item__meta">
+          <span v-if="node.provider" :role="node.provider_url ? 'link' : undefined" :tabindex="node.provider_url ? 0 : undefined" @click.stop="openProvider(node)" @keydown.enter.stop="openProvider(node)">{{ node.provider }}</span>
+          {{ [node.expires_on ? `到期 ${node.expires_on}` : '', node.price_period === 'free' ? '免费' : (node.price_period ? `${node.currency || 'USD'} ${node.price}/${({day:'天',month:'月',quarter:'季',year:'年'})[node.price_period] || node.price_period}` : ''), node.traffic_plan ? `流量 ${node.traffic_plan}` : '', node.bandwidth ? `带宽 ${node.bandwidth}` : ''].filter(Boolean).join(' · ') }}
+        </div>
         <!-- 离线这件事状态点已经说了，但「最后一次在线是什么时候」只有写出来才知道。 -->
         <div v-if="!node.online" class="m-item__meta">离线 · 最后在线 {{ formatDateTime(node.last_seen_at, '从未在线') }}</div>
       </button>
@@ -456,11 +458,15 @@ onBeforeUnmount(() => {
 
     <MSheet v-model="editSheet" title="编辑服务器">
       <div class="m-field">
+        <label class="m-field__label">套餐与到期信息</label>
+        <el-date-picker v-model="editForm.expires_on" type="date" value-format="YYYY-MM-DD" placeholder="到期日期" clearable style="width:100%;margin-bottom:8px" />
+        <div style="display:flex;gap:8px"><el-input v-model="editForm.price" :disabled="editForm.price_period === 'free'" placeholder="价格"/><el-select v-model="editForm.currency" style="width:110px"><el-option label="USD" value="USD"/><el-option label="CNY" value="CNY"/><el-option label="EUR" value="EUR"/><el-option label="CAD" value="CAD"/></el-select></div>
+        <el-select v-model="editForm.price_period" placeholder="计价周期" style="width:100%;margin-top:8px"><el-option label="免费" value="free"/><el-option label="按天" value="day"/><el-option label="按月" value="month"/><el-option label="按季" value="quarter"/><el-option label="按年" value="year"/></el-select>
+        <el-input v-model="editForm.provider" placeholder="厂商" style="margin-top:8px"/><el-input v-model="editForm.provider_url" placeholder="厂商访问 URL" style="margin-top:8px"/><el-input v-model="editForm.traffic_plan" placeholder="流量套餐" style="margin-top:8px"/><el-input v-model="editForm.bandwidth" placeholder="带宽大小" style="margin-top:8px"/>
+      </div>
+      <div class="m-field">
         <label class="m-field__label">服务器名称 <em>*</em></label>
         <el-input v-model="editForm.name" maxlength="128" aria-label="服务器名称" placeholder="例如：香港节点 01" />
-        <div class="flag-shortcuts" aria-label="国旗快捷选择">
-          <button v-for="[flag, country] in flagOptions" :key="flag" type="button" class="flag-shortcut" :aria-label="`添加${country}国旗`" @click="prependFlag(flag)">{{ flag }}</button>
-        </div>
       </div>
       <div class="m-field">
         <label class="m-field__label">客户端连接域名或 IP 地址</label>
@@ -601,8 +607,6 @@ onBeforeUnmount(() => {
 </template>
 
 <style scoped>
-.flag-shortcuts { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
-.flag-shortcut { min-width: 38px; min-height: 38px; border: 1px solid var(--sb-line); border-radius: 8px; background: var(--sb-surface); font-size: 20px; }
 /* 命令很长，横向滚动比换行成六七行好读，也方便长按整段选中。 */
 .command {
   margin: 0;

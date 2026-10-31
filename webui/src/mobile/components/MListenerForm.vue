@@ -32,6 +32,11 @@ const emit = defineEmits(['update:modelValue', 'save'])
 
 const model = ref(createListenerModel(null, ''))
 const accounts = ref([])
+const aliasFlags = [['🇭🇰','香港'],['🇹🇼','台湾'],['🇸🇬','新加坡'],['🇯🇵','日本'],['🇰🇷','韩国'],['🇺🇸','美国'],['🇬🇧','英国'],['🇩🇪','德国'],['🇫🇷','法国'],['🇳🇱','荷兰'],['🇨🇦','加拿大'],['🇦🇺','澳大利亚'],['🇪🇪','爱沙尼亚'],['🇮🇳','印度'],['🇹🇷','土耳其']]
+function addAliasFlag(account, flag) {
+  const alias = (account.alias || '').trim()
+  account.alias = alias.startsWith(flag) ? alias : `${flag}${alias ? ` ${alias}` : ''}`
+}
 const expanded = ref(0)
 
 const selectedProfile = computed(() => listenerProfileMap[model.value.profile])
@@ -472,7 +477,17 @@ function save() {
           </div>
           <div class="m-field">
             <label class="m-field__label">客户端节点别名 <em>*</em></label>
-            <el-input v-model="account.alias" maxlength="128" aria-label="客户端节点别名" placeholder="会写入该用户的订阅配置" />
+            <div class="alias-input">
+              <el-input v-model="account.alias" maxlength="128" aria-label="客户端节点别名" placeholder="会写入该用户的订阅配置" />
+              <el-popover trigger="click" placement="bottom-end" :width="244">
+                <template #reference><el-button class="alias-flag-trigger" aria-label="选择国旗" title="选择国旗">🏳️</el-button></template>
+                <div class="alias-flag-grid">
+                  <el-tooltip v-for="[flag, country] in aliasFlags" :key="flag" :content="country">
+                    <button type="button" class="alias-flag-option" :aria-label="country" @click="addAliasFlag(account, flag)">{{ flag }}</button>
+                  </el-tooltip>
+                </div>
+              </el-popover>
+            </div>
           </div>
           <div class="m-field">
             <label class="m-field__label">上网出口与链式代理</label>
@@ -505,6 +520,11 @@ function save() {
 </template>
 
 <style scoped>
+.alias-input { display: flex; gap: 6px; min-width: 0; }
+.alias-input :deep(.el-input) { flex: 1; min-width: 0; }
+.alias-flag-trigger { padding: 0 10px; }
+.alias-flag-grid { display: grid; grid-template-columns: repeat(5, 1fr); gap: 6px; }
+.alias-flag-option { height: 38px; border: 1px solid var(--sb-line); border-radius: 7px; background: var(--sb-surface); font-size: 20px; }
 .domain { border-style: dashed; cursor: pointer; }
 .domain small { color: var(--sb-muted); font-size: 11px; }
 .accounts { border: 1px solid var(--sb-line); border-radius: var(--m-radius); overflow: hidden; }

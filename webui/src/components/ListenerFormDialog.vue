@@ -34,6 +34,11 @@ const emit = defineEmits(['update:modelValue', 'save'])
 const formRef = ref()
 const model = ref(createListenerModel(null, ''))
 const accounts = ref([])
+const aliasFlags = [['🇭🇰','香港'],['🇹🇼','台湾'],['🇸🇬','新加坡'],['🇯🇵','日本'],['🇰🇷','韩国'],['🇺🇸','美国'],['🇬🇧','英国'],['🇩🇪','德国'],['🇫🇷','法国'],['🇳🇱','荷兰'],['🇨🇦','加拿大'],['🇦🇺','澳大利亚'],['🇪🇪','爱沙尼亚'],['🇮🇳','印度'],['🇹🇷','土耳其']]
+function addAliasFlag(account, flag) {
+  const alias = (account.alias || '').trim()
+  account.alias = alias.startsWith(flag) ? alias : `${flag}${alias ? ` ${alias}` : ''}`
+}
 const selectedProfile = computed(() => listenerProfileMap[model.value.profile])
 const showReality = computed(() => model.value.security === 'reality')
 
@@ -492,7 +497,17 @@ async function save() {
             <div v-for="(account, index) in accounts" :key="account.id || `new-${index}`" class="account-row">
               <span class="account-index">{{ index + 1 }}</span>
               <el-input v-model="account.name" aria-label="用户名称" placeholder="用户名称" />
-              <el-input v-model="account.alias" aria-label="客户端节点别名" maxlength="128" placeholder="客户端节点别名" />
+              <div class="alias-input">
+                <el-input v-model="account.alias" aria-label="客户端节点别名" maxlength="128" placeholder="客户端节点别名" />
+                <el-popover trigger="click" placement="bottom-end" :width="244">
+                  <template #reference><el-button class="alias-flag-trigger" aria-label="选择国旗" title="选择国旗">🏳️</el-button></template>
+                  <div class="alias-flag-grid">
+                    <el-tooltip v-for="[flag, country] in aliasFlags" :key="flag" :content="country">
+                      <button type="button" class="alias-flag-option" :aria-label="country" @click="addAliasFlag(account, flag)">{{ flag }}</button>
+                    </el-tooltip>
+                  </div>
+                </el-popover>
+              </div>
               <el-select
                 v-model="account.outbound_id"
                 filterable
@@ -558,6 +573,12 @@ async function save() {
 .account-section-head span { color: var(--sb-muted); font-size: 12px; }
 .account-list { border-top: 1px solid var(--sb-border); }
 .account-row { display: grid; grid-template-columns: 32px minmax(140px, 1fr) minmax(160px, 1fr) minmax(190px, 1.2fr) 62px 38px; gap: 10px; align-items: center; padding: 10px 0; border-bottom: 1px solid var(--sb-border); }
+.alias-input { display: flex; gap: 6px; min-width: 0; }
+.alias-input :deep(.el-input) { flex: 1; min-width: 0; }
+.alias-flag-trigger { padding: 0 9px; }
+.alias-flag-grid { display: grid; grid-template-columns: repeat(5, 1fr); gap: 6px; }
+.alias-flag-option { height: 36px; border: 1px solid var(--sb-border); border-radius: 6px; background: var(--sb-bg); font-size: 18px; cursor: pointer; }
+.alias-flag-option:hover { border-color: var(--el-color-primary); }
 .account-index { color: var(--sb-muted); text-align: center; font-variant-numeric: tabular-nums; }
 .form-hint { margin-top: 6px; color: var(--sb-muted); font-size: 12px; }
 .domain-note { float: right; margin-left: 20px; color: var(--sb-muted); font-size: 12px; }

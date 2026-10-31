@@ -464,6 +464,15 @@ func (e *AlertEngine) NotifyNodeOnline(nodeID, nodeName string) {
 	}
 }
 
+func (e *AlertEngine) NotifyServerExpiry(node Node, days int) {
+	title := "⏳ [Polaris] 服务器即将到期"
+	body := fmt.Sprintf("• 服务器: %s\n• 厂商: %s\n• 到期日期: %s\n• 剩余: %d 天", node.Name, node.Provider, node.ExpiresOn, days)
+	if node.ProviderURL != "" {
+		body += "\n• 管理入口: " + node.ProviderURL
+	}
+	e.sendAlert(context.Background(), title, body, "Polaris-服务器到期", "active", "", node.ProviderURL)
+}
+
 // NotifyDDNSUpdated sends an alert when a NAT node's public IP changes and DDNS is updated.
 func (e *AlertEngine) NotifyDDNSUpdated(nodeID, nodeName, oldIP, currentIP, domain string) {
 	alertKey := "ddns:" + nodeID + ":" + currentIP
@@ -631,19 +640,19 @@ func (e *AlertEngine) NotifySubscriptionPullFailed(tokenHint, reason, ip, userAg
 
 // ProbeResultItem holds one node's probe outcome.
 type ProbeResultItem struct {
-	NodeID                  string `json:"node_id"`
-	NodeName                string `json:"node_name"`
-	TargetHost              string `json:"target_host,omitempty"`
-	TargetPort              uint16 `json:"target_port,omitempty"`
-	OverseasOK              bool   `json:"overseas_ok"`
-	DomesticOK              bool   `json:"domestic_ok"`
-	GFWBlocked              bool   `json:"gfw_blocked"`
-	ProbeExecuted           bool   `json:"probe_executed"`
-	ProbeSource             string `json:"probe_source,omitempty"`
-	PacketLoss              int    `json:"packet_loss"`
-	LatencyMs               int    `json:"latency_ms"`
-	StatusDesc              string `json:"status_desc,omitempty"`
-	Error                   string `json:"error,omitempty"`
+	NodeID                      string `json:"node_id"`
+	NodeName                    string `json:"node_name"`
+	TargetHost                  string `json:"target_host,omitempty"`
+	TargetPort                  uint16 `json:"target_port,omitempty"`
+	OverseasOK                  bool   `json:"overseas_ok"`
+	DomesticOK                  bool   `json:"domestic_ok"`
+	GFWBlocked                  bool   `json:"gfw_blocked"`
+	ProbeExecuted               bool   `json:"probe_executed"`
+	ProbeSource                 string `json:"probe_source,omitempty"`
+	PacketLoss                  int    `json:"packet_loss"`
+	LatencyMs                   int    `json:"latency_ms"`
+	StatusDesc                  string `json:"status_desc,omitempty"`
+	Error                       string `json:"error,omitempty"`
 	InboundTelecomRoute         string `json:"inbound_telecom_route,omitempty"`
 	InboundTelecomLatencyMs     int    `json:"inbound_telecom_latency_ms,omitempty"`
 	InboundTelecomNodeLatencies string `json:"inbound_telecom_node_latencies,omitempty"`

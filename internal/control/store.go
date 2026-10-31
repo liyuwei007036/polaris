@@ -13,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -105,28 +106,36 @@ type RegistrationInput struct {
 }
 
 type Node struct {
-	ID             string `json:"id"`
-	Name           string `json:"name"`
-	ClientAddress  string `json:"client_address"`
-	AgentVersion   string `json:"agent_version"`
-	OS             string `json:"os"`
-	Architecture   string `json:"architecture"`
-	SingBox        string `json:"sing_box_version"`
-	Capabilities   string `json:"capabilities"`
-	Online         bool   `json:"online"`
-	LastSeenAt     string `json:"last_seen_at,omitempty"`
-	PublicKey      []byte `json:"-"`
-	DDNSEnabled    bool     `json:"ddns_enabled"`
-	DDNSRecordID   string   `json:"ddns_record_id"`
-	DDNSDomain     string   `json:"ddns_domain"`
-	DDNSRecordIDs  []string `json:"ddns_record_ids"`
-	DDNSDomains    []string `json:"ddns_domains"`
+	ID             string            `json:"id"`
+	Name           string            `json:"name"`
+	ClientAddress  string            `json:"client_address"`
+	AgentVersion   string            `json:"agent_version"`
+	OS             string            `json:"os"`
+	Architecture   string            `json:"architecture"`
+	SingBox        string            `json:"sing_box_version"`
+	Capabilities   string            `json:"capabilities"`
+	Online         bool              `json:"online"`
+	LastSeenAt     string            `json:"last_seen_at,omitempty"`
+	PublicKey      []byte            `json:"-"`
+	DDNSEnabled    bool              `json:"ddns_enabled"`
+	DDNSRecordID   string            `json:"ddns_record_id"`
+	DDNSDomain     string            `json:"ddns_domain"`
+	DDNSRecordIDs  []string          `json:"ddns_record_ids"`
+	DDNSDomains    []string          `json:"ddns_domains"`
 	LastObservedIP string            `json:"last_observed_ip"`
 	IPAddresses    []string          `json:"ip_addresses"`
 	IPAliases      map[string]string `json:"ip_aliases"`
 	IPMappings     map[string]string `json:"ip_mappings"`
 	Location       string            `json:"location,omitempty"`
 	City           string            `json:"city,omitempty"`
+	ExpiresOn      string            `json:"expires_on"`
+	Price          string            `json:"price"`
+	PricePeriod    string            `json:"price_period"`
+	Currency       string            `json:"currency"`
+	Provider       string            `json:"provider"`
+	ProviderURL    string            `json:"provider_url"`
+	TrafficPlan    string            `json:"traffic_plan"`
+	Bandwidth      string            `json:"bandwidth"`
 }
 
 type AgentStatus struct {
@@ -1174,7 +1183,7 @@ func (s *Store) ListNodes(ctx context.Context) ([]Node, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT id, name, client_address, agent_version, os, architecture, sing_box_version,
 		COALESCE(capabilities, ''), last_seen_at, COALESCE(ddns_enabled, 0), COALESCE(ddns_record_id, ''), COALESCE(ddns_domain, ''),
 		COALESCE(ddns_record_ids, '[]'), COALESCE(ddns_domains, '[]'), COALESCE(last_observed_ip, ''), COALESCE(ip_addresses, '[]'),
-		COALESCE(ip_aliases, '{}'), COALESCE(ip_mappings, '{}')
+		COALESCE(ip_aliases, '{}'), COALESCE(ip_mappings, '{}'), COALESCE(expires_on, ''), COALESCE(price, ''), COALESCE(price_period, ''), COALESCE(currency, ''), COALESCE(provider, ''), COALESCE(provider_url, ''), COALESCE(traffic_plan, ''), COALESCE(bandwidth, '')
 		FROM nodes WHERE revoked_at IS NULL ORDER BY name, id`)
 	if err != nil {
 		return nil, fmt.Errorf("list nodes: %w", err)
@@ -1188,7 +1197,7 @@ func (s *Store) ListNodes(ctx context.Context) ([]Node, error) {
 		var ddnsEnabled int
 		var rawRecIDs, rawDomains, rawIPs, rawAliases, rawMappings string
 		if err := rows.Scan(&node.ID, &node.Name, &node.ClientAddress, &node.AgentVersion, &node.OS, &node.Architecture, &node.SingBox, &node.Capabilities, &lastSeen,
-			&ddnsEnabled, &node.DDNSRecordID, &node.DDNSDomain, &rawRecIDs, &rawDomains, &node.LastObservedIP, &rawIPs, &rawAliases, &rawMappings); err != nil {
+			&ddnsEnabled, &node.DDNSRecordID, &node.DDNSDomain, &rawRecIDs, &rawDomains, &node.LastObservedIP, &rawIPs, &rawAliases, &rawMappings, &node.ExpiresOn, &node.Price, &node.PricePeriod, &node.Currency, &node.Provider, &node.ProviderURL, &node.TrafficPlan, &node.Bandwidth); err != nil {
 			return nil, fmt.Errorf("read node: %w", err)
 		}
 		node.DDNSEnabled = ddnsEnabled == 1
@@ -1223,10 +1232,10 @@ func (s *Store) NodeByID(ctx context.Context, nodeID string) (Node, error) {
 	row := s.db.QueryRowContext(ctx, `SELECT id, name, client_address, agent_version, os, architecture, sing_box_version,
 		COALESCE(capabilities, ''), last_seen_at, COALESCE(ddns_enabled, 0), COALESCE(ddns_record_id, ''), COALESCE(ddns_domain, ''),
 		COALESCE(ddns_record_ids, '[]'), COALESCE(ddns_domains, '[]'), COALESCE(last_observed_ip, ''), COALESCE(ip_addresses, '[]'),
-		COALESCE(ip_aliases, '{}'), COALESCE(ip_mappings, '{}')
+		COALESCE(ip_aliases, '{}'), COALESCE(ip_mappings, '{}'), COALESCE(expires_on, ''), COALESCE(price, ''), COALESCE(price_period, ''), COALESCE(currency, ''), COALESCE(provider, ''), COALESCE(provider_url, ''), COALESCE(traffic_plan, ''), COALESCE(bandwidth, '')
 		FROM nodes WHERE id = ? AND revoked_at IS NULL`, nodeID)
 	if err := row.Scan(&node.ID, &node.Name, &node.ClientAddress, &node.AgentVersion, &node.OS, &node.Architecture, &node.SingBox, &node.Capabilities, &lastSeen,
-		&ddnsEnabled, &node.DDNSRecordID, &node.DDNSDomain, &rawRecIDs, &rawDomains, &node.LastObservedIP, &rawIPs, &rawAliases, &rawMappings); err != nil {
+		&ddnsEnabled, &node.DDNSRecordID, &node.DDNSDomain, &rawRecIDs, &rawDomains, &node.LastObservedIP, &rawIPs, &rawAliases, &rawMappings, &node.ExpiresOn, &node.Price, &node.PricePeriod, &node.Currency, &node.Provider, &node.ProviderURL, &node.TrafficPlan, &node.Bandwidth); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return Node{}, ErrNotFound
 		}
@@ -1282,10 +1291,10 @@ func (s *Store) GetNode(ctx context.Context, nodeID string) (Node, error) {
 	err := s.db.QueryRowContext(ctx, `SELECT id, name, client_address, agent_version, os, architecture, sing_box_version,
 		COALESCE(capabilities, ''), last_seen_at, COALESCE(ddns_enabled, 0), COALESCE(ddns_record_id, ''), COALESCE(ddns_domain, ''),
 		COALESCE(ddns_record_ids, '[]'), COALESCE(ddns_domains, '[]'), COALESCE(last_observed_ip, ''), COALESCE(ip_addresses, '[]'),
-		COALESCE(ip_aliases, '{}'), COALESCE(ip_mappings, '{}')
+		COALESCE(ip_aliases, '{}'), COALESCE(ip_mappings, '{}'), COALESCE(expires_on, ''), COALESCE(price, ''), COALESCE(price_period, ''), COALESCE(currency, ''), COALESCE(provider, ''), COALESCE(provider_url, ''), COALESCE(traffic_plan, ''), COALESCE(bandwidth, '')
 		FROM nodes WHERE id = ? AND revoked_at IS NULL`, nodeID).
 		Scan(&node.ID, &node.Name, &node.ClientAddress, &node.AgentVersion, &node.OS, &node.Architecture, &node.SingBox, &node.Capabilities, &lastSeen,
-			&ddnsEnabled, &node.DDNSRecordID, &node.DDNSDomain, &rawRecIDs, &rawDomains, &node.LastObservedIP, &rawIPs, &rawAliases, &rawMappings)
+			&ddnsEnabled, &node.DDNSRecordID, &node.DDNSDomain, &rawRecIDs, &rawDomains, &node.LastObservedIP, &rawIPs, &rawAliases, &rawMappings, &node.ExpiresOn, &node.Price, &node.PricePeriod, &node.Currency, &node.Provider, &node.ProviderURL, &node.TrafficPlan, &node.Bandwidth)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Node{}, ErrNotFound
 	}
@@ -1364,6 +1373,43 @@ func (s *Store) SetNodeClientAddress(ctx context.Context, nodeID, address string
 // across two dialogs meant two round trips to change one thing.
 func (s *Store) UpdateNode(ctx context.Context, nodeID, name, address string) error {
 	return s.UpdateNodeWithDDNS(ctx, nodeID, name, address, nil, nil, nil)
+}
+
+func (s *Store) UpdateNodeHosting(ctx context.Context, nodeID string, expiresOn, price, period, currency, provider, providerURL, trafficPlan, bandwidth string) error {
+	if expiresOn != "" {
+		if _, err := time.Parse("2006-01-02", expiresOn); err != nil {
+			return errors.New("到期日期格式无效")
+		}
+	}
+	periods := map[string]bool{"": true, "free": true, "day": true, "month": true, "quarter": true, "year": true}
+	currencies := map[string]bool{"": true, "USD": true, "CNY": true, "EUR": true, "CAD": true}
+	if !periods[period] || !currencies[currency] {
+		return errors.New("价格周期或货币无效")
+	}
+	if period == "free" {
+		price = ""
+	} else if price != "" {
+		if _, err := strconv.ParseFloat(price, 64); err != nil {
+			return errors.New("价格必须为数字")
+		}
+	}
+	result, err := s.db.ExecContext(ctx, `UPDATE nodes SET expires_on=?, price=?, price_period=?, currency=?, provider=?, provider_url=?, traffic_plan=?, bandwidth=? WHERE id=? AND revoked_at IS NULL`, expiresOn, price, period, currency, provider, providerURL, trafficPlan, bandwidth, nodeID)
+	if err != nil {
+		return fmt.Errorf("update node hosting details: %w", err)
+	}
+	if n, _ := result.RowsAffected(); n != 1 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+func (s *Store) ClaimNodeExpiryReminder(ctx context.Context, nodeID, expiresOn string, days int) (bool, error) {
+	res, err := s.db.ExecContext(ctx, `INSERT OR IGNORE INTO node_expiry_reminders(node_id, expires_on, days_before, sent_at) VALUES(?,?,?,?)`, nodeID, expiresOn, days, nowUnix())
+	if err != nil {
+		return false, err
+	}
+	n, err := res.RowsAffected()
+	return n == 1, err
 }
 
 func (s *Store) UpdateNodeWithDDNS(ctx context.Context, nodeID, name, address string, ddnsEnabled *bool, ddnsRecordID, ddnsDomain *string, multiOptions ...[]string) error {
@@ -2509,6 +2555,7 @@ CREATE TABLE IF NOT EXISTS nodes (
   ip_mappings TEXT NOT NULL DEFAULT '{}',
   revoked_at INTEGER, created_at INTEGER NOT NULL
 );
+CREATE TABLE IF NOT EXISTS node_expiry_reminders (node_id TEXT NOT NULL, expires_on TEXT NOT NULL, days_before INTEGER NOT NULL, sent_at INTEGER NOT NULL, PRIMARY KEY(node_id, expires_on, days_before));
 CREATE TABLE IF NOT EXISTS audit_events (
   id TEXT PRIMARY KEY, operator_id TEXT NOT NULL REFERENCES operators(id), action TEXT NOT NULL,
   target_type TEXT NOT NULL, target_id TEXT NOT NULL, summary TEXT NOT NULL, created_at INTEGER NOT NULL
@@ -2778,6 +2825,9 @@ INSERT OR IGNORE INTO alert_settings (id, updated_at) VALUES (1, unixepoch());
 		"ddns_domains TEXT NOT NULL DEFAULT '[]'", "last_observed_ip TEXT NOT NULL DEFAULT ''",
 		"ip_addresses TEXT NOT NULL DEFAULT '[]'", "ip_aliases TEXT NOT NULL DEFAULT '{}'",
 		"ip_mappings TEXT NOT NULL DEFAULT '{}'",
+		"expires_on TEXT NOT NULL DEFAULT ''", "price TEXT NOT NULL DEFAULT ''", "price_period TEXT NOT NULL DEFAULT ''",
+		"currency TEXT NOT NULL DEFAULT ''", "provider TEXT NOT NULL DEFAULT ''", "provider_url TEXT NOT NULL DEFAULT ''",
+		"traffic_plan TEXT NOT NULL DEFAULT ''", "bandwidth TEXT NOT NULL DEFAULT ''",
 	} {
 		if err := s.addNodeColumn(ctx, column); err != nil {
 			return err
@@ -2810,8 +2860,7 @@ INSERT OR IGNORE INTO alert_settings (id, updated_at) VALUES (1, unixepoch());
 	if err := s.addListenerColumn(ctx, "connection_domain TEXT NOT NULL DEFAULT ''"); err != nil {
 		return err
 	}
-	if err := s.migrateLegacyVLESSToHTTPUpgrade(ctx);
-	err != nil {
+	if err := s.migrateLegacyVLESSToHTTPUpgrade(ctx); err != nil {
 		return err
 	}
 	if err := s.migrateLegacyVLESSRealityFlow(ctx); err != nil {

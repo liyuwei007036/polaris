@@ -77,16 +77,8 @@ const editForm = ref({
   ddns_record_ids: [],
   ddns_domains: [],
   ip_aliases: {},
+  expires_on: '', price: '', price_period: '', currency: 'USD', provider: '', provider_url: '', traffic_plan: '', bandwidth: '',
 })
-const flagOptions = [
-  ['🇭🇰', '香港'], ['🇹🇼', '台湾'], ['🇸🇬', '新加坡'], ['🇯🇵', '日本'], ['🇰🇷', '韩国'],
-  ['🇺🇸', '美国'], ['🇬🇧', '英国'], ['🇩🇪', '德国'], ['🇫🇷', '法国'], ['🇳🇱', '荷兰'],
-  ['🇨🇦', '加拿大'], ['🇦🇺', '澳大利亚'], ['🇷🇺', '俄罗斯'], ['🇮🇳', '印度'], ['🇹🇷', '土耳其'],
-]
-function prependFlag(flag) {
-  const name = editForm.value.name.trim()
-  editForm.value.name = name.startsWith(flag) ? name : `${flag} ${name}`
-}
 const newCustomEgressIP = ref('')
 
 const editNodeAllIPs = computed(() => {
@@ -777,6 +769,8 @@ async function openEdit(node) {
     ddns_record_ids: recordIds,
     ddns_domains: domains,
     ip_aliases: { ...(node.ip_aliases || {}) },
+    expires_on: node.expires_on || '', price: node.price || '', price_period: node.price_period || '', currency: node.currency || 'USD',
+    provider: node.provider || '', provider_url: node.provider_url || '', traffic_plan: node.traffic_plan || '', bandwidth: node.bandwidth || '',
   }
   loadCloudflareRecords()
   editDialog.value = true
@@ -795,6 +789,8 @@ async function saveEdit() {
       ddns_record_ids: editForm.value.ddns_record_ids,
       ddns_domains: editForm.value.ddns_domains,
       ip_aliases: editForm.value.ip_aliases || {},
+      expires_on: editForm.value.expires_on, price: editForm.value.price, price_period: editForm.value.price_period, currency: editForm.value.currency,
+      provider: editForm.value.provider, provider_url: editForm.value.provider_url, traffic_plan: editForm.value.traffic_plan, bandwidth: editForm.value.bandwidth,
     })
     ElMessage.success('服务器信息已保存')
     editDialog.value = false
@@ -1149,6 +1145,14 @@ onBeforeUnmount(() => {
                       {{ node.ip_addresses.length }} 个出口 IP
                     </span>
                   </el-tooltip>
+                </div>
+                <div v-if="node.expires_on || node.provider || node.price_period || node.traffic_plan || node.bandwidth" class="hosting-meta">
+                  <a v-if="node.provider && node.provider_url" :href="node.provider_url" target="_blank" rel="noopener noreferrer" class="hosting-provider">{{ node.provider }}</a>
+                  <span v-else-if="node.provider" class="hosting-provider">{{ node.provider }}</span>
+                  <span v-if="node.expires_on" class="sub-os-arch">到期 {{ node.expires_on }}</span>
+                  <span v-if="node.price_period" class="sub-os-arch">{{ node.price_period === 'free' ? '免费' : `${node.currency || 'USD'} ${node.price}/${({day:'天',month:'月',quarter:'季',year:'年'})[node.price_period] || node.price_period}` }}</span>
+                  <span v-if="node.traffic_plan" class="sub-os-arch">流量 {{ node.traffic_plan }}</span>
+                  <span v-if="node.bandwidth" class="sub-os-arch">带宽 {{ node.bandwidth }}</span>
                 </div>
               </div>
 
@@ -1552,11 +1556,6 @@ onBeforeUnmount(() => {
       <el-form label-position="top">
         <el-form-item label="服务器名称">
           <el-input v-model="editForm.name" placeholder="请输入服务器名称" />
-          <div class="flag-shortcuts" aria-label="国旗快捷选择">
-            <el-tooltip v-for="[flag, country] in flagOptions" :key="flag" :content="`添加${country}国旗`">
-              <button type="button" class="flag-shortcut" :aria-label="`添加${country}国旗`" @click="prependFlag(flag)">{{ flag }}</button>
-            </el-tooltip>
-          </div>
         </el-form-item>
         <el-form-item label="客户端连接域名或 IP">
           <el-input v-model="editForm.client_address" placeholder="例如：hk.example.com 或 1.2.3.4" />
@@ -1574,6 +1573,20 @@ onBeforeUnmount(() => {
             </el-tag>
           </div>
         </el-form-item>
+
+        <el-divider content-position="left">套餐与到期信息</el-divider>
+        <el-form-item label="到期日期"><el-date-picker v-model="editForm.expires_on" type="date" value-format="YYYY-MM-DD" placeholder="选择到期日期" clearable style="width:100%" /></el-form-item>
+        <el-form-item label="价格">
+          <div style="display:flex;gap:8px;width:100%">
+            <el-input v-model="editForm.price" :disabled="editForm.price_period === 'free'" placeholder="价格" />
+            <el-select v-model="editForm.currency" style="width:115px"><el-option label="美元 USD" value="USD"/><el-option label="人民币 CNY" value="CNY"/><el-option label="欧元 EUR" value="EUR"/><el-option label="加元 CAD" value="CAD"/></el-select>
+          </div>
+          <el-select v-model="editForm.price_period" placeholder="计价周期" style="width:100%;margin-top:8px"><el-option label="免费" value="free"/><el-option label="按天" value="day"/><el-option label="按月" value="month"/><el-option label="按季" value="quarter"/><el-option label="按年" value="year"/></el-select>
+        </el-form-item>
+        <el-form-item label="厂商"><el-input v-model="editForm.provider" placeholder="例如：DigitalOcean" /></el-form-item>
+        <el-form-item label="厂商访问 URL"><el-input v-model="editForm.provider_url" placeholder="https://..." /></el-form-item>
+        <el-form-item label="流量套餐"><el-input v-model="editForm.traffic_plan" placeholder="例如：每月 2 TB" /></el-form-item>
+        <el-form-item label="带宽大小"><el-input v-model="editForm.bandwidth" placeholder="例如：1 Gbps" /></el-form-item>
 
         <el-form-item label="本机出口 IP 与别名设置">
           <div class="subtle" style="font-size: 12px; margin-bottom: 8px">
@@ -1839,11 +1852,6 @@ onBeforeUnmount(() => {
   </div>
 </template>
 
-<style scoped>
-.flag-shortcuts { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 8px; }
-.flag-shortcut { border: 1px solid var(--el-border-color); border-radius: 6px; background: var(--el-fill-color-blank); padding: 3px 6px; font-size: 18px; cursor: pointer; }
-.flag-shortcut:hover { border-color: var(--el-color-primary); background: var(--el-fill-color-light); }
-</style>
 
 <style scoped>
 :global(.el-popper) {
@@ -2216,11 +2224,11 @@ onBeforeUnmount(() => {
   position: relative;
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: 9px;
   background: linear-gradient(180deg, rgba(16, 24, 42, 0.85) 0%, rgba(9, 14, 26, 0.96) 100%);
   border: 1px solid rgba(255, 255, 255, 0.08);
   border-radius: 14px;
-  padding: 14px 16px 12px;
+  padding: 12px 14px 10px;
   box-shadow: 0 8px 24px -4px rgba(0, 0, 0, 0.6), inset 0 1px 0 rgba(255, 255, 255, 0.08);
   backdrop-filter: blur(14px);
   overflow: hidden;
@@ -2330,6 +2338,19 @@ onBeforeUnmount(() => {
   color: var(--sb-muted);
   flex-wrap: wrap;
 }
+.hosting-meta {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 3px 8px;
+  min-height: 16px;
+  margin-top: 2px;
+  color: var(--sb-muted, #94a3b8);
+  font-size: 11px;
+  line-height: 1.45;
+}
+.hosting-provider { color: #7dd3fc; font-weight: 600; text-decoration: none; }
+.hosting-provider[href]:hover { color: #bae6fd; text-decoration: underline; }
 .sub-os-arch {
   background: rgba(255, 255, 255, 0.05);
   padding: 1px 5px;
@@ -2412,10 +2433,10 @@ onBeforeUnmount(() => {
 .card-telemetry-clean {
   background: rgba(0, 0, 0, 0.18);
   border-radius: 8px;
-  padding: 10px;
+  padding: 8px;
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 6px;
 }
 .hw-grid {
   display: grid;
@@ -2498,7 +2519,7 @@ onBeforeUnmount(() => {
 .route-matrix-box {
   background: rgba(0, 0, 0, 0.18);
   border-radius: 8px;
-  padding: 8px 10px;
+  padding: 6px 8px;
   display: flex;
   flex-direction: column;
   gap: 6px;

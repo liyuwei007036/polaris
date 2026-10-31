@@ -57,11 +57,11 @@ type Server struct {
 	autoInstallChecked     map[string]bool
 	latestSingBoxReleaseFn func(context.Context, string) (SingBoxRelease, error)
 	singBoxLatest          map[string]polarisReleaseCacheEntry
-	selfUpdateMu             sync.Mutex
+	selfUpdateMu           sync.Mutex
 	polarisLatest          map[string]polarisReleaseCacheEntry
 	latestPolarisReleaseFn func(context.Context, string) (SingBoxRelease, error)
-	selfUpdateApplyFn        func(context.Context, selfupdate.Manifest, string, func(context.Context, string) error) error
-	selfUpdateRestartFn      func() error
+	selfUpdateApplyFn      func(context.Context, selfupdate.Manifest, string, func(context.Context, string) error) error
+	selfUpdateRestartFn    func() error
 	connHub                *connectionsHub
 	connRates              *connectionRates
 	connActivity           *nodeActivity
@@ -81,14 +81,14 @@ type Server struct {
 	// fleetStreaming is whether nodes should currently be pushing their
 	// real-time connection lists. Guarded by controlMu alongside the sessions
 	// it is announced to.
-	fleetStreaming bool
-	reconcileMu    sync.Mutex
-	reconcileState         map[string]reconcileAttempt
-	taskWaitMu             sync.Mutex
-	taskWaiters            map[string]chan wire.TaskResult
-	subscriptionLimiter    *rateLimiter
-	alertEngine            *AlertEngine
-	prober                 *Prober
+	fleetStreaming      bool
+	reconcileMu         sync.Mutex
+	reconcileState      map[string]reconcileAttempt
+	taskWaitMu          sync.Mutex
+	taskWaiters         map[string]chan wire.TaskResult
+	subscriptionLimiter *rateLimiter
+	alertEngine         *AlertEngine
+	prober              *Prober
 	// now is the clock the subscription access window and expiry are read
 	// against; tests replace it to reach a specific moment.
 	now func() time.Time
@@ -137,16 +137,52 @@ func NewServer(store *Store, secureCookies bool) (*Server, error) {
 		taskWaiters:            make(map[string]chan wire.TaskResult),
 		latestSingBoxReleaseFn: LatestOfficialSingBoxRelease,
 		connHub:                newConnectionsHub(), connRates: newConnectionRates(), connActivity: newNodeActivity(),
-		connRecorder:           newConnectionRecorder(store),
-		liveHub:                newLiveHub(), ipLocator: ipLocator,
-		connectionsInterval:    DefaultConnectionsInterval,
-		subscriptionLimiter:    newRateLimiter(subscriptionRateWindow, subscriptionRateLimit, subscriptionRateMaxKeys),
-		alertEngine:            NewAlertEngine(store, ipLocator),
-		now:                    time.Now,
+		connRecorder: newConnectionRecorder(store),
+		liveHub:      newLiveHub(), ipLocator: ipLocator,
+		connectionsInterval: DefaultConnectionsInterval,
+		subscriptionLimiter: newRateLimiter(subscriptionRateWindow, subscriptionRateLimit, subscriptionRateMaxKeys),
+		alertEngine:         NewAlertEngine(store, ipLocator),
+		now:                 time.Now,
 	}
 	server.connHub.onWatchers = server.setFleetStreaming
 	server.prober = newProber(server)
+	go server.runExpiryReminders()
 	return server, nil
+}
+
+func (s *Server) runExpiryReminders() {
+	check := func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+		nodes, err := s.store.ListNodes(ctx)
+		if err != nil {
+			return
+		}
+		today := time.Now().In(NotificationLocation)
+		for _, node := range nodes {
+			if node.ExpiresOn == "" {
+				continue
+			}
+			expires, err := time.ParseInLocation("2006-01-02", node.ExpiresOn, NotificationLocation)
+			if err != nil {
+				continue
+			}
+			days := int(expires.Sub(time.Date(today.Year(), today.Month(), today.Day(), 0, 0, 0, 0, NotificationLocation)).Hours() / 24)
+			if days < 1 || days > 3 {
+				continue
+			}
+			claimed, err := s.store.ClaimNodeExpiryReminder(ctx, node.ID, node.ExpiresOn, days)
+			if err == nil && claimed && s.alertEngine != nil {
+				s.alertEngine.NotifyServerExpiry(node, days)
+			}
+		}
+	}
+	check()
+	ticker := time.NewTicker(time.Hour)
+	defer ticker.Stop()
+	for range ticker.C {
+		check()
+	}
 }
 
 // setFleetStreaming switches every connected node's real-time push on or off.
@@ -1730,6 +1766,14 @@ func (s *Server) updateNode(w http.ResponseWriter, r *http.Request) {
 		DDNSRecordIDs []string          `json:"ddns_record_ids"`
 		DDNSDomains   []string          `json:"ddns_domains"`
 		IPAliases     map[string]string `json:"ip_aliases"`
+		ExpiresOn     string            `json:"expires_on"`
+		Price         string            `json:"price"`
+		PricePeriod   string            `json:"price_period"`
+		Currency      string            `json:"currency"`
+		Provider      string            `json:"provider"`
+		ProviderURL   string            `json:"provider_url"`
+		TrafficPlan   string            `json:"traffic_plan"`
+		Bandwidth     string            `json:"bandwidth"`
 	}
 	if !decodeJSON(w, r, &input) {
 		return
@@ -1744,6 +1788,10 @@ func (s *Server) updateNode(w http.ResponseWriter, r *http.Request) {
 			writeError(w, err)
 			return
 		}
+	}
+	if err := s.store.UpdateNodeHosting(r.Context(), nodeID, input.ExpiresOn, input.Price, input.PricePeriod, input.Currency, input.Provider, input.ProviderURL, input.TrafficPlan, input.Bandwidth); err != nil {
+		writeError(w, err)
+		return
 	}
 	if err := s.store.AppendAudit(r.Context(), operator.ID, "node.updated", "node", nodeID, "node name, client address, and DDNS settings updated"); err != nil {
 		writeError(w, err)
@@ -3273,7 +3321,6 @@ func deduplicateStrings(values []string) []string {
 	}
 	return result
 }
-
 
 func containsChinese(s string) bool {
 	for _, r := range s {
