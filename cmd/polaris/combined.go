@@ -5,6 +5,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"log"
 	"net"
 	"net/http"
 	"os"
@@ -19,6 +20,7 @@ type combinedFlagValues struct {
 	agentConfigPath    *string
 	masterDataDir      *string
 	databasePath       *string
+	mmdbPath           *string
 	agentPort          *int
 	webPort            *int
 	allowInsecureHTTP  *bool
@@ -55,6 +57,7 @@ func addCombinedFlags(flags *flag.FlagSet) combinedFlagValues {
 		agentConfigPath:    flags.String("agent-config", "", "agent YAML configuration file"),
 		masterDataDir:      flags.String("master-data-dir", masterDefaults.DataDir, "master data directory"),
 		databasePath:       flags.String("database-path", "", "SQLite database file"),
+		mmdbPath:           flags.String("mmdb-path", "", "path to MaxMind GeoIP2 / GeoLite2 / IPinfo .mmdb database"),
 		agentPort:          flags.Int("agent-port", masterDefaults.AgentPort, "Noise TCP port for agents"),
 		webPort:            flags.Int("web-port", masterDefaults.WebPort, "HTTP port for the web console"),
 		allowInsecureHTTP:  flags.Bool("allow-insecure-http", false, "allow login cookies over plain HTTP"),
@@ -92,6 +95,9 @@ func resolveCombinedFlags(flags *flag.FlagSet, values combinedFlagValues) (maste
 	}
 	if *values.masterConfigPath == "" || visited["database-path"] {
 		masterConfiguration.DatabasePath = *values.databasePath
+	}
+	if *values.masterConfigPath == "" || visited["mmdb-path"] {
+		masterConfiguration.MMDBPath = *values.mmdbPath
 	}
 	if *values.masterConfigPath == "" || visited["agent-port"] {
 		masterConfiguration.AgentPort = *values.agentPort
@@ -151,6 +157,12 @@ func serveCombined(ctx context.Context, masterConfiguration masterConfig, agentC
 	if err != nil {
 		return err
 	}
+	if masterConfiguration.MMDBPath != "" {
+		if err := server.SetMMDBPath(masterConfiguration.MMDBPath); err != nil {
+			log.Printf("warning: loading MMDB at %s: %v", masterConfiguration.MMDBPath, err)
+		}
+	}
+	server.EnsureMMDBAsync(ctx)
 	if pinnedMasterKey != server.NoisePublicKey() {
 		return errors.New("agent master_public_key does not match this master")
 	}

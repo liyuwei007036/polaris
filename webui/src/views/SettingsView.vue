@@ -1,9 +1,9 @@
 <script setup>
 import { computed, inject, onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Bell, Check, Plus, Refresh, Search, Warning } from '@element-plus/icons-vue'
+import { Bell, Check, Download, Location, Plus, Refresh, Search, Upload, Warning } from '@element-plus/icons-vue'
 import QRCode from 'qrcode'
-import { api, post, put } from '../api'
+import { api, post, put, uploadFile } from '../api'
 import { formatDateTime, includesText } from '../format'
 import PageHeader from '../components/PageHeader.vue'
 import PagedTable from '../components/PagedTable.vue'
@@ -57,12 +57,119 @@ const filteredOperators = computed(() => operators.value.filter((row) => {
   return includesText([row.username, row.role], operatorKeyword.value)
 }))
 
+const ipdbStatus = reactive({
+  mmdb_loaded: false,
+  mmdb_path: '',
+  mmdb_type: '',
+  ip2region_loaded: true,
+})
+const ipdbLoading = ref(false)
+const ipDownloading = ref(false)
+const ipReloading = ref(false)
+const ipTestInput = ref('1.1.1.1')
+const ipTestResult = ref(null)
+const ipTesting = ref(false)
+const mmdbUploadInput = ref(null)
+
+async function loadIPDBStatus() {
+  if (!isAdmin.value) return
+  ipdbLoading.value = true
+  try {
+    const res = await api('/ip/database')
+    Object.assign(ipdbStatus, res)
+  } catch {
+    // ignore
+  } finally {
+    ipdbLoading.value = false
+  }
+}
+
+async function reloadIPDB() {
+  ipReloading.value = true
+  try {
+    const res = await post('/ip/database/reload')
+    if (res?.success) {
+      Object.assign(ipdbStatus, res)
+      ElMessage.success('IP 离线库重载完成')
+    } else {
+      ElMessage.warning(res?.error || '未找到新的 MMDB 离线库')
+    }
+  } catch (e) {
+    ElMessage.error(e instanceof Error ? e.message : '重载失败')
+  } finally {
+    ipReloading.value = false
+  }
+}
+
+async function downloadIPDB() {
+  try {
+    await ElMessageBox.confirm('确定要从高精度开源镜像源下载最新 GeoLite2-City.mmdb 数据库吗？下载通常需要数十秒。', '下载高精度 IP 库', { type: 'info' })
+  } catch {
+    return
+  }
+  ipDownloading.value = true
+  try {
+    const res = await post('/ip/database/download', {})
+    if (res?.success) {
+      Object.assign(ipdbStatus, res)
+      ElMessage.success('高精度 MMDB 离线库下载并加载成功！')
+    } else {
+      ElMessage.error(res?.error || '下载失败')
+    }
+  } catch (e) {
+    ElMessage.error(e instanceof Error ? e.message : '下载失败，请检查服务器网络或手动上传')
+  } finally {
+    ipDownloading.value = false
+  }
+}
+
+function triggerUploadMMDB() {
+  mmdbUploadInput.value?.click()
+}
+
+async function onMMDBFileSelected(event) {
+  const file = event.target.files?.[0]
+  if (!file) return
+  const formData = new FormData()
+  formData.append('file', file)
+  ipdbLoading.value = true
+  try {
+    const res = await uploadFile('/ip/database/upload', formData)
+    if (res?.success) {
+      Object.assign(ipdbStatus, res)
+      ElMessage.success('MMDB 数据库上传并成功生效！')
+    }
+  } catch (e) {
+    ElMessage.error(e instanceof Error ? e.message : '上传失败')
+  } finally {
+    ipdbLoading.value = false
+    event.target.value = ''
+  }
+}
+
+async function testIPLookup() {
+  const ip = ipTestInput.value.trim()
+  if (!ip) {
+    return ElMessage.warning('请输入待测试的 IP 地址')
+  }
+  ipTesting.value = true
+  try {
+    const res = await api(`/ip/lookup?ip=${encodeURIComponent(ip)}`)
+    ipTestResult.value = res
+  } catch (e) {
+    ElMessage.error(e instanceof Error ? e.message : '查询失败')
+  } finally {
+    ipTesting.value = false
+  }
+}
+
 async function load() {
   loading.value = true
   try {
     const [operatorResult, alertsResult] = await Promise.all([
       isAdmin.value ? api('/operators').catch(() => ({ operators: [] })) : Promise.resolve({ operators: [] }),
       isAdmin.value ? api('/alerts/settings').catch(() => ({ settings: null })) : Promise.resolve({ settings: null }),
+      loadIPDBStatus(),
     ])
     operators.value = operatorResult.operators || []
     if (alertsResult?.settings) {
@@ -500,6 +607,136 @@ onMounted(load)
                       </div>
                     </div>
                     <el-alert v-if="realityResult.recommendation" :title="realityResult.recommendation" :type="realityResult.compatible ? 'success' : 'warning'" show-icon :closable="false" style="margin-top: 12px" />
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </el-tab-pane>
+
+        <el-tab-pane v-if="isAdmin" label="高精度 IP 库 (MMDB)" name="ipdb">
+          <div class="settings-grid">
+            <!-- 隐式文件上传 input -->
+            <input
+              ref="mmdbUploadInput"
+              type="file"
+              accept=".mmdb"
+              style="display: none"
+              @change="onMMDBFileSelected"
+            />
+
+            <!-- IP 库状态与操作卡片 -->
+            <div class="settings-card">
+              <div class="card-header">
+                <div class="card-title">
+                  <el-icon class="card-icon"><Location /></el-icon>
+                  <div>
+                    <h3>IP 地理位置与 BGP 广播识别引擎</h3>
+                    <p>支持 MaxMind GeoIP2 / GeoLite2 / IPinfo 等工业级 MMDB 格式，精准识别 Anycast 广播 IP 与跨境机房宣告落地。</p>
+                  </div>
+                </div>
+                <el-tag :type="ipdbStatus.mmdb_loaded ? 'success' : 'warning'" size="large">
+                  {{ ipdbStatus.mmdb_loaded ? '高精 MMDB 库已生效' : '使用内置离线库 (未加载 MMDB)' }}
+                </el-tag>
+              </div>
+              <div class="card-body">
+                <el-descriptions :column="2" border style="margin-bottom: 20px">
+                  <el-descriptions-item label="MMDB 引擎状态">
+                    <el-tag :type="ipdbStatus.mmdb_loaded ? 'success' : 'info'" size="small">
+                      {{ ipdbStatus.mmdb_loaded ? '已加载生效' : '未加载' }}
+                    </el-tag>
+                  </el-descriptions-item>
+                  <el-descriptions-item label="数据库格式类型">
+                    <span class="mono">{{ ipdbStatus.mmdb_type || '—' }}</span>
+                  </el-descriptions-item>
+                  <el-descriptions-item label="当前 MMDB 文件路径" :span="2">
+                    <span class="mono">{{ ipdbStatus.mmdb_path || '无（放置于 data_dir/GeoLite2-City.mmdb 或上传即可自动生效）' }}</span>
+                  </el-descriptions-item>
+                  <el-descriptions-item label="内置 ip2region 引擎">
+                    <el-tag type="success" size="small">已就绪 (提供国内省市与运营商识别)</el-tag>
+                  </el-descriptions-item>
+                  <el-descriptions-item label="架构并发模式">
+                    <el-tag type="success" size="small">内存映射 mmap (零拷贝并发无锁)</el-tag>
+                  </el-descriptions-item>
+                </el-descriptions>
+
+                <div style="display: flex; gap: 12px; flex-wrap: wrap;">
+                  <el-button type="primary" :icon="Download" :loading="ipDownloading" @click="downloadIPDB">
+                    自动下载/更新 GeoLite2-City 离线库
+                  </el-button>
+                  <el-button :icon="Upload" :loading="ipdbLoading" @click="triggerUploadMMDB">
+                    上传本地 .mmdb 文件
+                  </el-button>
+                  <el-button :icon="Refresh" :loading="ipReloading" @click="reloadIPDB">
+                    重新扫描并重载 IP 库
+                  </el-button>
+                </div>
+                <div class="form-tip" style="margin-top: 12px">
+                  提示：系统在安装或启动时会自动从高速镜像拉取高精度离线库，开箱即用，无需申请任何 API 或准备文件。若拥有商业版数据库亦可在此手动上传覆盖。
+                </div>
+              </div>
+            </div>
+
+            <!-- IP 归属地测试工具卡片 -->
+            <div class="settings-card">
+              <div class="card-header">
+                <div class="card-title">
+                  <el-icon class="card-icon"><Search /></el-icon>
+                  <div>
+                    <h3>IP 归属地与机房广播精准测试</h3>
+                    <p>输入任意节点 IP 或外部 IP，实时验证系统识别出的物理落地机房、真实城市与自治域 ASN。</p>
+                  </div>
+                </div>
+              </div>
+              <div class="card-body">
+                <div style="display: flex; gap: 12px; max-width: 500px; margin-bottom: 20px">
+                  <el-input
+                    v-model="ipTestInput"
+                    placeholder="输入任意 IPv4 / IPv6 地址，如 1.1.1.1、8.8.8.8"
+                    clearable
+                    @keyup.enter="testIPLookup"
+                  />
+                  <el-button type="primary" :loading="ipTesting" @click="testIPLookup">测试查询</el-button>
+                </div>
+
+                <div v-if="ipTestResult" class="reality-result" style="margin-top: 0">
+                  <div class="result-grid">
+                    <div class="result-item">
+                      <span class="label">查询目标 IP:</span>
+                      <span class="mono">{{ ipTestResult.ip }}</span>
+                    </div>
+                    <div class="result-item">
+                      <span class="label">解析归属地 (Location):</span>
+                      <span style="font-weight: 600">{{ ipTestResult.location || '未知' }}</span>
+                    </div>
+                    <div class="result-item">
+                      <span class="label">落地城市 (City):</span>
+                      <span>{{ ipTestResult.city || '—' }}</span>
+                    </div>
+                    <div class="result-item">
+                      <span class="label">国家 / 地区代码:</span>
+                      <span>{{ ipTestResult.country || '—' }} ({{ ipTestResult.country_code || '—' }})</span>
+                    </div>
+                    <div class="result-item">
+                      <span class="label">运营商 / 网络组织:</span>
+                      <span>{{ ipTestResult.isp || '—' }}</span>
+                    </div>
+                    <div class="result-item">
+                      <span class="label">BGP 自治域 (ASN):</span>
+                      <span class="mono">{{ ipTestResult.asn || '—' }}</span>
+                    </div>
+                    <div class="result-item">
+                      <span class="label">识别来源引擎:</span>
+                      <el-tag size="small" :type="ipTestResult.source === 'mmdb' ? 'success' : 'info'">
+                        {{ ipTestResult.source === 'mmdb' ? 'MMDB 高精度离线库' : (ipTestResult.source === 'ip2region' ? '内置离线库' : ipTestResult.source) }}
+                      </el-tag>
+                    </div>
+                    <div class="result-item">
+                      <span class="label">Anycast / 广播 IP:</span>
+                      <el-tag size="small" :type="ipTestResult.is_anycast ? 'warning' : 'info'">
+                        {{ ipTestResult.is_anycast ? '是 (Anycast 广播)' : '否 (单播地址)' }}
+                      </el-tag>
+                    </div>
                   </div>
                 </div>
               </div>

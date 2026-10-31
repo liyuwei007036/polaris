@@ -8,6 +8,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"log"
 	"net"
 	"net/http"
 	"os"
@@ -175,6 +176,12 @@ func serveMaster(ctx context.Context, configuration masterConfig) error {
 	if err != nil {
 		return err
 	}
+	if configuration.MMDBPath != "" {
+		if err := server.SetMMDBPath(configuration.MMDBPath); err != nil {
+			log.Printf("warning: loading MMDB at %s: %v", configuration.MMDBPath, err)
+		}
+	}
+	server.EnsureMMDBAsync(ctx)
 	server.SetAgentPort(configuration.AgentPort)
 	applyConnectionsInterval(server, configuration.ConnectionsInterval)
 	server.EnableConnectionRecording(ctx)

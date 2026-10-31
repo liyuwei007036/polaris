@@ -60,3 +60,19 @@ export async function api(path, options = {}) {
 export const post = (path, body, options) => api(path, { ...options, method: 'POST', body })
 export const put = (path, body, options) => api(path, { ...options, method: 'PUT', body })
 export const del = (path) => api(path, { method: 'DELETE' })
+
+export async function uploadFile(path, formData) {
+  const headers = {}
+  if (csrfToken.value) headers['X-CSRF-Token'] = csrfToken.value
+  const response = await fetch(`/api/v1${path}`, {
+    method: 'POST',
+    credentials: 'same-origin',
+    headers,
+    body: formData,
+  })
+  if (!response.ok) {
+    const data = await response.json().catch(() => null)
+    throw new Error(data?.error || `上传失败: ${response.status}`)
+  }
+  return response.json()
+}

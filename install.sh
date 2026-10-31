@@ -298,6 +298,26 @@ configure_master() {
   else
     log "保留已有配置：/etc/polaris/master.yaml"
   fi
+
+  local mmdb_target
+  mmdb_target=$(root_path /var/lib/polaris-master/GeoLite2-City.mmdb)
+  if [[ ! -f "$mmdb_target" && -z "$DESTDIR" ]]; then
+    log "自动获取高精度全球地理 IP 库 (GeoLite2-City.mmdb)..."
+    local mirrors=(
+      "https://testingcf.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@release/GeoLite2-City.mmdb"
+      "https://ghproxy.net/https://github.com/P3TERX/GeoLite.mmdb/releases/latest/download/GeoLite2-City.mmdb"
+      "https://github.com/P3TERX/GeoLite.mmdb/releases/latest/download/GeoLite2-City.mmdb"
+    )
+    for m in "${mirrors[@]}"; do
+      if curl -fsSL --connect-timeout 5 --max-time 120 "$m" -o "${mmdb_target}.tmp" 2>/dev/null; then
+        mv -f "${mmdb_target}.tmp" "$mmdb_target"
+        chown polaris:polaris "$mmdb_target" 2>/dev/null || true
+        log "高精度 IP 库已就绪"
+        break
+      fi
+      rm -f "${mmdb_target}.tmp" 2>/dev/null || true
+    done
+  fi
 }
 
 write_agent_config() {

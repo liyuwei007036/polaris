@@ -29,6 +29,7 @@ type masterConfig struct {
 	// during the handshake, so changing it never means editing a file on a
 	// node or restarting one. Empty keeps the built-in default.
 	ConnectionsInterval string `yaml:"connections_interval,omitempty"`
+	MMDBPath            string `yaml:"mmdb_path,omitempty"`
 }
 
 type agentConfig struct {
@@ -47,6 +48,7 @@ type masterFlagValues struct {
 	agentPort         *int
 	webPort           *int
 	allowInsecureHTTP *bool
+	mmdbPath          *string
 }
 
 type agentFlagValues struct {
@@ -77,6 +79,7 @@ func addMasterFlags(flags *flag.FlagSet) masterFlagValues {
 		agentPort:         flags.Int("agent-port", defaults.AgentPort, "Noise TCP port for agents"),
 		webPort:           flags.Int("web-port", defaults.WebPort, "HTTP port for the web console"),
 		allowInsecureHTTP: flags.Bool("allow-insecure-http", false, "allow login cookies over plain HTTP"),
+		mmdbPath:          flags.String("mmdb-path", "", "path to MaxMind GeoIP2 / GeoLite2 / IPinfo .mmdb database"),
 	}
 }
 
@@ -119,6 +122,9 @@ func resolveMasterFlags(flags *flag.FlagSet, values masterFlagValues) (masterCon
 	}
 	if *values.configPath == "" || visited["allow-insecure-http"] {
 		configuration.AllowInsecureHTTP = *values.allowInsecureHTTP
+	}
+	if *values.configPath == "" || visited["mmdb-path"] {
+		configuration.MMDBPath = *values.mmdbPath
 	}
 	return normalizeMasterConfig(configuration, base)
 }
@@ -220,6 +226,9 @@ func normalizeMasterConfig(configuration masterConfig, base string) (masterConfi
 		configuration.DatabasePath = filepath.Join(configuration.DataDir, "polaris.db")
 	} else {
 		configuration.DatabasePath = resolveConfiguredPath(base, configuration.DatabasePath)
+	}
+	if strings.TrimSpace(configuration.MMDBPath) != "" {
+		configuration.MMDBPath = resolveConfiguredPath(base, configuration.MMDBPath)
 	}
 	if configuration.AgentPort < 1 || configuration.AgentPort > 65535 {
 		return masterConfig{}, errors.New("agent_port must be between 1 and 65535")

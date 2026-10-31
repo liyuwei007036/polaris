@@ -12,7 +12,7 @@ const testMasterPublicKey = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
 func TestMasterSupportsYAMLAndCommandLineConfiguration(t *testing.T) {
 	directory := t.TempDir()
 	path := filepath.Join(directory, "master.yaml")
-	content := "data_dir: state\ndatabase_path: database/control.db\nagent_port: 18443\nweb_port: 18080\nallow_insecure_http: true\n"
+	content := "data_dir: state\ndatabase_path: database/control.db\nagent_port: 18443\nweb_port: 18080\nallow_insecure_http: true\nmmdb_path: db/GeoLite2-City.mmdb\n"
 	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -25,7 +25,7 @@ func TestMasterSupportsYAMLAndCommandLineConfiguration(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if fromFile.DataDir != filepath.Join(directory, "state") || fromFile.DatabasePath != filepath.Join(directory, "database", "control.db") || fromFile.AgentPort != 18443 {
+	if fromFile.DataDir != filepath.Join(directory, "state") || fromFile.DatabasePath != filepath.Join(directory, "database", "control.db") || fromFile.AgentPort != 18443 || fromFile.MMDBPath != filepath.Join(directory, "db", "GeoLite2-City.mmdb") {
 		t.Fatalf("master YAML configuration = %#v", fromFile)
 	}
 
@@ -35,6 +35,7 @@ func TestMasterSupportsYAMLAndCommandLineConfiguration(t *testing.T) {
 		"--data-dir", filepath.Join(directory, "cli-state"),
 		"--database-path", filepath.Join(directory, "cli.db"),
 		"--agent-port", "19443", "--web-port", "19080", "--allow-insecure-http",
+		"--mmdb-path", filepath.Join(directory, "custom.mmdb"),
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -42,7 +43,7 @@ func TestMasterSupportsYAMLAndCommandLineConfiguration(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if fromCLI.AgentPort != 19443 || fromCLI.WebPort != 19080 || !fromCLI.AllowInsecureHTTP {
+	if fromCLI.AgentPort != 19443 || fromCLI.WebPort != 19080 || !fromCLI.AllowInsecureHTTP || fromCLI.MMDBPath != filepath.Join(directory, "custom.mmdb") {
 		t.Fatalf("master command configuration = %#v", fromCLI)
 	}
 }

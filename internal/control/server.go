@@ -18,6 +18,7 @@ import (
 	"net/url"
 	"os"
 	"path"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -25,6 +26,7 @@ import (
 	"github.com/liyuwei007036/polaris/internal/security"
 	"github.com/liyuwei007036/polaris/internal/selfupdate"
 	"github.com/liyuwei007036/polaris/internal/wire"
+	"github.com/oschwald/geoip2-golang"
 )
 
 const sessionCookieName = "polaris_session"
@@ -117,12 +119,13 @@ func NewServer(store *Store, secureCookies bool) (*Server, error) {
 	if err != nil {
 		return nil, err
 	}
-	ipLocator, err := newIPLocator()
+	ipLocator, err := newIPLocator(store.DataDir())
 	if err != nil {
 		return nil, fmt.Errorf("load IP location database: %w", err)
 	}
 	wire.CityResolver = ipLocator.LocateCity
 	wire.IsDomesticResolver = ipLocator.IsDomestic
+	wire.ASNResolver = ipLocator.LocateASN
 	server := &Server{
 		store: store, noiseKeypair: keypair, agentPort: defaultAgentPort, secureCookies: secureCookies,
 		controls: make(map[string]*controlSession), autoInstallChecked: make(map[string]bool),
@@ -403,6 +406,10 @@ func (s *Server) registerBrowserRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/v1/nodes/{id}/diagnose/mtr", s.handleRunNodeMTR)
 	mux.HandleFunc("GET /api/v1/diagnose/mtr/targets", s.handleGetMTRTargets)
 	mux.HandleFunc("GET /api/v1/ip/lookup", s.handleIPLookup)
+	mux.HandleFunc("GET /api/v1/ip/database", s.handleGetIPDatabaseStatus)
+	mux.HandleFunc("POST /api/v1/ip/database/reload", s.handleReloadIPDatabase)
+	mux.HandleFunc("POST /api/v1/ip/database/upload", s.handleUploadIPDatabase)
+	mux.HandleFunc("POST /api/v1/ip/database/download", s.handleDownloadIPDatabase)
 	mux.HandleFunc("GET /api/v1/nodes/{id}/speedtest/latest", s.handleGetNodeSpeedtestLatest)
 	mux.HandleFunc("GET /api/v1/nodes/speedtests/latest", s.handleListNodeSpeedtestsLatest)
 	mux.HandleFunc("POST /api/v1/tools/reality-check", s.handleCheckRealityCandidate)
@@ -1327,6 +1334,13 @@ func (s *Server) enrichNodeLocation(node *Node) {
 	}
 }
 
+func (s *Server) SetMMDBPath(path string) error {
+	if s.ipLocator == nil {
+		return errors.New("ip locator not initialized")
+	}
+	return s.ipLocator.LoadMMDB(path)
+}
+
 func (s *Server) handleIPLookup(w http.ResponseWriter, r *http.Request) {
 	if _, err := s.operator(r, false); err != nil {
 		writeError(w, err)
@@ -1337,17 +1351,310 @@ func (s *Server) handleIPLookup(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "ip parameter required"})
 		return
 	}
-	location := ""
-	city := ""
+	if s.ipLocator == nil {
+		writeJSON(w, http.StatusOK, map[string]any{
+			"ip":       ipStr,
+			"location": "未知",
+			"city":     "",
+		})
+		return
+	}
+	info := s.ipLocator.Lookup(ipStr)
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ip":           ipStr,
+		"location":     info.Location,
+		"city":         info.City,
+		"country":      info.Country,
+		"country_code": info.CountryCode,
+		"province":     info.Province,
+		"isp":          info.ISP,
+		"asn":          info.ASN,
+		"source":       info.Source,
+		"is_anycast":   info.IsAnycast,
+		"is_domestic":  info.IsDomestic,
+	})
+}
+
+func (s *Server) handleGetIPDatabaseStatus(w http.ResponseWriter, r *http.Request) {
+	if _, err := s.operator(r, false); err != nil {
+		writeError(w, err)
+		return
+	}
+	mmdbLoaded, mmdbPath, mmdbType := false, "", ""
 	if s.ipLocator != nil {
-		location = s.ipLocator.Locate(ipStr)
-		city = s.ipLocator.LocateCity(ipStr)
+		mmdbLoaded, mmdbPath, mmdbType = s.ipLocator.MMDBStatus()
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"ip":       ipStr,
-		"location": location,
-		"city":     city,
+		"mmdb_loaded":      mmdbLoaded,
+		"mmdb_path":        mmdbPath,
+		"mmdb_type":        mmdbType,
+		"ip2region_loaded": true,
 	})
+}
+
+func (s *Server) handleReloadIPDatabase(w http.ResponseWriter, r *http.Request) {
+	operator, err := s.writer(r)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	if s.ipLocator == nil {
+		writeError(w, errors.New("ip locator not initialized"))
+		return
+	}
+	if err := s.ipLocator.Reload(s.store.DataDir()); err != nil {
+		writeJSON(w, http.StatusOK, map[string]any{
+			"success": false,
+			"error":   err.Error(),
+		})
+		return
+	}
+	_ = s.store.AppendAudit(r.Context(), operator.ID, "system.ipdb_reloaded", "system", "ipdb", "IP location database reloaded")
+	mmdbLoaded, mmdbPath, mmdbType := s.ipLocator.MMDBStatus()
+	writeJSON(w, http.StatusOK, map[string]any{
+		"success":     true,
+		"mmdb_loaded": mmdbLoaded,
+		"mmdb_path":   mmdbPath,
+		"mmdb_type":   mmdbType,
+	})
+}
+
+func (s *Server) handleUploadIPDatabase(w http.ResponseWriter, r *http.Request) {
+	operator, err := s.writer(r)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	if err := r.ParseMultipartForm(128 << 20); err != nil {
+		writeError(w, fmt.Errorf("parse upload: %w", err))
+		return
+	}
+	file, header, err := r.FormFile("file")
+	if err != nil {
+		writeError(w, errors.New("file is required"))
+		return
+	}
+	defer file.Close()
+
+	filename := filepath.Base(header.Filename)
+	if !strings.HasSuffix(strings.ToLower(filename), ".mmdb") {
+		filename = "GeoLite2-City.mmdb"
+	}
+	destPath := filepath.Join(s.store.DataDir(), filename)
+	tempPath := destPath + ".tmp"
+	out, err := os.Create(tempPath)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	if _, err := io.Copy(out, file); err != nil {
+		_ = out.Close()
+		_ = os.Remove(tempPath)
+		writeError(w, err)
+		return
+	}
+	_ = out.Close()
+
+	// Verify database validity before activating
+	testReader, err := geoip2.Open(tempPath)
+	if err != nil {
+		_ = os.Remove(tempPath)
+		writeError(w, fmt.Errorf("invalid mmdb binary: %w", err))
+		return
+	}
+	_ = testReader.Close()
+
+	if err := os.Rename(tempPath, destPath); err != nil {
+		_ = os.Remove(tempPath)
+		writeError(w, err)
+		return
+	}
+
+	if s.ipLocator != nil {
+		if err := s.ipLocator.LoadMMDB(destPath); err != nil {
+			writeError(w, fmt.Errorf("load uploaded mmdb: %w", err))
+			return
+		}
+	}
+	_ = s.store.AppendAudit(r.Context(), operator.ID, "system.ipdb_uploaded", "system", "ipdb", fmt.Sprintf("MMDB IP database uploaded: %s", filename))
+
+	mmdbLoaded, mmdbPath, mmdbType := s.ipLocator.MMDBStatus()
+	writeJSON(w, http.StatusOK, map[string]any{
+		"success":     true,
+		"filename":    filename,
+		"mmdb_loaded": mmdbLoaded,
+		"mmdb_path":   mmdbPath,
+		"mmdb_type":   mmdbType,
+	})
+}
+
+func (s *Server) handleDownloadIPDatabase(w http.ResponseWriter, r *http.Request) {
+	operator, err := s.writer(r)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	var input struct {
+		URL string `json:"url"`
+	}
+	_ = json.NewDecoder(r.Body).Decode(&input)
+	downloadURL := strings.TrimSpace(input.URL)
+	if downloadURL == "" {
+		downloadURL = "https://github.com/P3TERX/GeoLite.mmdb/releases/latest/download/GeoLite2-City.mmdb"
+	}
+
+	destPath := filepath.Join(s.store.DataDir(), "GeoLite2-City.mmdb")
+	tempPath := destPath + ".downloading"
+
+	ctx, cancel := context.WithTimeout(r.Context(), 180*time.Second)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, downloadURL, nil)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	req.Header.Set("User-Agent", "Polaris-IPLocator/2.0")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		writeError(w, fmt.Errorf("download failed: %w", err))
+		return
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		writeError(w, fmt.Errorf("download failed with status %d", resp.StatusCode))
+		return
+	}
+
+	out, err := os.Create(tempPath)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	if _, err := io.Copy(out, resp.Body); err != nil {
+		_ = out.Close()
+		_ = os.Remove(tempPath)
+		writeError(w, err)
+		return
+	}
+	_ = out.Close()
+
+	// Verify database validity before activating
+	testReader, err := geoip2.Open(tempPath)
+	if err != nil {
+		_ = os.Remove(tempPath)
+		writeError(w, fmt.Errorf("downloaded file is not a valid mmdb: %w", err))
+		return
+	}
+	_ = testReader.Close()
+
+	if err := os.Rename(tempPath, destPath); err != nil {
+		_ = os.Remove(tempPath)
+		writeError(w, err)
+		return
+	}
+
+	if s.ipLocator != nil {
+		if err := s.ipLocator.LoadMMDB(destPath); err != nil {
+			writeError(w, fmt.Errorf("load downloaded mmdb: %w", err))
+			return
+		}
+	}
+	_ = s.store.AppendAudit(r.Context(), operator.ID, "system.ipdb_downloaded", "system", "ipdb", "High precision MMDB downloaded and activated")
+
+	mmdbLoaded, mmdbPath, mmdbType := s.ipLocator.MMDBStatus()
+	writeJSON(w, http.StatusOK, map[string]any{
+		"success":     true,
+		"mmdb_loaded": mmdbLoaded,
+		"mmdb_path":   mmdbPath,
+		"mmdb_type":   mmdbType,
+	})
+}
+
+// EnsureMMDBAsync checks if a high-precision MMDB is loaded.
+// If not, it kicks off a background goroutine to automatically download and hot-load GeoLite2-City.mmdb
+// from reliable public mirrors without requiring any API keys, accounts, or user intervention.
+func (s *Server) EnsureMMDBAsync(ctx context.Context) {
+	if s.ipLocator == nil {
+		return
+	}
+	if loaded, _, _ := s.ipLocator.MMDBStatus(); loaded {
+		return
+	}
+	go s.bootstrapMMDB(ctx)
+}
+
+func (s *Server) bootstrapMMDB(ctx context.Context) {
+	destPath := filepath.Join(s.store.DataDir(), "GeoLite2-City.mmdb")
+	if fi, err := os.Stat(destPath); err == nil && !fi.IsDir() {
+		if err := s.ipLocator.LoadMMDB(destPath); err == nil {
+			log.Printf("[polaris] 自动载入本地高精度 IP 库: %s", destPath)
+			return
+		}
+	}
+
+	mirrors := []string{
+		"https://testingcf.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@release/GeoLite2-City.mmdb",
+		"https://ghproxy.net/https://github.com/P3TERX/GeoLite.mmdb/releases/latest/download/GeoLite2-City.mmdb",
+		"https://github.com/P3TERX/GeoLite.mmdb/releases/latest/download/GeoLite2-City.mmdb",
+	}
+
+	tempPath := destPath + ".bootstrap"
+	for _, mirrorURL := range mirrors {
+		select {
+		case <-ctx.Done():
+			return
+		default:
+		}
+
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, mirrorURL, nil)
+		if err != nil {
+			continue
+		}
+		req.Header.Set("User-Agent", "Polaris-IPLocator/2.0")
+
+		client := &http.Client{Timeout: 120 * time.Second}
+		resp, err := client.Do(req)
+		if err != nil || resp.StatusCode != http.StatusOK {
+			if resp != nil && resp.Body != nil {
+				_ = resp.Body.Close()
+			}
+			continue
+		}
+
+		out, err := os.Create(tempPath)
+		if err != nil {
+			_ = resp.Body.Close()
+			continue
+		}
+
+		_, copyErr := io.Copy(out, resp.Body)
+		_ = out.Close()
+		_ = resp.Body.Close()
+		if copyErr != nil {
+			_ = os.Remove(tempPath)
+			continue
+		}
+
+		testReader, err := geoip2.Open(tempPath)
+		if err != nil {
+			_ = os.Remove(tempPath)
+			continue
+		}
+		_ = testReader.Close()
+
+		if err := os.Rename(tempPath, destPath); err != nil {
+			_ = os.Remove(tempPath)
+			continue
+		}
+
+		if err := s.ipLocator.LoadMMDB(destPath); err == nil {
+			log.Printf("[polaris] 高精度 IP 库 (GeoLite2-City) 自动同步并热加载成功: %s", mirrorURL)
+			return
+		}
+	}
 }
 
 func (s *Server) listNodes(w http.ResponseWriter, r *http.Request) {
