@@ -967,16 +967,24 @@ func applySingBoxConfig(ctx context.Context, task Task, dataDir string, passthro
 	if !strings.EqualFold(hex.EncodeToString(digest[:]), task.ExpectedHash) {
 		return TaskResult{Status: "failed", Summary: "configuration SHA-256 does not match task hash"}
 	}
-	if strings.EqualFold(reportedSingBoxConfigurationHash(dataDir), task.ExpectedHash) && singBoxServiceActive(ctx) {
-		return TaskResult{Status: "succeeded", Summary: "requested sing-box configuration is already active"}
-	}
-	// Placement is decided here, on the node: only the node can see what else
-	// holds the ports the services were asked to bind. The rewritten
-	// configuration is what gets written; the control plane still hears the
-	// hash it asked for, so it sees a converged node rather than drift.
 	plan, err := planNodePlacement(ctx, payload.Configuration, payload.SNI, dataDir)
 	if err != nil {
 		return TaskResult{Status: "failed", Summary: err.Error()}
+	}
+	routerConfiguration, digestErr := nginxroute.Compile(plan.routes)
+	if digestErr != nil {
+		return TaskResult{Status: "failed", Summary: "生成 Nginx 分流配置失败：" + digestErr.Error()}
+	}
+	if strings.EqualFold(reportedSingBoxConfigurationHash(dataDir), task.ExpectedHash) && singBoxServiceActive(ctx) {
+		router := applyNginxConfiguration(ctx, routerConfiguration, dataDir, passthrough)
+		if router.Status == "failed" {
+			return TaskResult{Status: "failed", Summary: "Nginx 分流未能应用：" + router.Summary}
+		}
+		summary := "requested sing-box configuration is already active"
+		if len(plan.summaries) > 0 {
+			summary += "；" + strings.Join(plan.summaries, "；")
+		}
+		return TaskResult{Status: "succeeded", Summary: summary}
 	}
 	configDir := filepath.Dir(managedSingBoxConfig)
 	if err := os.MkdirAll(configDir, 0o750); err != nil {
@@ -1024,7 +1032,7 @@ func applySingBoxConfig(ctx context.Context, task Task, dataDir string, passthro
 	// released it. Hence the two passes around the restart: the first drops
 	// what the router must give up, the second binds what it now serves. The
 	// second is a no-op whenever nothing changed.
-	routerConfiguration, digestErr := nginxroute.Compile(plan.routes)
+	routerConfiguration, digestErr = nginxroute.Compile(plan.routes)
 	if digestErr != nil {
 		return TaskResult{Status: "failed", Summary: "生成 Nginx 分流配置失败：" + digestErr.Error()}
 	}

@@ -927,9 +927,12 @@ func (s *Server) dispatchNodeConfiguration(ctx context.Context, nodeID, operator
 	if err != nil {
 		return Task{}, err
 	}
+	namesBytes, _ := json.Marshal(names)
+	namesDigest := sha256.Sum256(namesBytes)
+	idempotencyKey := "configuration-" + hash + "-" + hex.EncodeToString(namesDigest[:8])
 	return s.DispatchTask(ctx, Task{
 		NodeID: nodeID, OperatorID: operatorID, Kind: "singbox.apply_config",
-		IdempotencyKey: "configuration-" + hash, Payload: string(payload), ExpectedHash: hash,
+		IdempotencyKey: idempotencyKey, Payload: string(payload), ExpectedHash: hash,
 	})
 }
 
