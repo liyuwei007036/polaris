@@ -73,7 +73,7 @@ func newIPLocator(searchDirs ...string) (*ipLocator, error) {
 // autoLoadMMDB scans standard paths for a MaxMind / IPinfo .mmdb file and loads the first valid one found.
 func (l *ipLocator) autoLoadMMDB(dirs ...string) error {
 	candidates := make([]string, 0, len(dirs)*4+8)
-	names := []string{"GeoLite2-City.mmdb", "ipinfo.mmdb", "GeoIP2-City.mmdb", "Country.mmdb", "geoip.mmdb"}
+	names := []string{"GeoLite2-City.mmdb", "ipinfo.mmdb", "GeoIP2-City.mmdb", "Country.mmdb", "geoip.mmdb", "cz88.mmdb", "qqwry.mmdb"}
 
 	for _, dir := range dirs {
 		if dir == "" {
