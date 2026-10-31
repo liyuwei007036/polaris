@@ -4,22 +4,18 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import {
   Aim,
   Clock,
+  Close,
   Connection,
   CopyDocument,
-  Cpu,
   Delete,
   Edit,
-  Grid,
   InfoFilled,
   Loading,
-  Management,
-  Monitor,
   MoreFilled,
   Plus,
   Refresh,
   RemoveFilled,
   Search,
-  Tickets,
   Top,
 } from '@element-plus/icons-vue'
 import { api, post, put } from '../api'
@@ -27,10 +23,15 @@ import { formatBytes, formatDateTime, includesText } from '../format'
 import { subscribeLive } from '../live'
 import { connectionSnapshots, subscribeConnections } from '../connections'
 import PageHeader from '../components/PageHeader.vue'
-import PagedTable from '../components/PagedTable.vue'
 
 const MASTER_HOST_KEY = 'polaris_master_host'
-const VIEW_MODE_KEY = 'polaris_server_view_mode'
+const RING_LENGTH = 2 * Math.PI * 27
+const CARRIERS = [
+  { isp: 'telecom', short: '电信' },
+  { isp: 'unicom', short: '联通' },
+  { isp: 'mobile', short: '移动' },
+]
+const PERIOD_LABELS = { day: '天', month: '月', quarter: '季', year: '年' }
 
 const appState = inject('appState')
 const isAdmin = inject('isAdmin')
@@ -43,13 +44,6 @@ const pending = ref([])
 const metrics = ref({})
 const speedtests = ref({})
 const speedtesting = reactive({})
-
-// 视图模式：cards (默认精美卡片) 或 table (传统表格)
-const viewMode = ref(window.localStorage.getItem(VIEW_MODE_KEY) || 'cards')
-function switchViewMode(mode) {
-  viewMode.value = mode
-  window.localStorage.setItem(VIEW_MODE_KEY, mode)
-}
 
 const keyword = ref('')
 const statusFilter = ref('') // '' | 'online' | 'offline' | 'blocked'
@@ -77,6 +71,17 @@ const editForm = ref({
   expires_on: '', price: '', price_period: '', currency: 'USD', provider: '', provider_url: '', traffic_plan: '', bandwidth: '',
 })
 const newCustomEgressIP = ref('')
+const editTab = ref('basic')
+const editTabs = computed(() => [
+  { key: 'basic', label: '基本信息' },
+  { key: 'plan', label: '套餐与到期' },
+  { key: 'network', label: '网络与 DDNS', badge: editNodeAllIPs.value.length || '' },
+])
+const editHeader = computed(() => buildDialogHeader(editNode.value, editForm.value.name))
+const editPlanPreview = computed(() => {
+  const parts = [getPriceText(editForm.value), getExpiry(editForm.value.expires_on)?.text].filter(Boolean)
+  return parts.join(' · ')
+})
 
 const editNodeAllIPs = computed(() => {
   const ips = []
@@ -158,10 +163,6 @@ let stopLive
 let stopConnections
 let lastSingBoxCheckTime = 0
 
-// 卡片分页
-const currentPage = ref(1)
-const pageSize = ref(12)
-
 const filteredNodes = computed(() => {
   let list = appState.nodes.filter((node) => {
     if (statusFilter.value === 'online' && !node.online) return false
@@ -201,21 +202,131 @@ const filteredNodes = computed(() => {
   return list
 })
 
-const pagedNodes = computed(() => {
-  const start = (currentPage.value - 1) * pageSize.value
-  return filteredNodes.value.slice(start, start + pageSize.value)
-})
-
-watch([keyword, statusFilter, sortBy], () => {
-  currentPage.value = 1
-})
-
 const filteredPending = computed(() =>
   pending.value.filter((row) => includesText([row.node_name, row.capabilities], keyword.value)),
 )
 
 // 实时快照
 const live = computed(() => connectionSnapshots.value)
+
+function buildGauge(key, label, percent, available, detail, tip) {
+  const value = available ? Math.min(100, Math.max(0, Math.round(percent || 0))) : 0
+  return {
+    key,
+    label,
+    available,
+    text: available ? String(value) : '—',
+    detail,
+    tip,
+    color: available ? getUsageStatusColor(value) : 'rgba(148, 163, 184, .35)',
+    offset: RING_LENGTH * (1 - value / 100),
+  }
+}
+
+function buildRoute(st, isp, node, direction) {
+  const prefix = direction === 'in' ? `inbound_${isp}` : isp
+  const latency = direction === 'in' ? st[`${prefix}_latency_ms`] : (st[`${prefix}_latency_ms`] ?? st[`${prefix}_ping_ms`])
+  const blocked = direction === 'in' && isNodeGFWBlocked(st)
+  return {
+    label: blocked ? '阻断' : formatCarrierDisplay(st[`${prefix}_route`], latency),
+    latency: blocked ? '' : (latency > 0 ? `${latency}ms` : ''),
+    cls: blocked ? 'ping-status-timeout' : getPingClass(latency),
+    tip: direction === 'in'
+      ? (blocked ? getInboundProbeTooltip(st) : getInboundCarrierTooltip(st, isp, node))
+      : getISPTooltip(st, isp, node),
+  }
+}
+
+function getExpiry(value) {
+  if (!value) return null
+  const end = new Date(`${value}T00:00:00`)
+  if (Number.isNaN(end.getTime())) return { text: `到期 ${value}`, level: '' }
+  const today = new Date()
+  today.setHours(0, 0, 0, 0)
+  const days = Math.round((end - today) / 86400000)
+  if (days < 0) return { text: `已过期 ${-days} 天`, level: 'danger', title: `到期日 ${value}` }
+  if (days === 0) return { text: '今日到期', level: 'danger', title: `到期日 ${value}` }
+  return { text: `剩余 ${days} 天`, level: days <= 7 ? 'warning' : '', title: `到期日 ${value}` }
+}
+
+function getAvatar(name) {
+  const text = (name || '').trim()
+  const lead = text.match(/^(\p{Regional_Indicator}{2}|\p{Extended_Pictographic}\uFE0F?)/u)
+  if (lead) return { text: lead[0], isFlag: true, rest: text.slice(lead[0].length).trim() }
+  const flag = getNodeFlag(text)
+  if (flag && flag !== '🌐') return { text: flag, isFlag: true, rest: text }
+  return { text: (Array.from(text)[0] || '?').toUpperCase(), isFlag: false, rest: text }
+}
+
+function getNodeStatus(node) {
+  const blocked = isNodeGFWBlocked(speedtests.value[node.id])
+  const status = !node.online ? 'offline' : blocked ? 'blocked' : 'online'
+  return { status, blocked, statusText: { online: '在线', offline: '离线', blocked: '端口阻断' }[status] }
+}
+
+function buildDialogHeader(node, name) {
+  if (!node) return null
+  const avatar = getAvatar(name || node.name)
+  return {
+    ...getNodeStatus(node),
+    avatar: avatar.text,
+    isFlag: avatar.isFlag,
+    name: avatar.rest || name || node.name,
+    sub: [[node.os || 'linux', node.architecture].filter(Boolean).join(' · '), node.city || node.location, node.client_address]
+      .filter(Boolean)
+      .join(' · '),
+  }
+}
+
+function getPriceText(node) {
+  if (!node.price_period) return ''
+  if (node.price_period === 'free') return '免费'
+  return `${node.currency || 'USD'} ${node.price || 0}/${PERIOD_LABELS[node.price_period] || node.price_period}`
+}
+
+const cards = computed(() => filteredNodes.value.map((node) => {
+  const host = node.online ? metrics.value[node.id]?.host : null
+  const proxy = metrics.value[node.id]?.proxy
+  const st = speedtests.value[node.id]
+  const snap = live.value.get(node.id)
+  const { status, statusText, blocked } = getNodeStatus(node)
+  const avatar = getAvatar(node.name)
+  return {
+    node,
+    status,
+    statusText,
+    blocked,
+    avatar: avatar.text,
+    isFlag: avatar.isFlag,
+    displayName: avatar.rest || node.name,
+    platform: [node.os || 'linux', node.architecture].filter(Boolean).join(' · '),
+    region: node.city || node.location || '',
+    gauges: [
+      buildGauge('cpu', 'CPU', host?.cpu_percent, Boolean(host), host ? `${host.cpu_percent.toFixed(1)}%` : '待上报', getCPUTooltip(node)),
+      buildGauge('mem', '内存', getResourcePercent(host?.memory_used, host?.memory_total), Boolean(host?.memory_total),
+        host?.memory_total ? `${formatResourceBytes(host.memory_used)} / ${formatResourceBytes(host.memory_total)}` : '待上报', getMemTooltip(node)),
+      buildGauge('disk', '硬盘', getResourcePercent(host?.disk_used, host?.disk_total), Boolean(host?.disk_total),
+        host?.disk_total ? `${formatResourceBytes(host.disk_used)} / ${formatResourceBytes(host.disk_total)}` : '待上报', getDiskTooltip(node)),
+    ],
+    rx: snap?.has_rates ? formatBytes(snap.received_rate, '/s') : '0 B/s',
+    tx: snap?.has_rates ? formatBytes(snap.sent_rate, '/s') : '0 B/s',
+    total: proxy ? formatBytes((proxy.received_bytes || 0) + (proxy.sent_bytes || 0)) : '',
+    totalTip: proxy ? `累计下行 ${formatBytes(proxy.received_bytes)} · 累计上行 ${formatBytes(proxy.sent_bytes)}` : '',
+    conn: snap?.connection_count ?? 0,
+    testedAt: st?.tested_at ? formatFriendlyTime(st.tested_at).replace('刚刚活跃', '刚刚') : '',
+    routes: st
+      ? CARRIERS.map((c) => ({ ...c, in: buildRoute(st, c.isp, node, 'in'), out: buildRoute(st, c.isp, node, 'out') }))
+      : null,
+    price: getPriceText(node),
+    expiry: getExpiry(node.expires_on),
+    ddnsTip: node.ddns_enabled
+      ? `DDNS 域名: ${(node.ddns_domains?.length ? node.ddns_domains : [node.ddns_domain || node.client_address]).join('、')}<br/>当前解析 IP: ${node.last_observed_ip || '同步中'}`
+      : '',
+    ipTip: node.ip_addresses?.length
+      ? `本机网卡检测到的出口 IP (${node.ip_addresses.length} 个):<br/>${node.ip_addresses.map((ip) => ip + (node.ip_aliases?.[ip] ? ` (${node.ip_aliases[ip]})` : '')).join('<br/>')}`
+      : '',
+  }
+}))
 
 // 状态筛选计数
 const stats = computed(() => {
@@ -747,6 +858,7 @@ async function openEdit(node) {
     expires_on: node.expires_on || '', price: node.price || '', price_period: node.price_period || '', currency: node.currency || 'USD',
     provider: node.provider || '', provider_url: node.provider_url || '', traffic_plan: node.traffic_plan || '', bandwidth: node.bandwidth || '',
   }
+  editTab.value = 'basic'
   loadCloudflareRecords()
   editDialog.value = true
 }
@@ -833,8 +945,57 @@ function getLossColor(loss) {
   return 'var(--sb-danger, #ef4444)'
 }
 
+function formatMs(value) {
+  return value != null && value !== '' ? Number(value).toFixed(1) : '-'
+}
+
+function formatLoss(value) {
+  return Number.isInteger(value) ? String(value) : value.toFixed(1)
+}
+
+const mtrHeader = computed(() => buildDialogHeader(mtrTargetNode.value))
+
+const mtrHops = computed(() => (mtrReport.value?.hops || []).map((h, i) => {
+  const loss = Number(h.loss_percent ?? h.loss_pct ?? 0) || 0
+  return {
+    key: i,
+    no: h.count ?? h.hop ?? i + 1,
+    ip: h.ip || h.host || '???',
+    host: h.host && h.host !== h.ip ? h.host : '',
+    loc: h.location || h.node_name || (h.city ? (h.asn ? `${h.asn} ${h.city}` : h.city) : ''),
+    loss,
+    lossText: formatLoss(loss),
+    lossColor: getLossColor(loss),
+    kind: h.is_rate_limit || h.is_rate_limited ? 'limit' : loss > 0 ? 'drop' : 'ok',
+    avg: formatMs(h.avg_rtt_ms ?? h.avg_ms),
+    best: formatMs(h.best_rtt_ms ?? h.best_ms),
+    worst: formatMs(h.worst_rtt_ms ?? h.worst_ms),
+    stdev: formatMs(h.stdev_ms),
+  }
+}))
+
+const mtrSummary = computed(() => {
+  const r = mtrReport.value
+  if (!r) return null
+  const loss = Number(r.summary_loss ?? r.end_to_end_loss ?? 0) || 0
+  const realDrops = r.real_drop_hops ?? mtrHops.value.filter((h) => h.kind === 'drop').length
+  return {
+    target: r.target || r.target_host || '-',
+    label: r.target_label || '',
+    tool: r.tool || 'mtr',
+    loss: formatLoss(loss),
+    lossColor: getLossColor(loss),
+    avg: formatMs(r.summary_avg_ms ?? r.end_to_end_avg_ms),
+    hopCount: mtrHops.value.length,
+    realDrops,
+    bad: realDrops > 0 || loss > 0,
+    diagnosis: r.diagnosis || r.summary || '链路排查完成',
+  }
+})
+
 function handleCardCommand(node, command) {
-  if (command === 'upgradeAgent') upgradeAgent(node)
+  if (command === 'edit') openEdit(node)
+  else if (command === 'upgradeAgent') upgradeAgent(node)
   else if (command === 'upgradeSingBox') upgradeSingBox(node)
   else if (command === 'revoke') revoke(node)
   else if (command === 'mtr') openMTRDialog(node)
@@ -916,30 +1077,6 @@ onBeforeUnmount(() => {
             <el-option label="内存占用最高" value="mem" />
           </el-select>
         </div>
-
-        <div class="toolbar-right">
-          <!-- 视图模式切换 -->
-          <div class="view-mode-toggle">
-            <button
-              class="toggle-btn"
-              :class="{ active: viewMode === 'cards' }"
-              title="卡片视图"
-              @click="switchViewMode('cards')"
-            >
-              <el-icon><Grid /></el-icon>
-              <span>卡片</span>
-            </button>
-            <button
-              class="toggle-btn"
-              :class="{ active: viewMode === 'table' }"
-              title="表格视图"
-              @click="switchViewMode('table')"
-            >
-              <el-icon><Tickets /></el-icon>
-              <span>列表</span>
-            </button>
-          </div>
-        </div>
       </div>
 
       <!-- 3. 等待接入审核卡片 (Pending) -->
@@ -974,451 +1111,160 @@ onBeforeUnmount(() => {
         </div>
       </template>
 
-      <!-- 4. 视图 1：顶级暗黑工业美学卡片 (Card View) -->
-      <template v-if="viewMode === 'cards'">
-        <div v-if="filteredNodes.length === 0" class="empty-cards-box">
-          <el-empty description="未找到符合条件的服务器" />
-        </div>
+      <div v-if="cards.length === 0" class="empty-cards-box">
+        <el-empty description="未找到符合条件的服务器" />
+      </div>
 
-        <div v-else class="node-cards-grid">
-          <div
-            v-for="node in pagedNodes"
-            :key="node.id"
-            class="node-card"
-            :class="{
-              'is-offline': !node.online,
-              'has-gfw-block': isNodeGFWBlocked(speedtests[node.id]),
-            }"
-          >
-            <!-- 顶边高光线 -->
-            <div
-              class="node-card-glow"
-              :class="node.online ? (isNodeGFWBlocked(speedtests[node.id]) ? 'glow-blocked' : 'glow-online') : 'glow-offline'"
-            />
-
-            <!-- 1. 头部：标题、国旗、IP 与快捷操作 -->
-            <div class="card-header-clean">
-              <div class="header-main">
-                <div class="title-row">
-                  <span v-if="getNodeFlag(node.name)" class="flag-icon">{{ getNodeFlag(node.name) }}</span>
-                  <span class="server-title" :title="node.name">{{ node.name }}</span>
-                  <span
-                    class="status-indicator-dot"
-                    :class="node.online ? (isNodeGFWBlocked(speedtests[node.id]) ? 'blocked' : 'online') : 'offline'"
-                    :title="node.online ? (isNodeGFWBlocked(speedtests[node.id]) ? '探针全超时 (端口阻断)' : '在线运行中') : '节点已离线'"
-                  />
-                  <span v-if="isNodeGFWBlocked(speedtests[node.id])" class="pill-gfw-warn">
-                    端口阻断
-                  </span>
-                </div>
-                <div class="subtitle-row">
-                  <span class="sub-os-arch">{{ node.os || 'linux' }}/{{ node.architecture || 'amd64' }}</span>
-                  <span class="sub-ver">v{{ node.agent_version || '—' }}</span>
-                  <span v-if="node.city || node.location" class="sub-os-arch" :title="node.location || node.city">
-                    {{ node.city || node.location }}
-                  </span>
-                  <span v-if="node.client_address" class="sub-ip font-mono" :title="'点击复制: ' + node.client_address" @click="copyAddress(node.client_address)">
-                    {{ node.client_address }}
-                    <el-icon class="copy-icon"><CopyDocument /></el-icon>
-                  </span>
-                  <el-tooltip
-                    v-if="node.ddns_enabled"
-                    raw-content
-                    :content="`DDNS 域名: ${(node.ddns_domains && node.ddns_domains.length ? node.ddns_domains : [node.ddns_domain || node.client_address]).join('、')}<br/>当前解析 IP: ${node.last_observed_ip || '同步中'}`"
-                    placement="top"
-                  >
-                    <span class="chip-ddns">
-                      DDNS: {{ node.last_observed_ip || '同步中' }}
-                    </span>
-                  </el-tooltip>
-                  <el-tooltip
-                    v-if="node.ip_addresses && node.ip_addresses.length"
-                    raw-content
-                    :content="`本机网卡检测到的出口 IP (${node.ip_addresses.length} 个):<br/>${node.ip_addresses.map((ip) => ip + (node.ip_aliases && node.ip_aliases[ip] ? ' (' + node.ip_aliases[ip] + ')' : '')).join('<br/>')}`"
-                    placement="top"
-                  >
-                    <span class="chip-ddns" style="cursor: default">
-                      {{ node.ip_addresses.length }} 个出口 IP
-                    </span>
-                  </el-tooltip>
-                </div>
-                <div v-if="node.expires_on || node.provider || node.price_period || node.traffic_plan || node.bandwidth" class="hosting-meta">
-                  <a v-if="node.provider && node.provider_url" :href="node.provider_url" target="_blank" rel="noopener noreferrer" class="hosting-provider">{{ node.provider }}</a>
-                  <span v-else-if="node.provider" class="hosting-provider">{{ node.provider }}</span>
-                  <span v-if="node.expires_on" class="sub-os-arch">到期 {{ node.expires_on }}</span>
-                  <span v-if="node.price_period" class="sub-os-arch">{{ node.price_period === 'free' ? '免费' : `${node.currency || 'USD'} ${node.price}/${({day:'天',month:'月',quarter:'季',year:'年'})[node.price_period] || node.price_period}` }}</span>
-                  <span v-if="node.traffic_plan" class="sub-os-arch">流量 {{ node.traffic_plan }}</span>
-                  <span v-if="node.bandwidth" class="sub-os-arch">带宽 {{ node.bandwidth }}</span>
-                </div>
+      <div v-else class="srv-grid">
+        <article v-for="card in cards" :key="card.node.id" class="srv-card" :class="`is-${card.status}`">
+          <header class="srv-head">
+            <div class="srv-avatar" :class="{ 'is-flag': card.isFlag }">{{ card.avatar }}</div>
+            <div class="srv-ident">
+              <div class="srv-name-row">
+                <h3 class="srv-name" :title="card.node.name">{{ card.displayName }}</h3>
+                <span class="srv-status" :class="`is-${card.status}`">
+                  <i class="srv-status-dot" />{{ card.statusText }}
+                </span>
               </div>
-
-              <div class="header-actions">
-                <button
-                  v-if="canWrite && node.online"
-                  class="btn-speedtest-act"
-                  :disabled="Boolean(speedtesting[node.id])"
-                  title="测速"
-                  @click="runSpeedtest(node)"
-                >
-                  <el-icon :class="{ 'is-loading': speedtesting[node.id] }"><Connection /></el-icon>
-                  <span>{{ speedtesting[node.id] ? '测速中' : '测速' }}</span>
+              <div class="srv-sub">
+                <span>{{ card.platform }}</span>
+                <span v-if="card.region" class="srv-sub-sep">{{ card.region }}</span>
+                <span class="srv-sub-sep font-mono">v{{ card.node.agent_version || '—' }}</span>
+              </div>
+            </div>
+            <div class="srv-actions">
+              <el-tooltip v-if="canWrite && card.node.online" :content="speedtesting[card.node.id] ? '线路检测中' : '三网线路检测'" placement="top">
+                <button class="srv-icon-btn" :disabled="Boolean(speedtesting[card.node.id])" @click="runSpeedtest(card.node)">
+                  <el-icon :class="{ 'is-loading': speedtesting[card.node.id] }"><Connection /></el-icon>
                 </button>
-                <el-dropdown trigger="click" @command="handleCardCommand(node, $event)">
-                  <button class="icon-more-btn" title="更多操作">
-                    <el-icon><MoreFilled /></el-icon>
-                  </button>
-                  <template #dropdown>
-                    <el-dropdown-menu>
-                      <el-dropdown-item v-if="canWrite && node.online" command="mtr">
-                        <el-icon><Aim /></el-icon>逐跳丢包排障 (MTR)
-                      </el-dropdown-item>
-                      <el-dropdown-item v-if="canWrite && node.ddns_enabled" command="syncDDNS">
-                        <el-icon><Refresh /></el-icon>同步 DDNS
-                      </el-dropdown-item>
-                      <el-dropdown-item v-if="canWrite" command="edit" @click="openEdit(node)">
-                        <el-icon><Edit /></el-icon>配置节点
-                      </el-dropdown-item>
-                      <el-dropdown-item v-if="isAdmin && agentUpdateAvailable(node)" command="upgradeAgent">
-                        <el-icon><Top /></el-icon>升级 Agent
-                      </el-dropdown-item>
-                      <el-dropdown-item v-if="isAdmin && singBoxUpdateAvailable(node)" command="upgradeSingBox">
-                        <el-icon><Top /></el-icon>升级 sing-box
-                      </el-dropdown-item>
-                      <el-dropdown-item v-if="isAdmin" command="revoke" divided class="danger-item">
-                        <el-icon><RemoveFilled /></el-icon>移除服务器
-                      </el-dropdown-item>
-                    </el-dropdown-menu>
-                  </template>
-                </el-dropdown>
-              </div>
+              </el-tooltip>
+              <el-dropdown v-if="canWrite || isAdmin" trigger="click" @command="handleCardCommand(card.node, $event)">
+                <button class="srv-icon-btn" title="更多操作"><el-icon><MoreFilled /></el-icon></button>
+                <template #dropdown>
+                  <el-dropdown-menu>
+                    <el-dropdown-item v-if="canWrite" command="edit"><el-icon><Edit /></el-icon>配置节点</el-dropdown-item>
+                    <el-dropdown-item v-if="canWrite && card.node.online" command="mtr"><el-icon><Aim /></el-icon>逐跳丢包排障 (MTR)</el-dropdown-item>
+                    <el-dropdown-item v-if="canWrite && card.node.ddns_enabled" command="syncDDNS"><el-icon><Refresh /></el-icon>同步 DDNS</el-dropdown-item>
+                    <el-dropdown-item v-if="isAdmin && agentUpdateAvailable(card.node)" command="upgradeAgent"><el-icon><Top /></el-icon>升级 Agent</el-dropdown-item>
+                    <el-dropdown-item v-if="isAdmin && singBoxUpdateAvailable(card.node)" command="upgradeSingBox"><el-icon><Top /></el-icon>升级 sing-box</el-dropdown-item>
+                    <el-dropdown-item v-if="isAdmin" command="revoke" divided class="danger-item"><el-icon><RemoveFilled /></el-icon>移除服务器</el-dropdown-item>
+                  </el-dropdown-menu>
+                </template>
+              </el-dropdown>
             </div>
+          </header>
 
-            <!-- 2. 硬件遥测与流量聚合 (一体化呈现，无生硬分块) -->
-            <div class="card-telemetry-clean">
-              <!-- CPU / 内存 / 硬盘 三列紧凑进度 -->
-              <div class="hw-grid">
-                <el-tooltip :content="getCPUTooltip(node)" placement="top">
-                  <div class="hw-item">
-                    <div class="hw-head font-mono">
-                      <span class="hw-lbl">CPU</span>
-                      <span class="hw-val" :style="{ color: getUsageStatusColor(metrics[node.id]?.host?.cpu_percent || 0) }">
-                        {{ node.online && metrics[node.id]?.host ? `${metrics[node.id].host.cpu_percent.toFixed(0)}%` : '—' }}
-                      </span>
-                    </div>
-                    <div class="hw-track">
-                      <div
-                        class="hw-bar"
-                        :style="{
-                          width: `${node.online && metrics[node.id]?.host ? Math.min(100, metrics[node.id].host.cpu_percent) : 0}%`,
-                          backgroundColor: getUsageStatusColor(metrics[node.id]?.host?.cpu_percent || 0)
-                        }"
-                      />
-                    </div>
-                  </div>
-                </el-tooltip>
+          <div class="srv-chips">
+            <button v-if="card.node.client_address" class="srv-chip is-address font-mono" :title="`点击复制: ${card.node.client_address}`" @click="copyAddress(card.node.client_address)">
+              {{ card.node.client_address }}<el-icon><CopyDocument /></el-icon>
+            </button>
+            <span v-else class="srv-chip is-danger">未配置连接地址</span>
+            <el-tooltip v-if="card.ddnsTip" raw-content :content="card.ddnsTip" placement="top">
+              <span class="srv-chip is-violet">DDNS · {{ card.node.last_observed_ip || '同步中' }}</span>
+            </el-tooltip>
+            <el-tooltip v-if="card.ipTip" raw-content :content="card.ipTip" placement="top">
+              <span class="srv-chip">{{ card.node.ip_addresses.length }} 个出口 IP</span>
+            </el-tooltip>
+          </div>
 
-                <el-tooltip :content="getMemTooltip(node)" placement="top">
-                  <div class="hw-item">
-                    <div class="hw-head font-mono">
-                      <span class="hw-lbl">内存</span>
-                      <span class="hw-val" :style="{ color: getUsageStatusColor(getResourcePercent(metrics[node.id]?.host?.memory_used, metrics[node.id]?.host?.memory_total)) }">
-                        {{ node.online && metrics[node.id]?.host?.memory_total ? `${getResourcePercent(metrics[node.id].host.memory_used, metrics[node.id].host.memory_total)}%` : '—' }}
-                      </span>
-                    </div>
-                    <div class="hw-track">
-                      <div
-                        class="hw-bar"
-                        :style="{
-                          width: `${node.online && metrics[node.id]?.host ? getResourcePercent(metrics[node.id].host.memory_used, metrics[node.id].host.memory_total) : 0}%`,
-                          backgroundColor: getUsageStatusColor(getResourcePercent(metrics[node.id]?.host?.memory_used, metrics[node.id]?.host?.memory_total))
-                        }"
-                      />
-                    </div>
-                  </div>
-                </el-tooltip>
-
-                <el-tooltip :content="getDiskTooltip(node)" placement="top">
-                  <div class="hw-item">
-                    <div class="hw-head font-mono">
-                      <span class="hw-lbl">硬盘</span>
-                      <span class="hw-val" :style="{ color: getUsageStatusColor(getResourcePercent(metrics[node.id]?.host?.disk_used, metrics[node.id]?.host?.disk_total)) }">
-                        {{ node.online && metrics[node.id]?.host?.disk_total ? `${getResourcePercent(metrics[node.id].host.disk_used, metrics[node.id].host.disk_total)}%` : '—' }}
-                      </span>
-                    </div>
-                    <div class="hw-track">
-                      <div
-                        class="hw-bar"
-                        :style="{
-                          width: `${node.online && metrics[node.id]?.host ? getResourcePercent(metrics[node.id].host.disk_used, metrics[node.id].host.disk_total) : 0}%`,
-                          backgroundColor: getUsageStatusColor(getResourcePercent(metrics[node.id]?.host?.disk_used, metrics[node.id]?.host?.disk_total))
-                        }"
-                      />
-                    </div>
-                  </div>
-                </el-tooltip>
+          <div class="srv-gauges">
+            <el-tooltip v-for="g in card.gauges" :key="g.key" :content="g.tip" placement="top">
+              <div class="srv-gauge" :class="{ 'is-empty': !g.available }">
+                <svg class="srv-ring" viewBox="0 0 64 64" aria-hidden="true">
+                  <circle class="srv-ring-track" cx="32" cy="32" r="27" />
+                  <circle
+                    class="srv-ring-bar"
+                    cx="32"
+                    cy="32"
+                    r="27"
+                    :stroke="g.color"
+                    :stroke-dasharray="RING_LENGTH"
+                    :stroke-dashoffset="g.offset"
+                  />
+                </svg>
+                <div class="srv-ring-value font-mono">{{ g.text }}<small v-if="g.available">%</small></div>
+                <div class="srv-gauge-label">{{ g.label }}</div>
+                <div class="srv-gauge-detail font-mono">{{ g.detail }}</div>
               </div>
+            </el-tooltip>
+          </div>
 
-              <!-- 实时网速、总流量与活跃连接 -->
-              <div class="network-stream-row font-mono">
-                <div class="rate-group">
-                  <span class="rate-down">↓ {{ live.get(node.id)?.has_rates ? formatBytes(live.get(node.id).received_rate, '/s') : '0 B/s' }}</span>
-                  <span class="rate-up">↑ {{ live.get(node.id)?.has_rates ? formatBytes(live.get(node.id).sent_rate, '/s') : '0 B/s' }}</span>
-                </div>
-                <div class="traffic-conn-group">
-                  <el-tooltip
-                    v-if="metrics[node.id]?.proxy"
-                    :content="`累计下行: ${formatBytes(metrics[node.id].proxy.received_bytes)} · 累计上行: ${formatBytes(metrics[node.id].proxy.sent_bytes)}`"
-                    placement="top"
-                  >
-                    <span class="total-stream">总计 {{ formatBytes((metrics[node.id].proxy.received_bytes || 0) + (metrics[node.id].proxy.sent_bytes || 0)) }}</span>
-                  </el-tooltip>
-                  <span v-else class="total-stream subtle">等待流量</span>
-                  <span class="conn-pill" :class="{ 'has-conn': (live.get(node.id)?.connection_count || 0) > 0 }">
-                    {{ live.get(node.id)?.connection_count ?? 0 }} 连
-                  </span>
-                </div>
-              </div>
+          <div class="srv-net font-mono">
+            <div class="srv-net-item">
+              <span class="srv-net-label">下行</span>
+              <span class="srv-net-value is-down">↓ {{ card.rx }}</span>
             </div>
-
-            <!-- 3. 网络线路矩阵 (去程与返程完整三网类型) -->
-            <div class="route-matrix-box" :class="{ 'is-blocked': isNodeGFWBlocked(speedtests[node.id]) }">
-              <!-- 去程 Inbound -->
-              <div class="route-line">
-                <span class="dir-badge in">去程</span>
-                <!-- GFW 阻断提示 (悬停显示探针诊断详情，无需明细按钮) -->
-                <el-tooltip v-if="isNodeGFWBlocked(speedtests[node.id])" raw-content :content="getInboundProbeTooltip(speedtests[node.id])" placement="top">
-                  <div class="gfw-alert-capsule">
-                    <span class="gfw-alert-dot" />
-                    <span class="gfw-alert-txt font-mono">端口阻断 · 探针全超时</span>
-                  </div>
-                </el-tooltip>
-                <!-- 去程正常线路 -->
-                <div v-else-if="speedtests[node.id]" class="carrier-tags-flow">
-                  <el-tooltip raw-content :content="getInboundCarrierTooltip(speedtests[node.id], 'telecom', node)" placement="top">
-                    <span class="carrier-tag font-mono" :class="getPingClass(speedtests[node.id].inbound_telecom_latency_ms)">
-                      <span class="dot-carrier ct" />电: {{ formatCarrierDisplay(speedtests[node.id].inbound_telecom_route, speedtests[node.id].inbound_telecom_latency_ms) }}
-                    </span>
-                  </el-tooltip>
-                  <el-tooltip raw-content :content="getInboundCarrierTooltip(speedtests[node.id], 'unicom', node)" placement="top">
-                    <span class="carrier-tag font-mono" :class="getPingClass(speedtests[node.id].inbound_unicom_latency_ms)">
-                      <span class="dot-carrier cu" />联: {{ formatCarrierDisplay(speedtests[node.id].inbound_unicom_route, speedtests[node.id].inbound_unicom_latency_ms) }}
-                    </span>
-                  </el-tooltip>
-                  <el-tooltip raw-content :content="getInboundCarrierTooltip(speedtests[node.id], 'mobile', node)" placement="top">
-                    <span class="carrier-tag font-mono" :class="getPingClass(speedtests[node.id].inbound_mobile_latency_ms)">
-                      <span class="dot-carrier cm" />移: {{ formatCarrierDisplay(speedtests[node.id].inbound_mobile_route, speedtests[node.id].inbound_mobile_latency_ms) }}
-                    </span>
-                  </el-tooltip>
-                </div>
-                <span v-else class="route-empty-hint subtle font-mono">去程待测</span>
-              </div>
-
-              <!-- 返程 Outbound -->
-              <div class="route-line">
-                <span class="dir-badge out">返程</span>
-                <div v-if="speedtests[node.id]" class="carrier-tags-flow">
-                  <el-tooltip raw-content :content="getISPTooltip(speedtests[node.id], 'telecom', node)" placement="top">
-                    <span class="carrier-tag font-mono" :class="getPingClass(speedtests[node.id].telecom_latency_ms)">
-                      <span class="dot-carrier ct" />电: {{ formatCarrierDisplay(speedtests[node.id].telecom_route, speedtests[node.id].telecom_latency_ms) }}
-                    </span>
-                  </el-tooltip>
-                  <el-tooltip raw-content :content="getISPTooltip(speedtests[node.id], 'unicom', node)" placement="top">
-                    <span class="carrier-tag font-mono" :class="getPingClass(speedtests[node.id].unicom_latency_ms)">
-                      <span class="dot-carrier cu" />联: {{ formatCarrierDisplay(speedtests[node.id].unicom_route, speedtests[node.id].unicom_latency_ms) }}
-                    </span>
-                  </el-tooltip>
-                  <el-tooltip raw-content :content="getISPTooltip(speedtests[node.id], 'mobile', node)" placement="top">
-                    <span class="carrier-tag font-mono" :class="getPingClass(speedtests[node.id].mobile_latency_ms)">
-                      <span class="dot-carrier cm" />移: {{ formatCarrierDisplay(speedtests[node.id].mobile_route, speedtests[node.id].mobile_latency_ms) }}
-                    </span>
-                  </el-tooltip>
-                </div>
-                <span v-else class="route-empty-hint subtle font-mono">返程待测</span>
-              </div>
+            <div class="srv-net-item">
+              <span class="srv-net-label">上行</span>
+              <span class="srv-net-value is-up">↑ {{ card.tx }}</span>
             </div>
-
-            <!-- 4. 底栏：活跃时间、运行天数 -->
-            <div class="card-footer-clean">
-              <div class="footer-time-info font-mono">
-                <el-icon :size="12"><Clock /></el-icon>
-                <span>{{ formatFriendlyTime(node.last_seen_at) }}</span>
-                <span class="time-sep">·</span>
-                <span>{{ formatUptimeText(metrics[node.id]?.host?.uptime_seconds) }}</span>
+            <el-tooltip :content="card.totalTip || '等待流量上报'" placement="top">
+              <div class="srv-net-item">
+                <span class="srv-net-label">累计</span>
+                <span class="srv-net-value">{{ card.total || '—' }}</span>
               </div>
+            </el-tooltip>
+            <div class="srv-net-item">
+              <span class="srv-net-label">连接</span>
+              <span class="srv-net-value" :class="{ 'is-active': card.conn > 0 }">{{ card.conn }}</span>
             </div>
           </div>
-        </div>
-      </template>
 
-      <!-- 5. 视图 2：传统列表表格 (Table View) -->
-      <template v-else>
-        <div class="table-panel">
-          <PagedTable :rows="filteredNodes" empty-text="尚未接入任何服务器">
-            <el-table-column label="服务器 / 系统" min-width="190" show-overflow-tooltip>
-              <template #default="{ row }">
-                <div class="cell-main">
-                  <span class="status-indicator" :class="row.online ? (isNodeGFWBlocked(speedtests[row.id]) ? 'blocked' : 'online') : 'offline'" />
-                  <span v-if="getNodeFlag(row.name)" class="flag-icon" style="margin-left: 6px">{{ getNodeFlag(row.name) }}</span>
-                  <strong style="margin-left: 4px">{{ row.name }}</strong>
-                  <span v-if="isNodeGFWBlocked(speedtests[row.id])" class="badge-gfw-pill" style="margin-left: 6px">GFW 阻断</span>
-                </div>
-                <div class="cell-sub font-mono">{{ row.os || '—' }} · {{ row.architecture || '—' }} · v{{ row.agent_version || '—' }}</div>
-              </template>
-            </el-table-column>
-
-            <el-table-column label="硬件负载" min-width="170">
-              <template #default="{ row }">
-                <div v-if="row.online && metrics[row.id]?.host" class="table-hw-stack font-mono">
-                  <div class="hw-mini-row">
-                    <span class="hw-mini-name">CPU:</span>
-                    <span class="hw-mini-val" :style="{ color: getUsageStatusColor(metrics[row.id].host.cpu_percent) }">
-                      {{ metrics[row.id].host.cpu_percent.toFixed(1) }}%
-                    </span>
-                  </div>
-                  <div class="hw-mini-row">
-                    <span class="hw-mini-name">内存:</span>
-                    <span class="hw-mini-val">
-                      {{ getResourcePercent(metrics[row.id].host.memory_used, metrics[row.id].host.memory_total) }}%
-                    </span>
-                  </div>
-                  <div class="hw-mini-row">
-                    <span class="hw-mini-name">磁盘:</span>
-                    <span class="hw-mini-val">
-                      {{ getResourcePercent(metrics[row.id].host.disk_used, metrics[row.id].host.disk_total) }}%
-                    </span>
-                  </div>
-                </div>
-                <span v-else class="subtle font-mono">{{ row.online ? '待上报' : '离线' }}</span>
-              </template>
-            </el-table-column>
-
-            <el-table-column label="客户端连接地址" min-width="190" show-overflow-tooltip>
-              <template #default="{ row }">
-                <div v-if="row.client_address" class="mono" style="cursor: pointer" @click="copyAddress(row.client_address)">
-                  {{ row.client_address }}
-                  <span v-if="row.city || row.location" class="sub-os-arch" style="margin-left: 6px" :title="row.location || row.city">
-                    {{ row.city || row.location }}
-                  </span>
-                  <el-tooltip
-                    v-if="row.ddns_enabled"
-                    raw-content
-                    :content="`DDNS 域名: ${(row.ddns_domains && row.ddns_domains.length ? row.ddns_domains : [row.ddns_domain || row.client_address]).join('、')}<br/>当前解析 IP: ${row.last_observed_ip || '同步中'}`"
-                    placement="top"
-                  >
-                    <span class="chip-ddns" style="margin-left: 4px">
-                      DDNS: {{ row.last_observed_ip || '同步中' }}
+          <div class="srv-routes" :class="{ 'is-blocked': card.blocked }">
+            <div class="srv-routes-head">
+              <span>三网线路</span>
+              <span v-if="card.testedAt" class="srv-routes-time">{{ card.testedAt }}检测</span>
+            </div>
+            <template v-if="card.routes">
+              <div class="srv-route-grid">
+                <span />
+                <span class="srv-route-dir">去程</span>
+                <span class="srv-route-dir">返程</span>
+                <template v-for="r in card.routes" :key="r.isp">
+                  <span class="srv-carrier" :class="`is-${r.isp}`"><i />{{ r.short }}</span>
+                  <el-tooltip raw-content :content="r.in.tip" placement="top">
+                    <span class="srv-route-cell font-mono" :class="r.in.cls">
+                      {{ r.in.label }}<em v-if="r.in.latency">{{ r.in.latency }}</em>
                     </span>
                   </el-tooltip>
-                </div>
-                <span v-else class="danger-text">未配置连接地址</span>
-              </template>
-            </el-table-column>
-
-            <el-table-column label="实时速率" min-width="140">
-              <template #default="{ row }">
-                <template v-if="live.get(row.id)?.has_rates">
-                  <div class="rate-stack font-mono">
-                    <span class="rate-item down">↓ {{ formatBytes(live.get(row.id).received_rate, '/s') }}</span>
-                    <span class="rate-item up">↑ {{ formatBytes(live.get(row.id).sent_rate, '/s') }}</span>
-                  </div>
+                  <el-tooltip raw-content :content="r.out.tip" placement="top">
+                    <span class="srv-route-cell font-mono" :class="r.out.cls">
+                      {{ r.out.label }}<em v-if="r.out.latency">{{ r.out.latency }}</em>
+                    </span>
+                  </el-tooltip>
                 </template>
-                <span v-else class="subtle font-mono">0 B/s</span>
-              </template>
-            </el-table-column>
+              </div>
+            </template>
+            <div v-else class="srv-routes-empty">
+              <span>尚未检测线路</span>
+              <button
+                v-if="canWrite && card.node.online"
+                class="srv-link-btn"
+                :disabled="Boolean(speedtesting[card.node.id])"
+                @click="runSpeedtest(card.node)"
+              >
+                {{ speedtesting[card.node.id] ? '检测中…' : '立即检测' }}
+              </button>
+            </div>
+          </div>
 
-                        <el-table-column label="网络路由 (去程 / 返程)" min-width="280">
-              <template #default="{ row }">
-                <div v-if="speedtests[row.id]" class="table-net-stack">
-                  <!-- 去程行 -->
-                  <div class="table-net-row">
-                    <span class="table-dir-badge in">去程</span>
-                    <div v-if="isNodeGFWBlocked(speedtests[row.id])" class="table-gfw-text font-mono">
-                      🚨 端口阻断 (探针超时)
-                    </div>
-                    <div v-else class="table-isp-pills">
-                      <el-tooltip raw-content :content="getInboundCarrierTooltip(speedtests[row.id], 'telecom', row)" placement="top">
-                        <span class="table-isp-pill font-mono" :class="getPingClass(speedtests[row.id].inbound_telecom_latency_ms)">
-                          电: {{ formatCarrierDisplay(speedtests[row.id].inbound_telecom_route, speedtests[row.id].inbound_telecom_latency_ms) }}
-                        </span>
-                      </el-tooltip>
-                      <el-tooltip raw-content :content="getInboundCarrierTooltip(speedtests[row.id], 'unicom', row)" placement="top">
-                        <span class="table-isp-pill font-mono" :class="getPingClass(speedtests[row.id].inbound_unicom_latency_ms)">
-                          联: {{ formatCarrierDisplay(speedtests[row.id].inbound_unicom_route, speedtests[row.id].inbound_unicom_latency_ms) }}
-                        </span>
-                      </el-tooltip>
-                      <el-tooltip raw-content :content="getInboundCarrierTooltip(speedtests[row.id], 'mobile', row)" placement="top">
-                        <span class="table-isp-pill font-mono" :class="getPingClass(speedtests[row.id].inbound_mobile_latency_ms)">
-                          移: {{ formatCarrierDisplay(speedtests[row.id].inbound_mobile_route, speedtests[row.id].inbound_mobile_latency_ms) }}
-                        </span>
-                      </el-tooltip>
-                    </div>
-                  </div>
-                  <!-- 返程行 -->
-                  <div class="table-net-row">
-                    <span class="table-dir-badge out">返程</span>
-                    <div class="table-isp-pills">
-                      <el-tooltip raw-content :content="getISPTooltip(speedtests[row.id], 'telecom', row)" placement="top">
-                        <span class="table-isp-pill font-mono" :class="getPingClass(speedtests[row.id].telecom_latency_ms)">
-                          电: {{ formatCarrierDisplay(speedtests[row.id].telecom_route, speedtests[row.id].telecom_latency_ms) }}
-                        </span>
-                      </el-tooltip>
-                      <el-tooltip raw-content :content="getISPTooltip(speedtests[row.id], 'unicom', row)" placement="top">
-                        <span class="table-isp-pill font-mono" :class="getPingClass(speedtests[row.id].unicom_latency_ms)">
-                          联: {{ formatCarrierDisplay(speedtests[row.id].unicom_route, speedtests[row.id].unicom_latency_ms) }}
-                        </span>
-                      </el-tooltip>
-                      <el-tooltip raw-content :content="getISPTooltip(speedtests[row.id], 'mobile', row)" placement="top">
-                        <span class="table-isp-pill font-mono" :class="getPingClass(speedtests[row.id].mobile_latency_ms)">
-                          移: {{ formatCarrierDisplay(speedtests[row.id].mobile_route, speedtests[row.id].mobile_latency_ms) }}
-                        </span>
-                      </el-tooltip>
-                    </div>
-                  </div>
-                </div>
-                <div v-else class="table-untested font-mono">
-                  <span class="subtle">未测速</span>
-                  <button
-                    v-if="canWrite && row.online"
-                    class="btn-probe-quick"
-                    :disabled="Boolean(speedtesting[row.id])"
-                    @click="runSpeedtest(row)"
-                  >
-                    测速
-                  </button>
-                </div>
-              </template>
-            </el-table-column>
-
-            <el-table-column label="活跃时间" min-width="140">
-              <template #default="{ row }">
-                <span class="mono" :title="formatDateTime(row.last_seen_at)">
-                  {{ formatFriendlyTime(row.last_seen_at) }}
-                </span>
-              </template>
-            </el-table-column>
-
-            <el-table-column label="操作" width="220" fixed="right">
-              <template #default="{ row }">
-                <el-button v-if="canWrite && row.online" link type="primary" size="small" @click="runSpeedtest(row)">
-                  测速
-                </el-button>
-                <el-button v-if="canWrite && row.online" link type="primary" size="small" @click="openMTRDialog(row)">
-                  排障
-                </el-button>
-                <el-button v-if="canWrite && row.ddns_enabled" link type="primary" size="small" :loading="syncingDDNS" @click="triggerManualDDNS(row)">
-                  DDNS
-                </el-button>
-                <el-button v-if="canWrite" link type="primary" size="small" @click="openEdit(row)">
-                  配置
-                </el-button>
-                <el-button v-if="isAdmin" link type="danger" size="small" @click="revoke(row)">
-                  移除
-                </el-button>
-              </template>
-            </el-table-column>
-          </PagedTable>
-        </div>
-      </template>
+          <footer class="srv-foot">
+            <div class="srv-foot-plan">
+              <a v-if="card.node.provider && card.node.provider_url" :href="card.node.provider_url" target="_blank" rel="noopener noreferrer" class="srv-provider">{{ card.node.provider }}</a>
+              <span v-else-if="card.node.provider" class="srv-provider">{{ card.node.provider }}</span>
+              <span v-if="card.price">{{ card.price }}</span>
+              <span v-if="card.node.traffic_plan">流量 {{ card.node.traffic_plan }}</span>
+              <span v-if="card.node.bandwidth">带宽 {{ card.node.bandwidth }}</span>
+              <span v-if="card.expiry" class="srv-expiry" :class="card.expiry.level && `is-${card.expiry.level}`" :title="card.expiry.title">{{ card.expiry.text }}</span>
+            </div>
+            <div class="srv-foot-time font-mono" :title="formatDateTime(card.node.last_seen_at)">
+              <el-icon :size="12"><Clock /></el-icon>
+              {{ formatFriendlyTime(card.node.last_seen_at) }}
+              <template v-if="card.node.online"> · {{ formatUptimeText(metrics[card.node.id]?.host?.uptime_seconds) }}</template>
+            </div>
+          </footer>
+        </article>
+      </div>
     </main>
 
     <!-- 添加节点 Token 弹窗 -->
@@ -1448,301 +1294,316 @@ onBeforeUnmount(() => {
     </el-dialog>
 
     <!-- 配置服务器弹窗 -->
-    <el-dialog v-model="editDialog" title="配置服务器" width="520px">
-      <el-form label-position="top">
-        <el-form-item label="服务器名称">
-          <el-input v-model="editForm.name" placeholder="请输入服务器名称" />
-        </el-form-item>
-        <el-form-item label="客户端连接域名或 IP">
-          <el-input v-model="editForm.client_address" placeholder="例如：hk.example.com 或 1.2.3.4" />
-          <div v-if="editNodeAllIPs.length" style="margin-top: 6px; display: flex; flex-wrap: wrap; gap: 6px; align-items: center">
-            <span class="subtle" style="font-size: 12px">本机出口 IP：</span>
-            <el-tag
-              v-for="ip in editNodeAllIPs"
-              :key="ip"
-              size="small"
-              type="info"
-              style="cursor: pointer"
-              @click="editForm.client_address = ip"
-            >
-              {{ editForm.ip_aliases?.[ip] ? `${editForm.ip_aliases[ip]} (${ip})` : ip }}
-            </el-tag>
+    <el-dialog v-model="editDialog" width="680px" class="srv-dialog" :show-close="false" align-center>
+      <template #header="{ close }">
+        <div v-if="editHeader" class="dlg-hero" :class="`is-${editHeader.status}`">
+          <div class="srv-avatar" :class="{ 'is-flag': editHeader.isFlag }">{{ editHeader.avatar }}</div>
+          <div class="dlg-hero-text">
+            <div class="dlg-hero-kicker">配置服务器</div>
+            <div class="dlg-hero-name">
+              <span>{{ editHeader.name || '未命名服务器' }}</span>
+              <span class="srv-status" :class="`is-${editHeader.status}`"><i class="srv-status-dot" />{{ editHeader.statusText }}</span>
+            </div>
+            <div class="dlg-hero-sub font-mono">{{ editHeader.sub }}</div>
           </div>
-        </el-form-item>
+          <button class="srv-icon-btn" title="关闭" @click="close"><el-icon><Close /></el-icon></button>
+        </div>
+      </template>
 
-        <el-divider content-position="left">套餐与到期信息</el-divider>
-        <el-form-item label="到期日期"><el-date-picker v-model="editForm.expires_on" type="date" value-format="YYYY-MM-DD" placeholder="选择到期日期" clearable style="width:100%" /></el-form-item>
-        <el-form-item label="价格">
-          <div style="display:flex;gap:8px;width:100%">
-            <el-input v-model="editForm.price" :disabled="editForm.price_period === 'free'" placeholder="价格" />
-            <el-select v-model="editForm.currency" style="width:115px"><el-option label="美元 USD" value="USD"/><el-option label="人民币 CNY" value="CNY"/><el-option label="欧元 EUR" value="EUR"/><el-option label="加元 CAD" value="CAD"/></el-select>
-          </div>
-          <el-select v-model="editForm.price_period" placeholder="计价周期" style="width:100%;margin-top:8px"><el-option label="免费" value="free"/><el-option label="按天" value="day"/><el-option label="按月" value="month"/><el-option label="按季" value="quarter"/><el-option label="按年" value="year"/></el-select>
-        </el-form-item>
-        <el-form-item label="厂商"><el-input v-model="editForm.provider" placeholder="例如：DigitalOcean" /></el-form-item>
-        <el-form-item label="厂商访问 URL"><el-input v-model="editForm.provider_url" placeholder="https://..." /></el-form-item>
-        <el-form-item label="流量套餐"><el-input v-model="editForm.traffic_plan" placeholder="例如：每月 2 TB" /></el-form-item>
-        <el-form-item label="带宽大小"><el-input v-model="editForm.bandwidth" placeholder="例如：1 Gbps" /></el-form-item>
+      <div class="dlg-tabs" role="tablist">
+        <button
+          v-for="t in editTabs"
+          :key="t.key"
+          class="dlg-tab"
+          :class="{ active: editTab === t.key }"
+          role="tab"
+          :aria-selected="editTab === t.key"
+          @click="editTab = t.key"
+        >
+          {{ t.label }}<span v-if="t.badge" class="dlg-tab-badge">{{ t.badge }}</span>
+        </button>
+      </div>
 
-        <el-form-item label="本机出口 IP 与别名设置">
-          <div class="subtle" style="font-size: 12px; margin-bottom: 8px">
-            自动从服务器网卡获取或手动配置的出口 IP 地址。在此为出口 IP 设置别名，配置用户出口与节点分流时将优先显示该别名。
+      <el-form label-position="top" class="dlg-form">
+        <section v-show="editTab === 'basic'" class="dlg-pane">
+          <el-form-item label="服务器名称">
+            <el-input v-model="editForm.name" placeholder="请输入服务器名称" />
+            <div class="dlg-help">名称开头写国旗（如 🇭🇰 香港 01），卡片会把它显示成大号头像。</div>
+          </el-form-item>
+          <el-form-item label="客户端连接域名或 IP">
+            <el-input v-model="editForm.client_address" placeholder="例如：hk.example.com 或 1.2.3.4" />
+            <div v-if="editNodeAllIPs.length" class="dlg-pick">
+              <span class="dlg-pick-label">点选本机出口 IP</span>
+              <button
+                v-for="ip in editNodeAllIPs"
+                :key="ip"
+                type="button"
+                class="srv-chip dlg-pick-chip font-mono"
+                :class="{ 'is-address': editForm.client_address === ip }"
+                @click="editForm.client_address = ip"
+              >
+                {{ editForm.ip_aliases?.[ip] ? `${editForm.ip_aliases[ip]} · ${ip}` : ip }}
+              </button>
+            </div>
+          </el-form-item>
+          <div class="dlg-facts">
+            <div><span>系统</span><b class="font-mono">{{ editNode?.os || '—' }} / {{ editNode?.architecture || '—' }}</b></div>
+            <div><span>Agent</span><b class="font-mono">v{{ editNode?.agent_version || '—' }}</b></div>
+            <div><span>sing-box</span><b class="font-mono">{{ editNode?.sing_box_version || '—' }}</b></div>
+            <div><span>最后活跃</span><b class="font-mono">{{ formatFriendlyTime(editNode?.last_seen_at) }}</b></div>
           </div>
-          <div v-if="editNodeAllIPs.length" style="display: flex; flex-direction: column; gap: 8px; width: 100%">
-            <div
-              v-for="ip in editNodeAllIPs"
-              :key="ip"
-              style="display: flex; align-items: center; gap: 10px; background: var(--bg-subtle, rgba(0,0,0,0.03)); padding: 6px 10px; border-radius: 6px; border: 1px solid var(--border-color, #e4e7ed);"
-            >
-              <el-tag size="small" :type="ip.includes(':') ? 'warning' : 'success'" style="font-family: monospace; font-weight: bold">
-                {{ ip.includes(':') ? 'IPv6' : 'IPv4' }}
-              </el-tag>
-              <span style="font-family: monospace; font-size: 13px; min-width: 130px; word-break: break-all;">
-                {{ ip }}
-              </span>
-              <el-input
-                v-model="editForm.ip_aliases[ip]"
-                size="small"
-                placeholder="出口别名（例如：香港原生、电信出口）"
-                style="flex: 1"
+        </section>
+
+        <section v-show="editTab === 'plan'" class="dlg-pane">
+          <div class="dlg-grid">
+            <el-form-item label="厂商">
+              <el-input v-model="editForm.provider" placeholder="例如：DigitalOcean" />
+            </el-form-item>
+            <el-form-item label="厂商访问 URL">
+              <el-input v-model="editForm.provider_url" placeholder="https://..." />
+            </el-form-item>
+            <el-form-item label="计价周期">
+              <el-select v-model="editForm.price_period" placeholder="选择计价周期" clearable style="width: 100%">
+                <el-option label="免费" value="free" />
+                <el-option label="按天" value="day" />
+                <el-option label="按月" value="month" />
+                <el-option label="按季" value="quarter" />
+                <el-option label="按年" value="year" />
+              </el-select>
+            </el-form-item>
+            <el-form-item label="价格">
+              <div class="dlg-inline">
+                <el-input v-model="editForm.price" :disabled="editForm.price_period === 'free'" placeholder="价格" />
+                <el-select v-model="editForm.currency" :disabled="editForm.price_period === 'free'" style="width: 120px">
+                  <el-option label="美元 USD" value="USD" />
+                  <el-option label="人民币 CNY" value="CNY" />
+                  <el-option label="欧元 EUR" value="EUR" />
+                  <el-option label="加元 CAD" value="CAD" />
+                </el-select>
+              </div>
+            </el-form-item>
+            <el-form-item label="流量套餐">
+              <el-input v-model="editForm.traffic_plan" placeholder="例如：每月 2 TB" />
+            </el-form-item>
+            <el-form-item label="带宽大小">
+              <el-input v-model="editForm.bandwidth" placeholder="例如：1 Gbps" />
+            </el-form-item>
+            <el-form-item label="到期日期" class="dlg-span-2">
+              <el-date-picker
+                v-model="editForm.expires_on"
+                type="date"
+                value-format="YYYY-MM-DD"
+                placeholder="选择到期日期"
                 clearable
+                style="width: 100%"
               />
-              <el-button
-                v-if="!editNode?.ip_addresses?.includes(ip)"
-                text
-                type="danger"
-                size="small"
-                :icon="Delete"
-                title="删除手动添加的出口 IP"
-                @click="removeCustomEgressIP(ip)"
-              />
-            </div>
+            </el-form-item>
           </div>
-          <div v-else class="subtle" style="font-size: 12px; margin-bottom: 8px">
-            暂未检测到出口 IP。您可手动输入本服务器的出口 IP 添加管理。
+          <div v-if="editPlanPreview" class="dlg-preview">
+            <span>卡片底栏将显示</span>
+            <b>{{ editPlanPreview }}</b>
           </div>
-          <div style="display: flex; gap: 8px; width: 100%; margin-top: 8px">
-            <el-input
-              v-model="newCustomEgressIP"
-              size="small"
-              placeholder="手动添加出口 IP（如：198.51.100.2 或 2001:db8::1）"
-              clearable
-              @keydown.enter.prevent="addCustomEgressIP"
-            />
-            <el-button size="small" :icon="Plus" @click="addCustomEgressIP">添加出口 IP</el-button>
-          </div>
-        </el-form-item>
+        </section>
 
-        <el-form-item label="Cloudflare 动态域名解析 (DDNS)">
-          <div class="setting-edit-box">
-            <div class="setting-edit-text">
-              <div class="setting-edit-heading">出口 IP 变动自动同步解析</div>
-              <div class="subtle">当服务器公网 IP 发生变更时，自动更新绑定的 Cloudflare A / AAAA 记录。</div>
+        <section v-show="editTab === 'network'" class="dlg-pane">
+          <div class="dlg-block">
+            <div class="dlg-block-head">
+              <div>
+                <div class="dlg-block-title">出口 IP 与别名</div>
+                <div class="dlg-help">网卡自动检测或手动添加的出口 IP。配置用户出口与节点分流时会优先显示别名。</div>
+              </div>
             </div>
-            <el-switch
-              v-model="editForm.ddns_enabled"
-              size="small"
-            />
-          </div>
-          <div v-if="editForm.ddns_enabled" style="margin-top: 10px; width: 100%">
-            <el-select
-              v-model="editForm.ddns_record_ids"
-              multiple
-              filterable
-              collapse-tags
-              collapse-tags-tooltip
-              placeholder="选择绑定的 Cloudflare A 记录（支持多选）"
-              style="width: 100%"
-              :loading="cfLoading"
-              @change="onRecordsSelected"
-            >
-              <el-option
-                v-for="rec in cfRecords"
-                :key="rec.id"
-                :label="`${rec.name} (${rec.content})`"
-                :value="rec.id"
+            <div v-if="editNodeAllIPs.length" class="dlg-ip-list">
+              <div v-for="ip in editNodeAllIPs" :key="ip" class="dlg-ip-row">
+                <span class="dlg-ip-kind" :class="ip.includes(':') ? 'is-v6' : 'is-v4'">{{ ip.includes(':') ? 'IPv6' : 'IPv4' }}</span>
+                <span class="dlg-ip-addr font-mono">{{ ip }}</span>
+                <el-input v-model="editForm.ip_aliases[ip]" size="small" placeholder="别名，例如：香港原生" clearable class="dlg-ip-alias" />
+                <el-button
+                  v-if="!editNode?.ip_addresses?.includes(ip)"
+                  text
+                  type="danger"
+                  size="small"
+                  :icon="Delete"
+                  title="删除手动添加的出口 IP"
+                  @click="removeCustomEgressIP(ip)"
+                />
+              </div>
+            </div>
+            <div v-else class="dlg-empty">暂未检测到出口 IP，可在下方手动添加。</div>
+            <div class="dlg-inline">
+              <el-input
+                v-model="newCustomEgressIP"
+                size="small"
+                placeholder="手动添加出口 IP（如 198.51.100.2 或 2001:db8::1）"
+                clearable
+                @keydown.enter.prevent="addCustomEgressIP"
               />
-            </el-select>
-            <div v-if="(editForm.ddns_domains || []).length" style="margin-top: 8px; display: flex; flex-wrap: wrap; gap: 4px">
-              <el-tag v-for="d in editForm.ddns_domains" :key="d" size="small" type="info">
-                {{ d }}
-              </el-tag>
+              <el-button size="small" :icon="Plus" @click="addCustomEgressIP">添加</el-button>
             </div>
           </div>
-        </el-form-item>
+
+          <div class="dlg-block" :class="{ 'is-on': editForm.ddns_enabled }">
+            <div class="dlg-block-head">
+              <div>
+                <div class="dlg-block-title">Cloudflare 动态域名解析 (DDNS)</div>
+                <div class="dlg-help">服务器公网 IP 变化时，自动更新绑定的 Cloudflare A / AAAA 记录。</div>
+              </div>
+              <el-switch v-model="editForm.ddns_enabled" />
+            </div>
+            <template v-if="editForm.ddns_enabled">
+              <el-select
+                v-model="editForm.ddns_record_ids"
+                multiple
+                filterable
+                collapse-tags
+                collapse-tags-tooltip
+                placeholder="选择绑定的 Cloudflare A 记录（支持多选）"
+                style="width: 100%"
+                :loading="cfLoading"
+                @change="onRecordsSelected"
+              >
+                <el-option v-for="rec in cfRecords" :key="rec.id" :label="`${rec.name} (${rec.content})`" :value="rec.id" />
+              </el-select>
+              <div v-if="(editForm.ddns_domains || []).length" class="dlg-pick">
+                <span v-for="d in editForm.ddns_domains" :key="d" class="srv-chip is-violet font-mono">{{ d }}</span>
+              </div>
+            </template>
+          </div>
+        </section>
       </el-form>
 
       <template #footer>
-        <el-button @click="editDialog = false">取消</el-button>
-        <el-button type="primary" :loading="editSaving" @click="saveEdit">保存配置</el-button>
+        <div class="dlg-foot">
+          <span class="dlg-foot-hint">三个分页的修改会一起保存</span>
+          <el-button @click="editDialog = false">取消</el-button>
+          <el-button type="primary" :loading="editSaving" @click="saveEdit">保存配置</el-button>
+        </div>
       </template>
     </el-dialog>
 
     <!-- 逐跳丢包排障 (MTR) 弹窗 -->
-    <el-dialog
-      v-model="mtrDialogVisible"
-      :title="`链路逐跳丢包排障 - ${mtrTargetNode?.name || ''}`"
-      width="840px"
-      class="mtr-dialog"
-      destroy-on-close
-    >
-      <div class="mtr-dialog-body">
-        <!-- 控制表单栏 -->
-        <div class="mtr-ctrl-bar">
-          <div class="mtr-ctrl-item">
-            <span class="ctrl-label">诊断目标：</span>
-            <el-select v-model="mtrTargetType" style="width: 270px">
-              <el-option
-                v-for="opt in mtrTargetOptions"
-                :key="opt.value"
-                :label="opt.label"
-                :value="opt.value"
-              />
-            </el-select>
-          </div>
-          <div v-if="mtrTargetType === 'custom'" class="mtr-ctrl-item" style="flex: 1">
-            <el-input v-model="mtrCustomTarget" placeholder="输入目标 IP 或域名 (如 1.1.1.1)" clearable />
-          </div>
-          <div class="mtr-ctrl-item">
-            <span class="ctrl-label">采样次数：</span>
-            <el-select v-model="mtrCount" style="width: 95px">
-              <el-option :value="10" label="10 次" />
-              <el-option :value="15" label="15 次" />
-              <el-option :value="20" label="20 次" />
-            </el-select>
-          </div>
-          <el-button
-            type="primary"
-            :loading="mtrLoading"
-            :icon="Aim"
-            @click="startMTRDiagnose"
-          >
-            {{ mtrLoading ? '逐跳采样中...' : '开始诊断' }}
-          </el-button>
-        </div>
-
-        <div v-if="mtrLoading" class="mtr-loading-box">
-          <el-icon class="is-loading" :size="32"><Loading /></el-icon>
-          <div class="loading-tip">正在从节点发起多轮 ICMP/UDP 探测，分析各骨干跃点丢包与抖动，请稍候...</div>
-        </div>
-
-        <!-- 诊断结果区 -->
-        <div v-else-if="mtrReport" class="mtr-result-box">
-          <!-- 诊断概览摘要卡片 -->
-          <div class="mtr-summary-card" :class="{ 'has-real-drop': (mtrReport.real_drop_hops || 0) > 0 || (mtrReport.summary_loss || mtrReport.end_to_end_loss || 0) > 0 }">
-            <div class="summary-header">
-              <div class="summary-target">
-                <span class="summary-label">探测目标：</span>
-                <span class="summary-val font-mono">{{ mtrReport.target || mtrReport.target_host || '-' }}</span>
-                <span v-if="mtrReport.target_label" class="summary-label-sub" style="margin-left: 6px; color: #38bdf8; font-size: 12px">
-                  ({{ mtrReport.target_label }})
-                </span>
-                <span class="summary-tool font-mono">({{ mtrReport.tool || 'mtr' }})</span>
-              </div>
-              <div class="summary-badges">
-                <span class="metric-pill">
-                  目标端丢包：<b :style="{ color: getLossColor(mtrReport.summary_loss ?? mtrReport.end_to_end_loss ?? 0) }">{{ mtrReport.summary_loss ?? mtrReport.end_to_end_loss ?? 0 }}%</b>
-                </span>
-                <span class="metric-pill">
-                  平均时延：<b>{{ (mtrReport.summary_avg_ms ?? mtrReport.end_to_end_avg_ms) != null ? (mtrReport.summary_avg_ms ?? mtrReport.end_to_end_avg_ms).toFixed(1) + ' ms' : '-' }}</b>
-                </span>
-              </div>
+    <el-dialog v-model="mtrDialogVisible" width="880px" class="srv-dialog" :show-close="false" align-center destroy-on-close>
+      <template #header="{ close }">
+        <div v-if="mtrHeader" class="dlg-hero" :class="`is-${mtrHeader.status}`">
+          <div class="srv-avatar" :class="{ 'is-flag': mtrHeader.isFlag }">{{ mtrHeader.avatar }}</div>
+          <div class="dlg-hero-text">
+            <div class="dlg-hero-kicker">链路逐跳丢包排障</div>
+            <div class="dlg-hero-name">
+              <span>{{ mtrHeader.name }}</span>
+              <span class="srv-status" :class="`is-${mtrHeader.status}`"><i class="srv-status-dot" />{{ mtrHeader.statusText }}</span>
             </div>
-            <div class="summary-diagnosis">
-              <el-icon :size="16"><InfoFilled /></el-icon>
-              <span>{{ mtrReport.diagnosis || mtrReport.summary || '链路排查完成' }}</span>
+            <div class="dlg-hero-sub font-mono">{{ mtrHeader.sub }}</div>
+          </div>
+          <button class="srv-icon-btn" title="关闭" @click="close"><el-icon><Close /></el-icon></button>
+        </div>
+      </template>
+
+      <div class="mtr-ctrl">
+        <div class="mtr-ctrl-field is-grow">
+          <span class="mtr-ctrl-label">诊断目标</span>
+          <el-select v-model="mtrTargetType" placeholder="选择目标线路" style="width: 100%">
+            <el-option v-for="opt in mtrTargetOptions" :key="opt.value" :label="opt.label" :value="opt.value" />
+          </el-select>
+        </div>
+        <div v-if="mtrTargetType === 'custom'" class="mtr-ctrl-field is-grow">
+          <span class="mtr-ctrl-label">自定义目标</span>
+          <el-input v-model="mtrCustomTarget" placeholder="IP 或域名，如 1.1.1.1" clearable @keydown.enter.prevent="startMTRDiagnose" />
+        </div>
+        <div class="mtr-ctrl-field">
+          <span class="mtr-ctrl-label">采样次数</span>
+          <el-select v-model="mtrCount" style="width: 100px">
+            <el-option :value="10" label="10 次" />
+            <el-option :value="15" label="15 次" />
+            <el-option :value="20" label="20 次" />
+          </el-select>
+        </div>
+        <el-button type="primary" :loading="mtrLoading" :icon="Aim" @click="startMTRDiagnose">
+          {{ mtrLoading ? '采样中…' : mtrReport ? '重新诊断' : '开始诊断' }}
+        </el-button>
+      </div>
+
+      <div v-if="mtrLoading" class="mtr-state">
+        <div class="mtr-radar"><el-icon class="is-loading" :size="26"><Loading /></el-icon></div>
+        <div class="mtr-state-title">正在逐跳采样</div>
+        <div class="mtr-state-sub">节点正在发起多轮 ICMP/UDP 探测，分析各骨干跃点的丢包与抖动，请稍候。</div>
+      </div>
+
+      <div v-else-if="mtrReport && mtrSummary" class="mtr-result">
+        <div class="mtr-stats">
+          <div class="mtr-stat is-target">
+            <span>探测目标 · {{ mtrSummary.tool }}</span>
+            <b class="font-mono">{{ mtrSummary.target }}</b>
+            <small v-if="mtrSummary.label">{{ mtrSummary.label }}</small>
+          </div>
+          <div class="mtr-stat">
+            <span>目标端丢包</span>
+            <b class="font-mono" :style="{ color: mtrSummary.lossColor }">{{ mtrSummary.loss }}<small>%</small></b>
+          </div>
+          <div class="mtr-stat">
+            <span>平均时延</span>
+            <b class="font-mono">{{ mtrSummary.avg }}<small v-if="mtrSummary.avg !== '-'">ms</small></b>
+          </div>
+          <div class="mtr-stat">
+            <span>跃点 / 真实丢包</span>
+            <b class="font-mono">{{ mtrSummary.hopCount }}<small> / </small><em :class="{ 'is-bad': mtrSummary.realDrops > 0 }">{{ mtrSummary.realDrops }}</em></b>
+          </div>
+        </div>
+
+        <div class="mtr-verdict" :class="{ 'is-bad': mtrSummary.bad }">
+          <el-icon :size="16"><InfoFilled /></el-icon>
+          <span>{{ mtrSummary.diagnosis }}</span>
+        </div>
+
+        <div v-if="mtrHops.length" class="mtr-hops">
+          <div class="mtr-hop is-head">
+            <span>#</span><span>跃点路由与归属</span><span>丢包率</span>
+            <span class="is-num">平均</span><span class="is-num">最优 / 最差</span><span class="is-num">抖动</span>
+          </div>
+          <div v-for="h in mtrHops" :key="h.key" class="mtr-hop" :class="`is-${h.kind}`">
+            <span class="mtr-hop-no font-mono">{{ h.no }}</span>
+            <div class="mtr-hop-host">
+              <span class="font-mono">{{ h.ip }}</span>
+              <small v-if="h.host">{{ h.host }}</small>
+              <small v-if="h.loc" class="is-loc">{{ h.loc }}</small>
             </div>
-          </div>
-
-          <!-- 跃点明细表 -->
-          <div class="mtr-table-wrap">
-            <el-table :data="mtrReport.hops || []" size="small" stripe border style="width: 100%">
-              <el-table-column label="#" width="48" align="center">
-                <template #default="{ row }">
-                  <span class="font-mono">{{ row.count ?? row.hop ?? '' }}</span>
-                </template>
-              </el-table-column>
-              <el-table-column label="跃点路由与归属" min-width="210">
-                <template #default="{ row }">
-                  <div class="hop-host-cell">
-                    <span class="hop-ip font-mono">{{ row.ip || row.host || '???' }}</span>
-                    <span v-if="row.host && row.host !== row.ip" class="hop-hostname">{{ row.host }}</span>
-                    <span v-if="row.location || row.node_name || row.city" class="hop-loc">
-                      {{ row.location || row.node_name || (row.city ? (row.asn ? row.asn + ' ' + row.city : row.city) : '') }}
-                    </span>
-                  </div>
-                </template>
-              </el-table-column>
-              <el-table-column label="丢包率 (Loss%)" width="200">
-                <template #default="{ row }">
-                  <div class="loss-cell">
-                    <span class="loss-val font-mono" :style="{ color: getLossColor(row.loss_percent ?? row.loss_pct ?? 0) }">
-                      {{ row.loss_percent ?? row.loss_pct ?? 0 }}%
-                    </span>
-                    <el-tooltip
-                      v-if="row.is_rate_limit || row.is_rate_limited"
-                      content="该骨干路由 CPU 限制了 ICMP 响应频率，但后续跃点通信正常，数据包已完整穿透，非真实业务丢包。"
-                      placement="top"
-                    >
-                      <span class="pill-rate-limit">ICMP限速(正常)</span>
-                    </el-tooltip>
-                    <el-tooltip
-                      v-else-if="(row.loss_percent ?? row.loss_pct ?? 0) > 0"
-                      content="丢包已向下游跃点持续传递，属于真实链路拥塞或物理丢包，会影响业务流量！"
-                      placement="top"
-                    >
-                      <span class="pill-real-drop">真实丢包</span>
-                    </el-tooltip>
-                    <span v-else class="pill-perfect">0%</span>
-                  </div>
-                </template>
-              </el-table-column>
-              <el-table-column label="平均时延" width="95" align="right">
-                <template #default="{ row }">
-                  <span class="font-mono">{{ (row.avg_rtt_ms ?? row.avg_ms) != null ? (row.avg_rtt_ms ?? row.avg_ms).toFixed(1) + ' ms' : '-' }}</span>
-                </template>
-              </el-table-column>
-              <el-table-column label="最优 / 最差" width="130" align="right">
-                <template #default="{ row }">
-                  <span class="font-mono text-muted">
-                    {{ (row.best_rtt_ms ?? row.best_ms) != null ? (row.best_rtt_ms ?? row.best_ms).toFixed(1) : '-' }} / {{ (row.worst_rtt_ms ?? row.worst_ms) != null ? (row.worst_rtt_ms ?? row.worst_ms).toFixed(1) : '-' }} ms
-                  </span>
-                </template>
-              </el-table-column>
-              <el-table-column label="抖动 (StDev)" width="105" align="right">
-                <template #default="{ row }">
-                  <span class="font-mono text-muted">{{ row.stdev_ms != null ? (row.stdev_ms).toFixed(1) + ' ms' : '-' }}</span>
-                </template>
-              </el-table-column>
-            </el-table>
-          </div>
-
-          <!-- 无跃点告警提示 -->
-          <div v-if="!mtrReport.hops || mtrReport.hops.length === 0" style="margin-top: 12px; padding: 10px 14px; background: rgba(239, 68, 68, 0.1); border: 1px solid rgba(239, 68, 68, 0.3); border-radius: 6px; color: #fb7185; font-size: 12px;">
-            <el-icon style="margin-right: 6px; vertical-align: -2px"><InfoFilled /></el-icon>
-            {{ mtrReport.summary || mtrReport.diagnosis || '未能获取到跃点数据，已自动展开下方终端回显供排查' }}
-          </div>
-
-          <!-- 原始输出折叠 -->
-          <div v-if="mtrReport.raw_output" class="mtr-raw-toggle">
-            <el-button link type="primary" size="small" @click="mtrShowRaw = !mtrShowRaw">
-              {{ mtrShowRaw ? '收起终端原始输出' : '展开查看终端原始输出 (Raw Output)' }}
-            </el-button>
-            <pre v-if="mtrShowRaw" class="mtr-raw-terminal font-mono"><code>{{ mtrReport.raw_output }}</code></pre>
+            <div class="mtr-hop-loss">
+              <div class="mtr-loss-top">
+                <b class="font-mono" :style="{ color: h.lossColor }">{{ h.lossText }}%</b>
+                <el-tooltip v-if="h.kind === 'limit'" content="该骨干路由限制了 ICMP 响应频率，但后续跃点正常，数据包已完整穿透，不是真实业务丢包。" placement="top">
+                  <span class="mtr-tag is-limit">ICMP 限速</span>
+                </el-tooltip>
+                <el-tooltip v-else-if="h.kind === 'drop'" content="丢包持续传递到下游跃点，属于真实链路拥塞或物理丢包，会影响业务流量。" placement="top">
+                  <span class="mtr-tag is-drop">真实丢包</span>
+                </el-tooltip>
+              </div>
+              <div class="mtr-loss-track"><i :style="{ width: `${Math.min(100, h.loss)}%`, background: h.lossColor }" /></div>
+            </div>
+            <span class="is-num font-mono">{{ h.avg }}</span>
+            <span class="is-num font-mono is-muted">{{ h.best }} / {{ h.worst }}</span>
+            <span class="is-num font-mono is-muted">{{ h.stdev }}</span>
           </div>
         </div>
-
-        <!-- 初始空状态 -->
-        <div v-else class="mtr-empty-placeholder">
-          <el-icon :size="48" style="color: var(--sb-border)"><Aim /></el-icon>
-          <div class="empty-text">选择目标线路或输入自定义目标，点击「开始诊断」发起链路逐跳丢包排查</div>
-          <div class="empty-sub">支持智能识别骨干路由 CPU 的 ICMP 限速丢包与下游真实丢包</div>
+        <div v-else class="mtr-verdict is-bad">
+          <el-icon :size="16"><InfoFilled /></el-icon>
+          <span>未能获取到跃点数据，已自动展开下方终端原始输出供排查。</span>
         </div>
+
+        <div v-if="mtrReport.raw_output" class="mtr-raw">
+          <button class="srv-link-btn" @click="mtrShowRaw = !mtrShowRaw">
+            {{ mtrShowRaw ? '收起终端原始输出' : '查看终端原始输出' }}
+          </button>
+          <pre v-if="mtrShowRaw" class="mtr-raw-terminal font-mono"><code>{{ mtrReport.raw_output }}</code></pre>
+        </div>
+      </div>
+
+      <div v-else class="mtr-state">
+        <div class="mtr-radar is-idle"><el-icon :size="26"><Aim /></el-icon></div>
+        <div class="mtr-state-title">选择目标线路，开始逐跳排查</div>
+        <div class="mtr-state-sub">能区分骨干路由的 ICMP 限速丢包和影响业务的真实丢包。</div>
       </div>
 
       <template #footer>
         <el-button @click="mtrDialogVisible = false">关闭</el-button>
-        <el-button v-if="mtrReport" type="primary" :loading="mtrLoading" @click="startMTRDiagnose">重新测试</el-button>
       </template>
     </el-dialog>
   </div>
@@ -1857,35 +1718,6 @@ onBeforeUnmount(() => {
   color: #fb7185;
 }
 
-.view-mode-toggle {
-  display: inline-flex;
-  background: rgba(0, 0, 0, 0.35);
-  padding: 2px;
-  border-radius: 8px;
-  border: 1px solid rgba(255, 255, 255, 0.08);
-}
-.toggle-btn {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  padding: 4px 10px;
-  border: none;
-  background: transparent;
-  color: var(--sb-muted);
-  border-radius: 6px;
-  font-size: 12px;
-  cursor: pointer;
-  transition: all 0.15s;
-}
-.toggle-btn:hover {
-  color: var(--sb-text);
-}
-.toggle-btn.active {
-  background: rgba(56, 189, 248, 0.18);
-  color: #38bdf8;
-  font-weight: 600;
-}
-
 /* ── 3. 待接入横幅 (Pending Section) ────────────────────── */
 .pending-section-banner {
   margin-bottom: 12px;
@@ -1947,474 +1779,445 @@ onBeforeUnmount(() => {
   color: var(--sb-text-2);
 }
 
-/* ── 4. 顶级服务器卡片网格 (Server Cards Grid - 极简现代化架构) ──── */
-.node-cards-grid {
+/* ── 服务器卡片 ─────────────────────────────────────────── */
+.srv-grid {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(360px, 1fr));
   gap: 20px;
   margin-bottom: 24px;
 }
-@media (max-width: 1180px) {
-  .node-cards-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-}
 @media (max-width: 700px) {
-  .node-cards-grid { grid-template-columns: minmax(0, 1fr); gap: 14px; }
+  .srv-grid { grid-template-columns: minmax(0, 1fr); gap: 14px; }
 }
 
-.node-card {
+.srv-card {
+  --srv-tone: var(--sb-success);
+  --srv-tone-soft: rgba(52, 211, 153, .14);
   position: relative;
   display: flex;
   flex-direction: column;
-  gap: 12px;
-  background: linear-gradient(155deg, rgba(17, 30, 49, 0.98) 0%, rgba(10, 18, 32, 0.99) 100%);
-  border: 1px solid rgba(120, 153, 190, 0.2);
-  border-radius: 16px;
-  padding: 17px 18px 15px;
-  box-shadow: 0 10px 26px rgba(0, 0, 0, 0.25), inset 0 1px 0 rgba(255, 255, 255, 0.035);
+  gap: 16px;
+  padding: 20px;
+  border-radius: 18px;
+  border: 1px solid rgba(148, 163, 184, .14);
+  background:
+    radial-gradient(120% 70% at 0% 0%, var(--srv-tone-soft) 0%, transparent 55%),
+    linear-gradient(165deg, rgba(22, 32, 52, .96) 0%, rgba(11, 17, 30, .98) 100%);
+  box-shadow: 0 18px 40px -24px rgba(0, 0, 0, .9), inset 0 1px 0 rgba(255, 255, 255, .04);
   overflow: hidden;
-  transition: transform 0.22s cubic-bezier(0.4, 0, 0.2, 1),
-              border-color 0.22s cubic-bezier(0.4, 0, 0.2, 1),
-              box-shadow 0.22s cubic-bezier(0.4, 0, 0.2, 1);
+  transition: transform .22s ease, border-color .22s ease, box-shadow .22s ease;
 }
-
-.node-card:hover {
-  transform: translateY(-2px);
-  border-color: rgba(56, 189, 248, 0.48);
-  box-shadow: 0 14px 32px rgba(0, 0, 0, 0.34), 0 0 22px rgba(56, 189, 248, 0.08);
-}
-
-.node-card.is-offline {
-  opacity: 0.78;
-}
-.node-card.has-gfw-block {
-  border-color: rgba(244, 63, 94, 0.35);
-  box-shadow: 0 8px 24px -4px rgba(244, 63, 94, 0.2);
-}
-
-.node-card-glow {
+.srv-card::before {
+  content: '';
   position: absolute;
-  top: 0;
-  left: 0;
-  right: 0;
-  height: 2px;
-  background: transparent;
+  inset: 0 0 auto;
+  height: 3px;
+  background: linear-gradient(90deg, var(--srv-tone), transparent 75%);
+  opacity: .9;
 }
-.glow-online {
-  background: linear-gradient(90deg, transparent, #10b981, transparent);
+.srv-card:hover {
+  transform: translateY(-3px);
+  border-color: rgba(56, 189, 248, .4);
+  box-shadow: 0 26px 48px -24px rgba(0, 0, 0, .95), 0 0 0 1px rgba(56, 189, 248, .08);
 }
-.glow-offline {
-  background: linear-gradient(90deg, transparent, #64748b, transparent);
+.srv-card.is-offline {
+  --srv-tone: #64748b;
+  --srv-tone-soft: rgba(100, 116, 139, .1);
 }
-.glow-blocked {
-  background: linear-gradient(90deg, transparent, #f43f5e, transparent);
+.srv-card.is-offline .srv-gauges,
+.srv-card.is-offline .srv-net { opacity: .55; }
+.srv-card.is-blocked {
+  --srv-tone: #f43f5e;
+  --srv-tone-soft: rgba(244, 63, 94, .16);
+  border-color: rgba(244, 63, 94, .32);
 }
-
-/* 1. 头部 */
-.card-header-clean {
+/* 头部 */
+.srv-head {
   display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 10px;
+  align-items: center;
+  gap: 14px;
 }
-.header-main {
+.srv-avatar {
+  display: grid;
+  place-items: center;
+  flex-shrink: 0;
+  width: 46px;
+  height: 46px;
+  border-radius: 14px;
+  background: linear-gradient(145deg, rgba(56, 189, 248, .22), rgba(99, 102, 241, .22));
+  border: 1px solid rgba(148, 163, 184, .2);
+  color: #e0f2fe;
+  font-size: 18px;
+  font-weight: 700;
+}
+.srv-avatar.is-flag {
+  font-size: 26px;
+  background: rgba(148, 163, 184, .08);
+}
+.srv-ident {
   flex: 1;
   min-width: 0;
 }
-.title-row {
+.srv-name-row {
   display: flex;
   align-items: center;
-  gap: 9px;
-  flex-wrap: wrap;
+  gap: 10px;
+  min-width: 0;
 }
-.flag-icon {
-  font-size: 18px;
-  line-height: 1;
+.srv-name {
+  margin: 0;
+  min-width: 0;
+  overflow: hidden;
+  color: #f8fafc;
+  font-size: 17px;
+  font-weight: 700;
+  letter-spacing: -.2px;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.srv-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+  padding: 2px 9px;
+  border-radius: 999px;
+  background: var(--srv-tone-soft);
+  color: var(--srv-tone);
+  font-size: 11px;
+  font-weight: 600;
+}
+.srv-status.is-offline { color: #94a3b8; }
+.srv-status-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+}
+.srv-status.is-online .srv-status-dot,
+.srv-status.is-blocked .srv-status-dot {
+  box-shadow: 0 0 0 0 currentColor;
+  animation: srvPulse 2s ease-out infinite;
+}
+@keyframes srvPulse {
+  0% { box-shadow: 0 0 0 0 currentColor; }
+  70%, 100% { box-shadow: 0 0 0 6px transparent; }
+}
+.srv-sub {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  margin-top: 5px;
+  color: var(--sb-muted);
+  font-size: 12px;
+}
+.srv-sub-sep::before {
+  content: '·';
+  margin: 0 7px;
+  opacity: .6;
+}
+.srv-actions {
+  display: flex;
+  align-self: flex-start;
+  gap: 6px;
   flex-shrink: 0;
 }
-.server-title {
-  font-size: 15px;
-  font-weight: 700;
-  color: #f8fafc;
-  letter-spacing: -0.2px;
+.srv-icon-btn {
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  border-radius: 10px;
+  border: 1px solid rgba(148, 163, 184, .16);
+  background: rgba(148, 163, 184, .06);
+  color: var(--sb-text-2);
+  cursor: pointer;
+  transition: background .15s, color .15s, border-color .15s;
+}
+.srv-icon-btn:hover:not(:disabled) {
+  border-color: rgba(56, 189, 248, .45);
+  background: rgba(56, 189, 248, .14);
+  color: #e0f2fe;
+}
+.srv-icon-btn:disabled { cursor: progress; opacity: .7; }
+/* 地址标签 */
+.srv-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: -4px;
+}
+.srv-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  max-width: 100%;
+  padding: 3px 9px;
+  border-radius: 8px;
+  border: 1px solid rgba(148, 163, 184, .14);
+  background: rgba(148, 163, 184, .07);
+  color: var(--sb-text-2);
+  font-size: 12px;
+  line-height: 1.5;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
-.status-indicator-dot {
+.srv-chip.is-address {
+  border-color: rgba(56, 189, 248, .22);
+  background: rgba(56, 189, 248, .08);
+  color: #7dd3fc;
+  cursor: pointer;
+  transition: background .15s;
+}
+.srv-chip.is-address:hover { background: rgba(56, 189, 248, .18); }
+.srv-chip.is-violet {
+  border-color: rgba(168, 85, 247, .28);
+  background: rgba(168, 85, 247, .1);
+  color: #d8b4fe;
+}
+.srv-chip.is-danger {
+  border-color: rgba(244, 63, 94, .3);
+  background: rgba(244, 63, 94, .08);
+  color: var(--sb-danger);
+}
+
+/* 资源环形仪表 */
+.srv-gauges {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+  padding: 16px 8px 14px;
+  border-radius: 14px;
+  background: rgba(2, 6, 15, .32);
+  border: 1px solid rgba(148, 163, 184, .08);
+}
+.srv-gauge {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  min-width: 0;
+  cursor: default;
+}
+.srv-ring {
+  width: 76px;
+  height: 76px;
+  transform: rotate(-90deg);
+}
+.srv-ring-track {
+  fill: none;
+  stroke: rgba(148, 163, 184, .12);
+  stroke-width: 6;
+}
+.srv-ring-bar {
+  fill: none;
+  stroke-width: 6;
+  stroke-linecap: round;
+  transition: stroke-dashoffset .6s ease, stroke .3s ease;
+}
+.srv-gauge.is-empty .srv-ring-bar { stroke-linecap: butt; }
+.srv-ring-value {
+  position: absolute;
+  top: 0;
+  display: grid;
+  place-items: center;
+  width: 76px;
+  height: 76px;
+  color: #f1f5f9;
+  font-size: 19px;
+  font-weight: 700;
+  grid-auto-flow: column;
+  align-items: baseline;
+  align-content: center;
+  justify-content: center;
+}
+.srv-ring-value small {
+  margin-left: 1px;
+  color: var(--sb-muted);
+  font-size: 10px;
+  font-weight: 500;
+}
+.srv-gauge-label {
+  margin-top: 6px;
+  color: var(--sb-text-2);
+  font-size: 12px;
+  font-weight: 600;
+}
+.srv-gauge-detail {
+  max-width: 100%;
+  margin-top: 2px;
+  overflow: hidden;
+  color: var(--sb-muted);
+  font-size: 10.5px;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+/* 网络速率 */
+.srv-net {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  border-radius: 12px;
+  border: 1px solid rgba(148, 163, 184, .1);
+  background: rgba(148, 163, 184, .04);
+}
+.srv-net-item {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+  padding: 9px 12px;
+  cursor: default;
+}
+.srv-net-item + .srv-net-item { border-left: 1px solid rgba(148, 163, 184, .1); }
+.srv-net-label {
+  color: var(--sb-muted);
+  font-size: 10.5px;
+}
+.srv-net-value {
+  overflow: hidden;
+  color: var(--sb-text);
+  font-size: 12.5px;
+  font-weight: 600;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.srv-net-value.is-down { color: #34d399; }
+.srv-net-value.is-up { color: #38bdf8; }
+.srv-net-value.is-active { color: #34d399; }
+
+/* 三网线路 */
+.srv-routes {
+  padding: 12px 14px;
+  border-radius: 12px;
+  border: 1px solid rgba(148, 163, 184, .1);
+  background: rgba(2, 6, 15, .24);
+}
+.srv-routes.is-blocked {
+  border-color: rgba(244, 63, 94, .28);
+  background: rgba(244, 63, 94, .05);
+}
+.srv-routes-head {
+  display: flex;
+  justify-content: space-between;
+  margin-bottom: 10px;
+  color: var(--sb-text-2);
+  font-size: 12px;
+  font-weight: 600;
+}
+.srv-routes-time {
+  color: var(--sb-muted);
+  font-weight: 400;
+}
+.srv-route-grid {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) minmax(0, 1fr);
+  gap: 6px 8px;
+  align-items: center;
+}
+.srv-route-dir {
+  color: var(--sb-muted);
+  font-size: 10.5px;
+  text-align: center;
+}
+.srv-carrier {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding-right: 4px;
+  color: var(--sb-text-2);
+  font-size: 12px;
+}
+.srv-carrier i {
   width: 7px;
   height: 7px;
-  border-radius: 50%;
-  flex-shrink: 0;
+  border-radius: 2px;
 }
-.status-indicator-dot.online {
-  background: #10b981;
-  box-shadow: 0 0 8px #10b981;
-}
-.status-indicator-dot.offline {
-  background: #64748b;
-}
-.status-indicator-dot.blocked {
-  background: #f43f5e;
-  box-shadow: 0 0 8px #f43f5e;
-  animation: pulseLight 1.5s infinite;
-}
-.pill-gfw-warn {
-  font-size: 10px;
-  font-weight: 700;
-  padding: 1px 6px;
-  border-radius: 4px;
-  background: rgba(244, 63, 94, 0.16);
-  color: #fb7185;
-  border: 1px solid rgba(244, 63, 94, 0.35);
-}
-
-.subtitle-row {
+.srv-carrier.is-telecom i { background: #3b82f6; }
+.srv-carrier.is-unicom i { background: #f59e0b; }
+.srv-carrier.is-mobile i { background: #10b981; }
+.srv-route-cell {
   display: flex;
-  align-items: center;
-  gap: 8px;
-  margin-top: 7px;
-  font-size: 12px;
-  color: var(--sb-muted);
-  flex-wrap: wrap;
-}
-.hosting-meta {
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 7px 12px;
-  min-height: 22px;
-  margin-top: 6px;
-  color: var(--sb-muted, #94a3b8);
-  font-size: 12px;
-  line-height: 1.6;
-}
-.hosting-provider { color: #7dd3fc; font-weight: 600; text-decoration: none; }
-.hosting-provider[href]:hover { color: #bae6fd; text-decoration: underline; }
-.sub-os-arch {
-  background: rgba(148, 163, 184, 0.09);
-  padding: 3px 7px;
-  border-radius: 5px;
-}
-.sub-ver {
-  color: #94a3b8;
-}
-.sub-ip {
-  color: #38bdf8;
-  cursor: pointer;
-  display: inline-flex;
-  align-items: center;
-  gap: 3px;
-  padding: 1px 5px;
-  border-radius: 3px;
-  background: rgba(56, 189, 248, 0.08);
-  transition: all 0.15s;
-}
-.sub-ip:hover {
-  background: rgba(56, 189, 248, 0.18);
-  color: #7dd3fc;
-}
-.copy-icon {
-  font-size: 11px;
-}
-.chip-ddns {
-  font-size: 9px;
-  font-weight: 700;
-  background: rgba(168, 85, 247, 0.15);
-  color: #c084fc;
-  border: 1px solid rgba(168, 85, 247, 0.3);
-  padding: 1px 4px;
-  border-radius: 3px;
-}
-
-.header-actions {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  flex-shrink: 0;
-}
-.btn-speedtest-act {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  padding: 3px 8px;
-  border-radius: 5px;
-  font-size: 11px;
-  font-weight: 600;
-  background: rgba(56, 189, 248, 0.12);
-  color: #38bdf8;
-  border: 1px solid rgba(56, 189, 248, 0.28);
-  cursor: pointer;
-  transition: all 0.15s;
-}
-.btn-speedtest-act:hover:not(:disabled) {
-  background: rgba(56, 189, 248, 0.24);
-  color: #fff;
-}
-.icon-more-btn {
-  background: rgba(255, 255, 255, 0.04);
-  border: 1px solid rgba(255, 255, 255, 0.08);
-  color: var(--sb-muted);
-  width: 26px;
-  height: 26px;
-  border-radius: 5px;
-  display: flex;
-  align-items: center;
+  align-items: baseline;
   justify-content: center;
-  cursor: pointer;
-  transition: all 0.15s;
-}
-.icon-more-btn:hover {
-  background: rgba(255, 255, 255, 0.1);
-  color: #f8fafc;
-}
-
-/* 2. 遥测与带宽聚合 */
-.card-telemetry-clean {
-  background: rgba(0, 0, 0, 0.18);
+  gap: 6px;
+  min-width: 0;
+  padding: 5px 8px;
   border-radius: 8px;
-  padding: 12px;
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-}
-.hw-grid {
-  display: grid;
-  grid-template-columns: repeat(3, 1fr);
-  gap: 16px;
-}
-.hw-item {
+  border: 1px solid rgba(148, 163, 184, .12);
+  background: rgba(148, 163, 184, .06);
+  color: var(--sb-text);
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
   cursor: default;
 }
-.hw-head {
+.srv-route-cell em {
+  font-size: 10.5px;
+  font-style: normal;
+  font-weight: 500;
+  opacity: .8;
+}
+.srv-route-cell.ping-status-fast { border-color: rgba(52, 211, 153, .28); color: #6ee7b7; }
+.srv-route-cell.ping-status-medium { border-color: rgba(251, 191, 36, .28); color: #fcd34d; }
+.srv-route-cell.ping-status-slow { border-color: rgba(251, 146, 60, .3); color: #fdba74; }
+.srv-route-cell.ping-status-timeout {
+  border-color: rgba(244, 63, 94, .3);
+  background: rgba(244, 63, 94, .08);
+  color: #fda4af;
+}
+.srv-routes-empty {
   display: flex;
+  align-items: center;
   justify-content: space-between;
-  align-items: center;
-  font-size: 11px;
-  margin-bottom: 7px;
-}
-.hw-lbl {
   color: var(--sb-muted);
-  font-size: 10px;
-  text-transform: uppercase;
+  font-size: 12px;
 }
-.hw-val {
-  font-weight: 600;
-}
-.hw-track {
-  width: 100%;
-  height: 5px;
-  background: rgba(148, 163, 184, 0.14);
-  border-radius: 2px;
-  overflow: hidden;
-}
-.hw-bar {
-  height: 100%;
-  border-radius: 2px;
-  transition: width 0.3s ease;
-}
-
-.network-stream-row {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  font-size: 11px;
-  padding-top: 10px;
-  border-top: 1px solid rgba(148, 163, 184, 0.12);
-}
-.rate-group {
-  display: flex;
-  gap: 14px;
-}
-.rate-down {
-  color: #34d399;
-  font-weight: 600;
-}
-.rate-up {
-  color: #38bdf8;
-  font-weight: 600;
-}
-.traffic-conn-group {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-.total-stream {
-  color: var(--sb-muted);
-}
-.conn-pill {
-  padding: 1px 5px;
-  border-radius: 3px;
-  background: rgba(255, 255, 255, 0.05);
-  color: var(--sb-muted);
-  font-size: 10px;
-}
-.conn-pill.has-conn {
-  background: rgba(16, 185, 129, 0.12);
-  color: #34d399;
-  border: 1px solid rgba(16, 185, 129, 0.25);
-}
-
-/* 3. 网络线路矩阵 (去程 & 返程) */
-.route-matrix-box {
-  background: rgba(0, 0, 0, 0.18);
-  border-radius: 8px;
-  padding: 10px 12px;
-  display: flex;
-  flex-direction: column;
-  gap: 9px;
-  border: 1px solid rgba(120, 153, 190, 0.13);
-}
-.route-matrix-box.is-blocked {
-  border-color: rgba(244, 63, 94, 0.25);
-  background: rgba(244, 63, 94, 0.04);
-}
-
-.route-line {
-  display: flex;
-  align-items: center;
-  gap: 11px;
-}
-.dir-badge {
-  font-size: 9px;
-  font-weight: 700;
-  padding: 1px 5px;
-  border-radius: 3px;
-  letter-spacing: 0.5px;
-  flex-shrink: 0;
-}
-.dir-badge.in {
-  background: rgba(56, 189, 248, 0.15);
-  color: #38bdf8;
-  border: 1px solid rgba(56, 189, 248, 0.3);
-}
-.dir-badge.out {
-  background: rgba(168, 85, 247, 0.15);
-  color: #c084fc;
-  border: 1px solid rgba(168, 85, 247, 0.3);
-}
-
-.gfw-alert-capsule {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-}
-.gfw-alert-dot {
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: #f43f5e;
-  box-shadow: 0 0 8px #f43f5e;
-  animation: pulseLight 1.5s infinite;
-}
-.gfw-alert-txt {
-  font-size: 11px;
-  font-weight: 700;
-  color: #fb7185;
-}
-.gfw-detail-btn {
-  background: rgba(244, 63, 94, 0.18);
-  border: 1px solid rgba(244, 63, 94, 0.35);
-  color: #fecdd3;
-  font-size: 10px;
-  padding: 1px 5px;
-  border-radius: 3px;
+.srv-link-btn {
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--sb-accent);
+  font-size: 12px;
   cursor: pointer;
-  transition: all 0.15s;
 }
-.gfw-detail-btn:hover {
-  background: rgba(244, 63, 94, 0.3);
-  color: #fff;
-}
+.srv-link-btn:disabled { cursor: progress; opacity: .7; }
 
-.carrier-tags-flow {
+/* 底栏 */
+.srv-foot {
   display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px 12px;
+  margin-top: auto;
+  padding-top: 14px;
+  border-top: 1px dashed rgba(148, 163, 184, .14);
+  color: var(--sb-muted);
+  font-size: 12px;
+}
+.srv-foot-plan {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 12px;
+  min-width: 0;
+}
+.srv-provider {
+  color: #7dd3fc;
+  font-weight: 600;
+  text-decoration: none;
+}
+.srv-provider[href]:hover { color: #bae6fd; text-decoration: underline; }
+.srv-expiry.is-warning { color: var(--sb-warning); font-weight: 600; }
+.srv-expiry.is-danger { color: var(--sb-danger); font-weight: 600; }
+.srv-foot-time {
+  display: inline-flex;
   align-items: center;
   gap: 5px;
-  flex-wrap: wrap;
-  flex: 1;
-}
-.carrier-tag {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  padding: 4px 8px;
-  border-radius: 6px;
-  font-size: 12px;
-  background: rgba(30, 48, 70, 0.62);
-  border: 1px solid rgba(120, 153, 190, 0.16);
+  margin-left: auto;
   white-space: nowrap;
-  cursor: default;
-}
-.dot-carrier {
-  width: 5px;
-  height: 5px;
-  border-radius: 50%;
-  flex-shrink: 0;
-}
-.dot-carrier.ct { background: #3b82f6; }
-.dot-carrier.cu { background: #f59e0b; }
-.dot-carrier.cm { background: #10b981; }
-
-.route-empty-hint {
-  font-size: 11px;
-}
-
-/* 4. 底栏 */
-.card-footer-clean {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  font-size: 11px;
-  color: var(--sb-muted);
-  padding-top: 4px;
-}
-.footer-time-info {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-}
-.time-sep {
-  opacity: 0.5;
-}
-
-/* ── 列表表格与辅助 ─────────────────────────────────────── */
-.cards-pagination-bar {
-  display: flex;
-  justify-content: center;
-  margin-top: 16px;
-  margin-bottom: 30px;
-}
-.rate-stack {
-  display: flex;
-  flex-direction: column;
-  gap: 1px;
-  font-size: 11px;
-}
-.rate-item.down { color: #34d399; }
-.rate-item.up { color: #38bdf8; }
-
-.table-hw-stack {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  font-size: 11px;
-}
-.hw-mini-row {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-}
-.hw-mini-name {
-  color: var(--sb-muted);
-  width: 32px;
-}
-.hw-mini-val {
-  font-weight: 600;
-}
-.gfw-table-alert {
-  color: #fb7185;
-  font-weight: 700;
-  font-size: 12px;
 }
 
 .empty-cards-box {
@@ -2439,212 +2242,488 @@ onBeforeUnmount(() => {
   user-select: all;
 }
 
-.setting-edit-box {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  width: 100%;
-  padding: 10px 14px;
-  border: 1px solid var(--sb-line);
-  border-radius: var(--sb-radius-sm);
-  background: var(--sb-surface-muted, rgba(148, 163, 184, 0.05));
-  box-sizing: border-box;
+/* ── 弹窗通用外壳 ───────────────────────────────────────── */
+:global(.el-dialog.srv-dialog) {
+  max-width: calc(100vw - 32px);
+  padding: 0;
+  overflow: hidden;
+  border: 1px solid rgba(148, 163, 184, .16);
+  border-radius: 20px;
+  background: linear-gradient(170deg, #121b2d 0%, #0b111e 100%);
+  box-shadow: 0 40px 80px -30px rgba(0, 0, 0, .95);
 }
-.setting-edit-text {
-  flex: 1;
-  margin-right: 16px;
+:global(.el-dialog.srv-dialog .el-dialog__header) {
+  margin: 0;
+  padding: 0;
 }
-.setting-edit-heading {
-  font-weight: 600;
-  color: var(--sb-text-1);
-  margin-bottom: 2px;
+:global(.el-dialog.srv-dialog .el-dialog__body) {
+  max-height: min(64vh, 620px);
+  padding: 0 24px 4px;
+  overflow-y: auto;
+}
+:global(.el-dialog.srv-dialog .el-dialog__footer) {
+  padding: 14px 24px 18px;
+  border-top: 1px solid rgba(148, 163, 184, .1);
 }
 
-/* ── 逐跳丢包排障 (MTR) 样式 ───────────────────────── */
-.mtr-ctrl-bar {
+.dlg-hero {
+  --srv-tone: var(--sb-success);
+  --srv-tone-soft: rgba(52, 211, 153, .14);
+  position: relative;
   display: flex;
   align-items: center;
-  gap: 12px;
-  padding: 12px 16px;
-  background: var(--sb-surface-muted, rgba(148, 163, 184, 0.05));
-  border: 1px solid var(--sb-line);
-  border-radius: var(--sb-radius-sm, 8px);
-  margin-bottom: 16px;
-  flex-wrap: wrap;
+  gap: 14px;
+  padding: 22px 24px 18px;
+  background: radial-gradient(90% 140% at 0% 0%, var(--srv-tone-soft) 0%, transparent 60%);
 }
-.mtr-ctrl-item {
+.dlg-hero::before {
+  content: '';
+  position: absolute;
+  inset: 0 0 auto;
+  height: 3px;
+  background: linear-gradient(90deg, var(--srv-tone), transparent 70%);
+}
+.dlg-hero.is-offline { --srv-tone: #64748b; --srv-tone-soft: rgba(100, 116, 139, .12); }
+.dlg-hero.is-blocked { --srv-tone: #f43f5e; --srv-tone-soft: rgba(244, 63, 94, .16); }
+.dlg-hero .srv-status { background: var(--srv-tone-soft); color: var(--srv-tone); }
+.dlg-hero .srv-status.is-offline { color: #94a3b8; }
+.dlg-hero > .srv-icon-btn { align-self: flex-start; }
+.dlg-hero-text { flex: 1; min-width: 0; }
+.dlg-hero-kicker {
+  color: var(--sb-muted);
+  font-size: 11px;
+  letter-spacing: .08em;
+}
+.dlg-hero-name {
   display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 2px;
+  color: #f8fafc;
+  font-size: 18px;
+  font-weight: 700;
+}
+.dlg-hero-name > span:first-child {
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.dlg-hero-sub {
+  margin-top: 4px;
+  overflow: hidden;
+  color: var(--sb-muted);
+  font-size: 12px;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+/* 编辑弹窗：标签页 */
+.dlg-tabs {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  display: flex;
+  gap: 4px;
+  margin: 0 -24px 18px;
+  padding: 0 24px;
+  border-bottom: 1px solid rgba(148, 163, 184, .12);
+  background: #111a2b;
+}
+.dlg-tab {
+  position: relative;
+  display: inline-flex;
   align-items: center;
   gap: 6px;
-}
-.ctrl-label {
+  padding: 11px 14px;
+  border: none;
+  background: none;
+  color: var(--sb-muted);
   font-size: 13px;
-  color: var(--sb-text-2);
-  white-space: nowrap;
+  font-weight: 600;
+  cursor: pointer;
+  transition: color .15s;
 }
-.mtr-loading-box {
+.dlg-tab:hover { color: var(--sb-text); }
+.dlg-tab.active { color: #e0f2fe; }
+.dlg-tab.active::after {
+  content: '';
+  position: absolute;
+  inset: auto 10px -1px;
+  height: 2px;
+  border-radius: 2px;
+  background: var(--sb-accent);
+}
+.dlg-tab-badge {
+  min-width: 18px;
+  padding: 0 5px;
+  border-radius: 999px;
+  background: rgba(56, 189, 248, .16);
+  color: #7dd3fc;
+  font-size: 10.5px;
+  line-height: 17px;
+  text-align: center;
+}
+
+/* 编辑弹窗：表单内容 */
+.dlg-form :deep(.el-form-item) { margin-bottom: 16px; }
+.dlg-form :deep(.el-form-item__label) {
+  color: var(--sb-text-2);
+  font-size: 12.5px;
+  font-weight: 600;
+}
+.dlg-pane { min-height: 300px; padding-bottom: 6px; }
+.dlg-help {
+  margin-top: 6px;
+  color: var(--sb-muted);
+  font-size: 12px;
+  line-height: 1.55;
+}
+.dlg-pick {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  margin-top: 8px;
+}
+.dlg-pick-label {
+  margin-right: 2px;
+  color: var(--sb-muted);
+  font-size: 12px;
+}
+.dlg-pick-chip { cursor: pointer; }
+.dlg-pick-chip:hover { border-color: rgba(56, 189, 248, .4); }
+.dlg-facts {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  overflow: hidden;
+  border: 1px solid rgba(148, 163, 184, .1);
+  border-radius: 12px;
+  background: rgba(148, 163, 184, .04);
+}
+.dlg-facts > div {
   display: flex;
   flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  padding: 48px 16px;
-  gap: 14px;
-  color: var(--sb-accent, #38bdf8);
+  gap: 3px;
+  min-width: 0;
+  padding: 10px 12px;
 }
-.loading-tip {
-  font-size: 13px;
-  color: var(--sb-text-2);
+.dlg-facts > div + div { border-left: 1px solid rgba(148, 163, 184, .1); }
+.dlg-facts span { color: var(--sb-muted); font-size: 11px; }
+.dlg-facts b {
+  overflow: hidden;
+  color: var(--sb-text);
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+  text-overflow: ellipsis;
 }
-.mtr-summary-card {
-  padding: 14px 16px;
-  background: var(--sb-panel, rgba(23, 33, 54, 0.5));
-  border: 1px solid var(--sb-line);
-  border-left: 4px solid var(--sb-success, #10b981);
-  border-radius: var(--sb-radius-sm, 8px);
-  margin-bottom: 16px;
+.dlg-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  column-gap: 16px;
 }
-.mtr-summary-card.has-real-drop {
-  border-left-color: var(--sb-danger, #ef4444);
+.dlg-span-2 { grid-column: 1 / -1; }
+.dlg-inline {
+  display: flex;
+  gap: 8px;
+  width: 100%;
 }
-.summary-header {
+.dlg-preview {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  margin-bottom: 8px;
-  flex-wrap: wrap;
-  gap: 8px;
-}
-.summary-target {
-  font-size: 13px;
-}
-.summary-label {
-  color: var(--sb-text-2);
-}
-.summary-val {
-  font-weight: 600;
-  color: var(--sb-text-1);
-}
-.summary-tool {
+  gap: 12px;
+  padding: 10px 14px;
+  border: 1px dashed rgba(56, 189, 248, .28);
+  border-radius: 12px;
+  background: rgba(56, 189, 248, .05);
   color: var(--sb-muted);
-  font-size: 11px;
-  margin-left: 6px;
-}
-.summary-badges {
-  display: flex;
-  gap: 8px;
-}
-.metric-pill {
   font-size: 12px;
-  padding: 2px 8px;
-  background: rgba(255, 255, 255, 0.04);
-  border: 1px solid var(--sb-line);
-  border-radius: 4px;
-  color: var(--sb-text-2);
 }
-.metric-pill b {
-  color: var(--sb-text-1);
-}
-.summary-diagnosis {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  font-size: 12px;
-  color: var(--sb-text-2);
-  line-height: 1.5;
-}
-.hop-host-cell {
+.dlg-preview b { color: #7dd3fc; font-weight: 600; }
+/* 编辑弹窗：网络分区 */
+.dlg-block {
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: 12px;
+  margin-bottom: 14px;
+  padding: 14px 16px;
+  border: 1px solid rgba(148, 163, 184, .12);
+  border-radius: 14px;
+  background: rgba(2, 6, 15, .24);
+  transition: border-color .2s;
 }
-.hop-ip {
+.dlg-block.is-on { border-color: rgba(168, 85, 247, .3); }
+.dlg-block-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+.dlg-block-head .dlg-help { margin-top: 3px; }
+.dlg-block-title {
+  color: var(--sb-text);
+  font-size: 13px;
   font-weight: 600;
-  color: var(--sb-text-1);
-  font-size: 12px;
 }
-.hop-hostname {
-  font-size: 11px;
+.dlg-ip-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.dlg-ip-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 8px 6px 10px;
+  border-radius: 10px;
+  background: rgba(148, 163, 184, .05);
+}
+.dlg-ip-kind {
+  flex-shrink: 0;
+  padding: 1px 6px;
+  border-radius: 5px;
+  font-size: 10.5px;
+  font-weight: 700;
+}
+.dlg-ip-kind.is-v4 { background: rgba(52, 211, 153, .14); color: #6ee7b7; }
+.dlg-ip-kind.is-v6 { background: rgba(251, 191, 36, .14); color: #fcd34d; }
+.dlg-ip-addr {
+  min-width: 140px;
+  color: var(--sb-text);
+  font-size: 12.5px;
+  word-break: break-all;
+}
+.dlg-ip-alias { flex: 1; }
+.dlg-empty {
+  padding: 12px;
+  border-radius: 10px;
+  background: rgba(148, 163, 184, .05);
   color: var(--sb-muted);
+  font-size: 12px;
+  text-align: center;
 }
-.hop-loc {
-  font-size: 11px;
-  color: #38bdf8;
-}
-.loss-cell {
+.dlg-foot {
   display: flex;
   align-items: center;
   gap: 8px;
 }
-.loss-val {
-  font-weight: 700;
-  font-size: 13px;
-  min-width: 44px;
+.dlg-foot-hint {
+  margin-right: auto;
+  color: var(--sb-muted);
+  font-size: 12px;
 }
-.pill-rate-limit {
-  font-size: 10px;
-  padding: 1px 6px;
-  border-radius: 4px;
-  background: rgba(245, 158, 11, 0.12);
-  color: #f59e0b;
-  border: 1px solid rgba(245, 158, 11, 0.3);
-  cursor: help;
-  white-space: nowrap;
+@media (max-width: 700px) {
+  .dlg-grid, .dlg-facts { grid-template-columns: minmax(0, 1fr); }
+  .dlg-facts > div + div { border-left: none; border-top: 1px solid rgba(148, 163, 184, .1); }
+  .dlg-foot-hint { display: none; }
 }
-.pill-real-drop {
-  font-size: 10px;
-  padding: 1px 6px;
-  border-radius: 4px;
-  background: rgba(239, 68, 68, 0.15);
-  color: #ef4444;
-  border: 1px solid rgba(239, 68, 68, 0.35);
-  cursor: help;
+
+/* ── MTR 排障弹窗 ───────────────────────────────────────── */
+.mtr-ctrl {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 12px;
+  margin-bottom: 16px;
+  padding: 14px 16px;
+  border: 1px solid rgba(148, 163, 184, .12);
+  border-radius: 14px;
+  background: rgba(2, 6, 15, .24);
+}
+.mtr-ctrl-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.mtr-ctrl-field.is-grow { flex: 1; min-width: 200px; }
+.mtr-ctrl-label {
+  color: var(--sb-muted);
+  font-size: 11.5px;
   font-weight: 600;
+}
+.mtr-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  padding: 44px 16px 40px;
+  text-align: center;
+}
+.mtr-radar {
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: 64px;
+  height: 64px;
+  margin-bottom: 6px;
+  border-radius: 50%;
+  background: rgba(56, 189, 248, .1);
+  color: var(--sb-accent);
+}
+.mtr-radar::after {
+  content: '';
+  position: absolute;
+  inset: -6px;
+  border: 1px solid rgba(56, 189, 248, .35);
+  border-radius: 50%;
+  animation: mtrRipple 1.8s ease-out infinite;
+}
+.mtr-radar.is-idle { background: rgba(148, 163, 184, .08); color: var(--sb-muted); }
+.mtr-radar.is-idle::after { animation: none; border-color: rgba(148, 163, 184, .15); }
+@keyframes mtrRipple {
+  0% { transform: scale(.85); opacity: 1; }
+  100% { transform: scale(1.35); opacity: 0; }
+}
+.mtr-state-title {
+  color: var(--sb-text);
+  font-size: 14px;
+  font-weight: 600;
+}
+.mtr-state-sub {
+  max-width: 420px;
+  color: var(--sb-muted);
+  font-size: 12px;
+  line-height: 1.6;
+}
+.mtr-stats {
+  display: grid;
+  grid-template-columns: 1.6fr repeat(3, minmax(0, 1fr));
+  gap: 10px;
+  margin-bottom: 12px;
+}
+.mtr-stat {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+  padding: 12px 14px;
+  border: 1px solid rgba(148, 163, 184, .1);
+  border-radius: 12px;
+  background: rgba(148, 163, 184, .04);
+}
+.mtr-stat > span { color: var(--sb-muted); font-size: 11px; }
+.mtr-stat b {
+  overflow: hidden;
+  color: #f1f5f9;
+  font-size: 20px;
+  font-weight: 700;
   white-space: nowrap;
+  text-overflow: ellipsis;
 }
-.pill-perfect {
-  font-size: 10px;
-  padding: 1px 6px;
-  border-radius: 4px;
-  background: rgba(16, 185, 129, 0.1);
-  color: #10b981;
+.mtr-stat.is-target b { font-size: 15px; line-height: 27px; }
+.mtr-stat b small { margin-left: 2px; color: var(--sb-muted); font-size: 11px; font-weight: 500; }
+.mtr-stat b em { font-style: normal; color: var(--sb-success); }
+.mtr-stat b em.is-bad { color: var(--sb-danger); }
+.mtr-stat > small { color: #7dd3fc; font-size: 11.5px; }
+.mtr-verdict {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin-bottom: 14px;
+  padding: 10px 14px;
+  border: 1px solid rgba(52, 211, 153, .25);
+  border-radius: 12px;
+  background: rgba(52, 211, 153, .06);
+  color: #a7f3d0;
+  font-size: 12.5px;
+  line-height: 1.6;
 }
-.text-muted {
+.mtr-verdict .el-icon { margin-top: 2px; flex-shrink: 0; }
+.mtr-verdict.is-bad {
+  border-color: rgba(244, 63, 94, .3);
+  background: rgba(244, 63, 94, .07);
+  color: #fecdd3;
+}
+.mtr-hops {
+  overflow: hidden;
+  border: 1px solid rgba(148, 163, 184, .12);
+  border-radius: 14px;
+}
+.mtr-hop {
+  display: grid;
+  grid-template-columns: 40px minmax(0, 2.2fr) minmax(130px, 1.3fr) 70px 110px 64px;
+  align-items: center;
+  gap: 12px;
+  padding: 9px 14px;
+  font-size: 12.5px;
+}
+.mtr-hop + .mtr-hop { border-top: 1px solid rgba(148, 163, 184, .08); }
+.mtr-hop.is-head {
+  background: rgba(148, 163, 184, .06);
+  color: var(--sb-muted);
+  font-size: 11px;
+  font-weight: 600;
+}
+.mtr-hop.is-drop { background: rgba(244, 63, 94, .05); box-shadow: inset 3px 0 0 #f43f5e; }
+.mtr-hop.is-limit { box-shadow: inset 3px 0 0 rgba(251, 191, 36, .7); }
+.mtr-hop .is-num { text-align: right; }
+.mtr-hop .is-muted { color: var(--sb-muted); }
+.mtr-hop-no {
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  border-radius: 8px;
+  background: rgba(148, 163, 184, .08);
   color: var(--sb-text-2);
+  font-size: 11px;
 }
-.mtr-raw-toggle {
-  margin-top: 12px;
+.mtr-hop-host {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
 }
+.mtr-hop-host > span { color: var(--sb-text); font-weight: 600; }
+.mtr-hop-host small {
+  overflow: hidden;
+  color: var(--sb-muted);
+  font-size: 11px;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.mtr-hop-host small.is-loc { color: #7dd3fc; }
+.mtr-hop-loss { display: flex; flex-direction: column; gap: 5px; }
+.mtr-loss-top { display: flex; align-items: center; gap: 6px; }
+.mtr-loss-track {
+  height: 4px;
+  overflow: hidden;
+  border-radius: 2px;
+  background: rgba(148, 163, 184, .12);
+}
+.mtr-loss-track i { display: block; height: 100%; border-radius: 2px; }
+.mtr-tag {
+  padding: 0 6px;
+  border-radius: 5px;
+  font-size: 10.5px;
+  font-weight: 600;
+  line-height: 17px;
+  white-space: nowrap;
+  cursor: help;
+}
+.mtr-tag.is-limit { background: rgba(251, 191, 36, .14); color: #fcd34d; }
+.mtr-tag.is-drop { background: rgba(244, 63, 94, .16); color: #fda4af; }
+.mtr-raw { margin-top: 12px; }
 .mtr-raw-terminal {
-  margin-top: 8px;
-  padding: 12px;
-  background: #090d16;
-  border: 1px solid var(--sb-line);
-  border-radius: 6px;
+  margin: 8px 0 0;
+  max-height: 240px;
+  padding: 12px 14px;
+  overflow-y: auto;
+  border: 1px solid rgba(148, 163, 184, .12);
+  border-radius: 12px;
+  background: #060a13;
   color: #7dd3fc;
   font-size: 11px;
-  line-height: 1.5;
-  max-height: 240px;
-  overflow-y: auto;
+  line-height: 1.55;
   white-space: pre-wrap;
   word-break: break-all;
 }
-.mtr-empty-placeholder {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  padding: 48px 16px;
-  gap: 10px;
-  text-align: center;
-}
-.empty-text {
-  font-size: 14px;
-  font-weight: 500;
-  color: var(--sb-text-1);
-}
-.empty-sub {
-  font-size: 12px;
-  color: var(--sb-muted);
+@media (max-width: 860px) {
+  .mtr-stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .mtr-hop { grid-template-columns: 32px minmax(0, 1fr) 120px 64px; }
+  .mtr-hop > :nth-child(5), .mtr-hop > :nth-child(6) { display: none; }
 }
 
 :deep(.el-popper) {
