@@ -3,7 +3,6 @@ import { computed, inject, onBeforeUnmount, onMounted, reactive, ref, watch } fr
 import { ElMessage, ElMessageBox } from 'element-plus'
 import {
   Aim,
-  Clock,
   Close,
   Connection,
   CopyDocument,
@@ -25,7 +24,6 @@ import { connectionSnapshots, subscribeConnections } from '../connections'
 import PageHeader from '../components/PageHeader.vue'
 
 const MASTER_HOST_KEY = 'polaris_master_host'
-const RING_LENGTH = 2 * Math.PI * 27
 const CARRIERS = [
   { isp: 'telecom', short: '电信' },
   { isp: 'unicom', short: '联通' },
@@ -216,10 +214,10 @@ function buildGauge(key, label, percent, available, detail, tip) {
     label,
     available,
     text: available ? String(value) : '—',
+    p: value,
     detail,
     tip,
-    color: available ? getUsageStatusColor(value) : 'rgba(148, 163, 184, .35)',
-    offset: RING_LENGTH * (1 - value / 100),
+    color: available ? getUsageStatusColor(value) : 'var(--sb-muted)',
   }
 }
 
@@ -655,9 +653,9 @@ function getGFWDetailTooltip(st) {
 }
 
 function getUsageStatusColor(percent) {
-  if (percent >= 85) return '#f43f5e' // 红色警告
-  if (percent >= 65) return '#f59e0b' // 琥珀黄中载
-  return '#10b981' // 翠绿正常
+  if (percent >= 85) return 'var(--sb-danger)' // 红色警告
+  if (percent >= 65) return 'var(--sb-warning)' // 琥珀黄中载
+  return 'var(--sb-success)' // 翠绿正常
 }
 
 // 智能国旗推导
@@ -939,8 +937,8 @@ async function startMTRDiagnose() {
 }
 
 function getLossColor(loss) {
-  if (!loss || loss <= 0) return 'var(--sb-success, #10b981)'
-  if (loss < 10) return '#f59e0b'
+  if (!loss || loss <= 0) return 'var(--sb-success, var(--sb-success))'
+  if (loss < 10) return 'var(--sb-warning)'
   if (loss < 50) return '#ea580c'
   return 'var(--sb-danger, #ef4444)'
 }
@@ -1115,25 +1113,23 @@ onBeforeUnmount(() => {
         <el-empty description="未找到符合条件的服务器" />
       </div>
 
-      <div v-else class="srv-grid">
-        <article v-for="card in cards" :key="card.node.id" class="srv-card" :class="`is-${card.status}`">
-          <header class="srv-head">
-            <div class="srv-avatar" :class="{ 'is-flag': card.isFlag }">{{ card.avatar }}</div>
-            <div class="srv-ident">
-              <div class="srv-name-row">
-                <h3 class="srv-name" :title="card.node.name">{{ card.displayName }}</h3>
-                <span class="srv-status" :class="`is-${card.status}`">
-                  <i class="srv-status-dot" />{{ card.statusText }}
-                </span>
+      <div v-else class="n-grid">
+        <article v-for="card in cards" :key="card.node.id" class="n-card" :class="`is-${card.status}`">
+          <header class="n-head">
+            <span class="n-avatar" :class="{ 'is-flag': card.isFlag }">{{ card.avatar }}</span>
+            <div class="n-title">
+              <div class="n-name-row">
+                <h3 class="n-name" :title="card.node.name">{{ card.displayName }}</h3>
+                <span class="srv-status" :class="`is-${card.status}`"><i class="srv-status-dot" />{{ card.statusText }}</span>
               </div>
-              <div class="srv-sub">
+              <div class="n-meta font-mono">
                 <span>{{ card.platform }}</span>
-                <span v-if="card.region" class="srv-sub-sep">{{ card.region }}</span>
-                <span class="srv-sub-sep font-mono">v{{ card.node.agent_version || '—' }}</span>
+                <span v-if="card.region" class="n-region" :title="card.region"> · {{ card.region }}</span>
+                <span> · v{{ card.node.agent_version || '—' }}</span>
               </div>
             </div>
-            <div class="srv-actions">
-              <el-tooltip v-if="canWrite && card.node.online" :content="speedtesting[card.node.id] ? '线路检测中' : '三网线路检测'" placement="top">
+            <div class="n-ops">
+              <el-tooltip v-if="canWrite && card.node.online" content="三网线路检测" placement="top">
                 <button class="srv-icon-btn" :disabled="Boolean(speedtesting[card.node.id])" @click="runSpeedtest(card.node)">
                   <el-icon :class="{ 'is-loading': speedtesting[card.node.id] }"><Connection /></el-icon>
                 </button>
@@ -1154,92 +1150,59 @@ onBeforeUnmount(() => {
             </div>
           </header>
 
-          <div class="srv-chips">
-            <button v-if="card.node.client_address" class="srv-chip is-address font-mono" :title="`点击复制: ${card.node.client_address}`" @click="copyAddress(card.node.client_address)">
-              {{ card.node.client_address }}<el-icon><CopyDocument /></el-icon>
+          <div class="n-chips font-mono">
+            <button v-if="card.node.client_address" class="n-chip is-address" :title="`点击复制: ${card.node.client_address}`" @click="copyAddress(card.node.client_address)">
+              <span class="n-chip-txt">{{ card.node.client_address }}</span><el-icon><CopyDocument /></el-icon>
             </button>
-            <span v-else class="srv-chip is-danger">未配置连接地址</span>
+            <span v-else class="n-chip is-danger">未配置连接地址</span>
             <el-tooltip v-if="card.ddnsTip" raw-content :content="card.ddnsTip" placement="top">
-              <span class="srv-chip is-violet">DDNS · {{ card.node.last_observed_ip || '同步中' }}</span>
+              <span class="n-chip is-violet">{{ card.node.last_observed_ip || 'DDNS 同步中' }}</span>
             </el-tooltip>
             <el-tooltip v-if="card.ipTip" raw-content :content="card.ipTip" placement="top">
-              <span class="srv-chip">{{ card.node.ip_addresses.length }} 个出口 IP</span>
+              <span class="n-chip">{{ card.node.ip_addresses.length }} 出口</span>
             </el-tooltip>
           </div>
 
-          <div class="srv-gauges">
+          <div class="n-gauges">
             <el-tooltip v-for="g in card.gauges" :key="g.key" :content="g.tip" placement="top">
-              <div class="srv-gauge" :class="{ 'is-empty': !g.available }">
-                <svg class="srv-ring" viewBox="0 0 64 64" aria-hidden="true">
-                  <circle class="srv-ring-track" cx="32" cy="32" r="27" />
-                  <circle
-                    class="srv-ring-bar"
-                    cx="32"
-                    cy="32"
-                    r="27"
-                    :stroke="g.color"
-                    :stroke-dasharray="RING_LENGTH"
-                    :stroke-dashoffset="g.offset"
-                  />
-                </svg>
-                <div class="srv-ring-value font-mono">{{ g.text }}<small v-if="g.available">%</small></div>
-                <div class="srv-gauge-label">{{ g.label }}</div>
-                <div class="srv-gauge-detail font-mono">{{ g.detail }}</div>
+              <div class="n-gauge" :class="{ 'is-empty': !g.available }">
+                <div class="n-g-top font-mono"><span>{{ g.label }}</span><b :style="{ color: g.color }">{{ g.text }}<i v-if="g.available">%</i></b></div>
+                <div class="n-g-track"><i :style="{ width: `${g.p}%`, background: g.color }" /></div>
               </div>
             </el-tooltip>
           </div>
 
-          <div class="srv-net font-mono">
-            <div class="srv-net-item">
-              <span class="srv-net-label">下行</span>
-              <span class="srv-net-value is-down">↓ {{ card.rx }}</span>
-            </div>
-            <div class="srv-net-item">
-              <span class="srv-net-label">上行</span>
-              <span class="srv-net-value is-up">↑ {{ card.tx }}</span>
-            </div>
-            <el-tooltip :content="card.totalTip || '等待流量上报'" placement="top">
-              <div class="srv-net-item">
-                <span class="srv-net-label">累计</span>
-                <span class="srv-net-value">{{ card.total || '—' }}</span>
-              </div>
+          <div class="n-net font-mono">
+            <span class="is-down">↓{{ card.rx }}</span>
+            <span class="is-up">↑{{ card.tx }}</span>
+            <el-tooltip v-if="card.totalTip" :content="card.totalTip" placement="top">
+              <span class="is-total">{{ card.total }}</span>
             </el-tooltip>
-            <div class="srv-net-item">
-              <span class="srv-net-label">连接</span>
-              <span class="srv-net-value" :class="{ 'is-active': card.conn > 0 }">{{ card.conn }}</span>
-            </div>
+            <span v-else class="is-total">累计 —</span>
+            <span class="n-conn" :class="{ 'is-active': card.conn > 0 }">{{ card.conn }} 连</span>
           </div>
 
-          <div class="srv-routes" :class="{ 'is-blocked': card.blocked }">
-            <div class="srv-routes-head">
-              <span>三网线路</span>
-              <span v-if="card.testedAt" class="srv-routes-time">{{ card.testedAt }}检测</span>
-            </div>
+          <div class="n-routes" :class="{ 'is-blocked': card.blocked }">
             <template v-if="card.routes">
-              <div class="srv-route-grid">
-                <span />
-                <span class="srv-route-dir">去程</span>
-                <span class="srv-route-dir">返程</span>
-                <template v-for="r in card.routes" :key="r.isp">
-                  <span class="srv-carrier" :class="`is-${r.isp}`"><i />{{ r.short }}</span>
-                  <el-tooltip raw-content :content="r.in.tip" placement="top">
-                    <span class="srv-route-cell font-mono" :class="r.in.cls">
-                      {{ r.in.label }}<em v-if="r.in.latency">{{ r.in.latency }}</em>
-                    </span>
-                  </el-tooltip>
-                  <el-tooltip raw-content :content="r.out.tip" placement="top">
-                    <span class="srv-route-cell font-mono" :class="r.out.cls">
-                      {{ r.out.label }}<em v-if="r.out.latency">{{ r.out.latency }}</em>
-                    </span>
-                  </el-tooltip>
-                </template>
+              <div class="n-route-line font-mono">
+                <span class="n-dir is-in">去</span>
+                <el-tooltip v-for="r in card.routes" :key="r.isp" raw-content :content="r.in.tip" placement="top">
+                  <span class="n-lat" :class="r.in.cls"><b :class="`is-${r.isp}`">{{ r.short[0] }}</b>{{ r.in.label }}<em v-if="r.in.latency"> {{ r.in.latency }}</em></span>
+                </el-tooltip>
+              </div>
+              <div class="n-route-line font-mono">
+                <span class="n-dir is-out">返</span>
+                <el-tooltip v-for="r in card.routes" :key="`out-${r.isp}`" raw-content :content="r.out.tip" placement="top">
+                  <span class="n-lat" :class="r.out.cls"><b :class="`is-${r.isp}`">{{ r.short[0] }}</b>{{ r.out.label }}<em v-if="r.out.latency"> {{ r.out.latency }}</em></span>
+                </el-tooltip>
               </div>
             </template>
-            <div v-else class="srv-routes-empty">
-              <span>尚未检测线路</span>
+            <div v-else class="n-route-line is-empty font-mono">
+              <span class="n-dir is-in">去</span><span class="n-lat is-idle">待检测</span>
+              <span class="n-dir is-out">返</span><span class="n-lat is-idle">待检测</span>
               <button
                 v-if="canWrite && card.node.online"
-                class="srv-link-btn"
+                class="n-link"
                 :disabled="Boolean(speedtesting[card.node.id])"
                 @click="runSpeedtest(card.node)"
               >
@@ -1248,20 +1211,16 @@ onBeforeUnmount(() => {
             </div>
           </div>
 
-          <footer class="srv-foot">
-            <div class="srv-foot-plan">
-              <a v-if="card.node.provider && card.node.provider_url" :href="card.node.provider_url" target="_blank" rel="noopener noreferrer" class="srv-provider">{{ card.node.provider }}</a>
-              <span v-else-if="card.node.provider" class="srv-provider">{{ card.node.provider }}</span>
+          <footer class="n-foot">
+            <span class="n-plan">
+              <a v-if="card.node.provider && card.node.provider_url" :href="card.node.provider_url" target="_blank" rel="noopener noreferrer" class="n-provider" :title="card.node.provider">{{ card.node.provider }}</a>
+              <span v-else-if="card.node.provider" class="n-provider" :title="card.node.provider">{{ card.node.provider }}</span>
               <span v-if="card.price">{{ card.price }}</span>
-              <span v-if="card.node.traffic_plan">流量 {{ card.node.traffic_plan }}</span>
-              <span v-if="card.node.bandwidth">带宽 {{ card.node.bandwidth }}</span>
-              <span v-if="card.expiry" class="srv-expiry" :class="card.expiry.level && `is-${card.expiry.level}`" :title="card.expiry.title">{{ card.expiry.text }}</span>
-            </div>
-            <div class="srv-foot-time font-mono" :title="formatDateTime(card.node.last_seen_at)">
-              <el-icon :size="12"><Clock /></el-icon>
-              {{ formatFriendlyTime(card.node.last_seen_at) }}
-              <template v-if="card.node.online"> · {{ formatUptimeText(metrics[card.node.id]?.host?.uptime_seconds) }}</template>
-            </div>
+              <span v-if="card.expiry" :class="card.expiry.level && `is-${card.expiry.level}`" :title="card.expiry.title">{{ card.expiry.text }}</span>
+            </span>
+            <span class="n-time font-mono" :title="formatDateTime(card.node.last_seen_at)">
+              {{ formatFriendlyTime(card.node.last_seen_at) }}<template v-if="card.node.online"> · {{ formatUptimeText(metrics[card.node.id]?.host?.uptime_seconds) }}</template>
+            </span>
           </footer>
         </article>
       </div>
@@ -1617,7 +1576,7 @@ onBeforeUnmount(() => {
   font-size: 12px !important;
 }
 :global(.el-popper b) {
-  color: #38bdf8;
+  color: var(--sb-accent);
   font-weight: 600;
 }
 
@@ -1631,7 +1590,7 @@ onBeforeUnmount(() => {
   flex-shrink: 0;
 }
 .status-indicator.online {
-  background: #10b981;
+  background: var(--sb-success);
   box-shadow: 0 0 8px rgba(16, 185, 129, 0.85);
 }
 .status-indicator.online::after {
@@ -1639,15 +1598,15 @@ onBeforeUnmount(() => {
   position: absolute;
   inset: -3px;
   border-radius: 50%;
-  border: 1.5px solid #10b981;
+  border: 1.5px solid var(--sb-success);
   animation: pulseLight 2s cubic-bezier(0.24, 0, 0.38, 1) infinite;
 }
 .status-indicator.offline {
-  background: #64748b;
+  background: var(--sb-muted);
   box-shadow: 0 0 4px rgba(100, 116, 139, 0.4);
 }
 .status-indicator.blocked {
-  background: #f43f5e;
+  background: var(--sb-danger);
   box-shadow: 0 0 8px rgba(244, 63, 94, 0.9);
 }
 .status-indicator.blocked::after {
@@ -1655,11 +1614,11 @@ onBeforeUnmount(() => {
   position: absolute;
   inset: -3px;
   border-radius: 50%;
-  border: 1.5px solid #f43f5e;
+  border: 1.5px solid var(--sb-danger);
   animation: pulseLight 1.5s cubic-bezier(0.24, 0, 0.38, 1) infinite;
 }
 .status-indicator.pending {
-  background: #f59e0b;
+  background: var(--sb-warning);
   box-shadow: 0 0 6px rgba(245, 158, 11, 0.8);
 }
 @keyframes pulseLight {
@@ -1710,12 +1669,12 @@ onBeforeUnmount(() => {
 }
 .seg-btn.active {
   background: rgba(56, 189, 248, 0.18);
-  color: #38bdf8;
+  color: var(--sb-accent);
   font-weight: 600;
 }
 .seg-btn.seg-blocked.active {
   background: rgba(244, 63, 94, 0.2);
-  color: #fb7185;
+  color: var(--sb-danger);
 }
 
 /* ── 3. 待接入横幅 (Pending Section) ────────────────────── */
@@ -1736,7 +1695,7 @@ onBeforeUnmount(() => {
   padding: 1px 6px;
   border-radius: 10px;
   background: rgba(245, 158, 11, 0.2);
-  color: #fbbf24;
+  color: var(--sb-warning);
   border: 1px solid rgba(245, 158, 11, 0.4);
 }
 .pending-grid {
@@ -1762,7 +1721,7 @@ onBeforeUnmount(() => {
   align-items: center;
   gap: 6px;
   font-size: 14px;
-  color: #fbbf24;
+  color: var(--sb-warning);
 }
 .pending-body {
   font-size: 12px;
@@ -1780,114 +1739,436 @@ onBeforeUnmount(() => {
 }
 
 /* ── 服务器卡片 ─────────────────────────────────────────── */
-.srv-grid {
+/* ── 服务器卡片 ─────────────────────────────────────────── */
+.n-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(360px, 1fr));
-  gap: 20px;
-  margin-bottom: 24px;
+  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+  gap: 12px;
 }
-@media (max-width: 700px) {
-  .srv-grid { grid-template-columns: minmax(0, 1fr); gap: 14px; }
-}
-
-.srv-card {
-  --srv-tone: var(--sb-success);
-  --srv-tone-soft: rgba(52, 211, 153, .14);
+.n-card {
+  --tone: var(--sb-success);
+  --tone-soft: rgba(52, 211, 153, .1);
   position: relative;
   display: flex;
   flex-direction: column;
-  gap: 16px;
-  padding: 20px;
-  border-radius: 18px;
-  border: 1px solid rgba(148, 163, 184, .14);
-  background:
-    radial-gradient(120% 70% at 0% 0%, var(--srv-tone-soft) 0%, transparent 55%),
-    linear-gradient(165deg, rgba(22, 32, 52, .96) 0%, rgba(11, 17, 30, .98) 100%);
-  box-shadow: 0 18px 40px -24px rgba(0, 0, 0, .9), inset 0 1px 0 rgba(255, 255, 255, .04);
+  gap: 9px;
+  min-width: 0;
+  padding: 13px 14px 11px;
+  border: 1px solid var(--sb-line);
+  border-radius: var(--sb-radius);
+  background: var(--sb-surface);
   overflow: hidden;
-  transition: transform .22s ease, border-color .22s ease, box-shadow .22s ease;
+  transition: transform .18s ease, border-color .18s ease, box-shadow .18s ease;
 }
-.srv-card::before {
+.n-card::before {
   content: '';
   position: absolute;
   inset: 0 0 auto;
-  height: 3px;
-  background: linear-gradient(90deg, var(--srv-tone), transparent 75%);
-  opacity: .9;
+  height: 2px;
+  background: var(--tone);
+  opacity: .55;
 }
-.srv-card:hover {
-  transform: translateY(-3px);
-  border-color: rgba(56, 189, 248, .4);
-  box-shadow: 0 26px 48px -24px rgba(0, 0, 0, .95), 0 0 0 1px rgba(56, 189, 248, .08);
+.n-card:hover {
+  transform: translateY(-2px);
+  border-color: rgba(56, 189, 248, .45);
+  box-shadow: var(--sb-shadow);
 }
-.srv-card.is-offline {
-  --srv-tone: #64748b;
-  --srv-tone-soft: rgba(100, 116, 139, .1);
+.n-card.is-offline {
+  --tone: var(--sb-muted);
+  --tone-soft: rgba(148, 163, 184, .08);
 }
-.srv-card.is-offline .srv-gauges,
-.srv-card.is-offline .srv-net { opacity: .55; }
-.srv-card.is-blocked {
-  --srv-tone: #f43f5e;
-  --srv-tone-soft: rgba(244, 63, 94, .16);
-  border-color: rgba(244, 63, 94, .32);
+.n-card.is-offline .n-gauges,
+.n-card.is-offline .n-net,
+.n-card.is-offline .n-routes {
+  opacity: .6;
 }
-/* 头部 */
-.srv-head {
-  display: flex;
-  align-items: center;
-  gap: 14px;
+.n-card.is-blocked {
+  --tone: var(--sb-danger);
+  --tone-soft: rgba(251, 113, 133, .12);
 }
-.srv-avatar {
-  display: grid;
-  place-items: center;
-  flex-shrink: 0;
-  width: 46px;
-  height: 46px;
-  border-radius: 14px;
-  background: linear-gradient(145deg, rgba(56, 189, 248, .22), rgba(99, 102, 241, .22));
-  border: 1px solid rgba(148, 163, 184, .2);
-  color: #e0f2fe;
-  font-size: 18px;
-  font-weight: 700;
-}
-.srv-avatar.is-flag {
-  font-size: 26px;
-  background: rgba(148, 163, 184, .08);
-}
-.srv-ident {
-  flex: 1;
-  min-width: 0;
-}
-.srv-name-row {
+
+.n-head {
   display: flex;
   align-items: center;
   gap: 10px;
   min-width: 0;
 }
-.srv-name {
+.n-avatar {
+  display: grid;
+  place-items: center;
+  flex-shrink: 0;
+  width: 30px;
+  height: 30px;
+  border-radius: var(--sb-radius-sm);
+  background: var(--sb-surface-3);
+  border: 1px solid var(--sb-line);
+  color: var(--sb-text-2);
+  font-size: 12px;
+  font-weight: 700;
+}
+.n-avatar.is-flag {
+  font-size: 16px;
+  font-weight: 400;
+  background: rgba(148, 163, 184, .06);
+  color: var(--sb-text);
+}
+.n-title {
+  flex: 1;
+  min-width: 0;
+}
+.n-name-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.n-name {
   margin: 0;
   min-width: 0;
+  color: var(--sb-text);
+  font-size: 13.5px;
+  font-weight: 600;
+  white-space: nowrap;
   overflow: hidden;
-  color: #f8fafc;
-  font-size: 17px;
-  font-weight: 700;
-  letter-spacing: -.2px;
+  text-overflow: ellipsis;
+}
+.n-meta {
+  display: block;
+  margin-top: 2px;
+  color: var(--sb-muted);
+  font-size: 10.5px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.n-meta .n-region {
+  flex-shrink: 0;
+}
+
+.n-ops {
+  display: flex;
+  align-self: flex-start;
+  gap: 5px;
+  flex-shrink: 0;
+}
+.n-ops .srv-icon-btn {
+  width: 26px;
+  height: 26px;
+  border-radius: 7px;
+}
+
+.n-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  min-width: 0;
+}
+.n-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  max-width: 100%;
+  min-width: 0;
+  padding: 1.5px 7px;
+  border-radius: 6px;
+  border: 1px solid var(--sb-line);
+  background: var(--sb-surface-2);
+  color: var(--sb-text-2);
+  font-size: 10.5px;
+  line-height: 1.6;
+}
+.n-chip-txt {
+  overflow: hidden;
   white-space: nowrap;
   text-overflow: ellipsis;
+}
+.n-chip .el-icon {
+  flex-shrink: 0;
+  font-size: 10px;
+  opacity: .7;
+}
+.n-chip.is-address {
+  border-color: rgba(56, 189, 248, .26);
+  background: var(--sb-accent-soft);
+  color: var(--sb-accent);
+  cursor: pointer;
+  text-align: left;
+  transition: border-color .15s;
+}
+.n-chip.is-address:hover { border-color: var(--sb-accent); }
+.n-chip.is-violet {
+  border-color: rgba(168, 85, 247, .3);
+  background: rgba(168, 85, 247, .1);
+  color: #d8b4fe;
+}
+.n-chip.is-danger {
+  border-color: rgba(251, 113, 133, .35);
+  background: rgba(251, 113, 133, .1);
+  color: var(--sb-danger);
+}
+
+.n-gauges {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+}
+.n-gauge {
+  min-width: 0;
+  cursor: default;
+}
+.n-g-top {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  color: var(--sb-muted);
+  font-size: 10px;
+}
+.n-g-top b {
+  color: var(--sb-text-2);
+  font-size: 10.5px;
+  font-weight: 600;
+}
+.n-g-top b i {
+  margin-left: 1px;
+  color: var(--sb-muted);
+  font-size: 9px;
+  font-style: normal;
+}
+.n-g-track {
+  height: 3px;
+  margin-top: 4px;
+  overflow: hidden;
+  border-radius: 2px;
+  background: rgba(148, 163, 184, .16);
+}
+.n-g-track i {
+  display: block;
+  height: 100%;
+  border-radius: 2px;
+  transition: width .4s ease, background-color .3s ease;
+}
+
+.n-net {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  padding: 6px 10px;
+  border-radius: var(--sb-radius-sm);
+  border: 1px solid var(--sb-line);
+  background: var(--sb-surface-2);
+  font-size: 11px;
+}
+.n-net > span {
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+.n-net .is-down {
+  color: var(--sb-success);
+  font-weight: 600;
+}
+.n-net .is-up {
+  color: var(--sb-accent);
+  font-weight: 600;
+}
+.n-net .is-total {
+  color: var(--sb-muted);
+  font-size: 10.5px;
+  cursor: default;
+}
+.n-conn {
+  margin-left: auto;
+  padding: 0 7px;
+  border-radius: 999px;
+  background: rgba(148, 163, 184, .1);
+  color: var(--sb-muted);
+  font-size: 10px;
+  line-height: 16px;
+}
+.n-conn.is-active {
+  background: rgba(52, 211, 153, .12);
+  color: var(--sb-success);
+}
+
+.n-routes {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 7px 10px;
+  border-radius: var(--sb-radius-sm);
+  border: 1px solid var(--sb-line);
+  background: var(--sb-surface-2);
+}
+.n-routes.is-blocked {
+  border-color: rgba(251, 113, 133, .3);
+  background: rgba(251, 113, 133, .06);
+}
+.n-route-line {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 10.5px;
+}
+.n-dir {
+  flex-shrink: 0;
+  padding: 0 4px;
+  border-radius: 4px;
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 15px;
+}
+.n-dir.is-in {
+  background: rgba(56, 189, 248, .1);
+  color: var(--sb-accent);
+}
+.n-dir.is-out {
+  background: rgba(168, 85, 247, .1);
+  color: #c084fc;
+}
+.n-lat {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  min-width: 0;
+  max-width: 100%;
+  padding: 1px 6px;
+  border-radius: 6px;
+  border: 1px solid var(--sb-line);
+  background: var(--sb-surface-3);
+  color: var(--sb-text-2);
+  white-space: nowrap;
+  overflow: hidden;
+  cursor: default;
+}
+.n-lat b.is-telecom { color: #60a5fa; }
+.n-lat b.is-unicom { color: var(--sb-warning); }
+.n-lat b.is-mobile { color: var(--sb-success); }
+.n-lat em {
+  font-size: 9.5px;
+  font-style: normal;
+  opacity: .75;
+}
+.n-lat.is-idle {
+  border-style: dashed;
+  color: var(--sb-muted);
+  background: transparent;
+}
+.n-lat.ping-status-fast {
+  border-color: rgba(52, 211, 153, .28);
+  color: var(--sb-success);
+}
+.n-lat.ping-status-medium {
+  border-color: rgba(251, 191, 36, .3);
+  color: var(--sb-warning);
+}
+.n-lat.ping-status-slow {
+  border-color: rgba(251, 146, 60, .32);
+  color: #fb923c;
+}
+.n-lat.ping-status-timeout {
+  border-color: rgba(251, 113, 133, .4);
+  background: rgba(251, 113, 133, .08);
+  color: var(--sb-danger);
+}
+.n-link {
+  flex-shrink: 0;
+  margin-left: auto;
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--sb-accent);
+  font-size: 10.5px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.n-link:disabled {
+  cursor: progress;
+  opacity: .7;
+}
+
+.n-foot {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  margin-top: auto;
+  padding-top: 8px;
+  border-top: 1px dashed var(--sb-line);
+  font-size: 10.5px;
+  color: var(--sb-muted);
+}
+.n-plan {
+  display: flex;
+  align-items: baseline;
+  flex: 1;
+  min-width: 0;
+  gap: 8px;
+  overflow: hidden;
+  white-space: nowrap;
+}
+.n-plan > span,
+.n-provider {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.n-plan .is-warning { color: var(--sb-warning); }
+.n-plan .is-danger { color: var(--sb-danger); }
+.n-provider {
+  color: var(--sb-accent);
+  font-weight: 600;
+  text-decoration: none;
+}
+.n-provider[href]:hover { text-decoration: underline; }
+.n-time {
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+
+.empty-cards-box {
+  display: flex;
+  justify-content: center;
+  padding: 40px 0;
+}
+
+.srv-avatar {
+  display: grid;
+  place-items: center;
+  flex-shrink: 0;
+  width: 42px;
+  height: 42px;
+  border-radius: 12px;
+  background: var(--sb-accent-soft);
+  color: var(--sb-accent);
+  font-size: 15px;
+  font-weight: 700;
+}
+.srv-avatar.is-flag {
+  font-size: 24px;
+  font-weight: 400;
+  background: var(--sb-surface-3);
 }
 .srv-status {
   display: inline-flex;
   align-items: center;
   gap: 6px;
   flex-shrink: 0;
-  padding: 2px 9px;
+  padding: 2px 8px;
   border-radius: 999px;
-  background: var(--srv-tone-soft);
-  color: var(--srv-tone);
   font-size: 11px;
   font-weight: 600;
+  line-height: 16px;
 }
-.srv-status.is-offline { color: #94a3b8; }
+.srv-status.is-online {
+  background: rgba(52, 211, 153, .12);
+  color: var(--sb-success);
+}
+.srv-status.is-offline {
+  background: rgba(148, 163, 184, .1);
+  color: var(--sb-muted);
+}
+.srv-status.is-blocked {
+  background: rgba(251, 113, 133, .14);
+  color: var(--sb-danger);
+}
 .srv-status-dot {
   width: 6px;
   height: 6px;
@@ -1899,325 +2180,60 @@ onBeforeUnmount(() => {
   box-shadow: 0 0 0 0 currentColor;
   animation: srvPulse 2s ease-out infinite;
 }
+.srv-status.is-blocked .srv-status-dot { animation-duration: 1.4s; }
 @keyframes srvPulse {
   0% { box-shadow: 0 0 0 0 currentColor; }
   70%, 100% { box-shadow: 0 0 0 6px transparent; }
 }
-.srv-sub {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  margin-top: 5px;
-  color: var(--sb-muted);
-  font-size: 12px;
-}
-.srv-sub-sep::before {
-  content: '·';
-  margin: 0 7px;
-  opacity: .6;
-}
-.srv-actions {
-  display: flex;
-  align-self: flex-start;
-  gap: 6px;
-  flex-shrink: 0;
-}
 .srv-icon-btn {
   display: grid;
   place-items: center;
-  width: 32px;
-  height: 32px;
-  border-radius: 10px;
-  border: 1px solid rgba(148, 163, 184, .16);
-  background: rgba(148, 163, 184, .06);
+  width: 28px;
+  height: 28px;
+  border-radius: 8px;
+  border: 1px solid var(--sb-line);
+  background: transparent;
   color: var(--sb-text-2);
   cursor: pointer;
-  transition: background .15s, color .15s, border-color .15s;
+  transition: color .15s, border-color .15s, background-color .15s;
 }
 .srv-icon-btn:hover:not(:disabled) {
-  border-color: rgba(56, 189, 248, .45);
-  background: rgba(56, 189, 248, .14);
-  color: #e0f2fe;
+  border-color: rgba(56, 189, 248, .4);
+  background: var(--sb-accent-soft);
+  color: var(--sb-accent);
 }
-.srv-icon-btn:disabled { cursor: progress; opacity: .7; }
-/* 地址标签 */
-.srv-chips {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-  margin-top: -4px;
+.srv-icon-btn:disabled {
+  cursor: progress;
+  opacity: .6;
 }
 .srv-chip {
   display: inline-flex;
   align-items: center;
   gap: 5px;
   max-width: 100%;
-  padding: 3px 9px;
-  border-radius: 8px;
-  border: 1px solid rgba(148, 163, 184, .14);
-  background: rgba(148, 163, 184, .07);
+  padding: 3px 8px;
+  border-radius: 7px;
+  border: 1px solid var(--sb-line);
+  background: var(--sb-surface-2);
   color: var(--sb-text-2);
-  font-size: 12px;
+  font-size: 11.5px;
   line-height: 1.5;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
 }
 .srv-chip.is-address {
-  border-color: rgba(56, 189, 248, .22);
-  background: rgba(56, 189, 248, .08);
-  color: #7dd3fc;
+  border-color: rgba(56, 189, 248, .26);
+  background: var(--sb-accent-soft);
+  color: var(--sb-accent);
   cursor: pointer;
-  transition: background .15s;
 }
-.srv-chip.is-address:hover { background: rgba(56, 189, 248, .18); }
 .srv-chip.is-violet {
-  border-color: rgba(168, 85, 247, .28);
+  border-color: rgba(168, 85, 247, .3);
   background: rgba(168, 85, 247, .1);
   color: #d8b4fe;
 }
 .srv-chip.is-danger {
-  border-color: rgba(244, 63, 94, .3);
-  background: rgba(244, 63, 94, .08);
+  border-color: rgba(251, 113, 133, .35);
+  background: rgba(251, 113, 133, .1);
   color: var(--sb-danger);
-}
-
-/* 资源环形仪表 */
-.srv-gauges {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 10px;
-  padding: 16px 8px 14px;
-  border-radius: 14px;
-  background: rgba(2, 6, 15, .32);
-  border: 1px solid rgba(148, 163, 184, .08);
-}
-.srv-gauge {
-  position: relative;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  min-width: 0;
-  cursor: default;
-}
-.srv-ring {
-  width: 76px;
-  height: 76px;
-  transform: rotate(-90deg);
-}
-.srv-ring-track {
-  fill: none;
-  stroke: rgba(148, 163, 184, .12);
-  stroke-width: 6;
-}
-.srv-ring-bar {
-  fill: none;
-  stroke-width: 6;
-  stroke-linecap: round;
-  transition: stroke-dashoffset .6s ease, stroke .3s ease;
-}
-.srv-gauge.is-empty .srv-ring-bar { stroke-linecap: butt; }
-.srv-ring-value {
-  position: absolute;
-  top: 0;
-  display: grid;
-  place-items: center;
-  width: 76px;
-  height: 76px;
-  color: #f1f5f9;
-  font-size: 19px;
-  font-weight: 700;
-  grid-auto-flow: column;
-  align-items: baseline;
-  align-content: center;
-  justify-content: center;
-}
-.srv-ring-value small {
-  margin-left: 1px;
-  color: var(--sb-muted);
-  font-size: 10px;
-  font-weight: 500;
-}
-.srv-gauge-label {
-  margin-top: 6px;
-  color: var(--sb-text-2);
-  font-size: 12px;
-  font-weight: 600;
-}
-.srv-gauge-detail {
-  max-width: 100%;
-  margin-top: 2px;
-  overflow: hidden;
-  color: var(--sb-muted);
-  font-size: 10.5px;
-  white-space: nowrap;
-  text-overflow: ellipsis;
-}
-/* 网络速率 */
-.srv-net {
-  display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  border-radius: 12px;
-  border: 1px solid rgba(148, 163, 184, .1);
-  background: rgba(148, 163, 184, .04);
-}
-.srv-net-item {
-  display: flex;
-  flex-direction: column;
-  gap: 3px;
-  min-width: 0;
-  padding: 9px 12px;
-  cursor: default;
-}
-.srv-net-item + .srv-net-item { border-left: 1px solid rgba(148, 163, 184, .1); }
-.srv-net-label {
-  color: var(--sb-muted);
-  font-size: 10.5px;
-}
-.srv-net-value {
-  overflow: hidden;
-  color: var(--sb-text);
-  font-size: 12.5px;
-  font-weight: 600;
-  white-space: nowrap;
-  text-overflow: ellipsis;
-}
-.srv-net-value.is-down { color: #34d399; }
-.srv-net-value.is-up { color: #38bdf8; }
-.srv-net-value.is-active { color: #34d399; }
-
-/* 三网线路 */
-.srv-routes {
-  padding: 12px 14px;
-  border-radius: 12px;
-  border: 1px solid rgba(148, 163, 184, .1);
-  background: rgba(2, 6, 15, .24);
-}
-.srv-routes.is-blocked {
-  border-color: rgba(244, 63, 94, .28);
-  background: rgba(244, 63, 94, .05);
-}
-.srv-routes-head {
-  display: flex;
-  justify-content: space-between;
-  margin-bottom: 10px;
-  color: var(--sb-text-2);
-  font-size: 12px;
-  font-weight: 600;
-}
-.srv-routes-time {
-  color: var(--sb-muted);
-  font-weight: 400;
-}
-.srv-route-grid {
-  display: grid;
-  grid-template-columns: auto minmax(0, 1fr) minmax(0, 1fr);
-  gap: 6px 8px;
-  align-items: center;
-}
-.srv-route-dir {
-  color: var(--sb-muted);
-  font-size: 10.5px;
-  text-align: center;
-}
-.srv-carrier {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  padding-right: 4px;
-  color: var(--sb-text-2);
-  font-size: 12px;
-}
-.srv-carrier i {
-  width: 7px;
-  height: 7px;
-  border-radius: 2px;
-}
-.srv-carrier.is-telecom i { background: #3b82f6; }
-.srv-carrier.is-unicom i { background: #f59e0b; }
-.srv-carrier.is-mobile i { background: #10b981; }
-.srv-route-cell {
-  display: flex;
-  align-items: baseline;
-  justify-content: center;
-  gap: 6px;
-  min-width: 0;
-  padding: 5px 8px;
-  border-radius: 8px;
-  border: 1px solid rgba(148, 163, 184, .12);
-  background: rgba(148, 163, 184, .06);
-  color: var(--sb-text);
-  font-size: 12px;
-  font-weight: 600;
-  white-space: nowrap;
-  overflow: hidden;
-  cursor: default;
-}
-.srv-route-cell em {
-  font-size: 10.5px;
-  font-style: normal;
-  font-weight: 500;
-  opacity: .8;
-}
-.srv-route-cell.ping-status-fast { border-color: rgba(52, 211, 153, .28); color: #6ee7b7; }
-.srv-route-cell.ping-status-medium { border-color: rgba(251, 191, 36, .28); color: #fcd34d; }
-.srv-route-cell.ping-status-slow { border-color: rgba(251, 146, 60, .3); color: #fdba74; }
-.srv-route-cell.ping-status-timeout {
-  border-color: rgba(244, 63, 94, .3);
-  background: rgba(244, 63, 94, .08);
-  color: #fda4af;
-}
-.srv-routes-empty {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  color: var(--sb-muted);
-  font-size: 12px;
-}
-.srv-link-btn {
-  padding: 0;
-  border: none;
-  background: none;
-  color: var(--sb-accent);
-  font-size: 12px;
-  cursor: pointer;
-}
-.srv-link-btn:disabled { cursor: progress; opacity: .7; }
-
-/* 底栏 */
-.srv-foot {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px 12px;
-  margin-top: auto;
-  padding-top: 14px;
-  border-top: 1px dashed rgba(148, 163, 184, .14);
-  color: var(--sb-muted);
-  font-size: 12px;
-}
-.srv-foot-plan {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 4px 12px;
-  min-width: 0;
-}
-.srv-provider {
-  color: #7dd3fc;
-  font-weight: 600;
-  text-decoration: none;
-}
-.srv-provider[href]:hover { color: #bae6fd; text-decoration: underline; }
-.srv-expiry.is-warning { color: var(--sb-warning); font-weight: 600; }
-.srv-expiry.is-danger { color: var(--sb-danger); font-weight: 600; }
-.srv-foot-time {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  margin-left: auto;
-  white-space: nowrap;
 }
 
 .empty-cards-box {
@@ -2234,7 +2250,7 @@ onBeforeUnmount(() => {
   background: rgba(0, 0, 0, 0.6);
   border: 1px solid rgba(255, 255, 255, 0.08);
   border-radius: 6px;
-  color: #7dd3fc;
+  color: var(--sb-accent);
   font-size: 12px;
   line-height: 1.5;
   word-break: break-all;
@@ -2243,50 +2259,59 @@ onBeforeUnmount(() => {
 }
 
 /* ── 弹窗通用外壳 ───────────────────────────────────────── */
+/* align-center 依赖 overlay 的 flex 布局；显式声明一次，避免被其他样式冲掉 */
+:global(.el-overlay:has(.el-dialog.srv-dialog) .el-overlay-dialog) {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
 :global(.el-dialog.srv-dialog) {
+  margin: auto;
   max-width: calc(100vw - 32px);
   padding: 0;
   overflow: hidden;
-  border: 1px solid rgba(148, 163, 184, .16);
-  border-radius: 20px;
-  background: linear-gradient(170deg, #121b2d 0%, #0b111e 100%);
-  box-shadow: 0 40px 80px -30px rgba(0, 0, 0, .95);
+  border: 1px solid var(--sb-line-strong);
+  border-radius: var(--sb-radius);
+  background: var(--sb-surface);
+  box-shadow: var(--sb-shadow);
 }
 :global(.el-dialog.srv-dialog .el-dialog__header) {
   margin: 0;
   padding: 0;
 }
 :global(.el-dialog.srv-dialog .el-dialog__body) {
-  max-height: min(64vh, 620px);
+  max-height: min(62vh, 600px);
   padding: 0 24px 4px;
   overflow-y: auto;
 }
 :global(.el-dialog.srv-dialog .el-dialog__footer) {
-  padding: 14px 24px 18px;
-  border-top: 1px solid rgba(148, 163, 184, .1);
+  padding: 12px 24px 16px;
+  border-top: 1px solid var(--sb-line);
+  background: var(--sb-surface);
 }
 
 .dlg-hero {
   --srv-tone: var(--sb-success);
-  --srv-tone-soft: rgba(52, 211, 153, .14);
+  --srv-tone-soft: rgba(52, 211, 153, .1);
   position: relative;
   display: flex;
   align-items: center;
   gap: 14px;
-  padding: 22px 24px 18px;
-  background: radial-gradient(90% 140% at 0% 0%, var(--srv-tone-soft) 0%, transparent 60%);
+  padding: 20px 24px 16px;
+  border-bottom: 1px solid var(--sb-line);
+  background: var(--sb-surface-2);
 }
 .dlg-hero::before {
   content: '';
   position: absolute;
   inset: 0 0 auto;
-  height: 3px;
-  background: linear-gradient(90deg, var(--srv-tone), transparent 70%);
+  height: 2px;
+  background: var(--srv-tone);
+  opacity: .55;
 }
-.dlg-hero.is-offline { --srv-tone: #64748b; --srv-tone-soft: rgba(100, 116, 139, .12); }
-.dlg-hero.is-blocked { --srv-tone: #f43f5e; --srv-tone-soft: rgba(244, 63, 94, .16); }
+.dlg-hero.is-offline { --srv-tone: var(--sb-muted); --srv-tone-soft: rgba(148, 163, 184, .1); }
+.dlg-hero.is-blocked { --srv-tone: var(--sb-danger); --srv-tone-soft: rgba(251, 113, 133, .12); }
 .dlg-hero .srv-status { background: var(--srv-tone-soft); color: var(--srv-tone); }
-.dlg-hero .srv-status.is-offline { color: #94a3b8; }
 .dlg-hero > .srv-icon-btn { align-self: flex-start; }
 .dlg-hero-text { flex: 1; min-width: 0; }
 .dlg-hero-kicker {
@@ -2299,7 +2324,7 @@ onBeforeUnmount(() => {
   align-items: center;
   gap: 10px;
   margin-top: 2px;
-  color: #f8fafc;
+  color: var(--sb-text);
   font-size: 18px;
   font-weight: 700;
 }
@@ -2327,7 +2352,7 @@ onBeforeUnmount(() => {
   margin: 0 -24px 18px;
   padding: 0 24px;
   border-bottom: 1px solid rgba(148, 163, 184, .12);
-  background: #111a2b;
+  background: var(--sb-surface-2);
 }
 .dlg-tab {
   position: relative;
@@ -2344,7 +2369,7 @@ onBeforeUnmount(() => {
   transition: color .15s;
 }
 .dlg-tab:hover { color: var(--sb-text); }
-.dlg-tab.active { color: #e0f2fe; }
+.dlg-tab.active { color: var(--sb-accent); }
 .dlg-tab.active::after {
   content: '';
   position: absolute;
@@ -2358,7 +2383,7 @@ onBeforeUnmount(() => {
   padding: 0 5px;
   border-radius: 999px;
   background: rgba(56, 189, 248, .16);
-  color: #7dd3fc;
+  color: var(--sb-accent);
   font-size: 10.5px;
   line-height: 17px;
   text-align: center;
@@ -2441,7 +2466,7 @@ onBeforeUnmount(() => {
   color: var(--sb-muted);
   font-size: 12px;
 }
-.dlg-preview b { color: #7dd3fc; font-weight: 600; }
+.dlg-preview b { color: var(--sb-accent); font-weight: 600; }
 /* 编辑弹窗：网络分区 */
 .dlg-block {
   display: flex;
@@ -2606,7 +2631,7 @@ onBeforeUnmount(() => {
 .mtr-stat > span { color: var(--sb-muted); font-size: 11px; }
 .mtr-stat b {
   overflow: hidden;
-  color: #f1f5f9;
+  color: var(--sb-text);
   font-size: 20px;
   font-weight: 700;
   white-space: nowrap;
@@ -2616,7 +2641,7 @@ onBeforeUnmount(() => {
 .mtr-stat b small { margin-left: 2px; color: var(--sb-muted); font-size: 11px; font-weight: 500; }
 .mtr-stat b em { font-style: normal; color: var(--sb-success); }
 .mtr-stat b em.is-bad { color: var(--sb-danger); }
-.mtr-stat > small { color: #7dd3fc; font-size: 11.5px; }
+.mtr-stat > small { color: var(--sb-accent); font-size: 11.5px; }
 .mtr-verdict {
   display: flex;
   align-items: flex-start;
@@ -2626,7 +2651,7 @@ onBeforeUnmount(() => {
   border: 1px solid rgba(52, 211, 153, .25);
   border-radius: 12px;
   background: rgba(52, 211, 153, .06);
-  color: #a7f3d0;
+  color: var(--sb-success);
   font-size: 12.5px;
   line-height: 1.6;
 }
@@ -2634,7 +2659,7 @@ onBeforeUnmount(() => {
 .mtr-verdict.is-bad {
   border-color: rgba(244, 63, 94, .3);
   background: rgba(244, 63, 94, .07);
-  color: #fecdd3;
+  color: var(--sb-danger);
 }
 .mtr-hops {
   overflow: hidden;
@@ -2656,7 +2681,7 @@ onBeforeUnmount(() => {
   font-size: 11px;
   font-weight: 600;
 }
-.mtr-hop.is-drop { background: rgba(244, 63, 94, .05); box-shadow: inset 3px 0 0 #f43f5e; }
+.mtr-hop.is-drop { background: rgba(244, 63, 94, .05); box-shadow: inset 3px 0 0 var(--sb-danger); }
 .mtr-hop.is-limit { box-shadow: inset 3px 0 0 rgba(251, 191, 36, .7); }
 .mtr-hop .is-num { text-align: right; }
 .mtr-hop .is-muted { color: var(--sb-muted); }
@@ -2684,7 +2709,7 @@ onBeforeUnmount(() => {
   white-space: nowrap;
   text-overflow: ellipsis;
 }
-.mtr-hop-host small.is-loc { color: #7dd3fc; }
+.mtr-hop-host small.is-loc { color: var(--sb-accent); }
 .mtr-hop-loss { display: flex; flex-direction: column; gap: 5px; }
 .mtr-loss-top { display: flex; align-items: center; gap: 6px; }
 .mtr-loss-track {
@@ -2713,8 +2738,8 @@ onBeforeUnmount(() => {
   overflow-y: auto;
   border: 1px solid rgba(148, 163, 184, .12);
   border-radius: 12px;
-  background: #060a13;
-  color: #7dd3fc;
+  background: var(--sb-sidebar);
+  color: var(--sb-accent);
   font-size: 11px;
   line-height: 1.55;
   white-space: pre-wrap;
