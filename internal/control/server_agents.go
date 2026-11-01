@@ -656,8 +656,13 @@ type storedConnection struct {
 	DownloadRate float64 `json:"download_rate,omitempty"`
 	// IsChainRelay indicates whether this connection is an internal downstream relay
 	// leg of a chained proxy originating from another server in our fleet.
-	IsChainRelay  bool   `json:"is_chain_relay,omitempty"`
-	ChainedTarget string `json:"chained_target,omitempty"`
+	IsChainRelay bool `json:"is_chain_relay,omitempty"`
+	// RelayUpstreamNodeID identities the fleet node the relay leg came in from
+	// — the node whose egress IP the source address resolved to. Without it a
+	// flagged leg only says "from some other server", which is not enough to
+	// pair two chains that converge on the same destination.
+	RelayUpstreamNodeID string `json:"relay_upstream_node_id,omitempty"`
+	ChainedTarget       string `json:"chained_target,omitempty"`
 }
 
 func (s *Server) convertConnections(ctx context.Context, nodeID string, in []wire.ConnectionInfo) []storedConnection {
@@ -687,9 +692,11 @@ func (s *Server) convertConnections(ctx context.Context, nodeID string, in []wir
 		}
 
 		// Detect if this connection arrived on a chain target endpoint from another node in the fleet
+		var relayUpstreamNodeID string
 		if chainTargets[listenerID+"\x00"+account] || chainTargets[listenerID] {
 			if fromNodeID, ok := fleetIPs[ip]; ok && fromNodeID != nodeID {
 				isChainRelay = true
+				relayUpstreamNodeID = fromNodeID
 			}
 		}
 
@@ -698,7 +705,7 @@ func (s *Server) convertConnections(ctx context.Context, nodeID string, in []wir
 			SourceIP: ip, SourceLocation: s.ipLocator.Locate(ip), Host: c.Host, Upload: c.Upload, Download: c.Download,
 			StartedAt: c.StartedAt, Outbound: c.Outbound, Rule: c.Rule, RulePayload: c.RulePayload, Chains: c.Chains,
 			ListenerName: names[listenerID], User: user, OutboundName: outboundDisplayName(c.Outbound, egress),
-			IsChainRelay: isChainRelay, ChainedTarget: chainedTarget,
+			IsChainRelay: isChainRelay, RelayUpstreamNodeID: relayUpstreamNodeID, ChainedTarget: chainedTarget,
 		})
 	}
 	return out

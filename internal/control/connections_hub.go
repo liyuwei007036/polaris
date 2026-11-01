@@ -376,6 +376,16 @@ func (h *connectionsHub) totals(now time.Time, popular []popularNode) fleetTotal
 					continue
 				}
 				oc := other.conn
+				// 只有主控已确认的中继段才并入，且段必须来自入口所在的那台
+				// 服务器：目标相同不足以说明两段是同一条链路 —— 两台互不相干
+				// 的服务器访问同一个站点是常态，把普通连接或别的链路的中继段
+				// 并进来都会少算在线连接。
+				if !oc.IsChainRelay {
+					continue
+				}
+				if oc.RelayUpstreamNodeID != "" && oc.RelayUpstreamNodeID != item.nodeID {
+					continue
+				}
 				destMatch := (c.Destination != "" && c.Destination == oc.Destination) ||
 					(c.Host != "" && c.Host == oc.Host)
 				if !destMatch {
