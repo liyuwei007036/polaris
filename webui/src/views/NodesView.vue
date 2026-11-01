@@ -4,13 +4,13 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import {
   Aim,
   Close,
-  Connection,
   CopyDocument,
   Delete,
   Edit,
   InfoFilled,
   Loading,
   MoreFilled,
+  Odometer,
   Plus,
   Refresh,
   RemoveFilled,
@@ -30,6 +30,7 @@ const CARRIERS = [
   { isp: 'mobile', short: '移动' },
 ]
 const PERIOD_LABELS = { day: '天', month: '月', quarter: '季', year: '年' }
+const CURRENCY_SYMBOLS = { USD: '$', CNY: '¥', EUR: '€', CAD: 'C$' }
 
 const appState = inject('appState')
 const isAdmin = inject('isAdmin')
@@ -66,9 +67,8 @@ const editForm = ref({
   ddns_record_ids: [],
   ddns_domains: [],
   ip_aliases: {},
-  expires_on: '', price: '', price_period: '', currency: 'USD', provider: '', provider_url: '', traffic_plan: '', bandwidth: '',
+  expires_on: '', price: '', price_period: '', currency: 'USD', provider: '', provider_url: '', traffic_value: '', traffic_unit: 'MB', bandwidth: '',
 })
-const newCustomEgressIP = ref('')
 const editTab = ref('basic')
 const editTabs = computed(() => [
   { key: 'basic', label: '基本信息' },
@@ -76,10 +76,6 @@ const editTabs = computed(() => [
   { key: 'network', label: '网络与 DDNS', badge: editNodeAllIPs.value.length || '' },
 ])
 const editHeader = computed(() => buildDialogHeader(editNode.value, editForm.value.name))
-const editPlanPreview = computed(() => {
-  const parts = [getPriceText(editForm.value), getExpiry(editForm.value.expires_on)?.text].filter(Boolean)
-  return parts.join(' · ')
-})
 
 const editNodeAllIPs = computed(() => {
   const ips = []
@@ -101,23 +97,11 @@ const editNodeAllIPs = computed(() => {
   return ips
 })
 
-function addCustomEgressIP() {
-  const ip = (newCustomEgressIP.value || '').trim()
-  if (!ip) return
-  const ipv4 = /^((25[0-5]|(2[0-4]|1\d|[1-9]|)\d)\.?\b){4}$/
-  const ipv6 = /^([0-9a-fA-F]{0,4}:){2,7}[0-9a-fA-F]{0,4}$/
-  if (!ipv4.test(ip) && !ipv6.test(ip)) {
-    ElMessage.warning('请输入有效的 IPv4 或 IPv6 地址')
-    return
-  }
-  if (!editForm.value.ip_aliases) {
-    editForm.value.ip_aliases = {}
-  }
-  if (editForm.value.ip_aliases[ip] === undefined) {
-    editForm.value.ip_aliases[ip] = ''
-  }
-  newCustomEgressIP.value = ''
-  ElMessage.success(`已添加出口 IP: ${ip}`)
+// 从既有 traffic_plan（如 "每月 2 TB" / "2 GB"）解析数值与单位
+function parseTrafficPlan(plan) {
+  const m = String(plan || '').match(/([\d.]+)\s*(TB|GB|MB)/i)
+  if (!m) return { traffic_value: '', traffic_unit: 'MB' }
+  return { traffic_value: m[1], traffic_unit: m[2].toUpperCase() }
 }
 
 function removeCustomEgressIP(ip) {
@@ -279,7 +263,8 @@ function buildDialogHeader(node, name) {
 function getPriceText(node) {
   if (!node.price_period) return ''
   if (node.price_period === 'free') return '免费'
-  return `${node.currency || 'USD'} ${node.price || 0}/${PERIOD_LABELS[node.price_period] || node.price_period}`
+  const symbol = CURRENCY_SYMBOLS[node.currency] || `${node.currency} `
+  return `${symbol}${node.price || 0}/${PERIOD_LABELS[node.price_period] || node.price_period}`
 }
 
 const cards = computed(() => filteredNodes.value.map((node) => {
@@ -318,10 +303,10 @@ const cards = computed(() => filteredNodes.value.map((node) => {
     price: getPriceText(node),
     expiry: getExpiry(node.expires_on),
     ddnsTip: node.ddns_enabled
-      ? `DDNS 域名: ${(node.ddns_domains?.length ? node.ddns_domains : [node.ddns_domain || node.client_address]).join('、')}<br/>当前解析 IP: ${node.last_observed_ip || '同步中'}`
+      ? `${(node.ddns_domains?.length ? node.ddns_domains : [node.ddns_domain || node.client_address]).join('、')}<br/>解析: ${node.last_observed_ip || '同步中'}`
       : '',
     ipTip: node.ip_addresses?.length
-      ? `本机网卡检测到的出口 IP (${node.ip_addresses.length} 个):<br/>${node.ip_addresses.map((ip) => ip + (node.ip_aliases?.[ip] ? ` (${node.ip_aliases[ip]})` : '')).join('<br/>')}`
+      ? node.ip_addresses.map((ip) => ip + (node.ip_aliases?.[ip] ? ` (${node.ip_aliases[ip]})` : '')).join('<br/>')
       : '',
   }
 }))
@@ -536,9 +521,9 @@ function getInboundSummary(st) {
 function getInboundProbeTooltip(st) {
   if (!st) return ''
   if (isNodeGFWBlocked(st)) {
-    return '🚨 <b>端口阻断</b><br/>探针发起的 TCP 端口握手全部超时丢弃'
+    return '<b>端口阻断</b><br/>探针发起的 TCP 握手全部超时'
   }
-  return `网络通畅<br/>探针 TCP 延迟: ${st.domestic_latency_ms ? st.domestic_latency_ms + 'ms' : '畅通'}`
+  return `<b>探针畅通</b><br/>TCP 延迟: ${st.domestic_latency_ms ? st.domestic_latency_ms + 'ms' : '—'}`
 }
 
 function formatRouteSimple(route) {
@@ -854,7 +839,9 @@ async function openEdit(node) {
     ddns_domains: domains,
     ip_aliases: { ...(node.ip_aliases || {}) },
     expires_on: node.expires_on || '', price: node.price || '', price_period: node.price_period || '', currency: node.currency || 'USD',
-    provider: node.provider || '', provider_url: node.provider_url || '', traffic_plan: node.traffic_plan || '', bandwidth: node.bandwidth || '',
+    provider: node.provider || '', provider_url: node.provider_url || '',
+    ...parseTrafficPlan(node.traffic_plan),
+    bandwidth: node.bandwidth || '',
   }
   editTab.value = 'basic'
   loadCloudflareRecords()
@@ -875,7 +862,9 @@ async function saveEdit() {
       ddns_domains: editForm.value.ddns_domains,
       ip_aliases: editForm.value.ip_aliases || {},
       expires_on: editForm.value.expires_on, price: editForm.value.price, price_period: editForm.value.price_period, currency: editForm.value.currency,
-      provider: editForm.value.provider, provider_url: editForm.value.provider_url, traffic_plan: editForm.value.traffic_plan, bandwidth: editForm.value.bandwidth,
+      provider: editForm.value.provider, provider_url: editForm.value.provider_url,
+      traffic_plan: [editForm.value.traffic_value, editForm.value.traffic_unit].filter(Boolean).join(' '),
+      bandwidth: editForm.value.bandwidth,
     })
     ElMessage.success('服务器信息已保存')
     editDialog.value = false
@@ -1063,12 +1052,12 @@ onBeforeUnmount(() => {
               :class="{ active: statusFilter === 'blocked' }"
               @click="statusFilter = 'blocked'"
             >
-              🚨 被墙 ({{ stats.gfwBlockedCount }})
+              被墙 ({{ stats.gfwBlockedCount }})
             </button>
           </div>
 
           <el-select v-model="sortBy" placeholder="排序方式" style="width: 140px">
-            <el-option label="服务器名称 (默认)" value="name" />
+            <el-option label="服务器名称" value="name" />
             <el-option label="活跃时间优先" value="last_seen" />
             <el-option label="连接数最高" value="conn" />
             <el-option label="CPU 负载最高" value="cpu" />
@@ -1120,18 +1109,13 @@ onBeforeUnmount(() => {
             <div class="n-title">
               <div class="n-name-row">
                 <h3 class="n-name" :title="card.node.name">{{ card.displayName }}</h3>
-                <span class="srv-status" :class="`is-${card.status}`"><i class="srv-status-dot" />{{ card.statusText }}</span>
-              </div>
-              <div class="n-meta font-mono">
-                <span>{{ card.platform }}</span>
-                <span v-if="card.region" class="n-region" :title="card.region"> · {{ card.region }}</span>
-                <span> · v{{ card.node.agent_version || '—' }}</span>
+                <span class="srv-status" :class="`is-${card.status}`" :title="card.statusText"><i class="srv-status-dot" /></span>
               </div>
             </div>
             <div class="n-ops">
               <el-tooltip v-if="canWrite && card.node.online" content="三网线路检测" placement="top">
                 <button class="srv-icon-btn" :disabled="Boolean(speedtesting[card.node.id])" @click="runSpeedtest(card.node)">
-                  <el-icon :class="{ 'is-loading': speedtesting[card.node.id] }"><Connection /></el-icon>
+                  <el-icon :class="{ 'is-loading': speedtesting[card.node.id] }"><Odometer /></el-icon>
                 </button>
               </el-tooltip>
               <el-dropdown v-if="canWrite || isAdmin" trigger="click" @command="handleCardCommand(card.node, $event)">
@@ -1150,16 +1134,22 @@ onBeforeUnmount(() => {
             </div>
           </header>
 
+          <div class="n-meta font-mono">
+            <span>{{ card.platform }}</span>
+            <span v-if="card.region" class="n-region" :title="card.region"> · {{ card.region }}</span>
+            <span> · v{{ card.node.agent_version || '—' }}</span>
+          </div>
+
           <div class="n-chips font-mono">
             <button v-if="card.node.client_address" class="n-chip is-address" :title="`点击复制: ${card.node.client_address}`" @click="copyAddress(card.node.client_address)">
               <span class="n-chip-txt">{{ card.node.client_address }}</span><el-icon><CopyDocument /></el-icon>
             </button>
             <span v-else class="n-chip is-danger">未配置连接地址</span>
             <el-tooltip v-if="card.ddnsTip" raw-content :content="card.ddnsTip" placement="top">
-              <span class="n-chip is-violet">{{ card.node.last_observed_ip || 'DDNS 同步中' }}</span>
+              <span class="n-chip is-violet"><span class="n-chip-txt">{{ card.node.last_observed_ip || 'DDNS 同步中' }}</span></span>
             </el-tooltip>
             <el-tooltip v-if="card.ipTip" raw-content :content="card.ipTip" placement="top">
-              <span class="n-chip">{{ card.node.ip_addresses.length }} 出口</span>
+              <span class="n-chip"><span class="n-chip-txt">{{ card.node.ip_addresses.length }} 出口</span></span>
             </el-tooltip>
           </div>
 
@@ -1227,7 +1217,7 @@ onBeforeUnmount(() => {
     </main>
 
     <!-- 添加节点 Token 弹窗 -->
-    <el-dialog v-model="tokenDialog" title="接入新服务器" width="560px">
+    <el-dialog v-model="tokenDialog" title="接入新服务器" width="560px" append-to-body>
       <div style="margin-bottom: 14px">
         <div style="font-size: 13px; font-weight: 500; margin-bottom: 6px; color: var(--sb-text-1)">
           Master 地址（Agent 拨号连接的主机或 IP）
@@ -1253,7 +1243,7 @@ onBeforeUnmount(() => {
     </el-dialog>
 
     <!-- 配置服务器弹窗 -->
-    <el-dialog v-model="editDialog" width="680px" class="srv-dialog" :show-close="false" align-center>
+    <el-dialog v-model="editDialog" width="680px" class="srv-dialog" :show-close="false" align-center append-to-body>
       <template #header="{ close }">
         <div v-if="editHeader" class="dlg-hero" :class="`is-${editHeader.status}`">
           <div class="srv-avatar" :class="{ 'is-flag': editHeader.isFlag }">{{ editHeader.avatar }}</div>
@@ -1341,8 +1331,15 @@ onBeforeUnmount(() => {
                 </el-select>
               </div>
             </el-form-item>
-            <el-form-item label="流量套餐">
-              <el-input v-model="editForm.traffic_plan" placeholder="例如：每月 2 TB" />
+            <el-form-item label="流量套餐（按月）">
+              <div class="dlg-inline">
+                <el-input v-model="editForm.traffic_value" placeholder="例如：2" />
+                <el-select v-model="editForm.traffic_unit" style="width: 110px">
+                  <el-option label="MB" value="MB" />
+                  <el-option label="GB" value="GB" />
+                  <el-option label="TB" value="TB" />
+                </el-select>
+              </div>
             </el-form-item>
             <el-form-item label="带宽大小">
               <el-input v-model="editForm.bandwidth" placeholder="例如：1 Gbps" />
@@ -1358,10 +1355,6 @@ onBeforeUnmount(() => {
               />
             </el-form-item>
           </div>
-          <div v-if="editPlanPreview" class="dlg-preview">
-            <span>卡片底栏将显示</span>
-            <b>{{ editPlanPreview }}</b>
-          </div>
         </section>
 
         <section v-show="editTab === 'network'" class="dlg-pane">
@@ -1369,7 +1362,7 @@ onBeforeUnmount(() => {
             <div class="dlg-block-head">
               <div>
                 <div class="dlg-block-title">出口 IP 与别名</div>
-                <div class="dlg-help">网卡自动检测或手动添加的出口 IP。配置用户出口与节点分流时会优先显示别名。</div>
+                <div class="dlg-help">以下出口 IP 由本机网卡自动检测。配置用户出口与节点分流时可使用别名。</div>
               </div>
             </div>
             <div v-if="editNodeAllIPs.length" class="dlg-ip-list">
@@ -1383,22 +1376,12 @@ onBeforeUnmount(() => {
                   type="danger"
                   size="small"
                   :icon="Delete"
-                  title="删除手动添加的出口 IP"
+                  title="删除该出口 IP"
                   @click="removeCustomEgressIP(ip)"
                 />
               </div>
             </div>
-            <div v-else class="dlg-empty">暂未检测到出口 IP，可在下方手动添加。</div>
-            <div class="dlg-inline">
-              <el-input
-                v-model="newCustomEgressIP"
-                size="small"
-                placeholder="手动添加出口 IP（如 198.51.100.2 或 2001:db8::1）"
-                clearable
-                @keydown.enter.prevent="addCustomEgressIP"
-              />
-              <el-button size="small" :icon="Plus" @click="addCustomEgressIP">添加</el-button>
-            </div>
+            <div v-else class="dlg-empty">暂未检测到出口 IP。</div>
           </div>
 
           <div class="dlg-block" :class="{ 'is-on': editForm.ddns_enabled }">
@@ -1441,7 +1424,7 @@ onBeforeUnmount(() => {
     </el-dialog>
 
     <!-- 逐跳丢包排障 (MTR) 弹窗 -->
-    <el-dialog v-model="mtrDialogVisible" width="880px" class="srv-dialog" :show-close="false" align-center destroy-on-close>
+    <el-dialog v-model="mtrDialogVisible" width="880px" class="srv-dialog" :show-close="false" align-center destroy-on-close append-to-body>
       <template #header="{ close }">
         <div v-if="mtrHeader" class="dlg-hero" :class="`is-${mtrHeader.status}`">
           <div class="srv-avatar" :class="{ 'is-flag': mtrHeader.isFlag }">{{ mtrHeader.avatar }}</div>
@@ -1571,9 +1554,21 @@ onBeforeUnmount(() => {
 
 <style scoped>
 :global(.el-popper) {
-  line-height: 1.6 !important;
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif !important;
-  font-size: 12px !important;
+  line-height: 1.6;
+  font-size: 12px;
+}
+/* 悬浮提示融入系统风格（--sb-* token） */
+:global(.el-popper.is-dark) {
+  background: var(--sb-surface-3) !important;
+  border: 1px solid var(--sb-line-strong);
+  color: var(--sb-text-2) !important;
+  border-radius: var(--sb-radius-sm) !important;
+  box-shadow: var(--sb-shadow);
+  padding: 8px 12px;
+}
+:global(.el-popper.is-dark .el-popper__arrow::before) {
+  background: var(--sb-surface-3) !important;
+  border: 1px solid var(--sb-line-strong) !important;
 }
 :global(.el-popper b) {
   color: var(--sb-accent);
@@ -1742,8 +1737,8 @@ onBeforeUnmount(() => {
 /* ── 服务器卡片 ─────────────────────────────────────────── */
 .n-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
-  gap: 12px;
+  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+  gap: 14px;
 }
 .n-card {
   --tone: var(--sb-success);
@@ -1751,9 +1746,9 @@ onBeforeUnmount(() => {
   position: relative;
   display: flex;
   flex-direction: column;
-  gap: 9px;
+  gap: 7px;
   min-width: 0;
-  padding: 13px 14px 11px;
+  padding: 11px 14px 9px;
   border: 1px solid var(--sb-line);
   border-radius: var(--sb-radius);
   background: var(--sb-surface);
@@ -1807,9 +1802,10 @@ onBeforeUnmount(() => {
   font-weight: 700;
 }
 .n-avatar.is-flag {
-  font-size: 16px;
+  font-size: 14px;
   font-weight: 400;
-  background: rgba(148, 163, 184, .06);
+  background: transparent;
+  border-color: transparent;
   color: var(--sb-text);
 }
 .n-title {
@@ -1826,7 +1822,7 @@ onBeforeUnmount(() => {
   margin: 0;
   min-width: 0;
   color: var(--sb-text);
-  font-size: 13.5px;
+  font-size: 14px;
   font-weight: 600;
   white-space: nowrap;
   overflow: hidden;
@@ -1834,9 +1830,8 @@ onBeforeUnmount(() => {
 }
 .n-meta {
   display: block;
-  margin-top: 2px;
   color: var(--sb-muted);
-  font-size: 10.5px;
+  font-size: 11px;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -1859,22 +1854,23 @@ onBeforeUnmount(() => {
 
 .n-chips {
   display: flex;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   gap: 4px;
   min-width: 0;
 }
 .n-chip {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
+  gap: 5px;
   max-width: 100%;
   min-width: 0;
-  padding: 1.5px 7px;
+  overflow: hidden;
+  padding: 2.5px 6px;
   border-radius: 6px;
   border: 1px solid var(--sb-line);
   background: var(--sb-surface-2);
   color: var(--sb-text-2);
-  font-size: 10.5px;
+  font-size: 11px;
   line-height: 1.6;
 }
 .n-chip-txt {
@@ -1921,11 +1917,11 @@ onBeforeUnmount(() => {
   justify-content: space-between;
   align-items: baseline;
   color: var(--sb-muted);
-  font-size: 10px;
+  font-size: 10.5px;
 }
 .n-g-top b {
   color: var(--sb-text-2);
-  font-size: 10.5px;
+  font-size: 11px;
   font-weight: 600;
 }
 .n-g-top b i {
@@ -1951,12 +1947,8 @@ onBeforeUnmount(() => {
 .n-net {
   display: flex;
   align-items: baseline;
-  gap: 10px;
-  padding: 6px 10px;
-  border-radius: var(--sb-radius-sm);
-  border: 1px solid var(--sb-line);
-  background: var(--sb-surface-2);
-  font-size: 11px;
+  gap: 12px;
+  font-size: 11.5px;
 }
 .n-net > span {
   flex-shrink: 0;
@@ -1972,17 +1964,17 @@ onBeforeUnmount(() => {
 }
 .n-net .is-total {
   color: var(--sb-muted);
-  font-size: 10.5px;
+  font-size: 11px;
   cursor: default;
 }
 .n-conn {
   margin-left: auto;
-  padding: 0 7px;
+  padding: 0 8px;
   border-radius: 999px;
   background: rgba(148, 163, 184, .1);
   color: var(--sb-muted);
-  font-size: 10px;
-  line-height: 16px;
+  font-size: 10.5px;
+  line-height: 18px;
 }
 .n-conn.is-active {
   background: rgba(52, 211, 153, .12);
@@ -1993,7 +1985,7 @@ onBeforeUnmount(() => {
   display: flex;
   flex-direction: column;
   gap: 4px;
-  padding: 7px 10px;
+  padding: 6px 10px;
   border-radius: var(--sb-radius-sm);
   border: 1px solid var(--sb-line);
   background: var(--sb-surface-2);
@@ -2005,7 +1997,7 @@ onBeforeUnmount(() => {
 .n-route-line {
   display: flex;
   align-items: center;
-  gap: 5px;
+  gap: 4px;
   font-size: 10.5px;
 }
 .n-dir {
@@ -2030,7 +2022,7 @@ onBeforeUnmount(() => {
   gap: 3px;
   min-width: 0;
   max-width: 100%;
-  padding: 1px 6px;
+  padding: 1.5px 6px;
   border-radius: 6px;
   border: 1px solid var(--sb-line);
   background: var(--sb-surface-3);
@@ -2043,7 +2035,7 @@ onBeforeUnmount(() => {
 .n-lat b.is-unicom { color: var(--sb-warning); }
 .n-lat b.is-mobile { color: var(--sb-success); }
 .n-lat em {
-  font-size: 9.5px;
+  font-size: 10px;
   font-style: normal;
   opacity: .75;
 }
@@ -2076,7 +2068,7 @@ onBeforeUnmount(() => {
   border: none;
   background: none;
   color: var(--sb-accent);
-  font-size: 10.5px;
+  font-size: 11px;
   cursor: pointer;
   white-space: nowrap;
 }
@@ -2091,7 +2083,7 @@ onBeforeUnmount(() => {
   justify-content: space-between;
   gap: 10px;
   margin-top: auto;
-  padding-top: 8px;
+  padding-top: 6px;
   border-top: 1px dashed var(--sb-line);
   font-size: 10.5px;
   color: var(--sb-muted);
@@ -2142,31 +2134,26 @@ onBeforeUnmount(() => {
   font-weight: 700;
 }
 .srv-avatar.is-flag {
-  font-size: 24px;
+  font-size: 20px;
   font-weight: 400;
-  background: var(--sb-surface-3);
+  background: transparent;
 }
 .srv-status {
   display: inline-flex;
   align-items: center;
   gap: 6px;
   flex-shrink: 0;
-  padding: 2px 8px;
-  border-radius: 999px;
   font-size: 11px;
   font-weight: 600;
   line-height: 16px;
 }
 .srv-status.is-online {
-  background: rgba(52, 211, 153, .12);
   color: var(--sb-success);
 }
 .srv-status.is-offline {
-  background: rgba(148, 163, 184, .1);
   color: var(--sb-muted);
 }
 .srv-status.is-blocked {
-  background: rgba(251, 113, 133, .14);
   color: var(--sb-danger);
 }
 .srv-status-dot {
@@ -2751,10 +2738,8 @@ onBeforeUnmount(() => {
   .mtr-hop > :nth-child(5), .mtr-hop > :nth-child(6) { display: none; }
 }
 
-:deep(.el-popper) {
-  max-width: 280px !important;
+:global(.el-popper) {
+  max-width: min(420px, 90vw) !important;
   white-space: pre-line !important;
-  line-height: 1.45 !important;
-  font-size: 11px !important;
 }
 </style>

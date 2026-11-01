@@ -1,4 +1,4 @@
-import { shallowRef, triggerRef } from 'vue'
+import { shallowRef } from 'vue'
 
 // One shared connections stream for the whole console. Every page that shows
 // real-time data reads the same snapshot map instead of opening its own
@@ -18,7 +18,10 @@ let subscribers = new Set()
 let totalsSubscribers = new Set()
 
 function notify() {
-  triggerRef(connectionSnapshots)
+  // 不能只 triggerRef：shared Map 原地修改后，中间 computed 读到的
+  // 还是同一个对象，hasChanged 判定“值没变”，下游(卡片计算属性)
+  // 永远不会重算。必须换成新 Map 实例，让响应式链条真正失效重算。
+  connectionSnapshots.value = new Map(connectionSnapshots.value)
   subscribers.forEach((subscriber) => subscriber())
 }
 
@@ -82,8 +85,7 @@ export function closeConnectionEvents() {
   source?.close()
   source = undefined
   fleetTotals.value = null
-  connectionSnapshots.value.clear()
-  triggerRef(connectionSnapshots)
+  connectionSnapshots.value = new Map()
 }
 
 // mergeChainedConnections combines the hops of a chained proxy into a single
