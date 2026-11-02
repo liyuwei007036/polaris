@@ -446,6 +446,7 @@ func (s *Server) registerBrowserRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/v1/alerts/test", s.testAlert)
 	mux.HandleFunc("POST /api/v1/probes/run-gfw-check", s.handleRunGFWCheck)
 	mux.HandleFunc("POST /api/v1/nodes/{id}/speedtest", s.handleRunNodeSpeedtest)
+	mux.HandleFunc("GET /api/v1/ping", s.handlePing)
 	mux.HandleFunc("GET /api/v1/client-info", s.handleClientInfo)
 	mux.HandleFunc("POST /api/v1/nodes/{id}/probe-peers", s.handleProbeNodePeers)
 	mux.HandleFunc("POST /api/v1/nodes/{id}/probe-client", s.handleProbeNodeClient)

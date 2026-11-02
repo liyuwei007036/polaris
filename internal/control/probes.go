@@ -197,18 +197,20 @@ type NodePeerProbeItem struct {
 	IPv4MaxLatency float64 `json:"ipv4_max_latency_ms"`
 	IPv4Sent       int     `json:"ipv4_sent"`
 	IPv4Received   int     `json:"ipv4_received"`
-	IPv4Loss       float64 `json:"ipv4_loss_percent"`
-	IPv4Status     string  `json:"ipv4_status"` // "ok", "loss", "unreachable", "none"
-	IPv4Method     string  `json:"ipv4_method,omitempty"`
-	IPv6Target     string  `json:"ipv6_target,omitempty"`
-	IPv6LatencyMs  float64 `json:"ipv6_latency_ms"`
-	IPv6MinLatency float64 `json:"ipv6_min_latency_ms"`
-	IPv6MaxLatency float64 `json:"ipv6_max_latency_ms"`
-	IPv6Sent       int     `json:"ipv6_sent"`
-	IPv6Received   int     `json:"ipv6_received"`
-	IPv6Loss       float64 `json:"ipv6_loss_percent"`
-	IPv6Status     string  `json:"ipv6_status"` // "ok", "loss", "unreachable", "none"
-	IPv6Method     string  `json:"ipv6_method,omitempty"`
+	IPv4Loss       float64   `json:"ipv4_loss_percent"`
+	IPv4Status     string    `json:"ipv4_status"` // "ok", "loss", "unreachable", "none"
+	IPv4Method     string    `json:"ipv4_method,omitempty"`
+	IPv4Latencies  []float64 `json:"ipv4_latencies,omitempty"`
+	IPv6Target     string    `json:"ipv6_target,omitempty"`
+	IPv6LatencyMs  float64   `json:"ipv6_latency_ms"`
+	IPv6MinLatency float64   `json:"ipv6_min_latency_ms"`
+	IPv6MaxLatency float64   `json:"ipv6_max_latency_ms"`
+	IPv6Sent       int       `json:"ipv6_sent"`
+	IPv6Received   int       `json:"ipv6_received"`
+	IPv6Loss       float64   `json:"ipv6_loss_percent"`
+	IPv6Status     string    `json:"ipv6_status"` // "ok", "loss", "unreachable", "none"
+	IPv6Method     string    `json:"ipv6_method,omitempty"`
+	IPv6Latencies  []float64 `json:"ipv6_latencies,omitempty"`
 }
 
 type NodePeersProbeResult struct {
@@ -220,15 +222,16 @@ type NodePeersProbeResult struct {
 }
 
 type wireProbeResult struct {
-	OK           bool    `json:"ok"`
-	Method       string  `json:"method"`
-	Sent         int     `json:"sent"`
-	Received     int     `json:"received"`
-	LossPercent  float64 `json:"loss_percent"`
-	AvgLatencyMs float64 `json:"avg_latency_ms"`
-	MinLatencyMs float64 `json:"min_latency_ms"`
-	MaxLatencyMs float64 `json:"max_latency_ms"`
-	Status       string  `json:"status"`
+	OK           bool      `json:"ok"`
+	Method       string    `json:"method"`
+	Sent         int       `json:"sent"`
+	Received     int       `json:"received"`
+	LossPercent  float64   `json:"loss_percent"`
+	AvgLatencyMs float64   `json:"avg_latency_ms"`
+	MinLatencyMs float64   `json:"min_latency_ms"`
+	MaxLatencyMs float64   `json:"max_latency_ms"`
+	Status       string    `json:"status"`
+	Latencies    []float64 `json:"latencies,omitempty"`
 }
 
 func (s *Server) askNodeNetworkProbe(ctx context.Context, sourceNodeID, host string, port uint16, count int) (*wireProbeResult, error) {
@@ -315,6 +318,7 @@ func (s *Server) ProbeNodePeers(ctx context.Context, sourceNodeID string, target
 				item.IPv4Loss = pRes.LossPercent
 				item.IPv4Status = pRes.Status
 				item.IPv4Method = pRes.Method
+				item.IPv4Latencies = pRes.Latencies
 			} else {
 				item.IPv4Status = "unreachable"
 				item.IPv4Loss = 100.0
@@ -334,6 +338,7 @@ func (s *Server) ProbeNodePeers(ctx context.Context, sourceNodeID string, target
 				item.IPv6Loss = pRes.LossPercent
 				item.IPv6Status = pRes.Status
 				item.IPv6Method = pRes.Method
+				item.IPv6Latencies = pRes.Latencies
 			} else {
 				item.IPv6Status = "unreachable"
 				item.IPv6Loss = 100.0
@@ -389,6 +394,7 @@ func (s *Server) ProbeNodeClient(ctx context.Context, sourceNodeID, clientIP str
 			item.IPv4Loss = pRes.LossPercent
 			item.IPv4Status = pRes.Status
 			item.IPv4Method = pRes.Method
+			item.IPv4Latencies = pRes.Latencies
 		} else {
 			item.IPv4Status = "unreachable"
 			item.IPv4Loss = 100.0
@@ -405,6 +411,7 @@ func (s *Server) ProbeNodeClient(ctx context.Context, sourceNodeID, clientIP str
 			item.IPv6Loss = pRes.LossPercent
 			item.IPv6Status = pRes.Status
 			item.IPv6Method = pRes.Method
+			item.IPv6Latencies = pRes.Latencies
 		} else {
 			item.IPv6Status = "unreachable"
 			item.IPv6Loss = 100.0

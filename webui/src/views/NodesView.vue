@@ -684,19 +684,43 @@ const probeNode = ref(null)
 const probeActiveTab = ref('client')
 const clientInfo = ref({ ip: '', is_ipv6: false, location: '', isp: '', asn: '' })
 const loadingClientInfo = ref(false)
-
-const browserProbeTarget = ref('v4')
-const browserProbePort = ref(443)
-const browserProbing = ref(false)
-const browserProbeResults = ref([])
-const browserProbeStats = ref(null)
-
-const reverseProbing = ref(false)
-const reverseProbeResult = ref(null)
+const clientTargetIP = ref('')
+const clientProbing = ref(false)
+const clientProbeResult = ref(null)
 
 const peerProbing = ref(false)
 const peerProbeResults = ref([])
 const peerProbingSingle = reactive({})
+
+const clientProbeStats = computed(() => {
+  const r = clientProbeResult.value
+  if (!r) return null
+  const isV6 = Boolean(r.ipv6_target)
+  const target = isV6 ? r.ipv6_target : r.ipv4_target
+  const latency = isV6 ? r.ipv6_latency_ms : r.ipv4_latency_ms
+  const minLatency = isV6 ? r.ipv6_min_latency_ms : r.ipv4_min_latency_ms
+  const maxLatency = isV6 ? r.ipv6_max_latency_ms : r.ipv4_max_latency_ms
+  const sent = isV6 ? r.ipv6_sent : r.ipv4_sent
+  const received = isV6 ? r.ipv6_received : r.ipv4_received
+  const lossPercent = isV6 ? r.ipv6_loss_percent : r.ipv4_loss_percent
+  const status = isV6 ? r.ipv6_status : r.ipv4_status
+  const method = (isV6 ? r.ipv6_method : r.ipv4_method) || 'ICMP'
+  const latencies = (isV6 ? r.ipv6_latencies : r.ipv4_latencies) || []
+  return {
+    isV6,
+    target,
+    latency,
+    minLatency,
+    maxLatency,
+    sent: sent || 4,
+    received: received || 0,
+    lossPercent: typeof lossPercent === 'number' ? lossPercent : (received > 0 ? 0 : 100),
+    status,
+    method: method.toUpperCase(),
+    latencies,
+    hasResponse: (received || 0) > 0,
+  }
+})
 
 const getNodePublicIPv4 = (node) => {
   if (!node) return ''
@@ -750,123 +774,38 @@ const openNetworkProbe = async (node) => {
   probeNode.value = node
   probeDialog.value = true
   probeActiveTab.value = 'client'
-  browserProbeResults.value = []
-  browserProbeStats.value = null
-  reverseProbeResult.value = null
+  clientProbeResult.value = null
   peerProbeResults.value = []
-
-  browserProbeTarget.value = 'v4'
 
   loadingClientInfo.value = true
   try {
     const info = await api('/client-info')
     clientInfo.value = info || {}
+    clientTargetIP.value = info?.ip || ''
   } catch (err) {
-    clientInfo.value = { ip: '未知', location: '本地客户端' }
+    clientInfo.value = { ip: '', location: '本地客户端' }
+    clientTargetIP.value = ''
   } finally {
     loadingClientInfo.value = false
   }
 
-  runReverseProbe()
-  runBrowserProbe()
+  runClientProbe()
 }
 
-const runBrowserProbe = async () => {
+const runClientProbe = async () => {
   if (!probeNode.value) return
-  browserProbing.value = true
-  browserProbeResults.value = []
-  browserProbeStats.value = null
-
-  const isV6 = browserProbeTarget.value === 'v6'
-  let targetIP = isV6 ? getNodePublicIPv6(probeNode.value) : getNodePublicIPv4(probeNode.value)
-  if (!targetIP) {
-    targetIP = probeNode.value.client_address?.split(':')[0] || probeNode.value.last_observed_ip
-  }
-  const isHttps = window.location.protocol === 'https:'
-  const port = Number(browserProbePort.value) || (isHttps ? 443 : 80)
-  const scheme = isHttps ? 'https:' : 'http:'
-
-  const pulses = 5
-  const latencies = []
-  let received = 0
-
-  for (let i = 1; i <= pulses; i++) {
-    const start = performance.now()
-    let ok = false
-    let latency = 0
-    try {
-      const controller = new AbortController()
-      const timeoutId = setTimeout(() => controller.abort(), 2000)
-      const url = `${scheme}//${isV6 ? `[${targetIP}]` : targetIP}:${port}/favicon.ico?_t=${Date.now()}`
-      try {
-        await fetch(url, { mode: 'no-cors', cache: 'no-store', signal: controller.signal })
-        clearTimeout(timeoutId)
-        latency = Math.max(1, Math.round(performance.now() - start))
-        ok = true
-      } catch (fetchErr) {
-        clearTimeout(timeoutId)
-        if (fetchErr.name !== 'AbortError') {
-          const elapsed = Math.round(performance.now() - start)
-          // Instant rejection (<3ms) is caused by local browser security sandbox/mixed-content policy
-          if (elapsed >= 3) {
-            latency = elapsed
-            ok = true
-          }
-        }
-      }
-    } catch {
-      ok = false
-    }
-
-    if (ok) {
-      received++
-      latencies.push(latency)
-      browserProbeResults.value.push({ id: i, latency, success: true })
-    } else {
-      browserProbeResults.value.push({ id: i, latency: 0, success: false })
-    }
-    if (i < pulses) {
-      await new Promise(r => setTimeout(r, 80))
-    }
-  }
-
-  const sent = pulses
-  const lossPercent = Math.round(((sent - received) / sent) * 100)
-  let min = 0, max = 0, avg = 0, jitter = 0
-  let isBlocked = false
-
-  if (latencies.length > 0) {
-    min = Math.min(...latencies)
-    max = Math.max(...latencies)
-    avg = Math.round(latencies.reduce((a, b) => a + b, 0) / latencies.length)
-    if (latencies.length > 1) {
-      let diffSum = 0
-      for (let j = 1; j < latencies.length; j++) {
-        diffSum += Math.abs(latencies[j] - latencies[j - 1])
-      }
-      jitter = Math.round(diffSum / (latencies.length - 1))
-    }
-  } else {
-    isBlocked = true
-  }
-
-  browserProbeStats.value = { sent, received, lossPercent, min, max, avg, jitter, isBlocked }
-  browserProbing.value = false
-}
-
-const runReverseProbe = async () => {
-  if (!probeNode.value) return
-  reverseProbing.value = true
-  reverseProbeResult.value = null
+  clientProbing.value = true
+  clientProbeResult.value = null
+  const target = (clientTargetIP.value || clientInfo.value.ip || '').trim()
   try {
     const res = await post(`/nodes/${probeNode.value.id}/probe-client`, {
-      client_ip: clientInfo.value.ip
+      client_ip: target
     })
-    reverseProbeResult.value = res
+    clientProbeResult.value = res
   } catch (err) {
-    ElMessage.error(err.message || '服务器回程探测失败')
+    ElMessage.error(err.message || '链路探测失败')
   } finally {
-    reverseProbing.value = false
+    clientProbing.value = false
   }
 }
 
@@ -1406,118 +1345,147 @@ onBeforeUnmount(() => {
                 <span class="ep-badge">本地端</span>
                 <div class="ep-info">
                   <div class="ep-title">{{ clientInfo.location || '本地客户端网络' }}</div>
-                  <div class="ep-ip font-mono">{{ clientInfo.ip || '获取中...' }} <span v-if="clientInfo.isp">({{ clientInfo.isp }})</span></div>
+                  <div class="ep-ip font-mono">{{ clientTargetIP || clientInfo.ip || '获取中...' }} <span v-if="clientInfo.isp">({{ clientInfo.isp }})</span></div>
                 </div>
               </div>
               <div class="probe-route-connector">
                 <span class="connector-line"></span>
-                <span class="connector-label">双向互联链路</span>
+                <span class="connector-label">端到端双向互联</span>
                 <span class="connector-line"></span>
               </div>
               <div class="probe-route-endpoint is-target">
                 <span class="ep-badge">服务器端</span>
                 <div class="ep-info">
                   <div class="ep-title">{{ probeNode?.name }}</div>
-                  <div class="ep-ip font-mono">{{ probeNode?.city || probeNode?.location || '远程服务器' }}</div>
+                  <div class="ep-ip font-mono">{{ getNodePublicIPv4(probeNode) || getNodePublicIPv6(probeNode) || probeNode?.city || '远程服务器' }}</div>
                 </div>
               </div>
             </div>
 
-            <!-- 控制区 -->
+            <!-- 控制区 / 探测配置 -->
             <div class="probe-control-bar">
-              <div class="probe-target-selector">
-                <span class="ctrl-label">探测协议:</span>
-                <el-radio-group v-model="browserProbeTarget" size="small" :disabled="browserProbing">
-                  <el-radio-button value="v4">IPv4 直连</el-radio-button>
-                  <el-radio-button value="v6" :disabled="!getNodePublicIPv6(probeNode)">
-                    IPv6 直连 <span v-if="!getNodePublicIPv6(probeNode)" class="dim-hint">(无v6)</span>
-                  </el-radio-button>
-                </el-radio-group>
+              <div class="probe-target-ip-wrap">
+                <span class="ctrl-label">目标客户端 IP:</span>
+                <el-input
+                  v-model="clientTargetIP"
+                  size="small"
+                  placeholder="请输入探测的目标客户端 IP"
+                  style="width: 220px"
+                  :disabled="clientProbing"
+                  @keyup.enter="runClientProbe"
+                />
               </div>
 
-              <div class="probe-port-input">
-                <span class="ctrl-label">目标端口:</span>
-                <el-input-number v-model="browserProbePort" :min="1" :max="65535" size="small" :disabled="browserProbing" style="width: 110px" />
+              <div class="probe-proto-indicator">
+                <span class="ctrl-label">网络栈:</span>
+                <el-tag size="small" :type="clientTargetIP?.includes(':') ? 'warning' : 'success'">
+                  {{ clientTargetIP?.includes(':') ? 'IPv6 链路' : 'IPv4 链路' }}
+                </el-tag>
               </div>
 
-              <el-button type="primary" size="small" :icon="Refresh" :loading="browserProbing" @click="runBrowserProbe">
-                开始浏览器直连探测
+              <el-button
+                type="primary"
+                size="small"
+                :icon="Refresh"
+                :loading="clientProbing"
+                @click="runClientProbe"
+              >
+                {{ clientProbing ? '正在高精度采样中...' : '重新检测链路' }}
               </el-button>
             </div>
 
-            <!-- 浏览器直连探测指标卡片 -->
-            <div v-if="browserProbeStats" class="probe-stats-grid">
-              <div class="probe-stat-box" :class="{ 'is-loss': browserProbeStats.lossPercent > 0 }">
-                <div class="stat-num">{{ browserProbeStats.lossPercent }}%</div>
-                <div class="stat-name">丢包率</div>
-              </div>
-              <div class="probe-stat-box">
-                <div class="stat-num font-mono">
-                  <template v-if="browserProbeStats.isBlocked">受限</template>
-                  <template v-else>{{ browserProbeStats.avg }}<span class="unit">ms</span></template>
-                </div>
-                <div class="stat-name">平均延迟</div>
-              </div>
-              <div class="probe-stat-box">
-                <div class="stat-num font-mono">
-                  <template v-if="browserProbeStats.isBlocked">— / —</template>
-                  <template v-else>{{ browserProbeStats.min }} / {{ browserProbeStats.max }}<span class="unit">ms</span></template>
-                </div>
-                <div class="stat-name">最小 / 最大</div>
-              </div>
-              <div class="probe-stat-box">
-                <div class="stat-num font-mono">
-                  <template v-if="browserProbeStats.isBlocked">—</template>
-                  <template v-else>{{ browserProbeStats.jitter }}<span class="unit">ms</span></template>
-                </div>
-                <div class="stat-name">网络抖动 (Jitter)</div>
+            <!-- 采样中动画骨架 -->
+            <div v-if="clientProbing" class="probe-loading-state">
+              <el-icon class="is-loading probe-spin-icon"><Loading /></el-icon>
+              <div class="loading-text">
+                正在由远程服务器对公网 IP「{{ clientTargetIP || clientInfo.ip }}」发送 4 轮高精度 ICMP / TCP 探测...
               </div>
             </div>
 
-            <div v-if="browserProbeStats?.isBlocked" class="probe-sandbox-notice">
-              <span>提示：浏览器沙箱受 HTTPS / 跨域安全策略限制，无法直连该端口。请参考下方由 VPS 发起的【真实双向回程探测】。</span>
-            </div>
-
-            <!-- 测速脉冲明细 -->
-            <div v-if="browserProbeResults.length > 0" class="probe-pulses-row">
-              <span class="pulses-title">实时脉冲采样 (5次):</span>
-              <div class="pulses-list">
-                <span
-                  v-for="p in browserProbeResults"
-                  :key="p.id"
-                  class="pulse-pill"
-                  :class="p.success ? 'is-ok' : 'is-fail'"
-                >
-                  <i class="pulse-dot" />
-                  #{{ p.id }}: {{ p.success ? `${p.latency}ms` : '无法直连 / 超时' }}
-                </span>
-              </div>
-            </div>
-
-            <!-- 服务器反向回程探测 -->
-            <div class="probe-reverse-section">
-              <div class="reverse-header">
-                <div>
-                  <div class="reverse-title">服务器回程探测 (VPS 至客户端)</div>
-                  <div class="reverse-sub">由服务器反向对您当前的公网客户端 IP 发起链路丢包与 ICMP/TCP 延迟探测</div>
+            <!-- 探测结果卡片区 -->
+            <template v-else-if="clientProbeStats">
+              <!-- 场景一：正常收到回包 -->
+              <template v-if="clientProbeStats.hasResponse">
+                <div class="probe-stats-grid">
+                  <div class="probe-stat-box" :class="{ 'is-loss': clientProbeStats.lossPercent > 0 }">
+                    <div class="stat-num font-mono">{{ clientProbeStats.lossPercent }}%</div>
+                    <div class="stat-name">丢包率</div>
+                  </div>
+                  <div class="probe-stat-box">
+                    <div class="stat-num font-mono">
+                      {{ clientProbeStats.latency?.toFixed(1) }}<span class="unit">ms</span>
+                    </div>
+                    <div class="stat-name">往返延迟 (RTT)</div>
+                  </div>
+                  <div class="probe-stat-box">
+                    <div class="stat-num font-mono">
+                      {{ clientProbeStats.minLatency?.toFixed(0) }} ~ {{ clientProbeStats.maxLatency?.toFixed(0) }}<span class="unit">ms</span>
+                    </div>
+                    <div class="stat-name">极值波动 (Min ~ Max)</div>
+                  </div>
+                  <div class="probe-stat-box">
+                    <div class="stat-num font-mono" style="font-size: 15px; line-height: 28px;">
+                      {{ clientProbeStats.method }} · {{ clientProbeStats.received }}/{{ clientProbeStats.sent }} 包
+                    </div>
+                    <div class="stat-name">发包统计与协议</div>
+                  </div>
                 </div>
-                <el-button size="small" :loading="reverseProbing" @click="runReverseProbe">
-                  执行回程探测
-                </el-button>
-              </div>
 
-              <div v-if="reverseProbeResult" class="reverse-result-box" :class="(reverseProbeResult.ipv6_target ? reverseProbeResult.ipv6_loss_percent : reverseProbeResult.ipv4_loss_percent) > 0 ? 'is-loss' : 'is-good'">
-                <div class="reverse-metric">
-                  <span class="rev-tag">{{ ((reverseProbeResult.ipv6_target ? reverseProbeResult.ipv6_method : reverseProbeResult.ipv4_method) || 'ICMP').toUpperCase() }} 真实回程 ({{ reverseProbeResult.ipv6_target ? 'IPv6' : 'IPv4' }})</span>
-                  <span class="rev-loss">丢包率: <b>{{ reverseProbeResult.ipv6_target ? reverseProbeResult.ipv6_loss_percent : reverseProbeResult.ipv4_loss_percent }}%</b></span>
-                  <span class="rev-lat">往返延迟: <b>{{ (reverseProbeResult.ipv6_target ? reverseProbeResult.ipv6_latency_ms : reverseProbeResult.ipv4_latency_ms)?.toFixed(1) }} ms</b></span>
-                  <span class="rev-sample" v-if="reverseProbeResult.ipv4_sent || reverseProbeResult.ipv6_sent">
-                    <b>({{ reverseProbeResult.ipv6_target ? reverseProbeResult.ipv6_received : reverseProbeResult.ipv4_received }}/{{ reverseProbeResult.ipv6_target ? reverseProbeResult.ipv6_sent : reverseProbeResult.ipv4_sent }} 包)</b>
-                  </span>
-                  <span class="rev-status">{{ (reverseProbeResult.ipv6_target ? reverseProbeResult.ipv6_status : reverseProbeResult.ipv4_status) === 'ok' ? '连通良好' : '存在异常' }}</span>
+                <!-- 采样脉冲明细 -->
+                <div class="probe-pulses-row" v-if="clientProbeStats.latencies?.length > 0">
+                  <span class="pulses-title">高频往返脉冲记录 ({{ clientProbeStats.latencies.length }}次采样):</span>
+                  <div class="pulses-list">
+                    <span
+                      v-for="(lat, idx) in clientProbeStats.latencies"
+                      :key="idx"
+                      class="pulse-pill is-ok"
+                    >
+                      <i class="pulse-dot" />
+                      #{{ idx + 1 }}: {{ lat.toFixed(1) }}ms
+                    </span>
+                    <span
+                      v-for="lostIdx in (clientProbeStats.sent - clientProbeStats.received)"
+                      :key="'lost-' + lostIdx"
+                      class="pulse-pill is-fail"
+                    >
+                      <i class="pulse-dot" />
+                      #{{ clientProbeStats.received + lostIdx }}: 丢包超时
+                    </span>
+                  </div>
                 </div>
-              </div>
-            </div>
+              </template>
+
+              <!-- 场景二：未收到回包（家庭宽带光猫/本地防火墙拦截） -->
+              <template v-else>
+                <div class="probe-stats-grid">
+                  <div class="probe-stat-box is-warning">
+                    <div class="stat-num font-mono" style="font-size: 16px; color: var(--sb-warning);">本地路由拦截</div>
+                    <div class="stat-name">链路状态</div>
+                  </div>
+                  <div class="probe-stat-box">
+                    <div class="stat-num font-mono">{{ clientProbeStats.sent }} 次已发出</div>
+                    <div class="stat-name">发包记录</div>
+                  </div>
+                  <div class="probe-stat-box">
+                    <div class="stat-num font-mono">0 次响应</div>
+                    <div class="stat-name">回包数量</div>
+                  </div>
+                  <div class="probe-stat-box">
+                    <div class="stat-num font-mono" style="font-size: 15px; line-height: 28px;">
+                      {{ clientProbeStats.method }} 探测
+                    </div>
+                    <div class="stat-name">探测协议</div>
+                  </div>
+                </div>
+
+                <div class="probe-firewall-notice">
+                  <div class="notice-title">说明：服务器未收到来自客户端公网 IP 的回包</div>
+                  <div class="notice-desc">
+                    服务器已向目标 IP「{{ clientTargetIP || clientInfo.ip }}」发送 4 轮探测，但未收到回应。多数家庭宽带光猫或本地路由器默认启用了外网防探测防火墙（禁止 WAN 口 ICMP Ping 及主动入站连接），导致探测包被本地网络设备丢弃。这是家用网络的正常安全保护机制。若需测试链路，可在上方输入已开放 Ping 响应的公网 IP。
+                  </div>
+                </div>
+              </template>
+            </template>
           </div>
         </el-tab-pane>
 
@@ -2701,9 +2669,45 @@ onBeforeUnmount(() => {
   color: var(--sb-muted);
   margin-right: 6px;
 }
-.probe-port-input {
+.probe-target-ip-wrap, .probe-proto-indicator {
   display: flex;
   align-items: center;
+}
+.probe-loading-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 36px 16px;
+  background: var(--sb-surface-2);
+  border: 1px dashed var(--sb-line-strong);
+  border-radius: 12px;
+  gap: 12px;
+}
+.probe-spin-icon {
+  font-size: 28px;
+  color: var(--sb-accent);
+}
+.loading-text {
+  font-size: 13px;
+  color: var(--sb-text-2);
+}
+.probe-firewall-notice {
+  font-size: 12px;
+  line-height: 1.6;
+  padding: 14px 16px;
+  border-radius: 10px;
+  background: rgba(245, 158, 11, 0.08);
+  border: 1px solid rgba(245, 158, 11, 0.25);
+}
+.notice-title {
+  font-weight: 600;
+  color: var(--sb-warning);
+  margin-bottom: 4px;
+}
+.notice-desc {
+  color: var(--sb-text-2);
+  font-size: 12px;
 }
 .probe-stats-grid {
   display: grid;
@@ -2775,50 +2779,7 @@ onBeforeUnmount(() => {
   border-radius: 50%;
   background: currentColor;
 }
-.probe-reverse-section {
-  padding: 14px 16px;
-  border-radius: 12px;
-  background: var(--sb-surface-2);
-  border: 1px dashed var(--sb-line-strong);
-}
-.reverse-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-}
-.reverse-title {
-  font-size: 13px;
-  font-weight: 600;
-  color: var(--sb-text);
-}
-.reverse-sub {
-  font-size: 11.5px;
-  color: var(--sb-muted);
-  margin-top: 2px;
-}
-.reverse-result-box {
-  margin-top: 10px;
-  padding: 10px 14px;
-  border-radius: 8px;
-  background: rgba(15, 23, 42, 0.4);
-}
-.reverse-result-box.is-good { border-left: 3px solid var(--sb-success); }
-.reverse-result-box.is-loss { border-left: 3px solid var(--sb-danger); }
-.reverse-metric {
-  display: flex;
-  align-items: center;
-  gap: 16px;
-  font-size: 12px;
-  color: var(--sb-text);
-}
-.rev-tag {
-  padding: 2px 6px;
-  border-radius: 4px;
-  font-size: 10.5px;
-  background: var(--sb-surface-3);
-  color: var(--sb-muted);
-}
+
 .mesh-topbar {
   display: flex;
   align-items: center;
@@ -2897,18 +2858,7 @@ onBeforeUnmount(() => {
   font-weight: normal;
   margin-left: 2px;
 }
-.rev-sample {
-  font-size: 11.5px;
-  color: var(--sb-muted);
-}
-.probe-sandbox-notice {
-  font-size: 11.5px;
-  color: var(--sb-warning);
-  padding: 6px 10px;
-  border-radius: 6px;
-  background: rgba(245, 158, 11, 0.1);
-  border: 1px solid rgba(245, 158, 11, 0.2);
-}
+
 .cell-val.is-ok { color: var(--sb-success); }
 .cell-val.is-loss { color: var(--sb-warning); font-weight: 600; }
 .cell-val.is-fail { color: var(--sb-danger); }

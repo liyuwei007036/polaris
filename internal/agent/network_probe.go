@@ -33,15 +33,17 @@ type NetworkProbeResponse struct {
 	AvgLatencyMs float64 `json:"avg_latency_ms"`
 	MinLatencyMs float64 `json:"min_latency_ms"`
 	MaxLatencyMs float64 `json:"max_latency_ms"`
-	Status       string  `json:"status"` // "ok", "loss", "unreachable"
-	Summary      string  `json:"summary"`
+	Status       string    `json:"status"` // "ok", "loss", "unreachable"
+	Summary      string    `json:"summary"`
+	Latencies    []float64 `json:"latencies,omitempty"`
 }
 
 var (
-	linuxPingStatsRegex = regexp.MustCompile(`(\d+)\s+packets transmitted,\s+(\d+)\s+(?:packets\s+)?received,.*?(\d+(?:\.\d+)?)%\s+packet loss`)
-	linuxPingRttRegex   = regexp.MustCompile(`(?:rtt|round-trip)\s+min/avg/max/(?:mdev|stddev)\s*=\s*([0-9.]+)/([0-9.]+)/([0-9.]+)`)
-	winPingStatsRegex   = regexp.MustCompile(`Sent = (\d+),\s*Received = (\d+),\s*Lost = \d+\s*\(([0-9.]+)%\s*loss\)`)
-	winPingRttRegex     = regexp.MustCompile(`Minimum = (\d+)ms,\s*Maximum = (\d+)ms,\s*Average = (\d+)ms`)
+	linuxPingStatsRegex  = regexp.MustCompile(`(\d+)\s+packets transmitted,\s+(\d+)\s+(?:packets\s+)?received,.*?(\d+(?:\.\d+)?)%\s+packet loss`)
+	linuxPingRttRegex    = regexp.MustCompile(`(?:rtt|round-trip)\s+min/avg/max/(?:mdev|stddev)\s*=\s*([0-9.]+)/([0-9.]+)/([0-9.]+)`)
+	winPingStatsRegex    = regexp.MustCompile(`Sent = (\d+),\s*Received = (\d+),\s*Lost = \d+\s*\(([0-9.]+)%\s*loss\)`)
+	winPingRttRegex      = regexp.MustCompile(`Minimum = (\d+)ms,\s*Maximum = (\d+)ms,\s*Average = (\d+)ms`)
+	pingLineLatencyRegex = regexp.MustCompile(`time[<=]([0-9.]+)\s*ms`)
 )
 
 func runNetworkProbe(ctx context.Context, task Task) TaskResult {
@@ -84,6 +86,7 @@ func runNetworkProbe(ctx context.Context, task Task) TaskResult {
 			res.MinLatencyMs = icmpRes.MinLatencyMs
 			res.MaxLatencyMs = icmpRes.MaxLatencyMs
 			res.LatencyMs = int(res.AvgLatencyMs + 0.5)
+			res.Latencies = icmpRes.Latencies
 			if res.LossPercent == 0 {
 				res.Status = "ok"
 				res.Summary = fmt.Sprintf("ICMP 连通良好 (延迟: %.1fms, 零丢包)", res.AvgLatencyMs)
@@ -112,6 +115,7 @@ func runNetworkProbe(ctx context.Context, task Task) TaskResult {
 	res.MinLatencyMs = tcpRes.MinLatencyMs
 	res.MaxLatencyMs = tcpRes.MaxLatencyMs
 	res.LatencyMs = int(res.AvgLatencyMs + 0.5)
+	res.Latencies = tcpRes.Latencies
 
 	if res.Received > 0 {
 		res.OK = true
@@ -141,6 +145,7 @@ type probeStats struct {
 	AvgLatencyMs float64
 	MinLatencyMs float64
 	MaxLatencyMs float64
+	Latencies    []float64
 }
 
 func executeICMPPing(ctx context.Context, host string, ipVersion int, count int) (probeStats, bool) {
@@ -180,6 +185,14 @@ func executeICMPPing(ctx context.Context, host string, ipVersion int, count int)
 func parsePingOutput(output string, expectedCount int) (probeStats, bool) {
 	var stats probeStats
 	stats.Sent = expectedCount
+
+	for _, m := range pingLineLatencyRegex.FindAllStringSubmatch(output, -1) {
+		if len(m) == 2 {
+			if lat, err := strconv.ParseFloat(m[1], 64); err == nil {
+				stats.Latencies = append(stats.Latencies, lat)
+			}
+		}
+	}
 
 	// Check Linux format
 	if match := linuxPingStatsRegex.FindStringSubmatch(output); len(match) == 4 {
@@ -262,6 +275,7 @@ func executeTCPProbe(ctx context.Context, host string, port uint16, ipVersion in
 
 	stats.Received = len(latencies)
 	stats.LossPercent = float64(stats.Sent-stats.Received) * 100.0 / float64(stats.Sent)
+	stats.Latencies = latencies
 
 	if len(latencies) > 0 {
 		minLat := latencies[0]
