@@ -53,11 +53,21 @@ func runSpeedtest(ctx context.Context, task Task) TaskResult {
 	}
 	_ = json.Unmarshal([]byte(task.Payload), &payload)
 
+	hasNoRootfs := false
+	for _, arg := range payload.Args {
+		if arg == "--no-rootfs" {
+			hasNoRootfs = true
+			break
+		}
+	}
 	cliArgs := payload.Args
-	if len(cliArgs) == 0 {
-		// By default test both IPv4 and IPv6 (dual-stack) with 4 packets and 16 parallel threads.
-		// Passing non-debug args prevents the rootfs wrapper from waiting on interactive stdin.
-		cliArgs = []string{"-c", "4", "-p", "16"}
+	if !hasNoRootfs {
+		cliArgs = append([]string{"--no-rootfs"}, cliArgs...)
+	}
+	if len(payload.Args) == 0 {
+		// Enforce --no-rootfs to prevent runTcpQuality from downloading 500MB Debian rootfs,
+		// bind-mounting /dev and recursively unmounting host /dev which bricks VPS nodes.
+		cliArgs = []string{"--no-rootfs", "-c", "4", "-p", "16"}
 	}
 
 	escapedArgs := make([]string, len(cliArgs))

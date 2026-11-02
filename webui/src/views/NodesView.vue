@@ -711,7 +711,6 @@ const openNetworkProbe = async (node) => {
   }
 
   runBrowserProbe()
-  runPeerProbes()
 }
 
 const runBrowserProbe = async () => {

@@ -351,7 +351,10 @@ func (s *Server) handleAgentMessage(ctx context.Context, node Node, msgType byte
 		}
 		task, err := s.store.TaskByID(ctx, res.TaskID)
 		if err != nil {
-			return false
+			// A task not in the database and having no active live waiter is an
+			// expired/timed-out live task answer. Deliberately ignore it and keep
+			// the agent session alive. Never drop the connection because of late answers.
+			return true
 		}
 		if err := s.store.CompleteTask(ctx, task.ID, node.ID, res.Status, res.Summary); err != nil {
 			return false

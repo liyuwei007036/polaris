@@ -228,7 +228,7 @@ func executeTCPProbe(ctx context.Context, host string, port uint16, ipVersion in
 		network = "tcp4"
 	}
 
-	dialer := net.Dialer{Timeout: 1500 * time.Millisecond}
+	dialer := net.Dialer{Timeout: 800 * time.Millisecond}
 	var latencies []float64
 
 	for i := 0; i < count; i++ {
@@ -246,7 +246,7 @@ func executeTCPProbe(ctx context.Context, host string, port uint16, ipVersion in
 			latencies = append(latencies, elapsedMs)
 		}
 		if i < count-1 {
-			time.Sleep(30 * time.Millisecond)
+			time.Sleep(20 * time.Millisecond)
 		}
 	}
 

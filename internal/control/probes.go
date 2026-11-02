@@ -222,6 +222,9 @@ type wireProbeResult struct {
 }
 
 func (s *Server) askNodeNetworkProbe(ctx context.Context, sourceNodeID, host string, port uint16, count int) (*wireProbeResult, error) {
+	if count <= 0 {
+		count = 2
+	}
 	payload, _ := json.Marshal(map[string]any{
 		"host":   host,
 		"port":   port,
@@ -290,10 +293,10 @@ func (s *Server) ProbeNodePeers(ctx context.Context, sourceNodeID string, target
 		v4Host := getNodePublicIPv4(target)
 		v6Host := getNodePublicIPv6(target)
 
-		// Probe IPv4
+		// Probe IPv4 (fast pulse: 2 packets)
 		if v4Host != "" {
 			item.IPv4Target = v4Host
-			if pRes, err := s.askNodeNetworkProbe(ctx, sourceNodeID, v4Host, 0, 4); err == nil {
+			if pRes, err := s.askNodeNetworkProbe(ctx, sourceNodeID, v4Host, 0, 2); err == nil {
 				item.IPv4LatencyMs = pRes.AvgLatencyMs
 				item.IPv4Loss = pRes.LossPercent
 				item.IPv4Status = pRes.Status
@@ -304,10 +307,10 @@ func (s *Server) ProbeNodePeers(ctx context.Context, sourceNodeID string, target
 			}
 		}
 
-		// Probe IPv6 if target machine has IPv6
+		// Probe IPv6 if target machine has IPv6 (fast pulse: 2 packets)
 		if v6Host != "" {
 			item.IPv6Target = v6Host
-			if pRes, err := s.askNodeNetworkProbe(ctx, sourceNodeID, v6Host, 0, 4); err == nil {
+			if pRes, err := s.askNodeNetworkProbe(ctx, sourceNodeID, v6Host, 0, 2); err == nil {
 				item.IPv6LatencyMs = pRes.AvgLatencyMs
 				item.IPv6Loss = pRes.LossPercent
 				item.IPv6Status = pRes.Status

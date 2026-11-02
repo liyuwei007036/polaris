@@ -301,6 +301,12 @@ func RunSession(ctx context.Context, conn *wire.Conn, handler TaskHandler, heart
 	connectionsTimer := time.NewTimer(untilNextTick(time.Now(), connectionsInterval))
 	defer connectionsTimer.Stop()
 
+	type completedTask struct {
+		task   wire.Task
+		result TaskResult
+	}
+	taskCompletions := make(chan completedTask, 4)
+
 	for {
 		select {
 		case <-ctx.Done():
@@ -334,10 +340,27 @@ func RunSession(ctx context.Context, conn *wire.Conn, handler TaskHandler, heart
 			if err := wire.Decode(msg.body, &task); err != nil {
 				continue
 			}
-			result := TaskResult{Status: "failed", Summary: "agent has no handler for this task"}
-			if handler != nil {
-				result = handler(ctx, Task{ID: task.ID, Kind: task.Kind, IdempotencyKey: task.IdempotencyKey, Payload: task.Payload, ExpectedHash: task.ExpectedHash})
-			}
+			// Execute task asynchronously so long-running operations (such as speedtests or network probes)
+			// never stall the control loop, heartbeat ticker, or keepalive reader.
+			go func(t wire.Task) {
+				res := TaskResult{Status: "failed", Summary: "agent has no handler for this task"}
+				if handler != nil {
+					res = handler(ctx, Task{
+						ID:             t.ID,
+						Kind:           t.Kind,
+						IdempotencyKey: t.IdempotencyKey,
+						Payload:        t.Payload,
+						ExpectedHash:   t.ExpectedHash,
+					})
+				}
+				select {
+				case taskCompletions <- completedTask{task: t, result: res}:
+				case <-ctx.Done():
+				}
+			}(task)
+		case ct := <-taskCompletions:
+			result := ct.result
+			task := ct.task
 			if result.Status == "succeeded" && result.SingBoxVersion != "" {
 				singBoxVersion = result.SingBoxVersion
 			}
