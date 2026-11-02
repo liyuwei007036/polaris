@@ -232,7 +232,7 @@ func (s *Server) handleRunNodeSpeedtest(w http.ResponseWriter, r *http.Request) 
 			delete(s.speedtestingNodes, targetNodeID)
 			s.speedtestMu.Unlock()
 		}()
-		testCtx, cancel := context.WithTimeout(context.Background(), 3*time.Minute+30*time.Second)
+		testCtx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 		defer cancel()
 
 		st, err := s.ExecuteNodeSpeedtest(testCtx, targetNodeID)

@@ -1,11 +1,15 @@
 package agent
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
+	"net/http"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"regexp"
 	"runtime"
 	"strings"
@@ -45,7 +49,8 @@ func runSpeedtest(ctx context.Context, task Task) TaskResult {
 	}
 
 	// On Linux servers, execute TcpQuality via bash script
-	timeoutCtx, cancel := context.WithTimeout(ctx, 2*time.Minute+45*time.Second)
+	// Give a generous 10-minute timeout so full multi-vector suites on any VPS finish reliably.
+	timeoutCtx, cancel := context.WithTimeout(ctx, 10*time.Minute)
 	defer cancel()
 
 	var payload struct {
@@ -73,7 +78,7 @@ func runSpeedtest(ctx context.Context, task Task) TaskResult {
 		cliArgs = append(cliArgs, "--all")
 	}
 	if len(payload.Args) == 0 {
-		// Enforce safe options:
+		// Enforce safe and optimized options:
 		// 1. --no-rootfs: prevents downloading 500MB rootfs and unmounting host /dev
 		// 2. --all: comprehensive multi-tab detection
 		// 3. -c 4: fast pulse packet count (4 packets instead of 25)
@@ -91,6 +96,9 @@ func runSpeedtest(ctx context.Context, task Task) TaskResult {
 set -e
 export TERM=xterm
 export DEBIAN_FRONTEND=noninteractive
+export TCPQUALITY_INTERNATIONAL_IPERF_BUDGET_SECONDS=10
+export TCPQUALITY_INTERNATIONAL_IPERF_SECONDS=3
+export TCPQUALITY_INTERNATIONAL_MAX_IPS=1
 
 tmp=$(mktemp /tmp/tcpquality_run.XXXXXX.sh 2>/dev/null || mktemp)
 cleanup() {
@@ -110,11 +118,19 @@ else
 fi
 
 chmod 0755 "$tmp"
+# Fix hardcoded curl -4 in upload_report if present so IPv6/dual-stack nodes upload reliably
+sed -i 's/curl -4 -sS/curl -sS/g' "$tmp" 2>/dev/null || true
 bash "$tmp" %s
 exit $?
 `, argsStr)
 	cmd := exec.CommandContext(timeoutCtx, "bash", "-c", script)
-	cmd.Env = append(os.Environ(), "TERM=xterm", "DEBIAN_FRONTEND=noninteractive")
+	cmd.Env = append(os.Environ(),
+		"TERM=xterm",
+		"DEBIAN_FRONTEND=noninteractive",
+		"TCPQUALITY_INTERNATIONAL_IPERF_BUDGET_SECONDS=10",
+		"TCPQUALITY_INTERNATIONAL_IPERF_SECONDS=3",
+		"TCPQUALITY_INTERNATIONAL_MAX_IPS=1",
+	)
 
 	outBytes, err := cmd.CombinedOutput()
 	output := string(outBytes)
@@ -126,11 +142,32 @@ exit $?
 		reportURL = matches[len(matches)-1]
 	}
 
+	// Fallback: If URL was not in stdout, check if a CSV was generated in /tmp
+	if reportURL == "" {
+		if csvFiles, globErr := filepath.Glob("/tmp/zstatic_nping_*.csv"); globErr == nil && len(csvFiles) > 0 {
+			var newestFile string
+			var newestMod time.Time
+			for _, f := range csvFiles {
+				if fi, statErr := os.Stat(f); statErr == nil {
+					if fi.ModTime().After(newestMod) {
+						newestMod = fi.ModTime()
+						newestFile = f
+					}
+				}
+			}
+			if newestFile != "" {
+				if uploadedURL, uploadErr := uploadTcpQualityCSV(timeoutCtx, newestFile); uploadErr == nil && uploadedURL != "" {
+					reportURL = uploadedURL
+				}
+			}
+		}
+	}
+
 	if reportURL == "" {
 		if err != nil {
 			tail := output
-			if len(tail) > 400 {
-				tail = tail[len(tail)-400:]
+			if len(tail) > 600 {
+				tail = tail[len(tail)-600:]
 			}
 			return TaskResult{
 				Status:  "failed",
@@ -152,4 +189,34 @@ exit $?
 		Data:    string(resJSON),
 		Summary: fmt.Sprintf("TcpQuality 检测完成: %s", reportURL),
 	}
+}
+
+func uploadTcpQualityCSV(ctx context.Context, csvPath string) (string, error) {
+	data, err := os.ReadFile(csvPath)
+	if err != nil {
+		return "", err
+	}
+	req, err := http.NewRequestWithContext(ctx, "POST", "https://tcpquality.ibsgss.uk/generate", bytes.NewReader(data))
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Content-Type", "text/csv; charset=utf-8")
+	req.Header.Set("X-Report-Time", time.Now().Format("2006-01-02 15:04:05"))
+	client := &http.Client{Timeout: 30 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		body, _ := io.ReadAll(resp.Body)
+		return "", fmt.Errorf("HTTP %d: %s", resp.StatusCode, string(body))
+	}
+	var res struct {
+		URL string `json:"url"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&res); err != nil {
+		return "", err
+	}
+	return res.URL, nil
 }

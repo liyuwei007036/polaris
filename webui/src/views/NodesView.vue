@@ -314,7 +314,7 @@ const speedtestPollTimers = {}
 function pollSpeedtest(nodeId) {
   if (speedtestPollTimers[nodeId]) clearTimeout(speedtestPollTimers[nodeId])
   let attempts = 0
-  const maxAttempts = 60 // Poll for up to 3.5 minutes (60 * 3.5s)
+  const maxAttempts = 180 // Poll for up to 10.5 minutes (180 * 3.5s)
 
   const check = async () => {
     attempts++
@@ -323,10 +323,12 @@ function pollSpeedtest(nodeId) {
       if (res?.speedtest) {
         speedtests.value = { ...speedtests.value, [nodeId]: res.speedtest }
       }
-      if (res?.running === false || (!res?.running && res?.speedtest)) {
+      if (res?.running === false) {
         speedtesting[nodeId] = false
         delete speedtestPollTimers[nodeId]
-        ElMessage.success('TcpQuality 综合检测完成！已生成多维度报告')
+        if (res?.speedtest) {
+          ElMessage.success('TcpQuality 综合检测完成！已生成多维度报告')
+        }
         return
       }
     } catch {
@@ -347,7 +349,7 @@ async function runSpeedtest(node) {
   speedtesting[node.id] = true
   try {
     const res = await post(`/nodes/${node.id}/speedtest`, {})
-    ElMessage.info(res?.message || 'TcpQuality 综合质量检测已在后台启动（预计耗时 1~2 分钟）')
+    ElMessage.info(res?.message || 'TcpQuality 综合质量检测已在后台启动（预计耗时 1~3 分钟）')
     pollSpeedtest(node.id)
   } catch (error) {
     speedtesting[node.id] = false
@@ -1046,7 +1048,7 @@ onBeforeUnmount(() => {
             <template v-if="speedtesting[card.node.id]">
               <div class="n-quality-row is-testing">
                 <el-icon class="is-loading"><Loading /></el-icon>
-                <span>TcpQuality 检测中 (约需 1~2 分钟)…</span>
+                <span>TcpQuality 检测中 (约需 1~3 分钟)…</span>
               </div>
             </template>
             <template v-else-if="card.reportUrl">

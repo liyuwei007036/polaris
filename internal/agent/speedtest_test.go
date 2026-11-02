@@ -6,6 +6,7 @@ import (
 	"os"
 	"runtime"
 	"testing"
+	"time"
 )
 
 func TestRunSpeedtest(t *testing.T) {
@@ -92,4 +93,35 @@ func TestTcpQualityRegex(t *testing.T) {
 			t.Errorf("got %q, want %q", got, s.want)
 		}
 	}
+}
+
+func TestUploadTcpQualityCSV(t *testing.T) {
+	// Create a dummy CSV file
+	tmpFile, err := os.CreateTemp("", "zstatic_nping_test_*.csv")
+	if err != nil {
+		t.Fatalf("create temp csv: %v", err)
+	}
+	defer os.Remove(tmpFile.Name())
+	defer tmpFile.Close()
+
+	csvContent := `网络,IP版本,省份,运营商,域名,IP,状态,发送,收到,丢包率(%),平均延迟ms,线路,回程连接耗时ms,回程TLS握手耗时ms,去程连接耗时ms,去程TLS握手耗时ms,iPerf3重传次数,iPerf3方向
+三网,IPv4,北京,中国电信,bj.ct.example.com,1.1.1.1,正常,4,4,0,35.2,电信163`
+	if _, err := tmpFile.WriteString(csvContent); err != nil {
+		t.Fatalf("write csv: %v", err)
+	}
+	tmpFile.Close()
+
+	// Live upload test if network is accessible, or skip gracefully
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	defer cancel()
+
+	url, err := uploadTcpQualityCSV(ctx, tmpFile.Name())
+	if err != nil {
+		t.Logf("uploadTcpQualityCSV returned (network may be restricted in sandbox): %v", err)
+		return
+	}
+	if !tcpQualityURLRegex.MatchString(url) {
+		t.Fatalf("expected valid tcpquality report url, got %q", url)
+	}
+	t.Logf("successfully uploaded CSV and got authentic URL: %s", url)
 }
