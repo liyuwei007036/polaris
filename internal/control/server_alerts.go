@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net"
 	"net/http"
 	"strings"
@@ -200,12 +201,54 @@ func (s *Server) handleRunNodeSpeedtest(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	st, err := s.ExecuteNodeSpeedtest(r.Context(), nodeID)
+	node, err := s.store.GetNode(r.Context(), nodeID)
 	if err != nil {
 		writeError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"result": st, "speedtest": st})
+	if !node.Online {
+		writeError(w, errors.New("服务器当前处于离线状态，无法进行检测"))
+		return
+	}
+
+	s.speedtestMu.Lock()
+	if s.speedtestingNodes[nodeID] {
+		s.speedtestMu.Unlock()
+		writeJSON(w, http.StatusOK, map[string]any{
+			"status":  "running",
+			"running": true,
+			"message": "该节点已在进行 TcpQuality 检测中，请稍候...",
+		})
+		return
+	}
+	s.speedtestingNodes[nodeID] = true
+	s.speedtestMu.Unlock()
+
+	// Launch autonomous speedtest asynchronously in background:
+	// Decoupled from HTTP request context so reverse proxies (Nginx 60s/Cloudflare 100s) never abort it.
+	go func(targetNodeID string) {
+		defer func() {
+			s.speedtestMu.Lock()
+			delete(s.speedtestingNodes, targetNodeID)
+			s.speedtestMu.Unlock()
+		}()
+		testCtx, cancel := context.WithTimeout(context.Background(), 3*time.Minute+30*time.Second)
+		defer cancel()
+
+		st, err := s.ExecuteNodeSpeedtest(testCtx, targetNodeID)
+		if err != nil {
+			log.Printf("node %s speedtest failed: %v", targetNodeID, err)
+		}
+		s.liveHub.publish(liveEvent{Kind: "speedtest", NodeID: targetNodeID})
+		s.liveHub.publish(liveEvent{Kind: "node", NodeID: targetNodeID})
+		_ = st
+	}(nodeID)
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"status":  "started",
+		"running": true,
+		"message": "TcpQuality 综合质量检测已在后台启动（预计耗时 1~2 分钟）",
+	})
 }
 
 func (s *Server) handleGetNodeSpeedtestLatest(w http.ResponseWriter, r *http.Request) {
@@ -215,16 +258,20 @@ func (s *Server) handleGetNodeSpeedtestLatest(w http.ResponseWriter, r *http.Req
 	}
 
 	nodeID := r.PathValue("id")
+	s.speedtestMu.Lock()
+	running := s.speedtestingNodes[nodeID]
+	s.speedtestMu.Unlock()
+
 	st, err := s.store.GetLatestNodeSpeedtest(r.Context(), nodeID)
 	if err != nil {
 		writeError(w, err)
 		return
 	}
 	if st == nil {
-		writeJSON(w, http.StatusOK, map[string]any{"has_test": false})
+		writeJSON(w, http.StatusOK, map[string]any{"has_test": false, "running": running})
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"has_test": true, "speedtest": st, "result": st})
+	writeJSON(w, http.StatusOK, map[string]any{"has_test": true, "running": running, "speedtest": st, "result": st})
 }
 
 func (s *Server) handleListNodeSpeedtestsLatest(w http.ResponseWriter, r *http.Request) {
@@ -242,7 +289,19 @@ func (s *Server) handleListNodeSpeedtestsLatest(w http.ResponseWriter, r *http.R
 	for _, st := range list {
 		items = append(items, st)
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"speedtests": items, "speedtests_map": list})
+
+	s.speedtestMu.Lock()
+	runningMap := make(map[string]bool, len(s.speedtestingNodes))
+	for k, v := range s.speedtestingNodes {
+		runningMap[k] = v
+	}
+	s.speedtestMu.Unlock()
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"speedtests":     items,
+		"speedtests_map": list,
+		"running":        runningMap,
+	})
 }
 
 func (s *Server) handleCheckRealityCandidate(w http.ResponseWriter, r *http.Request) {

@@ -294,6 +294,14 @@ async function load(silent = false) {
     pending.value = registrations.registrations || []
     metrics.value = Object.fromEntries((metricResult.nodes || []).map((entry) => [entry.node_id, entry.report]))
     speedtests.value = Object.fromEntries((speedtestResult.speedtests || []).map((s) => [s.node_id, s]))
+    if (speedtestResult.running) {
+      for (const [nodeId, isRunning] of Object.entries(speedtestResult.running)) {
+        if (isRunning && !speedtesting[nodeId]) {
+          speedtesting[nodeId] = true
+          pollSpeedtest(nodeId)
+        }
+      }
+    }
   } finally {
     loading.value = false
     refreshing.value = false
@@ -301,18 +309,49 @@ async function load(silent = false) {
   loadSingBoxLatest().catch(() => {})
 }
 
+const speedtestPollTimers = {}
+
+function pollSpeedtest(nodeId) {
+  if (speedtestPollTimers[nodeId]) clearTimeout(speedtestPollTimers[nodeId])
+  let attempts = 0
+  const maxAttempts = 60 // Poll for up to 3.5 minutes (60 * 3.5s)
+
+  const check = async () => {
+    attempts++
+    try {
+      const res = await api(`/nodes/${nodeId}/speedtest/latest`)
+      if (res?.speedtest) {
+        speedtests.value = { ...speedtests.value, [nodeId]: res.speedtest }
+      }
+      if (res?.running === false || (!res?.running && res?.speedtest)) {
+        speedtesting[nodeId] = false
+        delete speedtestPollTimers[nodeId]
+        ElMessage.success('TcpQuality 综合检测完成！已生成多维度报告')
+        return
+      }
+    } catch {
+      // Continue polling
+    }
+    if (attempts >= maxAttempts) {
+      speedtesting[nodeId] = false
+      delete speedtestPollTimers[nodeId]
+      return
+    }
+    speedtestPollTimers[nodeId] = setTimeout(check, 3500)
+  }
+  speedtestPollTimers[nodeId] = setTimeout(check, 3500)
+}
+
 async function runSpeedtest(node) {
+  if (speedtesting[node.id]) return
   speedtesting[node.id] = true
   try {
     const res = await post(`/nodes/${node.id}/speedtest`, {})
-    if (res?.result) {
-      speedtests.value = { ...speedtests.value, [node.id]: res.result }
-      ElMessage.success(`“${node.name}”网络质量检测完成`)
-    }
+    ElMessage.info(res?.message || 'TcpQuality 综合质量检测已在后台启动（预计耗时 1~2 分钟）')
+    pollSpeedtest(node.id)
   } catch (error) {
-    ElMessage.error(error instanceof Error ? error.message : '网络质量检测执行失败')
-  } finally {
     speedtesting[node.id] = false
+    ElMessage.error(error instanceof Error ? error.message : '启动网络质量检测失败')
   }
 }
 
@@ -728,6 +767,7 @@ const openNetworkProbe = async (node) => {
     loadingClientInfo.value = false
   }
 
+  runReverseProbe()
   runBrowserProbe()
 }
 
@@ -742,7 +782,9 @@ const runBrowserProbe = async () => {
   if (!targetIP) {
     targetIP = probeNode.value.client_address?.split(':')[0] || probeNode.value.last_observed_ip
   }
-  const port = Number(browserProbePort.value) || 443
+  const isHttps = window.location.protocol === 'https:'
+  const port = Number(browserProbePort.value) || (isHttps ? 443 : 80)
+  const scheme = isHttps ? 'https:' : 'http:'
 
   const pulses = 5
   const latencies = []
@@ -755,7 +797,7 @@ const runBrowserProbe = async () => {
     try {
       const controller = new AbortController()
       const timeoutId = setTimeout(() => controller.abort(), 2000)
-      const url = `http://${isV6 ? `[${targetIP}]` : targetIP}:${port}/ping?_t=${Date.now()}`
+      const url = `${scheme}//${isV6 ? `[${targetIP}]` : targetIP}:${port}/favicon.ico?_t=${Date.now()}`
       try {
         await fetch(url, { mode: 'no-cors', cache: 'no-store', signal: controller.signal })
         clearTimeout(timeoutId)
@@ -764,8 +806,12 @@ const runBrowserProbe = async () => {
       } catch (fetchErr) {
         clearTimeout(timeoutId)
         if (fetchErr.name !== 'AbortError') {
-          latency = Math.max(1, Math.round(performance.now() - start))
-          ok = true
+          const elapsed = Math.round(performance.now() - start)
+          // Instant rejection (<3ms) is caused by local browser security sandbox/mixed-content policy
+          if (elapsed >= 3) {
+            latency = elapsed
+            ok = true
+          }
         }
       }
     } catch {
@@ -787,6 +833,8 @@ const runBrowserProbe = async () => {
   const sent = pulses
   const lossPercent = Math.round(((sent - received) / sent) * 100)
   let min = 0, max = 0, avg = 0, jitter = 0
+  let isBlocked = false
+
   if (latencies.length > 0) {
     min = Math.min(...latencies)
     max = Math.max(...latencies)
@@ -798,9 +846,11 @@ const runBrowserProbe = async () => {
       }
       jitter = Math.round(diffSum / (latencies.length - 1))
     }
+  } else {
+    isBlocked = true
   }
 
-  browserProbeStats.value = { sent, received, lossPercent, min, max, avg, jitter }
+  browserProbeStats.value = { sent, received, lossPercent, min, max, avg, jitter, isBlocked }
   browserProbing.value = false
 }
 
@@ -1402,17 +1452,30 @@ onBeforeUnmount(() => {
                 <div class="stat-name">丢包率</div>
               </div>
               <div class="probe-stat-box">
-                <div class="stat-num font-mono">{{ browserProbeStats.avg }}<span class="unit">ms</span></div>
+                <div class="stat-num font-mono">
+                  <template v-if="browserProbeStats.isBlocked">受限</template>
+                  <template v-else>{{ browserProbeStats.avg }}<span class="unit">ms</span></template>
+                </div>
                 <div class="stat-name">平均延迟</div>
               </div>
               <div class="probe-stat-box">
-                <div class="stat-num font-mono">{{ browserProbeStats.min }} / {{ browserProbeStats.max }}<span class="unit">ms</span></div>
+                <div class="stat-num font-mono">
+                  <template v-if="browserProbeStats.isBlocked">— / —</template>
+                  <template v-else>{{ browserProbeStats.min }} / {{ browserProbeStats.max }}<span class="unit">ms</span></template>
+                </div>
                 <div class="stat-name">最小 / 最大</div>
               </div>
               <div class="probe-stat-box">
-                <div class="stat-num font-mono">{{ browserProbeStats.jitter }}<span class="unit">ms</span></div>
+                <div class="stat-num font-mono">
+                  <template v-if="browserProbeStats.isBlocked">—</template>
+                  <template v-else>{{ browserProbeStats.jitter }}<span class="unit">ms</span></template>
+                </div>
                 <div class="stat-name">网络抖动 (Jitter)</div>
               </div>
+            </div>
+
+            <div v-if="browserProbeStats?.isBlocked" class="probe-sandbox-notice">
+              <span>提示：浏览器沙箱受 HTTPS / 跨域安全策略限制，无法直连该端口。请参考下方由 VPS 发起的【真实双向回程探测】。</span>
             </div>
 
             <!-- 测速脉冲明细 -->
@@ -1426,7 +1489,7 @@ onBeforeUnmount(() => {
                   :class="p.success ? 'is-ok' : 'is-fail'"
                 >
                   <i class="pulse-dot" />
-                  #{{ p.id }}: {{ p.success ? `${p.latency}ms` : '超时' }}
+                  #{{ p.id }}: {{ p.success ? `${p.latency}ms` : '无法直连 / 超时' }}
                 </span>
               </div>
             </div>
@@ -1445,9 +1508,12 @@ onBeforeUnmount(() => {
 
               <div v-if="reverseProbeResult" class="reverse-result-box" :class="(reverseProbeResult.ipv6_target ? reverseProbeResult.ipv6_loss_percent : reverseProbeResult.ipv4_loss_percent) > 0 ? 'is-loss' : 'is-good'">
                 <div class="reverse-metric">
-                  <span class="rev-tag">{{ (reverseProbeResult.ipv6_target ? reverseProbeResult.ipv6_method : reverseProbeResult.ipv4_method) || 'ICMP' }} 回程 ({{ reverseProbeResult.ipv6_target ? 'IPv6' : 'IPv4' }})</span>
+                  <span class="rev-tag">{{ ((reverseProbeResult.ipv6_target ? reverseProbeResult.ipv6_method : reverseProbeResult.ipv4_method) || 'ICMP').toUpperCase() }} 真实回程 ({{ reverseProbeResult.ipv6_target ? 'IPv6' : 'IPv4' }})</span>
                   <span class="rev-loss">丢包率: <b>{{ reverseProbeResult.ipv6_target ? reverseProbeResult.ipv6_loss_percent : reverseProbeResult.ipv4_loss_percent }}%</b></span>
-                  <span class="rev-lat">平均延迟: <b>{{ (reverseProbeResult.ipv6_target ? reverseProbeResult.ipv6_latency_ms : reverseProbeResult.ipv4_latency_ms)?.toFixed(1) }} ms</b></span>
+                  <span class="rev-lat">往返延迟: <b>{{ (reverseProbeResult.ipv6_target ? reverseProbeResult.ipv6_latency_ms : reverseProbeResult.ipv4_latency_ms)?.toFixed(1) }} ms</b></span>
+                  <span class="rev-sample" v-if="reverseProbeResult.ipv4_sent || reverseProbeResult.ipv6_sent">
+                    <b>({{ reverseProbeResult.ipv6_target ? reverseProbeResult.ipv6_received : reverseProbeResult.ipv4_received }}/{{ reverseProbeResult.ipv6_target ? reverseProbeResult.ipv6_sent : reverseProbeResult.ipv4_sent }} 包)</b>
+                  </span>
                   <span class="rev-status">{{ (reverseProbeResult.ipv6_target ? reverseProbeResult.ipv6_status : reverseProbeResult.ipv4_status) === 'ok' ? '连通良好' : '存在异常' }}</span>
                 </div>
               </div>
@@ -1492,12 +1558,16 @@ onBeforeUnmount(() => {
                       <div v-if="peer.ipv4_target" class="peer-probe-cell">
                         <span class="cell-tag v4">IPv4</span>
                         <span v-if="peer.ipv4_status === 'ok'" class="cell-val is-ok">
-                          {{ peer.ipv4_latency_ms.toFixed(1) }}ms · 0% 丢包
+                          <span class="cell-method">{{ peer.ipv4_method ? peer.ipv4_method.toUpperCase() : 'ICMP' }}</span>
+                          <b>{{ peer.ipv4_latency_ms.toFixed(1) }}ms</b> · 0% 丢包
+                          <small class="cell-details" v-if="peer.ipv4_sent">({{ peer.ipv4_received }}/{{ peer.ipv4_sent }}包<template v-if="peer.ipv4_min_latency">, {{ peer.ipv4_min_latency.toFixed(0) }}~{{ peer.ipv4_max_latency.toFixed(0) }}ms</template>)</small>
                         </span>
                         <span v-else-if="peer.ipv4_status === 'loss'" class="cell-val is-loss">
-                          {{ peer.ipv4_latency_ms.toFixed(1) }}ms · {{ peer.ipv4_loss }}% 丢包
+                          <span class="cell-method">{{ peer.ipv4_method ? peer.ipv4_method.toUpperCase() : 'ICMP' }}</span>
+                          <b>{{ peer.ipv4_latency_ms.toFixed(1) }}ms</b> · {{ peer.ipv4_loss }}% 丢包
+                          <small class="cell-details" v-if="peer.ipv4_sent">({{ peer.ipv4_received }}/{{ peer.ipv4_sent }}包)</small>
                         </span>
-                        <span v-else class="cell-val is-fail">不可达 / 超时</span>
+                        <span v-else class="cell-val is-fail">不可达 / 超时 (4/4 丢包)</span>
                       </div>
                       <div v-else class="cell-val is-dim">无 IPv4</div>
                     </td>
@@ -1505,12 +1575,16 @@ onBeforeUnmount(() => {
                       <div v-if="peer.ipv6_target" class="peer-probe-cell">
                         <span class="cell-tag v6">IPv6</span>
                         <span v-if="peer.ipv6_status === 'ok'" class="cell-val is-ok">
-                          {{ peer.ipv6_latency_ms.toFixed(1) }}ms · 0% 丢包
+                          <span class="cell-method">{{ peer.ipv6_method ? peer.ipv6_method.toUpperCase() : 'ICMP' }}</span>
+                          <b>{{ peer.ipv6_latency_ms.toFixed(1) }}ms</b> · 0% 丢包
+                          <small class="cell-details" v-if="peer.ipv6_sent">({{ peer.ipv6_received }}/{{ peer.ipv6_sent }}包<template v-if="peer.ipv6_min_latency">, {{ peer.ipv6_min_latency.toFixed(0) }}~{{ peer.ipv6_max_latency.toFixed(0) }}ms</template>)</small>
                         </span>
                         <span v-else-if="peer.ipv6_status === 'loss'" class="cell-val is-loss">
-                          {{ peer.ipv6_latency_ms.toFixed(1) }}ms · {{ peer.ipv6_loss }}% 丢包
+                          <span class="cell-method">{{ peer.ipv6_method ? peer.ipv6_method.toUpperCase() : 'ICMP' }}</span>
+                          <b>{{ peer.ipv6_latency_ms.toFixed(1) }}ms</b> · {{ peer.ipv6_loss }}% 丢包
+                          <small class="cell-details" v-if="peer.ipv6_sent">({{ peer.ipv6_received }}/{{ peer.ipv6_sent }}包)</small>
                         </span>
-                        <span v-else class="cell-val is-fail">不可达 / 超时</span>
+                        <span v-else class="cell-val is-fail">不可达 / 超时 (4/4 丢包)</span>
                       </div>
                       <div v-else class="cell-val is-dim">未配置 IPv6</div>
                     </td>
@@ -2809,6 +2883,32 @@ onBeforeUnmount(() => {
 }
 .cell-tag.v4 { background: rgba(52, 211, 153, 0.15); color: #34d399; }
 .cell-tag.v6 { background: rgba(168, 85, 247, 0.15); color: #c084fc; }
+.cell-method {
+  font-size: 10px;
+  font-family: monospace;
+  background: var(--sb-surface-3);
+  padding: 1px 4px;
+  border-radius: 3px;
+  color: var(--sb-muted);
+}
+.cell-details {
+  font-size: 11px;
+  color: var(--sb-muted);
+  font-weight: normal;
+  margin-left: 2px;
+}
+.rev-sample {
+  font-size: 11.5px;
+  color: var(--sb-muted);
+}
+.probe-sandbox-notice {
+  font-size: 11.5px;
+  color: var(--sb-warning);
+  padding: 6px 10px;
+  border-radius: 6px;
+  background: rgba(245, 158, 11, 0.1);
+  border: 1px solid rgba(245, 158, 11, 0.2);
+}
 .cell-val.is-ok { color: var(--sb-success); }
 .cell-val.is-loss { color: var(--sb-warning); font-weight: 600; }
 .cell-val.is-fail { color: var(--sb-danger); }

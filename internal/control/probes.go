@@ -193,11 +193,19 @@ type NodePeerProbeItem struct {
 	TargetOnline   bool    `json:"target_online"`
 	IPv4Target     string  `json:"ipv4_target,omitempty"`
 	IPv4LatencyMs  float64 `json:"ipv4_latency_ms"`
+	IPv4MinLatency float64 `json:"ipv4_min_latency_ms"`
+	IPv4MaxLatency float64 `json:"ipv4_max_latency_ms"`
+	IPv4Sent       int     `json:"ipv4_sent"`
+	IPv4Received   int     `json:"ipv4_received"`
 	IPv4Loss       float64 `json:"ipv4_loss_percent"`
 	IPv4Status     string  `json:"ipv4_status"` // "ok", "loss", "unreachable", "none"
 	IPv4Method     string  `json:"ipv4_method,omitempty"`
 	IPv6Target     string  `json:"ipv6_target,omitempty"`
 	IPv6LatencyMs  float64 `json:"ipv6_latency_ms"`
+	IPv6MinLatency float64 `json:"ipv6_min_latency_ms"`
+	IPv6MaxLatency float64 `json:"ipv6_max_latency_ms"`
+	IPv6Sent       int     `json:"ipv6_sent"`
+	IPv6Received   int     `json:"ipv6_received"`
 	IPv6Loss       float64 `json:"ipv6_loss_percent"`
 	IPv6Status     string  `json:"ipv6_status"` // "ok", "loss", "unreachable", "none"
 	IPv6Method     string  `json:"ipv6_method,omitempty"`
@@ -218,12 +226,14 @@ type wireProbeResult struct {
 	Received     int     `json:"received"`
 	LossPercent  float64 `json:"loss_percent"`
 	AvgLatencyMs float64 `json:"avg_latency_ms"`
+	MinLatencyMs float64 `json:"min_latency_ms"`
+	MaxLatencyMs float64 `json:"max_latency_ms"`
 	Status       string  `json:"status"`
 }
 
 func (s *Server) askNodeNetworkProbe(ctx context.Context, sourceNodeID, host string, port uint16, count int) (*wireProbeResult, error) {
 	if count <= 0 {
-		count = 2
+		count = 4
 	}
 	payload, _ := json.Marshal(map[string]any{
 		"host":   host,
@@ -293,31 +303,41 @@ func (s *Server) ProbeNodePeers(ctx context.Context, sourceNodeID string, target
 		v4Host := getNodePublicIPv4(target)
 		v6Host := getNodePublicIPv6(target)
 
-		// Probe IPv4 (fast pulse: 2 packets)
+		// Probe IPv4 (pulse: 4 packets)
 		if v4Host != "" {
 			item.IPv4Target = v4Host
-			if pRes, err := s.askNodeNetworkProbe(ctx, sourceNodeID, v4Host, 0, 2); err == nil {
+			if pRes, err := s.askNodeNetworkProbe(ctx, sourceNodeID, v4Host, 0, 4); err == nil {
 				item.IPv4LatencyMs = pRes.AvgLatencyMs
+				item.IPv4MinLatency = pRes.MinLatencyMs
+				item.IPv4MaxLatency = pRes.MaxLatencyMs
+				item.IPv4Sent = pRes.Sent
+				item.IPv4Received = pRes.Received
 				item.IPv4Loss = pRes.LossPercent
 				item.IPv4Status = pRes.Status
 				item.IPv4Method = pRes.Method
 			} else {
 				item.IPv4Status = "unreachable"
 				item.IPv4Loss = 100.0
+				item.IPv4Sent = 4
 			}
 		}
 
-		// Probe IPv6 if target machine has IPv6 (fast pulse: 2 packets)
+		// Probe IPv6 if target machine has IPv6 (pulse: 4 packets)
 		if v6Host != "" {
 			item.IPv6Target = v6Host
-			if pRes, err := s.askNodeNetworkProbe(ctx, sourceNodeID, v6Host, 0, 2); err == nil {
+			if pRes, err := s.askNodeNetworkProbe(ctx, sourceNodeID, v6Host, 0, 4); err == nil {
 				item.IPv6LatencyMs = pRes.AvgLatencyMs
+				item.IPv6MinLatency = pRes.MinLatencyMs
+				item.IPv6MaxLatency = pRes.MaxLatencyMs
+				item.IPv6Sent = pRes.Sent
+				item.IPv6Received = pRes.Received
 				item.IPv6Loss = pRes.LossPercent
 				item.IPv6Status = pRes.Status
 				item.IPv6Method = pRes.Method
 			} else {
 				item.IPv6Status = "unreachable"
 				item.IPv6Loss = 100.0
+				item.IPv6Sent = 4
 			}
 		}
 
@@ -362,23 +382,33 @@ func (s *Server) ProbeNodeClient(ctx context.Context, sourceNodeID, clientIP str
 		item.IPv4Target = clientIP
 		if pRes, err := s.askNodeNetworkProbe(ctx, sourceNodeID, clientIP, 0, 4); err == nil {
 			item.IPv4LatencyMs = pRes.AvgLatencyMs
+			item.IPv4MinLatency = pRes.MinLatencyMs
+			item.IPv4MaxLatency = pRes.MaxLatencyMs
+			item.IPv4Sent = pRes.Sent
+			item.IPv4Received = pRes.Received
 			item.IPv4Loss = pRes.LossPercent
 			item.IPv4Status = pRes.Status
 			item.IPv4Method = pRes.Method
 		} else {
 			item.IPv4Status = "unreachable"
 			item.IPv4Loss = 100.0
+			item.IPv4Sent = 4
 		}
 	} else {
 		item.IPv6Target = clientIP
 		if pRes, err := s.askNodeNetworkProbe(ctx, sourceNodeID, clientIP, 0, 4); err == nil {
 			item.IPv6LatencyMs = pRes.AvgLatencyMs
+			item.IPv6MinLatency = pRes.MinLatencyMs
+			item.IPv6MaxLatency = pRes.MaxLatencyMs
+			item.IPv6Sent = pRes.Sent
+			item.IPv6Received = pRes.Received
 			item.IPv6Loss = pRes.LossPercent
 			item.IPv6Status = pRes.Status
 			item.IPv6Method = pRes.Method
 		} else {
 			item.IPv6Status = "unreachable"
 			item.IPv6Loss = 100.0
+			item.IPv6Sent = 4
 		}
 	}
 

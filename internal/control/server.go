@@ -86,6 +86,8 @@ type Server struct {
 	reconcileState      map[string]reconcileAttempt
 	taskWaitMu          sync.Mutex
 	taskWaiters         map[string]chan wire.TaskResult
+	speedtestMu         sync.Mutex
+	speedtestingNodes   map[string]bool
 	subscriptionLimiter *rateLimiter
 	alertEngine         *AlertEngine
 	prober              *Prober
@@ -135,6 +137,7 @@ func NewServer(store *Store, secureCookies bool) (*Server, error) {
 		controls: make(map[string]*controlSession), autoInstallChecked: make(map[string]bool),
 		ddnsReconcileState:     make(map[string]*ddnsReconcileAttempt),
 		taskWaiters:            make(map[string]chan wire.TaskResult),
+		speedtestingNodes:      make(map[string]bool),
 		latestSingBoxReleaseFn: LatestOfficialSingBoxRelease,
 		connHub:                newConnectionsHub(), connRates: newConnectionRates(), connActivity: newNodeActivity(),
 		connRecorder: newConnectionRecorder(store),

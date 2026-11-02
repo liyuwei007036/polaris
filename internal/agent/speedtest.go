@@ -54,20 +54,31 @@ func runSpeedtest(ctx context.Context, task Task) TaskResult {
 	_ = json.Unmarshal([]byte(task.Payload), &payload)
 
 	hasNoRootfs := false
+	hasScopeFlag := false
 	for _, arg := range payload.Args {
 		if arg == "--no-rootfs" {
 			hasNoRootfs = true
-			break
+		}
+		if arg == "--all" || arg == "-v4" || arg == "-v6" || arg == "--intl" || arg == "--route" || arg == "--speedtest" {
+			hasScopeFlag = true
 		}
 	}
 	cliArgs := payload.Args
 	if !hasNoRootfs {
 		cliArgs = append([]string{"--no-rootfs"}, cliArgs...)
 	}
+	if !hasScopeFlag {
+		// Include --all so TcpQuality performs the complete multi-vector detection:
+		// IPv4 回程, IPv6 回程 (自适应检测), IPv4 大包回程, 教育网回程 (CERNET), 国际互联, 单线程测速.
+		cliArgs = append(cliArgs, "--all")
+	}
 	if len(payload.Args) == 0 {
-		// Enforce --no-rootfs to prevent runTcpQuality from downloading 500MB Debian rootfs,
-		// bind-mounting /dev and recursively unmounting host /dev which bricks VPS nodes.
-		cliArgs = []string{"--no-rootfs", "-c", "4", "-p", "16"}
+		// Enforce safe options:
+		// 1. --no-rootfs: prevents downloading 500MB rootfs and unmounting host /dev
+		// 2. --all: comprehensive multi-tab detection
+		// 3. -c 4: fast pulse packet count (4 packets instead of 25)
+		// 4. -p 16: 16 parallel threads for high efficiency
+		cliArgs = []string{"--no-rootfs", "--all", "-c", "4", "-p", "16"}
 	}
 
 	escapedArgs := make([]string, len(cliArgs))
