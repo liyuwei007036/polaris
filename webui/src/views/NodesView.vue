@@ -328,6 +328,8 @@ function pollSpeedtest(nodeId) {
         delete speedtestPollTimers[nodeId]
         if (res?.speedtest) {
           ElMessage.success('TcpQuality 综合检测完成！已生成多维度报告')
+        } else if (res?.error) {
+          ElMessage.error(`检测未完成: ${res.error}`)
         }
         return
       }
@@ -337,6 +339,7 @@ function pollSpeedtest(nodeId) {
     if (attempts >= maxAttempts) {
       speedtesting[nodeId] = false
       delete speedtestPollTimers[nodeId]
+      ElMessage.warning('TcpQuality 检测超时，请检查该节点服务器环境及网络连通性')
       return
     }
     speedtestPollTimers[nodeId] = setTimeout(check, 3500)

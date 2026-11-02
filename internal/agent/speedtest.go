@@ -100,18 +100,58 @@ export TCPQUALITY_INTERNATIONAL_IPERF_BUDGET_SECONDS=10
 export TCPQUALITY_INTERNATIONAL_IPERF_SECONDS=3
 export TCPQUALITY_INTERNATIONAL_MAX_IPS=1
 
+# 1. Environment compatibility: If bash is missing (e.g. Alpine Linux), attempt to install it
+if ! command -v bash >/dev/null 2>&1; then
+    if command -v apk >/dev/null 2>&1; then
+        apk update >/dev/null 2>&1 || true
+        apk add --no-cache bash curl ca-certificates >/dev/null 2>&1 || true
+    fi
+fi
+
+# 2. IPv6-only compatibility: If host has no IPv4 default route, ensure DNS64 is available
+# so IPv4-only domains (tcpquality.ibsgss.uk has NO IPv6 record) can be reached via NAT64
+if ! ip -4 route show default 2>/dev/null | grep -q default; then
+    if ! grep -q '2a00:1098:2b::1' /etc/resolv.conf 2>/dev/null; then
+        tmp_resolv=$(mktemp)
+        printf 'nameserver 2a00:1098:2b::1\nnameserver 2001:67c:2b0::4\nnameserver 2a01:4f8:c2c:123f::1\n' > "$tmp_resolv" 2>/dev/null || true
+        cat /etc/resolv.conf >> "$tmp_resolv" 2>/dev/null || true
+        cp "$tmp_resolv" /etc/resolv.conf 2>/dev/null || true
+        rm -f "$tmp_resolv"
+    fi
+fi
+
+# 3. CentOS 7 vault mirror fix (mirrorlist.centos.org was sunset in 2024)
+if [ -f /etc/centos-release ] && grep -q 'release 7' /etc/centos-release 2>/dev/null; then
+    sed -i 's/mirror.centos.org/vault.centos.org/g' /etc/yum.repos.d/*.repo 2>/dev/null || true
+    sed -i 's/^#.*baseurl=http/baseurl=http/g' /etc/yum.repos.d/*.repo 2>/dev/null || true
+    sed -i 's/^mirrorlist=http/#mirrorlist=http/g' /etc/yum.repos.d/*.repo 2>/dev/null || true
+fi
+
+# 4. Debian / Ubuntu wait for background unattended-upgrades dpkg lock
+if [ -f /var/lib/dpkg/lock-frontend ]; then
+    for i in $(seq 1 12); do
+        fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1 || break
+        sleep 1
+    done
+fi
+
 tmp=$(mktemp /tmp/tcpquality_run.XXXXXX.sh 2>/dev/null || mktemp)
 cleanup() {
     rm -rf "$tmp"
 }
 trap cleanup EXIT
 
-if curl -fsSL --retry 2 --connect-timeout 6 https://tcpquality.ibsgss.uk/run -o "$tmp"; then
+# 5. Multi-source download with domestic mirror fallbacks
+if curl -fsSL --retry 2 --connect-timeout 8 https://tcpquality.ibsgss.uk/run -o "$tmp"; then
     export TCPQUALITY_RAW_BASE="https://raw.githubusercontent.com/ibsgss/TcpQuality/main"
-elif curl -fsSL --retry 2 --connect-timeout 6 https://raw.githubusercontent.com/ibsgss/TcpQuality/main/runTcpQuality.sh -o "$tmp"; then
+elif curl -fsSL --retry 2 --connect-timeout 8 https://raw.githubusercontent.com/ibsgss/TcpQuality/main/runTcpQuality.sh -o "$tmp"; then
     export TCPQUALITY_RAW_BASE="https://raw.githubusercontent.com/ibsgss/TcpQuality/main"
-elif curl -fsSL --retry 2 --connect-timeout 6 https://ghproxy.net/https://raw.githubusercontent.com/ibsgss/TcpQuality/main/runTcpQuality.sh -o "$tmp"; then
+elif curl -fsSL --retry 2 --connect-timeout 8 https://ghproxy.net/https://raw.githubusercontent.com/ibsgss/TcpQuality/main/runTcpQuality.sh -o "$tmp"; then
     export TCPQUALITY_RAW_BASE="https://ghproxy.net/https://raw.githubusercontent.com/ibsgss/TcpQuality/main"
+elif curl -fsSL --retry 2 --connect-timeout 8 https://mirror.ghproxy.com/https://raw.githubusercontent.com/ibsgss/TcpQuality/main/runTcpQuality.sh -o "$tmp"; then
+    export TCPQUALITY_RAW_BASE="https://mirror.ghproxy.com/https://raw.githubusercontent.com/ibsgss/TcpQuality/main"
+elif curl -fsSL --retry 2 --connect-timeout 8 https://ghfast.top/https://raw.githubusercontent.com/ibsgss/TcpQuality/main/runTcpQuality.sh -o "$tmp"; then
+    export TCPQUALITY_RAW_BASE="https://ghfast.top/https://raw.githubusercontent.com/ibsgss/TcpQuality/main"
 else
     echo "Failed to download TcpQuality script from all sources" >&2
     exit 1
@@ -120,10 +160,22 @@ fi
 chmod 0755 "$tmp"
 # Fix hardcoded curl -4 in upload_report if present so IPv6/dual-stack nodes upload reliably
 sed -i 's/curl -4 -sS/curl -sS/g' "$tmp" 2>/dev/null || true
-bash "$tmp" %s
+if command -v bash >/dev/null 2>&1; then
+    bash "$tmp" %s
+else
+    sh "$tmp" %s
+fi
 exit $?
-`, argsStr)
-	cmd := exec.CommandContext(timeoutCtx, "bash", "-c", script)
+`, argsStr, argsStr)
+
+	shell := "bash"
+	if _, err := exec.LookPath("bash"); err != nil {
+		if _, err := exec.LookPath("sh"); err == nil {
+			shell = "sh"
+		}
+	}
+
+	cmd := exec.CommandContext(timeoutCtx, shell, "-c", script)
 	cmd.Env = append(os.Environ(),
 		"TERM=xterm",
 		"DEBIAN_FRONTEND=noninteractive",

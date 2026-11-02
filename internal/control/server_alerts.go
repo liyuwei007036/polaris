@@ -222,6 +222,7 @@ func (s *Server) handleRunNodeSpeedtest(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	s.speedtestingNodes[nodeID] = true
+	delete(s.speedtestErrors, nodeID)
 	s.speedtestMu.Unlock()
 
 	// Launch autonomous speedtest asynchronously in background:
@@ -238,6 +239,9 @@ func (s *Server) handleRunNodeSpeedtest(w http.ResponseWriter, r *http.Request) 
 		st, err := s.ExecuteNodeSpeedtest(testCtx, targetNodeID)
 		if err != nil {
 			log.Printf("node %s speedtest failed: %v", targetNodeID, err)
+			s.speedtestMu.Lock()
+			s.speedtestErrors[targetNodeID] = err.Error()
+			s.speedtestMu.Unlock()
 		}
 		s.liveHub.publish(liveEvent{Kind: "speedtest", NodeID: targetNodeID})
 		s.liveHub.publish(liveEvent{Kind: "node", NodeID: targetNodeID})
@@ -247,7 +251,7 @@ func (s *Server) handleRunNodeSpeedtest(w http.ResponseWriter, r *http.Request) 
 	writeJSON(w, http.StatusOK, map[string]any{
 		"status":  "started",
 		"running": true,
-		"message": "TcpQuality 综合质量检测已在后台启动（预计耗时 1~2 分钟）",
+		"message": "TcpQuality 综合质量检测已在后台启动（预计耗时 1~3 分钟）",
 	})
 }
 
@@ -260,6 +264,7 @@ func (s *Server) handleGetNodeSpeedtestLatest(w http.ResponseWriter, r *http.Req
 	nodeID := r.PathValue("id")
 	s.speedtestMu.Lock()
 	running := s.speedtestingNodes[nodeID]
+	lastErr := s.speedtestErrors[nodeID]
 	s.speedtestMu.Unlock()
 
 	st, err := s.store.GetLatestNodeSpeedtest(r.Context(), nodeID)
@@ -267,11 +272,16 @@ func (s *Server) handleGetNodeSpeedtestLatest(w http.ResponseWriter, r *http.Req
 		writeError(w, err)
 		return
 	}
-	if st == nil {
-		writeJSON(w, http.StatusOK, map[string]any{"has_test": false, "running": running})
-		return
+	resp := map[string]any{
+		"has_test": st != nil,
+		"running":  running,
+		"error":    lastErr,
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"has_test": true, "running": running, "speedtest": st, "result": st})
+	if st != nil {
+		resp["speedtest"] = st
+		resp["result"] = st
+	}
+	writeJSON(w, http.StatusOK, resp)
 }
 
 func (s *Server) handleListNodeSpeedtestsLatest(w http.ResponseWriter, r *http.Request) {
