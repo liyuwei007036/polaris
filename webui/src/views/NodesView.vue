@@ -2552,7 +2552,16 @@ onBeforeUnmount(() => {
 }
 
 /* ── 线路与丢包排查弹窗 ───────────────────────────────── */
+:global(.el-overlay:has(.el-dialog.probe-dialog) .el-overlay-dialog),
+:global(.el-overlay-dialog:has(.el-dialog.probe-dialog)) {
+  display: flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+}
+
 :global(.el-dialog.probe-dialog) {
+  margin: auto !important;
+  max-width: calc(100vw - 32px);
   border-radius: 16px;
   background: var(--sb-surface);
   border: 1px solid var(--sb-line-strong);
