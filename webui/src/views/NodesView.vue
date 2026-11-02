@@ -2,12 +2,13 @@
 import { computed, inject, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import {
-  Aim,
   Close,
+  Connection,
   CopyDocument,
   Delete,
   Edit,
   InfoFilled,
+  Link,
   Loading,
   MoreFilled,
   Odometer,
@@ -24,11 +25,6 @@ import { connectionSnapshots, subscribeConnections } from '../connections'
 import PageHeader from '../components/PageHeader.vue'
 
 const MASTER_HOST_KEY = 'polaris_master_host'
-const CARRIERS = [
-  { isp: 'telecom', short: '电信' },
-  { isp: 'unicom', short: '联通' },
-  { isp: 'mobile', short: '移动' },
-]
 const PERIOD_LABELS = { day: '天', month: '月', quarter: '季', year: '年' }
 const CURRENCY_SYMBOLS = { USD: '$', CNY: '¥', EUR: '€', CAD: 'C$' }
 
@@ -114,31 +110,6 @@ const cfLoading = ref(false)
 const syncingDDNS = ref(false)
 const editSaving = ref(false)
 
-const mtrDialogVisible = ref(false)
-const mtrTargetNode = ref(null)
-const mtrLoading = ref(false)
-const mtrTargetType = ref('')
-const mtrCustomTarget = ref('')
-const mtrCount = ref(10)
-const mtrReport = ref(null)
-const mtrShowRaw = ref(false)
-const mtrTargetOptions = ref([])
-
-async function loadMTRTargets(nodeId) {
-  try {
-    const url = nodeId ? `/diagnose/mtr/targets?node_id=${nodeId}` : '/diagnose/mtr/targets'
-    const res = await api(url)
-    if (res?.targets?.length) {
-      mtrTargetOptions.value = res.targets
-      if (!mtrTargetType.value || !res.targets.some((t) => t.value === mtrTargetType.value)) {
-        mtrTargetType.value = res.targets[0]?.value || 'custom'
-      }
-    }
-  } catch (_) {
-    // Keep empty or user custom
-  }
-}
-
 // 架构 -> 官方最新 sing-box 版本号
 const singBoxLatest = ref({})
 let stopLive
@@ -202,20 +173,6 @@ function buildGauge(key, label, percent, available, detail, tip) {
     detail,
     tip,
     color: available ? getUsageStatusColor(value) : 'var(--sb-muted)',
-  }
-}
-
-function buildRoute(st, isp, node, direction) {
-  const prefix = direction === 'in' ? `inbound_${isp}` : isp
-  const latency = direction === 'in' ? st[`${prefix}_latency_ms`] : (st[`${prefix}_latency_ms`] ?? st[`${prefix}_ping_ms`])
-  const blocked = direction === 'in' && isNodeGFWBlocked(st)
-  return {
-    label: blocked ? '阻断' : formatCarrierDisplay(st[`${prefix}_route`], latency),
-    latency: blocked ? '' : (latency > 0 ? `${latency}ms` : ''),
-    cls: blocked ? 'ping-status-timeout' : getPingClass(latency),
-    tip: direction === 'in'
-      ? (blocked ? getInboundProbeTooltip(st) : getInboundCarrierTooltip(st, isp, node))
-      : getISPTooltip(st, isp, node),
   }
 }
 
@@ -297,9 +254,7 @@ const cards = computed(() => filteredNodes.value.map((node) => {
     totalTip: proxy ? `累计下行 ${formatBytes(proxy.received_bytes)} · 累计上行 ${formatBytes(proxy.sent_bytes)}` : '',
     conn: snap?.connection_count ?? 0,
     testedAt: st?.tested_at ? formatFriendlyTime(st.tested_at).replace('刚刚活跃', '刚刚') : '',
-    routes: st
-      ? CARRIERS.map((c) => ({ ...c, in: buildRoute(st, c.isp, node, 'in'), out: buildRoute(st, c.isp, node, 'out') }))
-      : null,
+    reportUrl: st?.report_url || '',
     price: getPriceText(node),
     expiry: getExpiry(node.expires_on),
     ddnsTip: node.ddns_enabled
@@ -352,209 +307,17 @@ async function runSpeedtest(node) {
     const res = await post(`/nodes/${node.id}/speedtest`, {})
     if (res?.result) {
       speedtests.value = { ...speedtests.value, [node.id]: res.result }
+      ElMessage.success(`“${node.name}”网络质量检测完成`)
     }
-    ElMessage.success(`“${node.name}”三网延迟与线路检测完成`)
   } catch (error) {
-    ElMessage.error(error instanceof Error ? error.message : '线路检测执行失败')
+    ElMessage.error(error instanceof Error ? error.message : '网络质量检测执行失败')
   } finally {
     speedtesting[node.id] = false
   }
 }
 
-function getPingStr(val) {
-  if (val == null || val <= 0) return '超时'
-  return `${val}ms`
-}
-
-function getPingClass(val) {
-  if (val == null || val <= 0) return 'ping-status-timeout'
-  if (val < 90) return 'ping-status-fast'
-  if (val < 200) return 'ping-status-medium'
-  return 'ping-status-slow'
-}
-
 function isNodeGFWBlocked(st) {
-  if (!st) return false
-  return (
-    Boolean(st.gfw_blocked) ||
-    st.gfw_status === 'blocked'
-  )
-}
-
-function formatNodeLatencies(raw) {
-  if (!raw) return ''
-  return raw
-    .split('|')
-    .map(s => s.trim())
-    .filter(Boolean)
-    .map(s => `• ${s.replace(/电信|联通|移动/g, '')}`)
-    .join('<br/>')
-}
-
-function getNodeLocationLabel(node) {
-  if (!node) return '本地节点'
-  if (node.city) return node.city
-  if (node.location) return node.location
-
-  const name = (node.name || '').trim()
-  if (name && !name.includes('http') && name.length <= 20) {
-    return name
-  }
-  return '本地节点'
-}
-
-function getCarrierFallbackTrace(route, isp, node) {
-  const origin = getNodeLocationLabel(node)
-  const targetMap = { telecom: '电信网络', unicom: '联通网络', mobile: '移动网络' }
-  const target = targetMap[isp] || '目标网络'
-  return `${origin} ➔ 骨干直连 (骨干跃点未回显) ➔ ${target}`
-}
-
-function getInboundFallbackTrace(route, isp, node) {
-  const target = getNodeLocationLabel(node)
-  const srcMap = { telecom: '电信探针', unicom: '联通探针', mobile: '移动探针' }
-  const src = srcMap[isp] || '分布式探针'
-  return `${src} ➔ 骨干网 ➔ ${target}`
-}
-
-function cleanTracePath(trace, node) {
-  if (!trace) return ''
-  const loc = getNodeLocationLabel(node)
-  let t = trace
-  if (t.startsWith('节点 ➔') || t.startsWith('本地节点 ➔') || t.startsWith('服务器节点 ➔')) {
-    t = t.replace(/^(节点|本地节点|服务器节点)\s*➔\s*/, `${loc} ➔ `)
-  } else if (!t.includes(loc) && !t.includes('探针')) {
-    t = `${loc} ➔ ${t}`
-  }
-  t = t.replace(/➔\s*(目标节点|服务器节点|本地节点|目标机房)$/, `➔ ${loc}`)
-
-  // Remove any legacy erroneous AS174 string if present
-  t = t.replace(/AS174 \(Cogent·美西洛杉矶\)\s*➔\s*/g, '')
-
-  // Clean duplicate consecutive hops
-  const parts = t.split('➔').map(s => s.trim()).filter(Boolean)
-  const unique = []
-  for (let i = 0; i < parts.length; i++) {
-    if (unique.length > 0 && unique[unique.length - 1] === parts[i]) {
-      continue
-    }
-    unique.push(parts[i])
-  }
-  return unique.join(' ➔ ')
-}
-
-function getInboundCarrierTooltip(st, isp, node) {
-  if (!st) return '暂无探测数据'
-  let lats = ''
-  let trace = ''
-  let ping = 0
-  if (isp === 'telecom') {
-    lats = st.inbound_telecom_node_latencies
-    trace = st.inbound_telecom_trace_path || getInboundFallbackTrace(st.inbound_telecom_route, 'telecom', node)
-    ping = st.inbound_telecom_latency_ms
-  } else if (isp === 'unicom') {
-    lats = st.inbound_unicom_node_latencies
-    trace = st.inbound_unicom_trace_path || getInboundFallbackTrace(st.inbound_unicom_route, 'unicom', node)
-    ping = st.inbound_unicom_latency_ms
-  } else if (isp === 'mobile') {
-    lats = st.inbound_mobile_node_latencies
-    trace = st.inbound_mobile_trace_path || getInboundFallbackTrace(st.inbound_mobile_route, 'mobile', node)
-    ping = st.inbound_mobile_latency_ms
-  }
-
-  const sections = []
-  const formattedLats = formatNodeLatencies(lats)
-  if (formattedLats) {
-    sections.push(`<b>【去程节点延迟】</b><br/>${formattedLats}`)
-  } else if (ping > 0) {
-    sections.push(`<b>【去程延迟】</b><br/>• 探针实测: ${ping}ms`)
-  }
-
-  if (trace) {
-    sections.push(`<b>【去程线路轨迹】</b><br/>${cleanTracePath(trace, node)}`)
-  }
-  return sections.join('<br/><br/>')
-}
-
-function getISPTooltip(st, isp, node) {
-  if (!st) return '暂无测速数据'
-  let lats = ''
-  let trace = ''
-  let ping = 0
-  if (isp === 'telecom') {
-    lats = st.telecom_node_latencies
-    trace = st.telecom_trace_path || getCarrierFallbackTrace(st.telecom_route, 'telecom', node)
-    ping = st.telecom_latency_ms ?? st.telecom_ping_ms
-  } else if (isp === 'unicom') {
-    lats = st.unicom_node_latencies
-    trace = st.unicom_trace_path || getCarrierFallbackTrace(st.unicom_route, 'unicom', node)
-    ping = st.unicom_latency_ms ?? st.unicom_ping_ms
-  } else if (isp === 'mobile') {
-    lats = st.mobile_node_latencies
-    trace = st.mobile_trace_path || getCarrierFallbackTrace(st.mobile_route, 'mobile', node)
-    ping = st.mobile_latency_ms ?? st.mobile_ping_ms
-  }
-
-  const sections = []
-  const formattedLats = formatNodeLatencies(lats)
-  if (formattedLats) {
-    sections.push(`<b>【返程节点延迟】</b><br/>${formattedLats}`)
-  } else if (ping > 0) {
-    sections.push(`<b>【返程延迟】</b><br/>• 实测延迟: ${ping}ms`)
-  }
-
-  if (trace) {
-    sections.push(`<b>【返程线路轨迹】</b><br/>${cleanTracePath(trace, node)}`)
-  }
-  return sections.join('<br/><br/>')
-}
-
-function getInboundSummary(st) {
-  if (!st) return '待探测'
-  if (isNodeGFWBlocked(st)) return '探针全超时 · 端口阻断'
-  if (st.domestic_latency_ms) {
-    return `探针畅通 · 均值 ${st.domestic_latency_ms}ms`
-  }
-  return '探针畅通'
-}
-
-function getInboundProbeTooltip(st) {
-  if (!st) return ''
-  if (isNodeGFWBlocked(st)) {
-    return '<b>端口阻断</b><br/>探针发起的 TCP 握手全部超时'
-  }
-  return `<b>探针畅通</b><br/>TCP 延迟: ${st.domestic_latency_ms ? st.domestic_latency_ms + 'ms' : '—'}`
-}
-
-function formatRouteSimple(route) {
-  if (!route) return '待测'
-  if (route.includes('CN2 GIA')) return 'CN2 GIA'
-  if (route.includes('CN2 GT')) return 'CN2 GT'
-  if (route.includes('9929')) return '9929'
-  if (route.includes('4837')) return '4837'
-  if (route.includes('CMIN2')) return 'CMIN2'
-  if (route.includes('CMI')) return 'CMI'
-  if (route.includes('CTGNet')) return 'CTGNet'
-  if (route.includes('163')) return '163'
-  if (route.includes('BGP')) return 'BGP'
-  if (route.includes('GFW')) return 'GFW 阻断'
-  if (route.includes('超时')) return '超时'
-  // 若包含旧的“电信普通直连”等历史字段，映射为骨干网
-  if (route.includes('电信')) return '163'
-  if (route.includes('联通')) return '4837'
-  if (route.includes('移动')) return 'CMI'
-  const clean = route.replace(/骨干|普通/g, '').trim()
-  return clean || '163'
-}
-
-function formatCarrierDisplay(route, latencyMs) {
-  const rName = formatRouteSimple(route)
-  if (rName === 'GFW 阻断') return '阻断'
-  if (rName === '超时') return '超时'
-  if (latencyMs != null && latencyMs <= 0 && (!rName || rName === '待测')) {
-    return '超时'
-  }
-  return rName || '待测'
+  return false
 }
 
 function getResourcePercent(used, total) {
@@ -876,122 +639,221 @@ async function saveEdit() {
   }
 }
 
-async function openMTRDialog(node) {
-  mtrTargetNode.value = node
-  mtrReport.value = null
-  mtrShowRaw.value = false
-  mtrDialogVisible.value = true
-  await loadMTRTargets(node?.id)
+// ── 线路与丢包排查状态 ────────────────────────────────────
+const probeDialog = ref(false)
+const probeNode = ref(null)
+const probeActiveTab = ref('client')
+const clientInfo = ref({ ip: '', is_ipv6: false, location: '', isp: '', asn: '' })
+const loadingClientInfo = ref(false)
+
+const browserProbeTarget = ref('v4')
+const browserProbePort = ref(443)
+const browserProbing = ref(false)
+const browserProbeResults = ref([])
+const browserProbeStats = ref(null)
+
+const reverseProbing = ref(false)
+const reverseProbeResult = ref(null)
+
+const peerProbing = ref(false)
+const peerProbeResults = ref([])
+const peerProbingSingle = reactive({})
+
+const getNodePublicIPv4 = (node) => {
+  if (!node) return ''
+  for (const ip of (node.ip_addresses || [])) {
+    if (ip && !ip.includes(':') && !ip.startsWith('10.') && !ip.startsWith('192.168.') && !ip.startsWith('127.')) {
+      return ip
+    }
+  }
+  if (node.last_observed_ip && !node.last_observed_ip.includes(':')) {
+    return node.last_observed_ip
+  }
+  const host = (node.client_address || '').split(':')[0]
+  if (host && !host.includes(':')) return host
+  return ''
 }
 
-async function startMTRDiagnose() {
-  if (!mtrTargetNode.value) return
-  let target = ''
-  let label = ''
-  if (mtrTargetType.value === 'custom') {
-    target = mtrCustomTarget.value.trim()
-    if (!target) {
-      ElMessage.warning('请输入自定义目标 IP 或域名')
-      return
+const getNodePublicIPv6 = (node) => {
+  if (!node) return ''
+  for (const ip of (node.ip_addresses || [])) {
+    if (ip && ip.includes(':') && !ip.startsWith('fe80:') && !ip.startsWith('::1')) {
+      return ip
     }
-    label = target
-  } else {
-    const opt = mtrTargetOptions.value.find((o) => o.value === mtrTargetType.value)
-    if (!opt || !opt.ip) {
-      ElMessage.warning('请选择有效的诊断目标')
-      return
-    }
-    target = opt.ip
-    label = opt.label || target
   }
+  if (node.last_observed_ip && node.last_observed_ip.includes(':')) {
+    return node.last_observed_ip
+  }
+  const host = (node.client_address || '').replace(/^\[/, '').replace(/\](?::\d+)?$/, '')
+  if (host && host.includes(':')) return host
+  return ''
+}
 
-  mtrLoading.value = true
-  mtrReport.value = null
+const openNetworkProbe = async (node) => {
+  probeNode.value = node
+  probeDialog.value = true
+  probeActiveTab.value = 'client'
+  browserProbeResults.value = []
+  browserProbeStats.value = null
+  reverseProbeResult.value = null
+  peerProbeResults.value = []
+
+  browserProbeTarget.value = 'v4'
+
+  loadingClientInfo.value = true
   try {
-    const res = await post(`/nodes/${mtrTargetNode.value.id}/diagnose/mtr`, {
-      target,
-      label,
-      count: Number(mtrCount.value) || 10,
-    })
-    const data = res?.report || res?.result || res
-    mtrReport.value = data
-    if (!data?.hops || data.hops.length === 0) {
-      mtrShowRaw.value = true
-    }
-  } catch (error) {
-    ElMessage.error(error instanceof Error ? error.message : '链路诊断失败，请检查节点网络连接')
+    const info = await api('/client-info')
+    clientInfo.value = info || {}
+  } catch (err) {
+    clientInfo.value = { ip: '未知', location: '本地客户端' }
   } finally {
-    mtrLoading.value = false
+    loadingClientInfo.value = false
+  }
+
+  runBrowserProbe()
+  runPeerProbes()
+}
+
+const runBrowserProbe = async () => {
+  if (!probeNode.value) return
+  browserProbing.value = true
+  browserProbeResults.value = []
+  browserProbeStats.value = null
+
+  const isV6 = browserProbeTarget.value === 'v6'
+  let targetIP = isV6 ? getNodePublicIPv6(probeNode.value) : getNodePublicIPv4(probeNode.value)
+  if (!targetIP) {
+    targetIP = probeNode.value.client_address?.split(':')[0] || probeNode.value.last_observed_ip
+  }
+  const port = Number(browserProbePort.value) || 443
+
+  const pulses = 5
+  const latencies = []
+  let received = 0
+
+  for (let i = 1; i <= pulses; i++) {
+    const start = performance.now()
+    let ok = false
+    let latency = 0
+    try {
+      const controller = new AbortController()
+      const timeoutId = setTimeout(() => controller.abort(), 2000)
+      const url = `http://${isV6 ? `[${targetIP}]` : targetIP}:${port}/ping?_t=${Date.now()}`
+      try {
+        await fetch(url, { mode: 'no-cors', cache: 'no-store', signal: controller.signal })
+        clearTimeout(timeoutId)
+        latency = Math.max(1, Math.round(performance.now() - start))
+        ok = true
+      } catch (fetchErr) {
+        clearTimeout(timeoutId)
+        if (fetchErr.name !== 'AbortError') {
+          latency = Math.max(1, Math.round(performance.now() - start))
+          ok = true
+        }
+      }
+    } catch {
+      ok = false
+    }
+
+    if (ok) {
+      received++
+      latencies.push(latency)
+      browserProbeResults.value.push({ id: i, latency, success: true })
+    } else {
+      browserProbeResults.value.push({ id: i, latency: 0, success: false })
+    }
+    if (i < pulses) {
+      await new Promise(r => setTimeout(r, 80))
+    }
+  }
+
+  const sent = pulses
+  const lossPercent = Math.round(((sent - received) / sent) * 100)
+  let min = 0, max = 0, avg = 0, jitter = 0
+  if (latencies.length > 0) {
+    min = Math.min(...latencies)
+    max = Math.max(...latencies)
+    avg = Math.round(latencies.reduce((a, b) => a + b, 0) / latencies.length)
+    if (latencies.length > 1) {
+      let diffSum = 0
+      for (let j = 1; j < latencies.length; j++) {
+        diffSum += Math.abs(latencies[j] - latencies[j - 1])
+      }
+      jitter = Math.round(diffSum / (latencies.length - 1))
+    }
+  }
+
+  browserProbeStats.value = { sent, received, lossPercent, min, max, avg, jitter }
+  browserProbing.value = false
+}
+
+const runReverseProbe = async () => {
+  if (!probeNode.value) return
+  reverseProbing.value = true
+  reverseProbeResult.value = null
+  try {
+    const res = await post(`/nodes/${probeNode.value.id}/probe-client`, {
+      client_ip: clientInfo.value.ip
+    })
+    reverseProbeResult.value = res
+  } catch (err) {
+    ElMessage.error(err.message || '服务器回程探测失败')
+  } finally {
+    reverseProbing.value = false
   }
 }
 
-function getLossColor(loss) {
-  if (!loss || loss <= 0) return 'var(--sb-success, var(--sb-success))'
-  if (loss < 10) return 'var(--sb-warning)'
-  if (loss < 50) return '#ea580c'
-  return 'var(--sb-danger, #ef4444)'
-}
-
-function formatMs(value) {
-  return value != null && value !== '' ? Number(value).toFixed(1) : '-'
-}
-
-function formatLoss(value) {
-  return Number.isInteger(value) ? String(value) : value.toFixed(1)
-}
-
-const mtrHeader = computed(() => buildDialogHeader(mtrTargetNode.value))
-
-const mtrHops = computed(() => (mtrReport.value?.hops || []).map((h, i) => {
-  const loss = Number(h.loss_percent ?? h.loss_pct ?? 0) || 0
-  return {
-    key: i,
-    no: h.count ?? h.hop ?? i + 1,
-    ip: h.ip || h.host || '???',
-    host: h.host && h.host !== h.ip ? h.host : '',
-    loc: h.location || h.node_name || (h.city ? (h.asn ? `${h.asn} ${h.city}` : h.city) : ''),
-    loss,
-    lossText: formatLoss(loss),
-    lossColor: getLossColor(loss),
-    kind: h.is_rate_limit || h.is_rate_limited ? 'limit' : loss > 0 ? 'drop' : 'ok',
-    avg: formatMs(h.avg_rtt_ms ?? h.avg_ms),
-    best: formatMs(h.best_rtt_ms ?? h.best_ms),
-    worst: formatMs(h.worst_rtt_ms ?? h.worst_ms),
-    stdev: formatMs(h.stdev_ms),
+const runPeerProbes = async (targetNodeId = '') => {
+  if (!probeNode.value) return
+  if (targetNodeId) {
+    peerProbingSingle[targetNodeId] = true
+  } else {
+    peerProbing.value = true
   }
-}))
-
-const mtrSummary = computed(() => {
-  const r = mtrReport.value
-  if (!r) return null
-  const loss = Number(r.summary_loss ?? r.end_to_end_loss ?? 0) || 0
-  const realDrops = r.real_drop_hops ?? mtrHops.value.filter((h) => h.kind === 'drop').length
-  return {
-    target: r.target || r.target_host || '-',
-    label: r.target_label || '',
-    tool: r.tool || 'mtr',
-    loss: formatLoss(loss),
-    lossColor: getLossColor(loss),
-    avg: formatMs(r.summary_avg_ms ?? r.end_to_end_avg_ms),
-    hopCount: mtrHops.value.length,
-    realDrops,
-    bad: realDrops > 0 || loss > 0,
-    diagnosis: r.diagnosis || r.summary || '链路排查完成',
+  try {
+    const url = targetNodeId
+      ? `/nodes/${probeNode.value.id}/probe-peers?target_node_id=${targetNodeId}`
+      : `/nodes/${probeNode.value.id}/probe-peers`
+    const res = await post(url, {})
+    if (targetNodeId && res.peers?.length > 0) {
+      const idx = peerProbeResults.value.findIndex(p => p.target_node_id === targetNodeId)
+      if (idx >= 0) {
+        peerProbeResults.value[idx] = res.peers[0]
+      } else {
+        peerProbeResults.value.push(res.peers[0])
+      }
+    } else if (!targetNodeId) {
+      peerProbeResults.value = res.peers || []
+    }
+  } catch (err) {
+    ElMessage.error(err.message || '节点互联探测失败')
+  } finally {
+    if (targetNodeId) {
+      peerProbingSingle[targetNodeId] = false
+    } else {
+      peerProbing.value = false
+    }
   }
-})
+}
 
 function handleCardCommand(node, command) {
   if (command === 'edit') openEdit(node)
+  else if (command === 'networkProbe') openNetworkProbe(node)
   else if (command === 'upgradeAgent') upgradeAgent(node)
   else if (command === 'upgradeSingBox') upgradeSingBox(node)
   else if (command === 'revoke') revoke(node)
-  else if (command === 'mtr') openMTRDialog(node)
+  else if (command === 'tcpquality') runSpeedtest(node)
+  else if (command === 'viewReport') {
+    const st = speedtests.value[node.id]
+    if (st?.report_url) {
+      window.open(st.report_url, '_blank')
+    }
+  }
   else if (command === 'syncDDNS') triggerManualDDNS(node)
 }
 
 onMounted(() => {
   load()
-  loadMTRTargets().catch(() => {})
   stopConnections = subscribeConnections(() => {})
   stopLive = subscribeLive((event) => {
     if (event.kind === 'node') load(true).catch(() => {})
@@ -1113,7 +975,7 @@ onBeforeUnmount(() => {
               </div>
             </div>
             <div class="n-ops">
-              <el-tooltip v-if="canWrite && card.node.online" content="三网线路检测" placement="top">
+              <el-tooltip v-if="canWrite && card.node.online" content="网络质量检测 (TcpQuality)" placement="top">
                 <button class="srv-icon-btn" :disabled="Boolean(speedtesting[card.node.id])" @click="runSpeedtest(card.node)">
                   <el-icon :class="{ 'is-loading': speedtesting[card.node.id] }"><Odometer /></el-icon>
                 </button>
@@ -1123,7 +985,9 @@ onBeforeUnmount(() => {
                 <template #dropdown>
                   <el-dropdown-menu>
                     <el-dropdown-item v-if="canWrite" command="edit"><el-icon><Edit /></el-icon>配置节点</el-dropdown-item>
-                    <el-dropdown-item v-if="canWrite && card.node.online" command="mtr"><el-icon><Aim /></el-icon>逐跳丢包排障 (MTR)</el-dropdown-item>
+                    <el-dropdown-item v-if="canWrite && card.node.online" command="tcpquality"><el-icon><Odometer /></el-icon>网络质量检测 (TcpQuality)</el-dropdown-item>
+                    <el-dropdown-item v-if="card.node.online" command="networkProbe"><el-icon><Connection /></el-icon>线路与丢包排查</el-dropdown-item>
+                    <el-dropdown-item v-if="card.reportUrl" command="viewReport"><el-icon><Link /></el-icon>查看质量报告</el-dropdown-item>
                     <el-dropdown-item v-if="canWrite && card.node.ddns_enabled" command="syncDDNS"><el-icon><Refresh /></el-icon>同步 DDNS</el-dropdown-item>
                     <el-dropdown-item v-if="isAdmin && agentUpdateAvailable(card.node)" command="upgradeAgent"><el-icon><Top /></el-icon>升级 Agent</el-dropdown-item>
                     <el-dropdown-item v-if="isAdmin && singBoxUpdateAvailable(card.node)" command="upgradeSingBox"><el-icon><Top /></el-icon>升级 sing-box</el-dropdown-item>
@@ -1172,33 +1036,57 @@ onBeforeUnmount(() => {
             <span class="n-conn" :class="{ 'is-active': card.conn > 0 }">{{ card.conn }} 连</span>
           </div>
 
-          <div class="n-routes" :class="{ 'is-blocked': card.blocked }">
-            <template v-if="card.routes">
-              <div class="n-route-line font-mono">
-                <span class="n-dir is-in">去</span>
-                <el-tooltip v-for="r in card.routes" :key="r.isp" raw-content :content="r.in.tip" placement="top">
-                  <span class="n-lat" :class="r.in.cls"><b :class="`is-${r.isp}`">{{ r.short[0] }}</b>{{ r.in.label }}<em v-if="r.in.latency"> {{ r.in.latency }}</em></span>
-                </el-tooltip>
-              </div>
-              <div class="n-route-line font-mono">
-                <span class="n-dir is-out">返</span>
-                <el-tooltip v-for="r in card.routes" :key="`out-${r.isp}`" raw-content :content="r.out.tip" placement="top">
-                  <span class="n-lat" :class="r.out.cls"><b :class="`is-${r.isp}`">{{ r.short[0] }}</b>{{ r.out.label }}<em v-if="r.out.latency"> {{ r.out.latency }}</em></span>
-                </el-tooltip>
+          <div class="n-quality font-mono">
+            <template v-if="speedtesting[card.node.id]">
+              <div class="n-quality-row is-testing">
+                <el-icon class="is-loading"><Loading /></el-icon>
+                <span>TcpQuality 检测中 (约需 1~2 分钟)…</span>
               </div>
             </template>
-            <div v-else class="n-route-line is-empty font-mono">
-              <span class="n-dir is-in">去</span><span class="n-lat is-idle">待检测</span>
-              <span class="n-dir is-out">返</span><span class="n-lat is-idle">待检测</span>
-              <button
-                v-if="canWrite && card.node.online"
-                class="n-link"
-                :disabled="Boolean(speedtesting[card.node.id])"
-                @click="runSpeedtest(card.node)"
-              >
-                {{ speedtesting[card.node.id] ? '检测中…' : '立即检测' }}
-              </button>
-            </div>
+            <template v-else-if="card.reportUrl">
+              <div class="n-quality-row has-report">
+                <span class="n-quality-tag">质量报告</span>
+                <a :href="card.reportUrl" target="_blank" rel="noopener noreferrer" class="n-quality-link" title="点击查看 TcpQuality 在线测试报告">
+                  <span>查看报告</span>
+                </a>
+                <button class="n-quality-btn" title="复制报告链接" @click.stop="copyAddress(card.reportUrl)">
+                  <el-icon><CopyDocument /></el-icon>
+                </button>
+                <button
+                  v-if="card.node.online"
+                  class="n-quality-btn is-probe"
+                  title="排查客户端及各节点间网络线路与丢包"
+                  @click.stop="openNetworkProbe(card.node)"
+                >
+                  <el-icon><Connection /></el-icon>
+                  <span>线路排查</span>
+                </button>
+                <span v-if="card.testedAt" class="n-quality-time">{{ card.testedAt }}</span>
+              </div>
+            </template>
+            <template v-else>
+              <div class="n-quality-row is-empty">
+                <span class="n-quality-tag">网络质量</span>
+                <span class="n-quality-dim">暂无检测报告</span>
+                <button
+                  v-if="canWrite && card.node.online"
+                  class="n-link"
+                  :disabled="Boolean(speedtesting[card.node.id])"
+                  @click="runSpeedtest(card.node)"
+                >
+                  立即检测
+                </button>
+                <button
+                  v-if="card.node.online"
+                  class="n-quality-btn is-probe"
+                  title="排查客户端及各节点间网络线路与丢包"
+                  @click.stop="openNetworkProbe(card.node)"
+                >
+                  <el-icon><Connection /></el-icon>
+                  <span>线路排查</span>
+                </button>
+              </div>
+            </template>
           </div>
 
           <footer class="n-foot">
@@ -1423,130 +1311,209 @@ onBeforeUnmount(() => {
       </template>
     </el-dialog>
 
-    <!-- 逐跳丢包排障 (MTR) 弹窗 -->
-    <el-dialog v-model="mtrDialogVisible" width="880px" class="srv-dialog" :show-close="false" align-center destroy-on-close append-to-body>
-      <template #header="{ close }">
-        <div v-if="mtrHeader" class="dlg-hero" :class="`is-${mtrHeader.status}`">
-          <div class="srv-avatar" :class="{ 'is-flag': mtrHeader.isFlag }">{{ mtrHeader.avatar }}</div>
-          <div class="dlg-hero-text">
-            <div class="dlg-hero-kicker">链路逐跳丢包排障</div>
-            <div class="dlg-hero-name">
-              <span>{{ mtrHeader.name }}</span>
-              <span class="srv-status" :class="`is-${mtrHeader.status}`"><i class="srv-status-dot" />{{ mtrHeader.statusText }}</span>
-            </div>
-            <div class="dlg-hero-sub font-mono">{{ mtrHeader.sub }}</div>
+    <!-- 线路与丢包排查弹窗 -->
+    <el-dialog v-model="probeDialog" width="820px" class="probe-dialog" align-center append-to-body>
+      <template #header>
+        <div v-if="probeNode" class="probe-hero">
+          <div class="probe-hero-title">
+            <span class="probe-main-title">线路与丢包排查</span>
+            <span class="probe-hero-node">{{ probeNode.name }}</span>
+            <span v-if="getNodePublicIPv4(probeNode)" class="probe-ip-tag v4">IPv4</span>
+            <span v-if="getNodePublicIPv6(probeNode)" class="probe-ip-tag v6">IPv6</span>
           </div>
-          <button class="srv-icon-btn" title="关闭" @click="close"><el-icon><Close /></el-icon></button>
+          <div class="probe-hero-sub">
+            <span>目标服务器位置: {{ probeNode.city || probeNode.location || '全球节点' }}</span>
+            <span v-if="getNodePublicIPv4(probeNode)"> · {{ getNodePublicIPv4(probeNode) }}</span>
+            <span v-if="getNodePublicIPv6(probeNode)"> · {{ getNodePublicIPv6(probeNode) }}</span>
+          </div>
         </div>
       </template>
 
-      <div class="mtr-ctrl">
-        <div class="mtr-ctrl-field is-grow">
-          <span class="mtr-ctrl-label">诊断目标</span>
-          <el-select v-model="mtrTargetType" placeholder="选择目标线路" style="width: 100%">
-            <el-option v-for="opt in mtrTargetOptions" :key="opt.value" :label="opt.label" :value="opt.value" />
-          </el-select>
-        </div>
-        <div v-if="mtrTargetType === 'custom'" class="mtr-ctrl-field is-grow">
-          <span class="mtr-ctrl-label">自定义目标</span>
-          <el-input v-model="mtrCustomTarget" placeholder="IP 或域名，如 1.1.1.1" clearable @keydown.enter.prevent="startMTRDiagnose" />
-        </div>
-        <div class="mtr-ctrl-field">
-          <span class="mtr-ctrl-label">采样次数</span>
-          <el-select v-model="mtrCount" style="width: 100px">
-            <el-option :value="10" label="10 次" />
-            <el-option :value="15" label="15 次" />
-            <el-option :value="20" label="20 次" />
-          </el-select>
-        </div>
-        <el-button type="primary" :loading="mtrLoading" :icon="Aim" @click="startMTRDiagnose">
-          {{ mtrLoading ? '采样中…' : mtrReport ? '重新诊断' : '开始诊断' }}
-        </el-button>
-      </div>
-
-      <div v-if="mtrLoading" class="mtr-state">
-        <div class="mtr-radar"><el-icon class="is-loading" :size="26"><Loading /></el-icon></div>
-        <div class="mtr-state-title">正在逐跳采样</div>
-        <div class="mtr-state-sub">节点正在发起多轮 ICMP/UDP 探测，分析各骨干跃点的丢包与抖动，请稍候。</div>
-      </div>
-
-      <div v-else-if="mtrReport && mtrSummary" class="mtr-result">
-        <div class="mtr-stats">
-          <div class="mtr-stat is-target">
-            <span>探测目标 · {{ mtrSummary.tool }}</span>
-            <b class="font-mono">{{ mtrSummary.target }}</b>
-            <small v-if="mtrSummary.label">{{ mtrSummary.label }}</small>
-          </div>
-          <div class="mtr-stat">
-            <span>目标端丢包</span>
-            <b class="font-mono" :style="{ color: mtrSummary.lossColor }">{{ mtrSummary.loss }}<small>%</small></b>
-          </div>
-          <div class="mtr-stat">
-            <span>平均时延</span>
-            <b class="font-mono">{{ mtrSummary.avg }}<small v-if="mtrSummary.avg !== '-'">ms</small></b>
-          </div>
-          <div class="mtr-stat">
-            <span>跃点 / 真实丢包</span>
-            <b class="font-mono">{{ mtrSummary.hopCount }}<small> / </small><em :class="{ 'is-bad': mtrSummary.realDrops > 0 }">{{ mtrSummary.realDrops }}</em></b>
-          </div>
-        </div>
-
-        <div class="mtr-verdict" :class="{ 'is-bad': mtrSummary.bad }">
-          <el-icon :size="16"><InfoFilled /></el-icon>
-          <span>{{ mtrSummary.diagnosis }}</span>
-        </div>
-
-        <div v-if="mtrHops.length" class="mtr-hops">
-          <div class="mtr-hop is-head">
-            <span>#</span><span>跃点路由与归属</span><span>丢包率</span>
-            <span class="is-num">平均</span><span class="is-num">最优 / 最差</span><span class="is-num">抖动</span>
-          </div>
-          <div v-for="h in mtrHops" :key="h.key" class="mtr-hop" :class="`is-${h.kind}`">
-            <span class="mtr-hop-no font-mono">{{ h.no }}</span>
-            <div class="mtr-hop-host">
-              <span class="font-mono">{{ h.ip }}</span>
-              <small v-if="h.host">{{ h.host }}</small>
-              <small v-if="h.loc" class="is-loc">{{ h.loc }}</small>
-            </div>
-            <div class="mtr-hop-loss">
-              <div class="mtr-loss-top">
-                <b class="font-mono" :style="{ color: h.lossColor }">{{ h.lossText }}%</b>
-                <el-tooltip v-if="h.kind === 'limit'" content="该骨干路由限制了 ICMP 响应频率，但后续跃点正常，数据包已完整穿透，不是真实业务丢包。" placement="top">
-                  <span class="mtr-tag is-limit">ICMP 限速</span>
-                </el-tooltip>
-                <el-tooltip v-else-if="h.kind === 'drop'" content="丢包持续传递到下游跃点，属于真实链路拥塞或物理丢包，会影响业务流量。" placement="top">
-                  <span class="mtr-tag is-drop">真实丢包</span>
-                </el-tooltip>
+      <el-tabs v-model="probeActiveTab" class="probe-tabs">
+        <!-- 标签页 1: 客户端至该节点 -->
+        <el-tab-pane label="客户端至该节点" name="client">
+          <div class="probe-client-panel">
+            <!-- 链路概览条 -->
+            <div class="probe-route-card">
+              <div class="probe-route-endpoint is-source">
+                <span class="ep-badge">本地端</span>
+                <div class="ep-info">
+                  <div class="ep-title">{{ clientInfo.location || '本地客户端网络' }}</div>
+                  <div class="ep-ip font-mono">{{ clientInfo.ip || '获取中...' }} <span v-if="clientInfo.isp">({{ clientInfo.isp }})</span></div>
+                </div>
               </div>
-              <div class="mtr-loss-track"><i :style="{ width: `${Math.min(100, h.loss)}%`, background: h.lossColor }" /></div>
+              <div class="probe-route-connector">
+                <span class="connector-line"></span>
+                <span class="connector-label">双向互联链路</span>
+                <span class="connector-line"></span>
+              </div>
+              <div class="probe-route-endpoint is-target">
+                <span class="ep-badge">服务器端</span>
+                <div class="ep-info">
+                  <div class="ep-title">{{ probeNode?.name }}</div>
+                  <div class="ep-ip font-mono">{{ probeNode?.city || probeNode?.location || '远程服务器' }}</div>
+                </div>
+              </div>
             </div>
-            <span class="is-num font-mono">{{ h.avg }}</span>
-            <span class="is-num font-mono is-muted">{{ h.best }} / {{ h.worst }}</span>
-            <span class="is-num font-mono is-muted">{{ h.stdev }}</span>
+
+            <!-- 控制区 -->
+            <div class="probe-control-bar">
+              <div class="probe-target-selector">
+                <span class="ctrl-label">探测协议:</span>
+                <el-radio-group v-model="browserProbeTarget" size="small" :disabled="browserProbing">
+                  <el-radio-button value="v4">IPv4 直连</el-radio-button>
+                  <el-radio-button value="v6" :disabled="!getNodePublicIPv6(probeNode)">
+                    IPv6 直连 <span v-if="!getNodePublicIPv6(probeNode)" class="dim-hint">(无v6)</span>
+                  </el-radio-button>
+                </el-radio-group>
+              </div>
+
+              <div class="probe-port-input">
+                <span class="ctrl-label">目标端口:</span>
+                <el-input-number v-model="browserProbePort" :min="1" :max="65535" size="small" :disabled="browserProbing" style="width: 110px" />
+              </div>
+
+              <el-button type="primary" size="small" :icon="Refresh" :loading="browserProbing" @click="runBrowserProbe">
+                开始浏览器直连探测
+              </el-button>
+            </div>
+
+            <!-- 浏览器直连探测指标卡片 -->
+            <div v-if="browserProbeStats" class="probe-stats-grid">
+              <div class="probe-stat-box" :class="{ 'is-loss': browserProbeStats.lossPercent > 0 }">
+                <div class="stat-num">{{ browserProbeStats.lossPercent }}%</div>
+                <div class="stat-name">丢包率</div>
+              </div>
+              <div class="probe-stat-box">
+                <div class="stat-num font-mono">{{ browserProbeStats.avg }}<span class="unit">ms</span></div>
+                <div class="stat-name">平均延迟</div>
+              </div>
+              <div class="probe-stat-box">
+                <div class="stat-num font-mono">{{ browserProbeStats.min }} / {{ browserProbeStats.max }}<span class="unit">ms</span></div>
+                <div class="stat-name">最小 / 最大</div>
+              </div>
+              <div class="probe-stat-box">
+                <div class="stat-num font-mono">{{ browserProbeStats.jitter }}<span class="unit">ms</span></div>
+                <div class="stat-name">网络抖动 (Jitter)</div>
+              </div>
+            </div>
+
+            <!-- 测速脉冲明细 -->
+            <div v-if="browserProbeResults.length > 0" class="probe-pulses-row">
+              <span class="pulses-title">实时脉冲采样 (5次):</span>
+              <div class="pulses-list">
+                <span
+                  v-for="p in browserProbeResults"
+                  :key="p.id"
+                  class="pulse-pill"
+                  :class="p.success ? 'is-ok' : 'is-fail'"
+                >
+                  <i class="pulse-dot" />
+                  #{{ p.id }}: {{ p.success ? `${p.latency}ms` : '超时' }}
+                </span>
+              </div>
+            </div>
+
+            <!-- 服务器反向回程探测 -->
+            <div class="probe-reverse-section">
+              <div class="reverse-header">
+                <div>
+                  <div class="reverse-title">服务器回程探测 (VPS 至客户端)</div>
+                  <div class="reverse-sub">由服务器反向对您当前的公网客户端 IP 发起链路丢包与 ICMP/TCP 延迟探测</div>
+                </div>
+                <el-button size="small" :loading="reverseProbing" @click="runReverseProbe">
+                  执行回程探测
+                </el-button>
+              </div>
+
+              <div v-if="reverseProbeResult" class="reverse-result-box" :class="reverseProbeResult.ipv4_loss_percent > 0 ? 'is-loss' : 'is-good'">
+                <div class="reverse-metric">
+                  <span class="rev-tag">{{ reverseProbeResult.ipv4_method || 'ICMP' }} 回程</span>
+                  <span class="rev-loss">丢包率: <b>{{ reverseProbeResult.ipv4_loss_percent }}%</b></span>
+                  <span class="rev-lat">平均延迟: <b>{{ reverseProbeResult.ipv4_latency_ms?.toFixed(1) }} ms</b></span>
+                  <span class="rev-status">{{ reverseProbeResult.ipv4_status === 'ok' ? '连通良好' : '存在异常' }}</span>
+                </div>
+              </div>
+            </div>
           </div>
-        </div>
-        <div v-else class="mtr-verdict is-bad">
-          <el-icon :size="16"><InfoFilled /></el-icon>
-          <span>未能获取到跃点数据，已自动展开下方终端原始输出供排查。</span>
-        </div>
+        </el-tab-pane>
 
-        <div v-if="mtrReport.raw_output" class="mtr-raw">
-          <button class="srv-link-btn" @click="mtrShowRaw = !mtrShowRaw">
-            {{ mtrShowRaw ? '收起终端原始输出' : '查看终端原始输出' }}
-          </button>
-          <pre v-if="mtrShowRaw" class="mtr-raw-terminal font-mono"><code>{{ mtrReport.raw_output }}</code></pre>
-        </div>
-      </div>
+        <!-- 标签页 2: 各节点间互联线路与丢包 -->
+        <el-tab-pane label="各节点间互联线路与丢包" name="mesh">
+          <div class="probe-mesh-panel">
+            <div class="mesh-topbar">
+              <span class="mesh-hint">从当前节点服务器探测至集群内其他各 VPS 节点的网络互联、丢包与延迟</span>
+              <el-button type="primary" size="small" :icon="Refresh" :loading="peerProbing" @click="runPeerProbes('')">
+                一键检测所有互联节点
+              </el-button>
+            </div>
 
-      <div v-else class="mtr-state">
-        <div class="mtr-radar is-idle"><el-icon :size="26"><Aim /></el-icon></div>
-        <div class="mtr-state-title">选择目标线路，开始逐跳排查</div>
-        <div class="mtr-state-sub">能区分骨干路由的 ICMP 限速丢包和影响业务的真实丢包。</div>
-      </div>
+            <div v-if="peerProbeResults.length === 0 && !peerProbing" class="mesh-empty">
+              <span>暂无互联探测数据，点击上方按钮开始探测</span>
+            </div>
 
-      <template #footer>
-        <el-button @click="mtrDialogVisible = false">关闭</el-button>
-      </template>
+            <div v-else class="mesh-table-wrap">
+              <table class="mesh-table">
+                <thead>
+                  <tr>
+                    <th>目标服务器</th>
+                    <th>所在区域/线路</th>
+                    <th>IPv4 互联丢包与延迟</th>
+                    <th>IPv6 互联丢包与延迟</th>
+                    <th style="text-align: right">操作</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr v-for="peer in peerProbeResults" :key="peer.target_node_id">
+                    <td>
+                      <div class="peer-name font-mono">{{ peer.target_node_name }}</div>
+                    </td>
+                    <td>
+                      <div class="peer-loc">{{ peer.target_location }}</div>
+                    </td>
+                    <td>
+                      <div v-if="peer.ipv4_target" class="peer-probe-cell">
+                        <span class="cell-tag v4">IPv4</span>
+                        <span v-if="peer.ipv4_status === 'ok'" class="cell-val is-ok">
+                          {{ peer.ipv4_latency_ms.toFixed(1) }}ms · 0% 丢包
+                        </span>
+                        <span v-else-if="peer.ipv4_status === 'loss'" class="cell-val is-loss">
+                          {{ peer.ipv4_latency_ms.toFixed(1) }}ms · {{ peer.ipv4_loss }}% 丢包
+                        </span>
+                        <span v-else class="cell-val is-fail">不可达 / 超时</span>
+                      </div>
+                      <div v-else class="cell-val is-dim">无 IPv4</div>
+                    </td>
+                    <td>
+                      <div v-if="peer.ipv6_target" class="peer-probe-cell">
+                        <span class="cell-tag v6">IPv6</span>
+                        <span v-if="peer.ipv6_status === 'ok'" class="cell-val is-ok">
+                          {{ peer.ipv6_latency_ms.toFixed(1) }}ms · 0% 丢包
+                        </span>
+                        <span v-else-if="peer.ipv6_status === 'loss'" class="cell-val is-loss">
+                          {{ peer.ipv6_latency_ms.toFixed(1) }}ms · {{ peer.ipv6_loss }}% 丢包
+                        </span>
+                        <span v-else class="cell-val is-fail">不可达 / 超时</span>
+                      </div>
+                      <div v-else class="cell-val is-dim">未配置 IPv6</div>
+                    </td>
+                    <td style="text-align: right">
+                      <el-button
+                        size="small"
+                        link
+                        :loading="Boolean(peerProbingSingle[peer.target_node_id])"
+                        @click="runPeerProbes(peer.target_node_id)"
+                      >
+                        重测
+                      </el-button>
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </el-tab-pane>
+      </el-tabs>
     </el-dialog>
   </div>
 </template>
@@ -1774,7 +1741,7 @@ onBeforeUnmount(() => {
 }
 .n-card.is-offline .n-gauges,
 .n-card.is-offline .n-net,
-.n-card.is-offline .n-routes {
+.n-card.is-offline .n-quality {
   opacity: .6;
 }
 .n-card.is-blocked {
@@ -1981,85 +1948,73 @@ onBeforeUnmount(() => {
   color: var(--sb-success);
 }
 
-.n-routes {
+.n-quality {
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  justify-content: center;
+  min-height: 48px;
   padding: 6px 10px;
   border-radius: var(--sb-radius-sm);
   border: 1px solid var(--sb-line);
   background: var(--sb-surface-2);
 }
-.n-routes.is-blocked {
-  border-color: rgba(251, 113, 133, .3);
-  background: rgba(251, 113, 133, .06);
-}
-.n-route-line {
+.n-quality-row {
   display: flex;
   align-items: center;
-  gap: 4px;
-  font-size: 10.5px;
+  gap: 8px;
+  font-size: 11px;
 }
-.n-dir {
+.n-quality-tag {
   flex-shrink: 0;
-  padding: 0 4px;
+  padding: 1px 6px;
   border-radius: 4px;
   font-size: 10px;
   font-weight: 700;
-  line-height: 15px;
-}
-.n-dir.is-in {
   background: rgba(56, 189, 248, .1);
   color: var(--sb-accent);
 }
-.n-dir.is-out {
-  background: rgba(168, 85, 247, .1);
-  color: #c084fc;
-}
-.n-lat {
+.n-quality-link {
   display: inline-flex;
   align-items: center;
   gap: 3px;
-  min-width: 0;
-  max-width: 100%;
-  padding: 1.5px 6px;
-  border-radius: 6px;
+  color: var(--sb-text-1);
+  font-weight: 600;
+  text-decoration: none;
+  transition: color .15s ease;
+}
+.n-quality-link:hover {
+  color: var(--sb-accent);
+  text-decoration: underline;
+}
+.n-quality-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 2px 5px;
   border: 1px solid var(--sb-line);
-  background: var(--sb-surface-3);
-  color: var(--sb-text-2);
-  white-space: nowrap;
-  overflow: hidden;
-  cursor: default;
-}
-.n-lat b.is-telecom { color: #60a5fa; }
-.n-lat b.is-unicom { color: var(--sb-warning); }
-.n-lat b.is-mobile { color: var(--sb-success); }
-.n-lat em {
-  font-size: 10px;
-  font-style: normal;
-  opacity: .75;
-}
-.n-lat.is-idle {
-  border-style: dashed;
-  color: var(--sb-muted);
+  border-radius: 4px;
   background: transparent;
+  color: var(--sb-muted);
+  cursor: pointer;
+  font-size: 11px;
+  transition: all .15s ease;
 }
-.n-lat.ping-status-fast {
-  border-color: rgba(52, 211, 153, .28);
-  color: var(--sb-success);
+.n-quality-btn:hover {
+  color: var(--sb-text-1);
+  border-color: var(--sb-muted);
 }
-.n-lat.ping-status-medium {
-  border-color: rgba(251, 191, 36, .3);
-  color: var(--sb-warning);
+.n-quality-time {
+  margin-left: auto;
+  color: var(--sb-muted);
+  font-size: 10.5px;
 }
-.n-lat.ping-status-slow {
-  border-color: rgba(251, 146, 60, .32);
-  color: #fb923c;
+.n-quality-dim {
+  color: var(--sb-muted);
+  font-size: 11px;
 }
-.n-lat.ping-status-timeout {
-  border-color: rgba(251, 113, 133, .4);
-  background: rgba(251, 113, 133, .08);
-  color: var(--sb-danger);
+.n-quality-row.is-testing {
+  color: var(--sb-accent);
+  gap: 6px;
 }
 .n-link {
   flex-shrink: 0;
@@ -2532,214 +2487,323 @@ onBeforeUnmount(() => {
   .dlg-foot-hint { display: none; }
 }
 
-/* ── MTR 排障弹窗 ───────────────────────────────────────── */
-.mtr-ctrl {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: flex-end;
-  gap: 12px;
-  margin-bottom: 16px;
-  padding: 14px 16px;
-  border: 1px solid rgba(148, 163, 184, .12);
-  border-radius: 14px;
-  background: rgba(2, 6, 15, .24);
-}
-.mtr-ctrl-field {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-.mtr-ctrl-field.is-grow { flex: 1; min-width: 200px; }
-.mtr-ctrl-label {
-  color: var(--sb-muted);
-  font-size: 11.5px;
-  font-weight: 600;
-}
-.mtr-state {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 8px;
-  padding: 44px 16px 40px;
-  text-align: center;
-}
-.mtr-radar {
-  position: relative;
-  display: grid;
-  place-items: center;
-  width: 64px;
-  height: 64px;
-  margin-bottom: 6px;
-  border-radius: 50%;
-  background: rgba(56, 189, 248, .1);
-  color: var(--sb-accent);
-}
-.mtr-radar::after {
-  content: '';
-  position: absolute;
-  inset: -6px;
-  border: 1px solid rgba(56, 189, 248, .35);
-  border-radius: 50%;
-  animation: mtrRipple 1.8s ease-out infinite;
-}
-.mtr-radar.is-idle { background: rgba(148, 163, 184, .08); color: var(--sb-muted); }
-.mtr-radar.is-idle::after { animation: none; border-color: rgba(148, 163, 184, .15); }
-@keyframes mtrRipple {
-  0% { transform: scale(.85); opacity: 1; }
-  100% { transform: scale(1.35); opacity: 0; }
-}
-.mtr-state-title {
-  color: var(--sb-text);
-  font-size: 14px;
-  font-weight: 600;
-}
-.mtr-state-sub {
-  max-width: 420px;
-  color: var(--sb-muted);
-  font-size: 12px;
-  line-height: 1.6;
-}
-.mtr-stats {
-  display: grid;
-  grid-template-columns: 1.6fr repeat(3, minmax(0, 1fr));
-  gap: 10px;
-  margin-bottom: 12px;
-}
-.mtr-stat {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  min-width: 0;
-  padding: 12px 14px;
-  border: 1px solid rgba(148, 163, 184, .1);
-  border-radius: 12px;
-  background: rgba(148, 163, 184, .04);
-}
-.mtr-stat > span { color: var(--sb-muted); font-size: 11px; }
-.mtr-stat b {
-  overflow: hidden;
-  color: var(--sb-text);
-  font-size: 20px;
-  font-weight: 700;
-  white-space: nowrap;
-  text-overflow: ellipsis;
-}
-.mtr-stat.is-target b { font-size: 15px; line-height: 27px; }
-.mtr-stat b small { margin-left: 2px; color: var(--sb-muted); font-size: 11px; font-weight: 500; }
-.mtr-stat b em { font-style: normal; color: var(--sb-success); }
-.mtr-stat b em.is-bad { color: var(--sb-danger); }
-.mtr-stat > small { color: var(--sb-accent); font-size: 11.5px; }
-.mtr-verdict {
-  display: flex;
-  align-items: flex-start;
-  gap: 8px;
-  margin-bottom: 14px;
-  padding: 10px 14px;
-  border: 1px solid rgba(52, 211, 153, .25);
-  border-radius: 12px;
-  background: rgba(52, 211, 153, .06);
-  color: var(--sb-success);
-  font-size: 12.5px;
-  line-height: 1.6;
-}
-.mtr-verdict .el-icon { margin-top: 2px; flex-shrink: 0; }
-.mtr-verdict.is-bad {
-  border-color: rgba(244, 63, 94, .3);
-  background: rgba(244, 63, 94, .07);
-  color: var(--sb-danger);
-}
-.mtr-hops {
-  overflow: hidden;
-  border: 1px solid rgba(148, 163, 184, .12);
-  border-radius: 14px;
-}
-.mtr-hop {
-  display: grid;
-  grid-template-columns: 40px minmax(0, 2.2fr) minmax(130px, 1.3fr) 70px 110px 64px;
-  align-items: center;
-  gap: 12px;
-  padding: 9px 14px;
-  font-size: 12.5px;
-}
-.mtr-hop + .mtr-hop { border-top: 1px solid rgba(148, 163, 184, .08); }
-.mtr-hop.is-head {
-  background: rgba(148, 163, 184, .06);
-  color: var(--sb-muted);
-  font-size: 11px;
-  font-weight: 600;
-}
-.mtr-hop.is-drop { background: rgba(244, 63, 94, .05); box-shadow: inset 3px 0 0 var(--sb-danger); }
-.mtr-hop.is-limit { box-shadow: inset 3px 0 0 rgba(251, 191, 36, .7); }
-.mtr-hop .is-num { text-align: right; }
-.mtr-hop .is-muted { color: var(--sb-muted); }
-.mtr-hop-no {
-  display: grid;
-  place-items: center;
-  width: 24px;
-  height: 24px;
-  border-radius: 8px;
-  background: rgba(148, 163, 184, .08);
-  color: var(--sb-text-2);
-  font-size: 11px;
-}
-.mtr-hop-host {
-  display: flex;
-  flex-direction: column;
-  gap: 1px;
-  min-width: 0;
-}
-.mtr-hop-host > span { color: var(--sb-text); font-weight: 600; }
-.mtr-hop-host small {
-  overflow: hidden;
-  color: var(--sb-muted);
-  font-size: 11px;
-  white-space: nowrap;
-  text-overflow: ellipsis;
-}
-.mtr-hop-host small.is-loc { color: var(--sb-accent); }
-.mtr-hop-loss { display: flex; flex-direction: column; gap: 5px; }
-.mtr-loss-top { display: flex; align-items: center; gap: 6px; }
-.mtr-loss-track {
-  height: 4px;
-  overflow: hidden;
-  border-radius: 2px;
-  background: rgba(148, 163, 184, .12);
-}
-.mtr-loss-track i { display: block; height: 100%; border-radius: 2px; }
-.mtr-tag {
-  padding: 0 6px;
-  border-radius: 5px;
-  font-size: 10.5px;
-  font-weight: 600;
-  line-height: 17px;
-  white-space: nowrap;
-  cursor: help;
-}
-.mtr-tag.is-limit { background: rgba(251, 191, 36, .14); color: #fcd34d; }
-.mtr-tag.is-drop { background: rgba(244, 63, 94, .16); color: #fda4af; }
-.mtr-raw { margin-top: 12px; }
-.mtr-raw-terminal {
-  margin: 8px 0 0;
-  max-height: 240px;
-  padding: 12px 14px;
-  overflow-y: auto;
-  border: 1px solid rgba(148, 163, 184, .12);
-  border-radius: 12px;
-  background: var(--sb-sidebar);
-  color: var(--sb-accent);
-  font-size: 11px;
-  line-height: 1.55;
-  white-space: pre-wrap;
-  word-break: break-all;
-}
-@media (max-width: 860px) {
-  .mtr-stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  .mtr-hop { grid-template-columns: 32px minmax(0, 1fr) 120px 64px; }
-  .mtr-hop > :nth-child(5), .mtr-hop > :nth-child(6) { display: none; }
-}
-
 :global(.el-popper) {
   max-width: min(420px, 90vw) !important;
   white-space: pre-line !important;
+}
+
+/* ── 线路与丢包排查弹窗 ───────────────────────────────── */
+:global(.el-dialog.probe-dialog) {
+  border-radius: 16px;
+  background: var(--sb-surface);
+  border: 1px solid var(--sb-line-strong);
+  box-shadow: 0 20px 40px rgba(0, 0, 0, 0.45);
+  overflow: hidden;
+}
+:global(.el-dialog.probe-dialog .el-dialog__header) {
+  padding: 18px 24px 14px;
+  border-bottom: 1px solid var(--sb-line);
+  background: var(--sb-surface-2);
+}
+:global(.el-dialog.probe-dialog .el-dialog__body) {
+  padding: 16px 24px 24px;
+}
+.probe-hero-title {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 17px;
+  font-weight: 700;
+  color: var(--sb-text);
+}
+.probe-hero-node {
+  color: var(--sb-accent);
+}
+.probe-ip-tag {
+  font-size: 11px;
+  padding: 1px 7px;
+  border-radius: 6px;
+  font-weight: 600;
+}
+.probe-ip-tag.v4 { background: rgba(52, 211, 153, .16); color: #34d399; }
+.probe-ip-tag.v6 { background: rgba(168, 85, 247, .16); color: #c084fc; }
+.probe-hero-sub {
+  margin-top: 4px;
+  font-size: 12px;
+  color: var(--sb-muted);
+}
+.probe-client-panel, .probe-mesh-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  margin-top: 6px;
+}
+.probe-route-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 18px;
+  border-radius: 12px;
+  background: rgba(15, 23, 42, 0.4);
+  border: 1px solid var(--sb-line);
+  gap: 12px;
+}
+.probe-route-endpoint {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex: 1;
+}
+.probe-route-endpoint.is-target {
+  justify-content: flex-end;
+  text-align: right;
+}
+.ep-badge {
+  font-size: 11px;
+  font-weight: 700;
+  padding: 3px 8px;
+  border-radius: 6px;
+  background: var(--sb-surface-3);
+  color: var(--sb-text-2);
+  flex-shrink: 0;
+}
+.is-source .ep-badge { background: rgba(56, 189, 248, .15); color: #38bdf8; }
+.is-target .ep-badge { background: rgba(168, 85, 247, .15); color: #c084fc; }
+.ep-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--sb-text);
+}
+.ep-ip {
+  font-size: 12px;
+  color: var(--sb-muted);
+}
+.probe-route-connector {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+.connector-line {
+  width: 24px;
+  height: 1px;
+  background: var(--sb-line-strong);
+}
+.connector-label {
+  font-size: 11px;
+  color: var(--sb-muted);
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: var(--sb-surface-3);
+}
+.probe-control-bar {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  flex-wrap: wrap;
+  padding: 12px 16px;
+  border-radius: 10px;
+  background: var(--sb-surface-2);
+}
+.ctrl-label {
+  font-size: 12px;
+  color: var(--sb-muted);
+  margin-right: 6px;
+}
+.probe-port-input {
+  display: flex;
+  align-items: center;
+}
+.probe-stats-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 12px;
+}
+.probe-stat-box {
+  padding: 14px 12px;
+  border-radius: 10px;
+  background: var(--sb-surface-2);
+  border: 1px solid var(--sb-line);
+  text-align: center;
+}
+.probe-stat-box.is-loss .stat-num {
+  color: var(--sb-danger);
+}
+.probe-stat-box .stat-num {
+  font-size: 20px;
+  font-weight: 700;
+  color: var(--sb-success);
+}
+.probe-stat-box .unit {
+  font-size: 12px;
+  font-weight: normal;
+  margin-left: 2px;
+  color: var(--sb-muted);
+}
+.probe-stat-box .stat-name {
+  margin-top: 4px;
+  font-size: 11.5px;
+  color: var(--sb-muted);
+}
+.probe-pulses-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  font-size: 12px;
+}
+.pulses-title {
+  color: var(--sb-muted);
+  font-size: 12px;
+}
+.pulses-list {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.pulse-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 8px;
+  border-radius: 6px;
+  font-family: monospace;
+  font-size: 11px;
+}
+.pulse-pill.is-ok {
+  background: rgba(52, 211, 153, 0.12);
+  color: #34d399;
+}
+.pulse-pill.is-fail {
+  background: rgba(244, 63, 94, 0.12);
+  color: #f43f5e;
+}
+.pulse-dot {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: currentColor;
+}
+.probe-reverse-section {
+  padding: 14px 16px;
+  border-radius: 12px;
+  background: var(--sb-surface-2);
+  border: 1px dashed var(--sb-line-strong);
+}
+.reverse-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.reverse-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--sb-text);
+}
+.reverse-sub {
+  font-size: 11.5px;
+  color: var(--sb-muted);
+  margin-top: 2px;
+}
+.reverse-result-box {
+  margin-top: 10px;
+  padding: 10px 14px;
+  border-radius: 8px;
+  background: rgba(15, 23, 42, 0.4);
+}
+.reverse-result-box.is-good { border-left: 3px solid var(--sb-success); }
+.reverse-result-box.is-loss { border-left: 3px solid var(--sb-danger); }
+.reverse-metric {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  font-size: 12px;
+  color: var(--sb-text);
+}
+.rev-tag {
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-size: 10.5px;
+  background: var(--sb-surface-3);
+  color: var(--sb-muted);
+}
+.mesh-topbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.mesh-hint {
+  font-size: 12px;
+  color: var(--sb-muted);
+}
+.mesh-empty {
+  padding: 40px;
+  text-align: center;
+  color: var(--sb-muted);
+  font-size: 13px;
+  border: 1px dashed var(--sb-line);
+  border-radius: 10px;
+}
+.mesh-table-wrap {
+  border: 1px solid var(--sb-line);
+  border-radius: 10px;
+  overflow: hidden;
+}
+.mesh-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12.5px;
+}
+.mesh-table th {
+  background: var(--sb-surface-2);
+  color: var(--sb-muted);
+  font-weight: 600;
+  text-align: left;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--sb-line);
+}
+.mesh-table td {
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--sb-line);
+}
+.mesh-table tr:last-child td {
+  border-bottom: none;
+}
+.peer-name {
+  font-weight: 600;
+  color: var(--sb-text);
+}
+.peer-loc {
+  font-size: 12px;
+  color: var(--sb-muted);
+}
+.peer-probe-cell {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.cell-tag {
+  font-size: 10px;
+  font-weight: 700;
+  padding: 1px 5px;
+  border-radius: 4px;
+}
+.cell-tag.v4 { background: rgba(52, 211, 153, 0.15); color: #34d399; }
+.cell-tag.v6 { background: rgba(168, 85, 247, 0.15); color: #c084fc; }
+.cell-val.is-ok { color: var(--sb-success); }
+.cell-val.is-loss { color: var(--sb-warning); font-weight: 600; }
+.cell-val.is-fail { color: var(--sb-danger); }
+.cell-val.is-dim { color: var(--sb-muted); font-size: 11.5px; }
+.n-quality-btn.is-probe {
+  margin-left: 2px;
+  color: var(--sb-text-2);
+  border: 1px solid var(--sb-line);
+}
+.n-quality-btn.is-probe:hover {
+  color: var(--sb-accent);
+  border-color: var(--sb-accent);
+  background: rgba(56, 189, 248, 0.08);
 }
 </style>

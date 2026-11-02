@@ -110,13 +110,8 @@ func TestAlertsAndSpeedtestAPIs(t *testing.T) {
 
 	// Save test speedtest record directly
 	_ = store.SaveNodeSpeedtest(ctx, NodeSpeedtest{
-		NodeID:           nodeID,
-		TelecomLatencyMs: 40,
-		TelecomSpeedMbps: 100.0,
-		UnicomLatencyMs:  50,
-		UnicomSpeedMbps:  150.0,
-		MobileLatencyMs:  35,
-		MobileSpeedMbps:  210.0,
+		NodeID:    nodeID,
+		ReportURL: "https://tcpquality.ibsgss.uk/r/test-speedtest-1",
 	})
 
 	// GET /api/v1/nodes/{id}/speedtest/latest
@@ -148,13 +143,7 @@ func TestAlertsAndSpeedtestAPIs(t *testing.T) {
 		t.Errorf("expected clean client error or handled response, got 500: %s", rec.Body.String())
 	}
 
-	// 6. POST /api/v1/nodes/{id}/diagnose/mtr on offline node should return clean 400
-	rec = doRequest("POST", "/api/v1/nodes/"+nodeID+"/diagnose/mtr", map[string]any{"target": "202.96.209.133"})
-	if rec.Code != http.StatusBadRequest {
-		t.Errorf("expected 400 for offline node MTR, got %d %s", rec.Code, rec.Body.String())
-	}
-
-	// 7. GET /api/v1/ip/lookup queries IP database dynamically
+	// 6. GET /api/v1/ip/lookup queries IP database dynamically
 	rec = doRequest("GET", "/api/v1/ip/lookup?ip=8.8.8.8", nil)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected 200 for ip lookup, got %d %s", rec.Code, rec.Body.String())

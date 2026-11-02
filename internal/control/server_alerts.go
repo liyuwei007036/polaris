@@ -6,11 +6,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"strings"
 	"time"
-
-	"github.com/liyuwei007036/polaris/internal/wire"
 )
 
 func (s *Server) getAlertSettings(w http.ResponseWriter, r *http.Request) {
@@ -209,155 +208,6 @@ func (s *Server) handleRunNodeSpeedtest(w http.ResponseWriter, r *http.Request) 
 	writeJSON(w, http.StatusOK, map[string]any{"result": st, "speedtest": st})
 }
 
-func (s *Server) handleRunNodeMTR(w http.ResponseWriter, r *http.Request) {
-	op, err := s.operator(r, false)
-	if err != nil {
-		writeError(w, err)
-		return
-	}
-	if op.Role != "admin" && op.Role != "operator" {
-		writeError(w, ErrForbidden)
-		return
-	}
-
-	nodeID := r.PathValue("id")
-	if nodeID == "" {
-		writeError(w, errors.New("缺少节点 ID"))
-		return
-	}
-
-	node, err := s.store.GetNode(r.Context(), nodeID)
-	if err != nil {
-		writeError(w, err)
-		return
-	}
-	if !node.Online {
-		writeError(w, errors.New("服务器当前处于离线状态，无法进行路由排障诊断"))
-		return
-	}
-
-	var req struct {
-		Target string `json:"target"`
-		Count  int    `json:"count"`
-		Label  string `json:"label"`
-	}
-	_ = json.NewDecoder(r.Body).Decode(&req)
-	req.Target = strings.TrimSpace(req.Target)
-	if req.Target == "" {
-		writeError(w, errors.New("请指定诊断目标地址"))
-		return
-	}
-	if req.Label == "" {
-		city := ""
-		if s.ipLocator != nil {
-			city = s.ipLocator.LocateCity(req.Target)
-		}
-		if city == "" {
-			city = wire.IPv4ToCity(req.Target)
-		}
-		asn := wire.IPv4ToASN(req.Target)
-		netName := wire.ASNToName(asn)
-		if city != "" && netName != "" {
-			req.Label = city + " · " + netName
-		} else if city != "" {
-			req.Label = city
-		} else if netName != "" {
-			req.Label = netName
-		} else {
-			req.Label = req.Target
-		}
-	}
-	if req.Count <= 0 || req.Count > 30 {
-		req.Count = 10
-	}
-
-	payloadBytes, _ := json.Marshal(req)
-	data, err := s.AskNode(r.Context(), nodeID, "diagnose.mtr", string(payloadBytes))
-	if err != nil {
-		writeError(w, fmt.Errorf("执行 MTR 逐跳丢包排障失败: %w", err))
-		return
-	}
-
-	var report map[string]any
-	if err := json.Unmarshal([]byte(data), &report); err != nil {
-		writeJSON(w, http.StatusOK, map[string]any{"raw": data, "summary": data, "raw_output": data})
-		return
-	}
-
-	response := make(map[string]any)
-	for k, v := range report {
-		response[k] = v
-	}
-	response["report"] = report
-	response["result"] = report
-	writeJSON(w, http.StatusOK, response)
-}
-
-type MTRTargetOption struct {
-	Label string `json:"label"`
-	Value string `json:"value"`
-	IP    string `json:"ip"`
-}
-
-func (s *Server) GetMTRTargets(ctx context.Context, currentNodeID string) []MTRTargetOption {
-	var targets []MTRTargetOption
-	nodes, err := s.store.ListNodes(ctx)
-	if err == nil {
-		for _, n := range nodes {
-			if n.ID == currentNodeID || !n.Online {
-				continue
-			}
-			ip := strings.TrimSpace(n.LastObservedIP)
-			if ip == "" {
-				ip = strings.TrimSpace(n.ClientAddress)
-			}
-			if ip == "" && len(n.IPAddresses) > 0 {
-				ip = strings.TrimSpace(n.IPAddresses[0])
-			}
-			if ip == "" {
-				continue
-			}
-			city := ""
-			if s.ipLocator != nil {
-				city = s.ipLocator.LocateCity(ip)
-			}
-			if city == "" {
-				city = wire.IPv4ToCity(ip)
-			}
-			asn := wire.IPv4ToASN(ip)
-			netName := wire.ASNToName(asn)
-			label := n.Name
-			if city != "" && netName != "" {
-				label = fmt.Sprintf("%s (%s·%s)", n.Name, city, netName)
-			} else if city != "" {
-				label = fmt.Sprintf("%s (%s)", n.Name, city)
-			} else if netName != "" {
-				label = fmt.Sprintf("%s (%s)", n.Name, netName)
-			}
-			targets = append(targets, MTRTargetOption{
-				Label: label,
-				Value: n.ID,
-				IP:    ip,
-			})
-		}
-	}
-	targets = append(targets, MTRTargetOption{
-		Label: "自定义目标 (IP 或域名)",
-		Value: "custom",
-		IP:    "",
-	})
-	return targets
-}
-
-func (s *Server) handleGetMTRTargets(w http.ResponseWriter, r *http.Request) {
-	if _, err := s.operator(r, false); err != nil {
-		writeError(w, err)
-		return
-	}
-	currentNodeID := r.URL.Query().Get("node_id")
-	writeJSON(w, http.StatusOK, map[string]any{"targets": s.GetMTRTargets(r.Context(), currentNodeID)})
-}
-
 func (s *Server) handleGetNodeSpeedtestLatest(w http.ResponseWriter, r *http.Request) {
 	if _, err := s.operator(r, false); err != nil {
 		writeError(w, err)
@@ -425,4 +275,97 @@ func (s *Server) handleCheckRealityCandidate(w http.ResponseWriter, r *http.Requ
 		"reality_check": report,
 		"report":        report,
 	})
+}
+
+func (s *Server) handleClientInfo(w http.ResponseWriter, r *http.Request) {
+	clientIP := ""
+	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
+		parts := strings.Split(xff, ",")
+		clientIP = strings.TrimSpace(parts[0])
+	}
+	if clientIP == "" {
+		clientIP = strings.TrimSpace(r.Header.Get("X-Real-IP"))
+	}
+	if clientIP == "" {
+		if host, _, err := net.SplitHostPort(r.RemoteAddr); err == nil {
+			clientIP = host
+		} else {
+			clientIP = r.RemoteAddr
+		}
+	}
+
+	info := LocationInfo{IP: clientIP}
+	if s.ipLocator != nil && clientIP != "" {
+		info = s.ipLocator.Lookup(clientIP)
+	}
+
+	isIPv6 := false
+	if parsed := net.ParseIP(clientIP); parsed != nil && parsed.To4() == nil {
+		isIPv6 = true
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ip":          clientIP,
+		"is_ipv6":     isIPv6,
+		"location":    info.Location,
+		"city":        info.City,
+		"country":     info.Country,
+		"province":    info.Province,
+		"isp":         info.ISP,
+		"asn":         info.ASN,
+		"is_domestic": info.IsDomestic,
+	})
+}
+
+func (s *Server) handleProbeNodePeers(w http.ResponseWriter, r *http.Request) {
+	if _, err := s.operator(r, false); err != nil {
+		writeError(w, err)
+		return
+	}
+	nodeID := r.PathValue("id")
+	targetNodeID := r.URL.Query().Get("target_node_id")
+
+	res, err := s.ProbeNodePeers(r.Context(), nodeID, targetNodeID)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, res)
+}
+
+func (s *Server) handleProbeNodeClient(w http.ResponseWriter, r *http.Request) {
+	if _, err := s.operator(r, false); err != nil {
+		writeError(w, err)
+		return
+	}
+	nodeID := r.PathValue("id")
+
+	var req struct {
+		ClientIP string `json:"client_ip"`
+	}
+	_ = json.NewDecoder(r.Body).Decode(&req)
+	clientIP := strings.TrimSpace(req.ClientIP)
+	if clientIP == "" {
+		if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
+			parts := strings.Split(xff, ",")
+			clientIP = strings.TrimSpace(parts[0])
+		}
+		if clientIP == "" {
+			clientIP = strings.TrimSpace(r.Header.Get("X-Real-IP"))
+		}
+		if clientIP == "" {
+			if host, _, err := net.SplitHostPort(r.RemoteAddr); err == nil {
+				clientIP = host
+			} else {
+				clientIP = r.RemoteAddr
+			}
+		}
+	}
+
+	res, err := s.ProbeNodeClient(r.Context(), nodeID, clientIP)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, res)
 }

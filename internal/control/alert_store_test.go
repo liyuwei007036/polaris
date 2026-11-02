@@ -65,6 +65,7 @@ func TestAlertSettingsLifecycle(t *testing.T) {
 	}
 	st := NodeSpeedtest{
 		NodeID:           nodeID,
+		ReportURL:        "https://tcpquality.ibsgss.uk/r/abc123xyz",
 		TelecomLatencyMs: 45,
 		TelecomSpeedMbps: 120.5,
 		UnicomLatencyMs:  52,
@@ -82,6 +83,9 @@ func TestAlertSettingsLifecycle(t *testing.T) {
 	}
 	if latest == nil {
 		t.Fatalf("expected speedtest record, got nil")
+	}
+	if latest.ReportURL != "https://tcpquality.ibsgss.uk/r/abc123xyz" {
+		t.Errorf("expected report URL https://tcpquality.ibsgss.uk/r/abc123xyz, got %s", latest.ReportURL)
 	}
 	if latest.MobileLatencyMs != 38 {
 		t.Errorf("expected mobile latency 38, got %d", latest.MobileLatencyMs)

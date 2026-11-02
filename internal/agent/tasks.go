@@ -127,12 +127,10 @@ func executeTask(ctx context.Context, task Task, options TaskOptions) TaskResult
 		return upgradeAgent(ctx, task, options.DataDir)
 	case "outbound.test":
 		return testOutbound(ctx, task)
-	case "speedtest.run":
+	case "speedtest.run", "tcpquality.run":
 		return runSpeedtest(ctx, task)
-	case "diagnose.mtr":
-		return runMTRDiagnose(ctx, task)
-	case "probe.tcp":
-		return runTCPProbe(ctx, task)
+	case "probe.tcp", "probe.network", "network.probe":
+		return runNetworkProbe(ctx, task)
 	case "dns.update":
 		return updateDNS(ctx, task)
 	default:

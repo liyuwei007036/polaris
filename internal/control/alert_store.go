@@ -38,6 +38,7 @@ type AlertSettings struct {
 type NodeSpeedtest struct {
 	ID                      string  `json:"id"`
 	NodeID                  string  `json:"node_id"`
+	ReportURL               string  `json:"report_url"`
 	// 返程 (Outbound)
 	TelecomLatencyMs        int     `json:"telecom_latency_ms"`
 	TelecomSpeedMbps        float64 `json:"telecom_speed_mbps"`
@@ -253,7 +254,7 @@ func (s *Store) SaveNodeSpeedtest(ctx context.Context, st NodeSpeedtest) error {
 	st.MobileRoute = cleanLegacyRoute(st.MobileRoute)
 	now := nowUnix()
 	_, err := s.db.ExecContext(ctx, `INSERT INTO node_speedtests (
-		id, node_id, telecom_latency_ms, telecom_speed_mbps, telecom_route,
+		id, node_id, report_url, telecom_latency_ms, telecom_speed_mbps, telecom_route,
 		unicom_latency_ms, unicom_speed_mbps, unicom_route,
 		mobile_latency_ms, mobile_speed_mbps, mobile_route,
 		gfw_blocked, gfw_status, domestic_latency_ms, domestic_source,
@@ -267,8 +268,8 @@ func (s *Store) SaveNodeSpeedtest(ctx context.Context, st NodeSpeedtest) error {
 		inbound_unicom_node_latencies, inbound_unicom_trace_path,
 		inbound_mobile_node_latencies, inbound_mobile_trace_path,
 		tested_at
-	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		st.ID, st.NodeID, st.TelecomLatencyMs, st.TelecomSpeedMbps, st.TelecomRoute,
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		st.ID, st.NodeID, st.ReportURL, st.TelecomLatencyMs, st.TelecomSpeedMbps, st.TelecomRoute,
 		st.UnicomLatencyMs, st.UnicomSpeedMbps, st.UnicomRoute,
 		st.MobileLatencyMs, st.MobileSpeedMbps, st.MobileRoute,
 		boolToInt(st.GFWBlocked), st.GFWStatus, st.DomesticLatency, st.DomesticSource,
@@ -289,7 +290,7 @@ func (s *Store) SaveNodeSpeedtest(ctx context.Context, st NodeSpeedtest) error {
 }
 
 func (s *Store) GetLatestNodeSpeedtest(ctx context.Context, nodeID string) (*NodeSpeedtest, error) {
-	row := s.db.QueryRowContext(ctx, `SELECT id, node_id, telecom_latency_ms, telecom_speed_mbps, telecom_route,
+	row := s.db.QueryRowContext(ctx, `SELECT id, node_id, COALESCE(report_url, ''), telecom_latency_ms, telecom_speed_mbps, telecom_route,
 		unicom_latency_ms, unicom_speed_mbps, unicom_route, mobile_latency_ms, mobile_speed_mbps, mobile_route,
 		COALESCE(gfw_blocked, 0), COALESCE(gfw_status, ''), COALESCE(domestic_latency_ms, 0), COALESCE(domestic_source, ''),
 		COALESCE(inbound_telecom_route, ''), COALESCE(inbound_telecom_latency_ms, 0),
@@ -306,7 +307,7 @@ func (s *Store) GetLatestNodeSpeedtest(ctx context.Context, nodeID string) (*Nod
 	var st NodeSpeedtest
 	var testedAt int64
 	var gfwBlockedInt int
-	err := row.Scan(&st.ID, &st.NodeID, &st.TelecomLatencyMs, &st.TelecomSpeedMbps, &st.TelecomRoute,
+	err := row.Scan(&st.ID, &st.NodeID, &st.ReportURL, &st.TelecomLatencyMs, &st.TelecomSpeedMbps, &st.TelecomRoute,
 		&st.UnicomLatencyMs, &st.UnicomSpeedMbps, &st.UnicomRoute,
 		&st.MobileLatencyMs, &st.MobileSpeedMbps, &st.MobileRoute,
 		&gfwBlockedInt, &st.GFWStatus, &st.DomesticLatency, &st.DomesticSource,
@@ -333,7 +334,7 @@ func (s *Store) GetLatestNodeSpeedtest(ctx context.Context, nodeID string) (*Nod
 
 func (s *Store) ListLatestNodeSpeedtests(ctx context.Context) (map[string]NodeSpeedtest, error) {
 	// Query the most recent test for each node using window function or group by
-	rows, err := s.db.QueryContext(ctx, `SELECT s1.id, s1.node_id, s1.telecom_latency_ms, s1.telecom_speed_mbps, s1.telecom_route,
+	rows, err := s.db.QueryContext(ctx, `SELECT s1.id, s1.node_id, COALESCE(s1.report_url, ''), s1.telecom_latency_ms, s1.telecom_speed_mbps, s1.telecom_route,
 		s1.unicom_latency_ms, s1.unicom_speed_mbps, s1.unicom_route, s1.mobile_latency_ms, s1.mobile_speed_mbps, s1.mobile_route,
 		COALESCE(s1.gfw_blocked, 0), COALESCE(s1.gfw_status, ''), COALESCE(s1.domestic_latency_ms, 0), COALESCE(s1.domestic_source, ''),
 		COALESCE(s1.inbound_telecom_route, ''), COALESCE(s1.inbound_telecom_latency_ms, 0),
@@ -360,7 +361,7 @@ func (s *Store) ListLatestNodeSpeedtests(ctx context.Context) (map[string]NodeSp
 		var st NodeSpeedtest
 		var testedAt int64
 		var gfwBlockedInt int
-		if err := rows.Scan(&st.ID, &st.NodeID, &st.TelecomLatencyMs, &st.TelecomSpeedMbps, &st.TelecomRoute,
+		if err := rows.Scan(&st.ID, &st.NodeID, &st.ReportURL, &st.TelecomLatencyMs, &st.TelecomSpeedMbps, &st.TelecomRoute,
 			&st.UnicomLatencyMs, &st.UnicomSpeedMbps, &st.UnicomRoute,
 			&st.MobileLatencyMs, &st.MobileSpeedMbps, &st.MobileRoute,
 			&gfwBlockedInt, &st.GFWStatus, &st.DomesticLatency, &st.DomesticSource,

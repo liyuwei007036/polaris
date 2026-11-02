@@ -724,38 +724,21 @@ func (e *AlertEngine) NotifyProbeSummary(items []ProbeResultItem) {
 	}
 }
 
-// NotifySpeedtestReport sends a Bark summary after a route and latency probe run.
+// NotifySpeedtestReport sends a Bark summary after a network quality test.
 func (e *AlertEngine) NotifySpeedtestReport(nodeName string, st NodeSpeedtest) {
 	settings, err := e.getSettings()
 	if err != nil || settings.BarkDeviceKey == "" {
 		return
 	}
 
-	title := fmt.Sprintf("⚡ [三网延迟与线路] %s 巡检报告", nodeName)
+	title := fmt.Sprintf("⚡ [网络质量] %s 检测完成", nodeName)
 	sound := "telegraph.caf"
 	var lines []string
-	if st.GFWBlocked {
-		title = fmt.Sprintf("🚨 [节点阻断警报] %s 端口疑似被阻断！", nodeName)
-		sound = "alarm.caf"
-		lines = append(lines, fmt.Sprintf("⚠️ 该节点公网端口探针全部超时 (阻断未响应, 来源: %s)", st.DomesticSource))
-	}
-	if st.TelecomRoute != "" {
-		lines = append(lines, fmt.Sprintf("• 电信线路: %d ms (%s)", st.TelecomLatencyMs, st.TelecomRoute))
-	} else if st.TelecomLatencyMs > 0 {
-		lines = append(lines, fmt.Sprintf("• 电信线路: %d ms", st.TelecomLatencyMs))
-	}
-	if st.UnicomRoute != "" {
-		lines = append(lines, fmt.Sprintf("• 联通线路: %d ms (%s)", st.UnicomLatencyMs, st.UnicomRoute))
-	} else if st.UnicomLatencyMs > 0 {
-		lines = append(lines, fmt.Sprintf("• 联通线路: %d ms", st.UnicomLatencyMs))
-	}
-	if st.MobileRoute != "" {
-		lines = append(lines, fmt.Sprintf("• 移动线路: %d ms (%s)", st.MobileLatencyMs, st.MobileRoute))
-	} else if st.MobileLatencyMs > 0 {
-		lines = append(lines, fmt.Sprintf("• 移动线路: %d ms", st.MobileLatencyMs))
+	if st.ReportURL != "" {
+		lines = append(lines, fmt.Sprintf("• 报告链接: %s", st.ReportURL))
 	}
 	lines = append(lines, fmt.Sprintf("🕒 检测时间: %s", NowAlertTime()))
 
 	body := strings.Join(lines, "\n")
-	e.sendAlert(context.Background(), title, body, "Polaris-巡检报告", "active", sound, "")
+	e.sendAlert(context.Background(), title, body, "Polaris-网络质量", "active", sound, st.ReportURL)
 }

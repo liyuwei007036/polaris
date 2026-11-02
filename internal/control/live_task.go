@@ -53,8 +53,8 @@ func (s *Server) AskNode(ctx context.Context, nodeID, kind, payload string) (str
 	}()
 
 	timeout := liveTaskTimeout
-	if kind == "speedtest.run" || kind == "diagnose.mtr" {
-		timeout = 45 * time.Second
+	if kind == "speedtest.run" || kind == "tcpquality.run" {
+		timeout = 3 * time.Minute
 	}
 	waitCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()

@@ -2738,6 +2738,7 @@ CREATE TABLE IF NOT EXISTS alert_settings (
 CREATE TABLE IF NOT EXISTS node_speedtests (
   id TEXT PRIMARY KEY,
   node_id TEXT NOT NULL REFERENCES nodes(id) ON DELETE CASCADE,
+  report_url TEXT NOT NULL DEFAULT '',
   telecom_latency_ms INTEGER NOT NULL DEFAULT 0,
   telecom_speed_mbps REAL NOT NULL DEFAULT 0,
   telecom_route TEXT NOT NULL DEFAULT '',
@@ -2778,6 +2779,7 @@ INSERT OR IGNORE INTO alert_settings (id, updated_at) VALUES (1, unixepoch());
 		return fmt.Errorf("migrate database: %w", err)
 	}
 	for _, column := range []string{
+		"report_url TEXT NOT NULL DEFAULT ''",
 		"telecom_route TEXT NOT NULL DEFAULT ''",
 		"unicom_route TEXT NOT NULL DEFAULT ''",
 		"mobile_route TEXT NOT NULL DEFAULT ''",
