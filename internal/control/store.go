@@ -234,11 +234,18 @@ func OpenWithDatabase(dataDir, databasePath string) (*Store, error) {
 	if err := os.MkdirAll(filepath.Dir(databasePath), 0o700); err != nil {
 		return nil, fmt.Errorf("create database directory: %w", err)
 	}
-	db, err := sql.Open("sqlite", databasePath)
+	dsn := databasePath
+	if !strings.Contains(dsn, "?") {
+		dsn += "?_pragma=busy_timeout(10000)&_pragma=journal_mode(WAL)&_pragma=foreign_keys(ON)"
+	} else {
+		dsn += "&_pragma=busy_timeout(10000)"
+	}
+	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("open database: %w", err)
 	}
 	db.SetMaxOpenConns(1)
+	_, _ = db.Exec("PRAGMA busy_timeout = 10000;")
 	store := &Store{db: db, dataDir: dataDir, masterKey: key, releaseSigningKey: releaseSigningKey}
 	if err := store.migrate(context.Background()); err != nil {
 		db.Close()
@@ -2508,6 +2515,7 @@ func (s *Store) ListAudit(ctx context.Context, page, pageSize int) ([]AuditEvent
 
 func (s *Store) migrate(ctx context.Context) error {
 	_, err := s.db.ExecContext(ctx, `
+PRAGMA busy_timeout = 10000;
 PRAGMA foreign_keys = ON;
 PRAGMA journal_mode = WAL;
 CREATE TABLE IF NOT EXISTS operators (

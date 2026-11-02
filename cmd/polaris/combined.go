@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"sync"
 	"time"
 
 	"github.com/liyuwei007036/polaris/internal/control"
@@ -190,32 +191,37 @@ func serveCombined(ctx context.Context, masterConfiguration masterConfig, agentC
 	server.StartMaintenance(combinedContext)
 	server.StartTrafficAggregation(combinedContext)
 	server.StartProber(combinedContext)
-	go func() {
-		<-combinedContext.Done()
-		_ = agentListener.Close()
-		_ = browserServer.Close()
-	}()
 	warnIfNotRoot()
 	errorsChannel := make(chan error, 3)
+	var wg sync.WaitGroup
+	wg.Add(3)
 	go func() {
+		defer wg.Done()
 		fmt.Fprintln(os.Stdout, "polaris combined (master agent port) listening on", agentAddress)
 		errorsChannel <- server.ServeAgents(combinedContext, agentListener)
 	}()
 	go func() {
+		defer wg.Done()
 		fmt.Fprintln(os.Stdout, "polaris combined (master web port) listening on", browserAddress)
 		errorsChannel <- browserServer.ListenAndServe()
 	}()
 	go func() {
+		defer wg.Done()
 		errorsChannel <- runAgentLoop(combinedContext, agentConfiguration.DataDir, agentConfiguration.MasterAddress, pinnedMasterKey, heartbeat, connections, "", agentConfiguration.NginxPassthroughRoutes)
 	}()
+
+	var finalErr error
 	select {
 	case <-combinedContext.Done():
-		return nil
 	case runErr := <-errorsChannel:
 		cancel()
-		if errors.Is(runErr, http.ErrServerClosed) || combinedContext.Err() != nil {
-			return nil
+		if !errors.Is(runErr, http.ErrServerClosed) && combinedContext.Err() == nil {
+			finalErr = runErr
 		}
-		return runErr
 	}
+	cancel()
+	_ = agentListener.Close()
+	_ = browserServer.Close()
+	wg.Wait()
+	return finalErr
 }
