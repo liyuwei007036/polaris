@@ -54,7 +54,7 @@ func (s *Server) AskNode(ctx context.Context, nodeID, kind, payload string) (str
 
 	timeout := liveTaskTimeout
 	if kind == "speedtest.run" || kind == "tcpquality.run" {
-		timeout = 3 * time.Minute
+		timeout = 3*time.Minute + 30*time.Second
 	} else if kind == "network.probe" || kind == "probe.network" || kind == "probe.tcp" {
 		timeout = 45 * time.Second
 	}

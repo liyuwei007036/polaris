@@ -662,30 +662,48 @@ const peerProbingSingle = reactive({})
 const getNodePublicIPv4 = (node) => {
   if (!node) return ''
   for (const ip of (node.ip_addresses || [])) {
-    if (ip && !ip.includes(':') && !ip.startsWith('10.') && !ip.startsWith('192.168.') && !ip.startsWith('127.')) {
+    if (ip && !ip.includes(':') && !ip.startsWith('10.') && !ip.startsWith('192.168.') && !ip.startsWith('127.') && !/^172\.(1[6-9]|2\d|3[01])\./.test(ip)) {
       return ip
     }
   }
-  if (node.last_observed_ip && !node.last_observed_ip.includes(':')) {
+  if (node.last_observed_ip && !node.last_observed_ip.includes(':') && !node.last_observed_ip.startsWith('10.') && !node.last_observed_ip.startsWith('192.168.') && !node.last_observed_ip.startsWith('127.')) {
     return node.last_observed_ip
   }
-  const host = (node.client_address || '').split(':')[0]
-  if (host && !host.includes(':')) return host
+  let host = node.client_address || ''
+  if (host.startsWith('[')) {
+    return '' // IPv6 address with port
+  }
+  if (host.includes(':')) {
+    host = host.split(':')[0]
+  }
+  if (host && !host.includes(':') && !host.startsWith('10.') && !host.startsWith('192.168.') && !host.startsWith('127.')) {
+    return host
+  }
   return ''
 }
 
 const getNodePublicIPv6 = (node) => {
   if (!node) return ''
   for (const ip of (node.ip_addresses || [])) {
-    if (ip && ip.includes(':') && !ip.startsWith('fe80:') && !ip.startsWith('::1')) {
+    if (ip && ip.includes(':') && !ip.startsWith('fe80:') && !ip.startsWith('::1') && !ip.startsWith('fc') && !ip.startsWith('fd')) {
       return ip
     }
   }
-  if (node.last_observed_ip && node.last_observed_ip.includes(':')) {
+  if (node.last_observed_ip && node.last_observed_ip.includes(':') && !node.last_observed_ip.startsWith('fe80:') && !node.last_observed_ip.startsWith('::1')) {
     return node.last_observed_ip
   }
-  const host = (node.client_address || '').replace(/^\[/, '').replace(/\](?::\d+)?$/, '')
-  if (host && host.includes(':')) return host
+  let host = node.client_address || ''
+  if (host.startsWith('[')) {
+    const end = host.indexOf(']')
+    if (end > 1) {
+      host = host.substring(1, end)
+    }
+  } else if (host.includes(':') && (host.match(/:/g) || []).length === 1) {
+    return ''
+  }
+  if (host && host.includes(':') && !host.startsWith('fe80:') && !host.startsWith('::1')) {
+    return host
+  }
   return ''
 }
 
@@ -1425,12 +1443,12 @@ onBeforeUnmount(() => {
                 </el-button>
               </div>
 
-              <div v-if="reverseProbeResult" class="reverse-result-box" :class="reverseProbeResult.ipv4_loss_percent > 0 ? 'is-loss' : 'is-good'">
+              <div v-if="reverseProbeResult" class="reverse-result-box" :class="(reverseProbeResult.ipv6_target ? reverseProbeResult.ipv6_loss_percent : reverseProbeResult.ipv4_loss_percent) > 0 ? 'is-loss' : 'is-good'">
                 <div class="reverse-metric">
-                  <span class="rev-tag">{{ reverseProbeResult.ipv4_method || 'ICMP' }} 回程</span>
-                  <span class="rev-loss">丢包率: <b>{{ reverseProbeResult.ipv4_loss_percent }}%</b></span>
-                  <span class="rev-lat">平均延迟: <b>{{ reverseProbeResult.ipv4_latency_ms?.toFixed(1) }} ms</b></span>
-                  <span class="rev-status">{{ reverseProbeResult.ipv4_status === 'ok' ? '连通良好' : '存在异常' }}</span>
+                  <span class="rev-tag">{{ (reverseProbeResult.ipv6_target ? reverseProbeResult.ipv6_method : reverseProbeResult.ipv4_method) || 'ICMP' }} 回程 ({{ reverseProbeResult.ipv6_target ? 'IPv6' : 'IPv4' }})</span>
+                  <span class="rev-loss">丢包率: <b>{{ reverseProbeResult.ipv6_target ? reverseProbeResult.ipv6_loss_percent : reverseProbeResult.ipv4_loss_percent }}%</b></span>
+                  <span class="rev-lat">平均延迟: <b>{{ (reverseProbeResult.ipv6_target ? reverseProbeResult.ipv6_latency_ms : reverseProbeResult.ipv4_latency_ms)?.toFixed(1) }} ms</b></span>
+                  <span class="rev-status">{{ (reverseProbeResult.ipv6_target ? reverseProbeResult.ipv6_status : reverseProbeResult.ipv4_status) === 'ok' ? '连通良好' : '存在异常' }}</span>
                 </div>
               </div>
             </div>

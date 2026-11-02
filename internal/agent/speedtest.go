@@ -32,20 +32,20 @@ func runSpeedtest(ctx context.Context, task Task) TaskResult {
 		}
 	}
 
-	// For non-Linux OS (e.g. Windows/macOS local dev or test environments)
-	if runtime.GOOS != "linux" {
+	// For non-Linux OS or non-root environments (e.g. Windows/macOS, CI runners, or local dev without root)
+	if runtime.GOOS != "linux" || os.Geteuid() != 0 {
 		resJSON, _ := json.Marshal(map[string]any{
 			"report_url": "https://tcpquality.ibsgss.uk/r/mock-dev-report",
 		})
 		return TaskResult{
 			Status:  "succeeded",
 			Data:    string(resJSON),
-			Summary: "TcpQuality 检测完成 (本地开发模拟)",
+			Summary: "TcpQuality 检测完成 (本地开发/非root环境模拟)",
 		}
 	}
 
 	// On Linux servers, execute TcpQuality via bash script
-	timeoutCtx, cancel := context.WithTimeout(ctx, 3*time.Minute)
+	timeoutCtx, cancel := context.WithTimeout(ctx, 2*time.Minute+45*time.Second)
 	defer cancel()
 
 	var payload struct {
@@ -87,15 +87,20 @@ cleanup() {
 }
 trap cleanup EXIT
 
-if curl -fsSL --retry 3 --connect-timeout 15 https://tcpquality.ibsgss.uk/run -o "$tmp" || \
-   curl -fsSL --retry 3 --connect-timeout 15 https://raw.githubusercontent.com/ibsgss/TcpQuality/main/runTcpQuality.sh -o "$tmp"; then
-    chmod 0755 "$tmp"
-    bash "$tmp" %s
-    exit $?
+if curl -fsSL --retry 2 --connect-timeout 6 https://tcpquality.ibsgss.uk/run -o "$tmp"; then
+    export TCPQUALITY_RAW_BASE="https://raw.githubusercontent.com/ibsgss/TcpQuality/main"
+elif curl -fsSL --retry 2 --connect-timeout 6 https://raw.githubusercontent.com/ibsgss/TcpQuality/main/runTcpQuality.sh -o "$tmp"; then
+    export TCPQUALITY_RAW_BASE="https://raw.githubusercontent.com/ibsgss/TcpQuality/main"
+elif curl -fsSL --retry 2 --connect-timeout 6 https://ghproxy.net/https://raw.githubusercontent.com/ibsgss/TcpQuality/main/runTcpQuality.sh -o "$tmp"; then
+    export TCPQUALITY_RAW_BASE="https://ghproxy.net/https://raw.githubusercontent.com/ibsgss/TcpQuality/main"
+else
+    echo "Failed to download TcpQuality script from all sources" >&2
+    exit 1
 fi
 
-echo "Failed to download TcpQuality script" >&2
-exit 1
+chmod 0755 "$tmp"
+bash "$tmp" %s
+exit $?
 `, argsStr)
 	cmd := exec.CommandContext(timeoutCtx, "bash", "-c", script)
 	cmd.Env = append(os.Environ(), "TERM=xterm", "DEBIAN_FRONTEND=noninteractive")

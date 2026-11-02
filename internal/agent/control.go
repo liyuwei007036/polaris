@@ -301,11 +301,11 @@ func RunSession(ctx context.Context, conn *wire.Conn, handler TaskHandler, heart
 	connectionsTimer := time.NewTimer(untilNextTick(time.Now(), connectionsInterval))
 	defer connectionsTimer.Stop()
 
-	type completedTask struct {
+	type taskCompletionEnvelope struct {
 		task   wire.Task
 		result TaskResult
 	}
-	taskCompletions := make(chan completedTask, 4)
+	taskCompletions := make(chan taskCompletionEnvelope, 4)
 
 	for {
 		select {
@@ -354,7 +354,7 @@ func RunSession(ctx context.Context, conn *wire.Conn, handler TaskHandler, heart
 					})
 				}
 				select {
-				case taskCompletions <- completedTask{task: t, result: res}:
+				case taskCompletions <- taskCompletionEnvelope{task: t, result: res}:
 				case <-ctx.Done():
 				}
 			}(task)

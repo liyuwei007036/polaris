@@ -129,9 +129,9 @@ func runNetworkProbe(ctx context.Context, task Task) TaskResult {
 	res.OK = false
 	res.Status = "unreachable"
 	res.LossPercent = 100.0
-	res.Summary = fmt.Sprintf("目标不可达 (已发送 %d 次探测均超时或拒绝)", req.Count)
+	res.Summary = fmt.Sprintf("目标不可达 (已发送 %d 次探测均超时或无响应)", req.Count)
 	resJSON, _ := json.Marshal(res)
-	return TaskResult{Status: "failed", Summary: res.Summary, Data: string(resJSON)}
+	return TaskResult{Status: "succeeded", Summary: res.Summary, Data: string(resJSON)}
 }
 
 type probeStats struct {
@@ -145,7 +145,7 @@ type probeStats struct {
 
 func executeICMPPing(ctx context.Context, host string, ipVersion int, count int) (probeStats, bool) {
 	var stats probeStats
-	timeout := time.Duration(count+3) * time.Second
+	timeout := time.Duration(count+1) * time.Second
 	pingCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
@@ -212,6 +212,14 @@ func parsePingOutput(output string, expectedCount int) (probeStats, bool) {
 	return stats, false
 }
 
+func isTCPRefused(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "refused") || strings.Contains(msg, "reset by peer")
+}
+
 func executeTCPProbe(ctx context.Context, host string, port uint16, ipVersion int, count int) probeStats {
 	var stats probeStats
 	stats.Sent = count
@@ -232,17 +240,19 @@ func executeTCPProbe(ctx context.Context, host string, port uint16, ipVersion in
 	var latencies []float64
 
 	for i := 0; i < count; i++ {
-		select {
-		case <-ctx.Done():
+		if ctx.Err() != nil {
 			break
-		default:
 		}
 
 		start := time.Now()
 		conn, err := dialer.DialContext(ctx, network, address)
+		elapsedMs := float64(time.Since(start).Microseconds()) / 1000.0
 		if err == nil {
-			elapsedMs := float64(time.Since(start).Microseconds()) / 1000.0
 			_ = conn.Close()
+			latencies = append(latencies, elapsedMs)
+		} else if isTCPRefused(err) {
+			// Remote TCP stack responded with RST (connection refused), meaning the packet
+			// reached the target host and returned within 1 round-trip time.
 			latencies = append(latencies, elapsedMs)
 		}
 		if i < count-1 {

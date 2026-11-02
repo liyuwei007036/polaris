@@ -136,3 +136,62 @@ func TestRunNetworkProbeTask(t *testing.T) {
 		t.Errorf("expected sent=2, received=2, got sent=%d, received=%d", resp.Sent, resp.Received)
 	}
 }
+
+func TestExecuteTCPProbeRefused(t *testing.T) {
+	// Listen on an ephemeral port and close immediately to get an unoccupied port
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Skip("skipping local listener test:", err)
+	}
+	port := uint16(ln.Addr().(*net.TCPAddr).Port)
+	_ = ln.Close()
+
+	// Probing a closed port on 127.0.0.1 immediately elicits TCP RST (connection refused)
+	stats := executeTCPProbe(context.Background(), "127.0.0.1", port, 4, 2)
+	if stats.Sent != 2 {
+		t.Errorf("expected sent=2, got %d", stats.Sent)
+	}
+	if stats.Received != 2 {
+		t.Errorf("expected received=2 via RST recognition, got %d", stats.Received)
+	}
+	if stats.LossPercent != 0.0 {
+		t.Errorf("expected 0 loss, got %f", stats.LossPercent)
+	}
+}
+
+func TestRunNetworkProbeUnreachable(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // Cancel immediately to simulate connection timeout/failure
+
+	payloadJSON, _ := json.Marshal(NetworkProbeRequest{
+		Host:   "127.0.0.1",
+		Port:   443,
+		Count:  1,
+		Method: "tcp",
+	})
+
+	task := Task{
+		ID:      "test-probe-unreach",
+		Kind:    "network.probe",
+		Payload: string(payloadJSON),
+	}
+
+	res := runNetworkProbe(ctx, task)
+	if res.Status != "succeeded" {
+		t.Fatalf("expected succeeded task result so data is delivered, got %s", res.Status)
+	}
+
+	var resp NetworkProbeResponse
+	if err := json.Unmarshal([]byte(res.Data), &resp); err != nil {
+		t.Fatalf("failed to unmarshal probe data: %v", err)
+	}
+	if resp.OK {
+		t.Errorf("expected resp.OK = false for unreachable host")
+	}
+	if resp.Status != "unreachable" {
+		t.Errorf("expected status 'unreachable', got %s", resp.Status)
+	}
+	if resp.LossPercent != 100.0 {
+		t.Errorf("expected 100%% loss, got %f", resp.LossPercent)
+	}
+}
