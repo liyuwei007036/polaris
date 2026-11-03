@@ -188,6 +188,10 @@ func serveMaster(ctx context.Context, configuration masterConfig) error {
 	server.StartMaintenance(ctx)
 	server.StartTrafficAggregation(ctx)
 	server.StartProber(ctx)
+	if err := server.EnsureDemoNodes(ctx); err != nil {
+		log.Printf("[polaris] seeding demo nodes error: %v", err)
+	}
+	server.StartDemoSimulator(ctx)
 	agentAddress := portAddress(configuration.AgentPort)
 	agentListener, err := net.Listen("tcp", agentAddress)
 	if err != nil {

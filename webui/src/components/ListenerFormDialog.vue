@@ -392,7 +392,7 @@ async function save() {
           </el-select>
         </div>
         <div v-if="selectedProfile" class="protocol-summary">
-          <el-icon color="#38bdf8" :size="24"><CircleCheck /></el-icon>
+          <el-icon color="var(--sb-accent)" :size="24"><CircleCheck /></el-icon>
           <div class="protocol-summary__main">
             <strong>{{ selectedProfile.label }}</strong>
             <span>{{ selectedProfile.summary }}</span>

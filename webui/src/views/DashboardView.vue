@@ -1,5 +1,5 @@
 <script setup>
-import { computed, inject, nextTick, onBeforeUnmount, onMounted, ref, shallowRef } from 'vue'
+import { computed, inject, nextTick, onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vue'
 import { Refresh } from '@element-plus/icons-vue'
 import { BarChart, LineChart, PieChart } from 'echarts/charts'
 import { GridComponent, LegendComponent, TitleComponent, TooltipComponent } from 'echarts/components'
@@ -8,9 +8,11 @@ import { CanvasRenderer } from 'echarts/renderers'
 import { api } from '../api'
 import { formatBytes } from '../format'
 import { subscribeLive } from '../live'
-import { fleetTotals, subscribeFleetTotals } from '../connections'
+import { fleetTotals, subscribeFleetTotals, connectionSnapshots } from '../connections'
 import { FLAG_FONT_FAMILY } from '../flags'
+import { isDark } from '../theme'
 import PageHeader from '../components/PageHeader.vue'
+import SummaryCards from '../components/SummaryCards.vue'
 
 use([BarChart, LineChart, PieChart, GridComponent, LegendComponent, TitleComponent, TooltipComponent, CanvasRenderer])
 
@@ -18,6 +20,8 @@ const appState = inject('appState')
 const loadNodes = inject('loadNodes')
 const loading = ref(false)
 const endpointCount = ref(0)
+const metrics = ref({})
+const live = computed(() => connectionSnapshots.value)
 const cumulative = ref({ download: 0, upload: 0 })
 const trafficHistory = shallowRef([])
 const connectionHistory = shallowRef([])
@@ -29,18 +33,54 @@ const connectionChart = ref()
 const networkChart = ref()
 const proxyChart = ref()
 const charts = []
-const protocolColors = { TCP: '#38bdf8', UDP: '#34d399', 其他: '#64748b' }
-// 图表配色跟随控制台的深色令牌，避免出现浅色底残留。
-const chartInk = { title: '#e8eef8', label: '#8496b0', line: 'rgba(148,163,184,.22)', split: 'rgba(148,163,184,.10)', empty: 'rgba(148,163,184,.16)' }
-const chartTooltip = { backgroundColor: '#101a2c', borderColor: 'rgba(148,163,184,.28)', textStyle: { color: chartInk.title, fontSize: 12 } }
-const chartLegend = { bottom: 10, textStyle: { color: chartInk.label } }
-// 环形图上的数字：一根引导线牵到环外。数值直接写在图上，不必先悬停出提示，
-// 也不必对着图例猜哪一段是哪一个。
+const protocolColors = { TCP: '#008BCC', UDP: '#00A263', 其他: '#666B81' }
+
+// 图表配色跟随深色/浅色主题令牌自适应（取自 Openlat 微拟态设计规范）
+const chartInk = computed(() => isDark.value ? {
+  title: '#F0F1F7',
+  label: '#9FA4B8',
+  line: 'rgba(255,255,255,.14)',
+  split: 'rgba(255,255,255,.07)',
+  empty: 'rgba(255,255,255,.12)',
+  pieBorder: '#161826',
+  down: '#38BDF8',
+  downArea: 'rgba(56, 189, 248, 0.14)',
+  up: '#818CF8',
+  upArea: 'rgba(129, 140, 248, 0.14)',
+  conn: '#A78BFA',
+  connArea: 'rgba(167, 139, 250, 0.14)',
+} : {
+  title: '#0F172A',
+  label: '#64748B',
+  line: 'rgba(100,104,123,.20)',
+  split: 'rgba(100,104,123,.08)',
+  empty: 'rgba(100,104,123,.18)',
+  pieBorder: '#ffffff',
+  down: '#0284C7',
+  downArea: 'rgba(2, 132, 199, 0.12)',
+  up: '#6366F1',
+  upArea: 'rgba(99, 102, 241, 0.12)',
+  conn: '#8B5CF6',
+  connArea: 'rgba(139, 92, 246, 0.12)',
+})
+
+const chartTooltip = computed(() => isDark.value ? {
+  backgroundColor: '#161826',
+  borderColor: 'rgba(255,255,255,.14)',
+  textStyle: { color: chartInk.value.title, fontSize: 12 },
+} : {
+  backgroundColor: '#ffffff',
+  borderColor: 'rgba(148,163,184,.40)',
+  textStyle: { color: chartInk.value.title, fontSize: 12 },
+})
+
+const chartLegend = computed(() => ({ bottom: 10, textStyle: { color: chartInk.value.label } }))
+
 function donutLabels(formatter, show) {
   return {
-    label: show ? { show: true, color: chartInk.title, fontSize: 12, formatter } : { show: false },
+    label: show ? { show: true, color: chartInk.value.title, fontSize: 12, formatter } : { show: false },
     labelLine: show
-      ? { show: true, length: 14, length2: 14, lineStyle: { color: chartInk.line } }
+      ? { show: true, length: 14, length2: 14, lineStyle: { color: chartInk.value.line } }
       : { show: false },
   }
 }
@@ -70,8 +110,8 @@ function dismiss(key, reference, value) {
 function chartBase(title) {
   return {
     animation: false,
-    title: { text: title, left: 16, top: 14, textStyle: { color: chartInk.title, fontSize: 13, fontWeight: 600 } },
-    tooltip: { ...chartTooltip, trigger: 'axis' },
+    title: { text: title, left: 16, top: 14, textStyle: { color: chartInk.value.title, fontSize: 13, fontWeight: 600 } },
+    tooltip: { ...chartTooltip.value, trigger: 'axis' },
     grid: { left: 56, right: 22, top: 58, bottom: 66 },
     textStyle: { fontFamily: `"${FLAG_FONT_FAMILY}", Inter, Segoe UI, Microsoft YaHei, sans-serif` },
   }
@@ -103,24 +143,28 @@ function scheduleRender() {
   })
 }
 
+watch(isDark, () => {
+  renderCharts()
+})
+
 function renderCharts() {
   if (charts.length !== 5) return
   const axis = {
-    axisLine: { lineStyle: { color: chartInk.line } },
+    axisLine: { lineStyle: { color: chartInk.value.line } },
     axisTick: { show: false },
-    axisLabel: { color: chartInk.label, fontSize: 11 },
-    splitLine: { lineStyle: { color: chartInk.split } },
+    axisLabel: { color: chartInk.value.label, fontSize: 11 },
+    splitLine: { lineStyle: { color: chartInk.value.split } },
   }
   charts[0].setOption({
     ...chartBase('实时流量'),
     // Rates are sampled counters, so they arrive with a long fractional tail.
     // The default axis tooltip would print that raw number.
     tooltip: {
-      ...chartTooltip,
+      ...chartTooltip.value,
       trigger: 'axis',
       formatter: (items) => [timeLabel(items[0].axisValue), ...items.map((item) => `${item.marker}${item.seriesName} ${formatBytes(item.value[1], '/s')}`)].join('<br>'),
     },
-    legend: { ...chartLegend, data: ['下载', '上传'] },
+    legend: { ...chartLegend.value, data: ['下载', '上传'] },
     // A time axis rather than a category one. Samples do not arrive on a fixed
     // beat, and spacing them evenly drew a twenty-second gap exactly as wide as
     // a one-second one — and printed a label per sample, so the same second
@@ -128,8 +172,8 @@ function renderCharts() {
     xAxis: { ...axis, type: 'time', splitNumber: 5, axisLabel: { ...axis.axisLabel, hideOverlap: true, formatter: timeLabel } },
     yAxis: { ...axis, type: 'value', minInterval: 1, axisLabel: { ...axis.axisLabel, formatter: (value) => formatBytes(value, '/s') } },
     series: [
-      { name: '下载', type: 'line', data: trafficHistory.value.map((item) => [item.time, item.download]), showSymbol: false, smooth: 0.25, itemStyle: { color: '#38bdf8' }, lineStyle: { width: 2, color: '#38bdf8' }, areaStyle: { color: 'rgba(56,189,248,.14)' } },
-      { name: '上传', type: 'line', data: trafficHistory.value.map((item) => [item.time, item.upload]), showSymbol: false, smooth: 0.25, itemStyle: { color: '#34d399' }, lineStyle: { width: 2, color: '#34d399' }, areaStyle: { color: 'rgba(52,211,153,.12)' } },
+      { name: '下载', type: 'line', data: trafficHistory.value.map((item) => [item.time, item.download]), showSymbol: false, smooth: 0.25, itemStyle: { color: chartInk.value.down }, lineStyle: { width: 2, color: chartInk.value.down }, areaStyle: { color: chartInk.value.downArea } },
+      { name: '上传', type: 'line', data: trafficHistory.value.map((item) => [item.time, item.upload]), showSymbol: false, smooth: 0.25, itemStyle: { color: chartInk.value.up }, lineStyle: { width: 2, color: chartInk.value.up }, areaStyle: { color: chartInk.value.upArea } },
     ],
   }, true)
   const totals = cumulative.value.download + cumulative.value.upload
@@ -137,8 +181,8 @@ function renderCharts() {
     animation: false,
     title: chartBase('累计流量').title,
     // 没有流量时只显示占位圆环，不要把占位用的 1 当成流量报出来。
-    tooltip: { ...chartTooltip, trigger: 'item', formatter: ({ name, value }) => (totals > 0 ? `${name}<br>${formatBytes(value)}` : name) },
-    legend: { ...chartLegend, show: totals > 0 },
+    tooltip: { ...chartTooltip.value, trigger: 'item', formatter: ({ name, value }) => (totals > 0 ? `${name}<br>${formatBytes(value)}` : name) },
+    legend: { ...chartLegend.value, show: totals > 0 },
     series: [{
       type: 'pie',
       silent: totals === 0,
@@ -147,31 +191,31 @@ function renderCharts() {
       center: ['50%', '48%'],
       avoidLabelOverlap: true,
       ...donutLabels(({ value }) => formatBytes(value), totals > 0),
-      itemStyle: { borderColor: '#0e1524', borderWidth: 2 },
+      itemStyle: { borderColor: chartInk.value.pieBorder, borderWidth: 2 },
       data: totals > 0 ? [
-        { name: '下载', value: cumulative.value.download, itemStyle: { color: '#38bdf8' } },
-        { name: '上传', value: cumulative.value.upload, itemStyle: { color: '#34d399' } },
-      ] : [{ name: '暂无流量', value: 1, itemStyle: { color: chartInk.empty } }],
+        { name: '下载', value: cumulative.value.download, itemStyle: { color: chartInk.value.down } },
+        { name: '上传', value: cumulative.value.upload, itemStyle: { color: chartInk.value.up } },
+      ] : [{ name: '暂无流量', value: 1, itemStyle: { color: chartInk.value.empty } }],
     }],
   }, true)
   charts[2].setOption({
     ...chartBase('活动连接'),
-    tooltip: { ...chartTooltip, trigger: 'axis', formatter: (items) => `${timeLabel(items[0].axisValue)}<br>${items[0].marker}${items[0].seriesName} ${items[0].value[1]}` },
-    legend: { ...chartLegend, data: ['连接数'] },
+    tooltip: { ...chartTooltip.value, trigger: 'axis', formatter: (items) => `${timeLabel(items[0].axisValue)}<br>${items[0].marker}${items[0].seriesName} ${items[0].value[1]}` },
+    legend: { ...chartLegend.value, data: ['连接数'] },
     xAxis: { ...axis, type: 'time', splitNumber: 5, axisLabel: { ...axis.axisLabel, hideOverlap: true, formatter: timeLabel } },
     yAxis: { ...axis, type: 'value', minInterval: 1 },
-    series: [{ name: '连接数', type: 'line', data: connectionHistory.value.map((item) => [item.time, item.count]), showSymbol: false, smooth: 0.25, itemStyle: { color: '#a78bfa' }, lineStyle: { width: 2, color: '#a78bfa' }, areaStyle: { color: 'rgba(167,139,250,.14)' } }],
+    series: [{ name: '连接数', type: 'line', data: connectionHistory.value.map((item) => [item.time, item.count]), showSymbol: false, smooth: 0.25, itemStyle: { color: chartInk.value.conn }, lineStyle: { width: 2, color: chartInk.value.conn }, areaStyle: { color: chartInk.value.connArea } }],
   }, true)
   const protocolCounts = Object.entries(fleetTotals.value?.protocols || {})
   charts[3].setOption({
     animation: false,
     title: chartBase('传输协议').title,
     tooltip: {
-      ...chartTooltip,
+      ...chartTooltip.value,
       trigger: 'item',
       formatter: ({ name, value, percent }) => (protocolCounts.length ? `${name}<br>${value} 条连接（${percent}%）` : name),
     },
-    legend: { ...chartLegend, show: protocolCounts.length > 0 },
+    legend: { ...chartLegend.value, show: protocolCounts.length > 0 },
     series: [{
       type: 'pie',
       silent: protocolCounts.length === 0,
@@ -179,26 +223,26 @@ function renderCharts() {
       center: ['50%', '48%'],
       avoidLabelOverlap: true,
       ...donutLabels(({ value }) => `${value} 条`, protocolCounts.length > 0),
-      itemStyle: { borderColor: '#0e1524', borderWidth: 2 },
+      itemStyle: { borderColor: chartInk.value.pieBorder, borderWidth: 2 },
       data: protocolCounts.length
         ? protocolCounts.map(([name, value]) => ({ name, value, itemStyle: { color: protocolColors[name] || '#64748b' } }))
-        : [{ name: '暂无连接', value: 1, itemStyle: { color: chartInk.empty } }],
+        : [{ name: '暂无连接', value: 1, itemStyle: { color: chartInk.value.empty } }],
     }],
   }, true)
   const popular = fleetTotals.value?.popular_nodes || []
   charts[4].setOption({
     ...chartBase(`热门节点（最近 ${Number(fleetTotals.value?.popular_window_minutes) || 10} 分钟）`),
     grid: { left: 148, right: 52, top: 58, bottom: 24 },
-    tooltip: { ...chartTooltip, trigger: 'axis', formatter: (items) => `${items[0].name}<br>${items[0].value} 次连接` },
+    tooltip: { ...chartTooltip.value, trigger: 'axis', formatter: (items) => `${items[0].name}<br>${items[0].value} 次连接` },
     xAxis: { ...axis, type: 'value', minInterval: 1 },
     // 这一列是名称而不是刻度，用标题的亮度写，暗一档在深底上就糊了。
-    yAxis: { ...axis, type: 'category', inverse: true, data: popular.map((item) => item.name), axisLabel: { ...axis.axisLabel, color: chartInk.title, width: 128, overflow: 'truncate' } },
+    yAxis: { ...axis, type: 'category', inverse: true, data: popular.map((item) => item.name), axisLabel: { ...axis.axisLabel, color: chartInk.value.title, width: 128, overflow: 'truncate' } },
     series: [{
       type: 'bar',
       data: popular.map((item) => item.count),
       barMaxWidth: 16,
       // 数字写在柱子末端：横条上比长短要来回对轴上的刻度，直接写出来省这一步。
-      label: { show: true, position: 'right', color: chartInk.title, fontSize: 11, formatter: '{c}' },
+      label: { show: true, position: 'right', color: chartInk.value.title, fontSize: 11, formatter: '{c}' },
       itemStyle: { color: '#22d3ee', borderRadius: [0, 3, 3, 0] },
     }],
   }, true)
@@ -239,6 +283,7 @@ async function load(silent = false) {
     // A node is one client-facing account, so a service with two users is two
     // nodes. The listener list carries the per-service count already.
     endpointCount.value = (listenerResult.listeners || []).reduce((total, listener) => total + Number(listener.endpoint_count || 0), 0)
+    metrics.value = Object.fromEntries((metricResult.nodes || []).map((entry) => [entry.node_id, entry.report]))
     // Proxied traffic, not host interface totals, so the figure matches what
     // the connection list and the live rate are describing.
     cumulative.value = (metricResult.nodes || []).reduce((total, entry) => ({
@@ -290,38 +335,40 @@ onBeforeUnmount(() => {
       <el-alert v-if="offline > 0 && dismissedOffline !== offline" :title="`${offline} 台服务器离线`" type="warning" show-icon closable @close="dismiss('sb_dashboard_offline', dismissedOffline, offline)" />
 
       <section class="metric-strip">
-        <div class="metric"><div class="metric__label">服务器总数</div><div class="metric__value">{{ appState.nodes.length }}</div></div>
-        <div class="metric"><div class="metric__label">在线服务器</div><div class="metric__value">{{ online }}</div></div>
-        <div class="metric"><div class="metric__label">活动连接</div><div class="metric__value">{{ activeConnections }}</div></div>
-        <div class="metric"><div class="metric__label">节点数量</div><div class="metric__value">{{ endpointCount }}</div></div>
+        <div class="metric neu"><div class="metric__label">服务器总数</div><div class="metric__value">{{ appState.nodes.length }}</div></div>
+        <div class="metric neu"><div class="metric__label">在线服务器</div><div class="metric__value">{{ online }}</div></div>
+        <div class="metric neu"><div class="metric__label">活动连接</div><div class="metric__value">{{ activeConnections }}</div></div>
+        <div class="metric neu"><div class="metric__label">节点数量</div><div class="metric__value">{{ endpointCount }}</div></div>
       </section>
 
       <section class="chart-grid">
-        <div ref="trafficChart" class="chart-panel chart-panel--wide" />
-        <div ref="totalChart" class="chart-panel" />
-        <div ref="connectionChart" class="chart-panel" />
-        <div ref="networkChart" class="chart-panel" />
-        <div ref="proxyChart" class="chart-panel" />
+        <div ref="trafficChart" class="chart-panel chart-panel--wide neu" />
+        <div ref="totalChart" class="chart-panel neu" />
+        <div ref="connectionChart" class="chart-panel neu" />
+        <div ref="networkChart" class="chart-panel neu" />
+        <div ref="proxyChart" class="chart-panel neu" />
       </section>
     </main>
   </div>
 </template>
 
 <style scoped>
-.dashboard-content { display: flex; flex-direction: column; gap: 16px; }
+.dashboard-content { display: flex; flex-direction: column; gap: 14px; }
 .dashboard-content :deep(.el-alert) { flex: none; }
-.metric-strip { flex: none; margin-bottom: 0; }
 /* The chart rows share whatever height is left rather than each claiming a
    fixed one, so the overview fits the window instead of scrolling. */
 .chart-grid { flex: 1; min-height: 0; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); grid-template-rows: repeat(2, minmax(190px, 1fr)); gap: 14px; }
 .chart-panel {
   min-width: 0;
   min-height: 0;
-  background: var(--sb-panel);
-  border: 1px solid var(--sb-line);
   border-radius: var(--sb-radius);
-  box-shadow: var(--sb-shadow);
   overflow: hidden;
+  transition: transform .2s ease, border-color .2s ease, box-shadow .2s ease;
+}
+.chart-panel:hover {
+  transform: translateY(-2px);
+  border-color: color-mix(in oklab, var(--sb-accent) 40%, transparent);
+  box-shadow: var(--sh-neu), 0 0 20px color-mix(in oklab, var(--sb-accent) 10%, transparent);
 }
 .chart-panel--wide { grid-column: span 2; }
 @media (max-width: 1180px) { .chart-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); grid-template-rows: repeat(3, minmax(190px, 1fr)); } .chart-panel--wide { grid-column: span 2; } }

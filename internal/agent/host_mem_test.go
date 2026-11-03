@@ -101,3 +101,23 @@ func TestParseMemInfo_Empty(t *testing.T) {
 		t.Fatalf("expected ok=false for empty input")
 	}
 }
+
+func TestParseMemAndSwapInfo(t *testing.T) {
+	sample := `
+MemTotal:        4000000 kB
+MemFree:         1000000 kB
+MemAvailable:    2500000 kB
+SwapTotal:       2000000 kB
+SwapFree:        1500000 kB
+`
+	memTotal, memUsed, swapTotal, swapUsed, ok := parseMemAndSwapInfo(strings.NewReader(sample))
+	if !ok {
+		t.Fatalf("expected ok=true")
+	}
+	if memTotal != 4000000*1024 || memUsed != 1500000*1024 {
+		t.Fatalf("unexpected mem values: total=%d, used=%d", memTotal, memUsed)
+	}
+	if swapTotal != 2000000*1024 || swapUsed != 500000*1024 {
+		t.Fatalf("unexpected swap values: total=%d, used=%d", swapTotal, swapUsed)
+	}
+}

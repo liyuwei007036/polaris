@@ -131,11 +131,30 @@ func executeTask(ctx context.Context, task Task, options TaskOptions) TaskResult
 		return runSpeedtest(ctx, task)
 	case "probe.tcp", "probe.network", "network.probe":
 		return runNetworkProbe(ctx, task)
+	case "probe.configure":
+		return configurePingProbes(task)
 	case "dns.update":
 		return updateDNS(ctx, task)
 	default:
 		return TaskResult{Status: "failed", Summary: "task kind is not implemented by this agent build"}
 	}
+}
+
+func configurePingProbes(task Task) TaskResult {
+	var payload []struct {
+		ID     string `json:"id"`
+		Name   string `json:"name"`
+		Target string `json:"target"`
+	}
+	if err := json.Unmarshal([]byte(task.Payload), &payload); err != nil {
+		return TaskResult{Status: "failed", Summary: "探针配置无效"}
+	}
+	targets := make([]PingTargetConfig, 0, len(payload))
+	for _, probe := range payload {
+		targets = append(targets, PingTargetConfig{ID: probe.ID, Name: probe.Name, Addr: probe.Target})
+	}
+	ConfigurePingTargets(targets)
+	return TaskResult{Status: "succeeded", Summary: "延迟监控已下发"}
 }
 
 func runTCPProbe(ctx context.Context, task Task) TaskResult {
@@ -497,7 +516,6 @@ func mutateFirewall(ctx context.Context, task Task) TaskResult {
 	}
 	return TaskResult{Status: "succeeded", Summary: "访问限制已在服务器防火墙上生效", Data: string(encoded)}
 }
-
 
 // ensureIptablesReady makes sure the command this agent writes rules with is
 // there. There is no firewall to install: the filter table and its INPUT chain

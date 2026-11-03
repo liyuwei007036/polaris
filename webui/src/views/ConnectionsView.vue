@@ -8,7 +8,7 @@ import PagedTable from '../components/PagedTable.vue'
 
 const appState = inject('appState')
 const loadNodes = inject('loadNodes')
-const loading = ref(true)
+const loading = ref(false)
 const selectedNode = ref('')
 const selectedOutbound = ref('')
 const keyword = ref('')
@@ -77,22 +77,11 @@ async function load() {
 // hundred milliseconds later. Holding the loading state until something
 // arrives — or until the wait is clearly over — keeps "no active connections"
 // from flashing past just before the list appears.
-let settleTimer
-function settle() {
-  clearTimeout(settleTimer)
-  loading.value = false
-}
-
 onMounted(async () => {
-  try {
-    await loadNodes()
-  } finally {
-    stopConnections = subscribeConnections(() => { if (rows.value.length) settle() })
-    settleTimer = setTimeout(settle, 1500)
-  }
+  stopConnections = subscribeConnections()
+  await loadNodes()
 })
 onBeforeUnmount(() => {
-  clearTimeout(settleTimer)
   stopConnections?.()
 })
 </script>
@@ -116,26 +105,26 @@ onBeforeUnmount(() => {
       </div>
       <div class="table-panel">
         <PagedTable :rows="filteredRows" :loading="loading" empty-text="当前没有活动连接">
-          <el-table-column label="服务器" prop="node_name" min-width="92" show-overflow-tooltip />
-          <el-table-column label="来源" min-width="152" show-overflow-tooltip>
+          <el-table-column label="服务器" prop="node_name" min-width="160" show-overflow-tooltip />
+          <el-table-column label="来源" min-width="160" show-overflow-tooltip>
             <template #default="{ row }">
               <div class="mono">{{ row.source_ip || row.source || '—' }}</div>
               <div class="subtle">{{ row.source_location || '未知' }}</div>
             </template>
           </el-table-column>
-          <el-table-column label="目标" min-width="172" show-overflow-tooltip>
+          <el-table-column label="目标" min-width="200" show-overflow-tooltip>
             <template #default="{ row }"><strong>{{ row.target }}</strong></template>
           </el-table-column>
-          <el-table-column label="入站节点" min-width="152" show-overflow-tooltip>
+          <el-table-column label="入站节点" min-width="160" show-overflow-tooltip>
             <template #default="{ row }">
               <div>{{ row.entry }}</div>
               <div class="subtle">{{ (row.network || '').toUpperCase() || '—' }}</div>
             </template>
           </el-table-column>
-          <el-table-column label="出口" min-width="100" class-name="tag-cell" show-overflow-tooltip>
+          <el-table-column label="出口" min-width="220" class-name="tag-cell" show-overflow-tooltip>
             <template #default="{ row }"><el-tag size="small" effect="plain">{{ row.exit }}</el-tag></template>
           </el-table-column>
-          <el-table-column label="实时速率" width="118" show-overflow-tooltip>
+          <el-table-column label="实时速率" width="130" show-overflow-tooltip>
             <template #default="{ row }">
               <template v-if="row.has_rates">
                 <div class="mono">↓ {{ formatBytes(row.download_rate, '/s') }}</div>
@@ -144,15 +133,26 @@ onBeforeUnmount(() => {
               <span v-else class="subtle">等待上报</span>
             </template>
           </el-table-column>
-          <el-table-column label="累计流量" width="112" show-overflow-tooltip>
+          <el-table-column label="累计流量" width="120" show-overflow-tooltip>
             <template #default="{ row }">
               <div class="mono">↓ {{ formatBytes(row.download) }}</div>
               <div class="mono subtle">↑ {{ formatBytes(row.upload) }}</div>
             </template>
           </el-table-column>
-          <el-table-column label="时间" width="168" show-overflow-tooltip><template #default="{ row }">{{ formatDateTime(row.started_at) }}</template></el-table-column>
+          <el-table-column label="时间" width="170" show-overflow-tooltip><template #default="{ row }">{{ formatDateTime(row.started_at) }}</template></el-table-column>
         </PagedTable>
       </div>
     </main>
   </div>
 </template>
+
+<style scoped>
+:deep(.tag-cell .el-tag) {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  display: inline-block;
+  vertical-align: middle;
+}
+</style>

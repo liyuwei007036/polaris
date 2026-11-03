@@ -173,7 +173,7 @@ onMounted(load)
           <el-table-column label="操作" width="264" fixed="right" class-name="action-column">
             <template #default="{ row }">
               <template v-if="row.type !== 'direct'">
-                <el-button link type="primary" :icon="Connection" @click="openTest(row)">测试</el-button>
+                <el-button link :icon="Connection" @click="openTest(row)">测试</el-button>
                 <el-button v-if="canWrite" link :icon="Edit" @click="openEdit(row)">编辑</el-button>
                 <el-button v-if="canWrite" link @click="toggle(row)">{{ row.enabled ? '停用' : '启用' }}</el-button>
                 <el-button v-if="isAdmin" link type="danger" :icon="Delete" @click="remove(row)">删除</el-button>

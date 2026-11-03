@@ -143,10 +143,10 @@ type agentInboundMessage struct {
 // three separate HTTP endpoints (heartbeat, connections push, task result).
 func (s *Server) runAgentSession(ctx context.Context, conn *wire.Conn, node Node, remoteAddr string) {
 	session := &controlSession{
-		done: make(chan struct{}),
-		tasks: make(chan Task, 16),
-		questions: make(chan wire.Task, 16),
-		watch: make(chan struct{}, 1),
+		done:       make(chan struct{}),
+		tasks:      make(chan Task, 16),
+		questions:  make(chan wire.Task, 16),
+		watch:      make(chan struct{}, 1),
 		remoteAddr: remoteAddr,
 	}
 	s.controlMu.Lock()
@@ -160,6 +160,9 @@ func (s *Server) runAgentSession(ctx context.Context, conn *wire.Conn, node Node
 	}
 	if s.alertEngine != nil && ctx.Err() == nil {
 		s.alertEngine.NotifyNodeOnline(node.ID, node.Name)
+	}
+	if probeTasks, probeErr := s.store.ListPingTasks(ctx); probeErr == nil {
+		_ = s.reconcilePingTasksNode(ctx, node.ID, probeTasks, "")
 	}
 	defer func() {
 		s.controlMu.Lock()
@@ -324,19 +327,40 @@ func (s *Server) handleAgentMessage(ctx context.Context, node Node, msgType byte
 			if st.HasHostTotals {
 				m.Host = &HostResources{
 					CPUPercent:    st.CPUPercent,
+					LoadAvg:       st.LoadAvg,
 					MemoryTotal:   st.MemoryTotal,
 					MemoryUsed:    st.MemoryUsed,
+					SwapTotal:     st.SwapTotal,
+					SwapUsed:      st.SwapUsed,
 					DiskTotal:     st.DiskTotal,
 					DiskUsed:      st.DiskUsed,
 					UptimeSeconds: st.UptimeSeconds,
+					TCP:           st.TCP,
+					UDP:           st.UDP,
+					Procs:         st.Procs,
+					NetRxRate:     st.NetRxRate,
+					NetTxRate:     st.NetTxRate,
+					OSName:        st.OSName,
+					Kernel:        st.Kernel,
+					Virt:          st.Virt,
+					CPUName:       st.CPUName,
+					CPUCores:      st.CPUCores,
 				}
 			}
+			m.Latency = s.recordNodePingResults(node.ID, st.PingResults, m.Latency)
 			m.Health = &storedHealth{
 				Status: st.HealthStatus, Message: st.HealthMessage, SingBoxService: st.SingBoxService,
 				ClashAPIAvailable: st.ClashAPIAvailable, TrafficAvailable: st.TrafficAvailable,
 			}
 		}); err != nil {
 			return false
+		}
+		if st.HasHostTotals {
+			s.recordNodeMetricPoint(node.ID, &HostResources{
+				CPUPercent: st.CPUPercent, MemoryTotal: st.MemoryTotal, MemoryUsed: st.MemoryUsed,
+				DiskTotal: st.DiskTotal, DiskUsed: st.DiskUsed,
+				NetRxRate: st.NetRxRate, NetTxRate: st.NetTxRate,
+			})
 		}
 		s.liveHub.publish(liveEvent{Kind: "node", NodeID: node.ID})
 	case wire.MsgTaskResult:
@@ -410,8 +434,8 @@ func (s *Server) handleAgentMessage(ctx context.Context, node Node, msgType byte
 		s.connHub.update(nodeConnectionsSnapshot{
 			NodeID: node.ID, CollectedAt: push.CollectedAt, Connections: connJSON, RawConns: connections,
 			ConnectionCount: len(connections),
-			Protocols: protocolCounts(connections),
-			HasRates:  measured, ReceivedRate: downloadRate, SentRate: uploadRate,
+			Protocols:       protocolCounts(connections),
+			HasRates:        measured, ReceivedRate: downloadRate, SentRate: uploadRate,
 		})
 	case wire.MsgKeepalive:
 		// no-op
@@ -546,12 +570,25 @@ func (s *Server) scheduleAutomaticSingBoxInstall(ctx context.Context, nodeID, ar
 // merged with whatever was already stored so a Status update doesn't erase
 // the last-known connections and vice versa.
 type HostResources struct {
-	CPUPercent    float64 `json:"cpu_percent"`
-	MemoryTotal   uint64  `json:"memory_total"`
-	MemoryUsed    uint64  `json:"memory_used"`
-	DiskTotal     uint64  `json:"disk_total"`
-	DiskUsed      uint64  `json:"disk_used"`
-	UptimeSeconds uint64  `json:"uptime_seconds,omitempty"`
+	CPUPercent    float64    `json:"cpu_percent"`
+	LoadAvg       [3]float64 `json:"load_avg"`
+	MemoryTotal   uint64     `json:"memory_total"`
+	MemoryUsed    uint64     `json:"memory_used"`
+	SwapTotal     uint64     `json:"swap_total"`
+	SwapUsed      uint64     `json:"swap_used"`
+	DiskTotal     uint64     `json:"disk_total"`
+	DiskUsed      uint64     `json:"disk_used"`
+	UptimeSeconds uint64     `json:"uptime_seconds,omitempty"`
+	TCP           uint32     `json:"tcp"`
+	UDP           uint32     `json:"udp"`
+	Procs         uint32     `json:"procs"`
+	NetRxRate     uint64     `json:"net_rx_rate"`
+	NetTxRate     uint64     `json:"net_tx_rate"`
+	OSName        string     `json:"os_name,omitempty"`
+	Kernel        string     `json:"kernel,omitempty"`
+	Virt          string     `json:"virt,omitempty"`
+	CPUName       string     `json:"cpu_name,omitempty"`
+	CPUCores      uint32     `json:"cpu_cores,omitempty"`
 }
 
 type storedMetrics struct {
@@ -563,6 +600,7 @@ type storedMetrics struct {
 	Connections []storedConnection `json:"connections,omitempty"`
 	Health      *storedHealth      `json:"health,omitempty"`
 	Host        *HostResources     `json:"host,omitempty"`
+	Latency     *storedLatency     `json:"latency,omitempty"`
 }
 
 func accumulateMetric(totals map[string]uint64, rawTotals map[string]uint64, curRx, curTx uint64) (map[string]uint64, map[string]uint64) {

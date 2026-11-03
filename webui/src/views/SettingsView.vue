@@ -506,8 +506,8 @@ onMounted(load)
                   <div class="card-title">
                     <el-icon class="card-icon"><Check /></el-icon>
                     <div>
-                      <h3>定时端口连通性探测与网络质量检测</h3>
-                      <p>定时通过分布式视角探测各节点连通性与网络质量，每逢探测必推通知汇报状态。</p>
+                      <h3>定时端口连通性探测</h3>
+                      <p>定时探测节点连接端口，按通知配置汇报连通状态。</p>
                     </div>
                   </div>
                   <el-switch v-model="alertSettings.auto_probe_gfw_enabled" active-text="定时探测开启" inactive-text="定时探测关闭" />
@@ -518,12 +518,6 @@ onMounted(load)
                       <el-form-item label="GFW 阻断探测周期 (分钟)">
                         <el-input-number v-model="alertSettings.probe_gfw_interval_minutes" :min="1" :max="1440" :step="1" style="width: 100%" />
                         <div class="form-tip">定时探测客户端连接端口是否被阻断。</div>
-                      </el-form-item>
-                    </el-col>
-                    <el-col :span="12">
-                      <el-form-item label="定时网络质量检测周期 (小时)">
-                        <el-input-number v-model="alertSettings.probe_speedtest_interval_hours" :min="1" :max="168" :step="1" style="width: 100%" />
-                        <div class="form-tip">运行 TcpQuality 并生成网络质量报告。</div>
                       </el-form-item>
                     </el-col>
                   </el-row>

@@ -166,6 +166,38 @@ func TestMihomoSubscriptionWritesRawDNSUnchanged(t *testing.T) {
 	}
 }
 
+func TestMihomoSubscriptionUnwrapsRootDNSKey(t *testing.T) {
+	store, groupID := newMihomoDNSFixture(t)
+	input := mihomoDNSConfig(groupID)
+	input.DNSMode = "text"
+	input.RawDNS = "dns:\n  enable: true\n  enhanced-mode: fake-ip\n  nameserver:\n    - https://dns.example.net/dns-query\n  nameserver-policy:\n    \"+.lan\": system\n"
+	config, err := store.CreateMihomoClientConfig(t.Context(), input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, yaml, err := store.GenerateStoredMihomoYAML(t.Context(), config.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(yaml, "dns:\n  dns:") || strings.Contains(yaml, "dns:\n    dns:") {
+		t.Fatalf("subscription contains double-nested dns block:\n%s", yaml)
+	}
+	var generated map[string]any
+	if err := gopkgyaml.Unmarshal([]byte(yaml), &generated); err != nil {
+		t.Fatalf("generated YAML cannot be parsed: %v\n%s", err, yaml)
+	}
+	dnsSection, ok := generated["dns"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected dns mapping in generated YAML:\n%s", yaml)
+	}
+	if _, nested := dnsSection["dns"]; nested {
+		t.Fatalf("dns section still has nested dns block:\n%s", yaml)
+	}
+	if dnsSection["enable"] != true {
+		t.Fatalf("expected enable: true in dns section, got %#v", dnsSection)
+	}
+}
+
 func TestMihomoClientDNSRejectsSettingsMihomoWouldRefuse(t *testing.T) {
 	store, groupID := newMihomoDNSFixture(t)
 	for name, mutate := range map[string]func(*control.MihomoClientConfig){
@@ -192,6 +224,9 @@ func TestMihomoClientDNSRejectsSettingsMihomoWouldRefuse(t *testing.T) {
 		},
 		"高级文本启用后缺少 nameserver": func(config *control.MihomoClientConfig) {
 			config.DNSMode, config.RawDNS = "text", "enable: true\nenhanced-mode: fake-ip\n"
+		},
+		"带顶层 dns 键的高级文本启用后缺少 nameserver": func(config *control.MihomoClientConfig) {
+			config.DNSMode, config.RawDNS = "text", "dns:\n  enable: true\n  enhanced-mode: fake-ip\n"
 		},
 	} {
 		t.Run(name, func(t *testing.T) {

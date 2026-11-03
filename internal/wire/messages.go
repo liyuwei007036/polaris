@@ -100,19 +100,35 @@ type Status struct {
 	ProxySentBytes     uint64
 	HasProxyTotals     bool
 	HealthStatus       string
-	HealthMessage     string
-	SingBoxService    string
-	ClashAPIAvailable bool
-	TrafficAvailable  bool
+	HealthMessage      string
+	SingBoxService     string
+	ClashAPIAvailable  bool
+	TrafficAvailable   bool
 
 	// Host system resource monitoring
 	HasHostTotals bool
 	CPUPercent    float64
+	LoadAvg       [3]float64
 	MemoryTotal   uint64
 	MemoryUsed    uint64
+	SwapTotal     uint64
+	SwapUsed      uint64
 	DiskTotal     uint64
 	DiskUsed      uint64
 	UptimeSeconds uint64
+	TCP           uint32
+	UDP           uint32
+	Procs         uint32
+	NetRxRate     uint64
+	NetTxRate     uint64
+	OSName        string
+	Kernel        string
+	Virt          string
+	CPUName       string
+	CPUCores      uint32
+
+	// Continuous ping probe results
+	PingResults []PingResult
 
 	// IPAddresses holds all verified public egress IPv4 and IPv6 addresses on the host.
 	IPAddresses []string
@@ -123,6 +139,15 @@ type Status struct {
 	// Network protection is deliberately not part of the heartbeat: the console
 	// asks a node for its firewall and jails at the moment it shows them, so it
 	// can never present a rule that has since been changed on the server.
+}
+
+// PingResult represents one endpoint latency measurement from continuous probing.
+type PingResult struct {
+	ProbeID   string
+	ProbeName string
+	Target    string
+	LatencyMs int   // -1 indicates timeout or unreachable
+	Timestamp int64 // unix seconds
 }
 
 // ConnectionsPush is the fast-cadence, independent real-time connections

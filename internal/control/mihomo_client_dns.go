@@ -201,6 +201,28 @@ func normalizeMihomoClientDNSForm(config *MihomoClientConfig) error {
 	return nil
 }
 
+// unwrapMihomoRawDNSNode extracts the inner DNS mapping if the user wrote an outer "dns:" key,
+// preventing duplicate "dns:\n  dns:" serialization in subscriptions while still accepting standard Clash configs.
+func unwrapMihomoRawDNSNode(node *yaml.Node) *yaml.Node {
+	if node == nil {
+		return nil
+	}
+	target := node
+	if target.Kind == yaml.DocumentNode {
+		if len(target.Content) == 0 {
+			return nil
+		}
+		target = target.Content[0]
+	}
+	if target.Kind != yaml.MappingNode {
+		return target
+	}
+	if len(target.Content) == 2 && strings.EqualFold(strings.TrimSpace(target.Content[0].Value), "dns") && target.Content[1].Kind == yaml.MappingNode {
+		return target.Content[1]
+	}
+	return target
+}
+
 // validateMihomoClientRawDNS only checks what can be judged without running
 // Mihomo: that the text is a YAML mapping, plus the two conditions Mihomo
 // refuses to start on.
@@ -212,7 +234,8 @@ func validateMihomoClientRawDNS(raw string) error {
 	if err := yaml.Unmarshal([]byte(raw), &document); err != nil {
 		return fmt.Errorf("DNS text is not valid YAML: %w", err)
 	}
-	if len(document.Content) == 0 || document.Content[0].Kind != yaml.MappingNode {
+	target := unwrapMihomoRawDNSNode(&document)
+	if target == nil || target.Kind != yaml.MappingNode {
 		return errors.New("DNS text must be a YAML mapping of dns options")
 	}
 	var section struct {
@@ -221,7 +244,7 @@ func validateMihomoClientRawDNS(raw string) error {
 		RespectRules          bool     `yaml:"respect-rules"`
 		ProxyServerNameserver []string `yaml:"proxy-server-nameserver"`
 	}
-	if err := document.Content[0].Decode(&section); err != nil {
+	if err := target.Decode(&section); err != nil {
 		return fmt.Errorf("DNS text is not a valid dns section: %w", err)
 	}
 	if section.Enable && len(section.Nameserver) == 0 {
@@ -244,10 +267,11 @@ func mihomoClientDNSNode(config MihomoClientConfig) (*yaml.Node, error) {
 		if err := yaml.Unmarshal([]byte(config.RawDNS), &node); err != nil {
 			return nil, fmt.Errorf("encode DNS section: %w", err)
 		}
-		if len(node.Content) == 0 {
+		target := unwrapMihomoRawDNSNode(&node)
+		if target == nil {
 			return nil, nil
 		}
-		return node.Content[0], nil
+		return target, nil
 	}
 	if !config.DNS.Enable {
 		return nil, nil

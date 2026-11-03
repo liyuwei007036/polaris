@@ -2,8 +2,9 @@
 import { computed, inject, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import {
-  Bell, Clock, Collection, Connection, Document, Lock, Monitor, Operation, Refresh, Setting, Share, Tickets, TrendCharts, User,
+  Bell, Clock, Collection, Connection, Document, Lock, Monitor, Moon, Operation, Refresh, Setting, Share, Sunny, Tickets, TrendCharts, User,
 } from '@element-plus/icons-vue'
+import { isDark, toggleTheme } from '../../theme'
 import { post } from '../../api'
 import MPage from '../components/MPage.vue'
 import MSheet from '../components/MSheet.vue'
@@ -120,6 +121,16 @@ async function confirmLogout() {
         </button>
       </div>
     </template>
+
+    <div class="m-section">外观风格</div>
+    <div class="entry-group">
+      <button type="button" class="entry" @click="toggleTheme">
+        <el-icon :size="17"><component :is="isDark ? Sunny : Moon" /></el-icon>
+        <span>显示模式</span>
+        <em class="entry__value">{{ isDark ? '极客深空（深色）' : '典雅明亮（浅色）' }}</em>
+        <i aria-hidden="true">›</i>
+      </button>
+    </div>
 
     <div class="m-section">关于</div>
     <div class="entry-group">

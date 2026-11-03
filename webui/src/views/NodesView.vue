@@ -7,15 +7,15 @@ import {
   CopyDocument,
   Delete,
   Edit,
+  Grid,
   InfoFilled,
-  Link,
   Loading,
   MoreFilled,
-  Odometer,
   Plus,
   Refresh,
   RemoveFilled,
   Search,
+  Tickets,
   Top,
 } from '@element-plus/icons-vue'
 import { api, post, put } from '../api'
@@ -23,6 +23,14 @@ import { formatBytes, formatDateTime, includesText } from '../format'
 import { subscribeLive } from '../live'
 import { connectionSnapshots, subscribeConnections } from '../connections'
 import PageHeader from '../components/PageHeader.vue'
+import StatusDot from '../components/StatusDot.vue'
+import OsIcon from '../components/OsIcon.vue'
+import LatencyPanel from '../components/LatencyPanel.vue'
+import SummaryCards from '../components/SummaryCards.vue'
+import NodeCard from '../components/NodeCard.vue'
+import NodeRow from '../components/NodeRow.vue'
+import NodeDetail from '../components/NodeDetail.vue'
+import ProbeManager from '../components/ProbeManager.vue'
 
 const MASTER_HOST_KEY = 'polaris_master_host'
 const PERIOD_LABELS = { day: '天', month: '月', quarter: '季', year: '年' }
@@ -33,16 +41,28 @@ const isAdmin = inject('isAdmin')
 const canWrite = inject('canWrite')
 const loadNodes = inject('loadNodes')
 
+const selectedNodeId = ref(null)
+const selectedNode = computed(() => appState.nodes.find((n) => n.id === selectedNodeId.value) || null)
+
+function handleCardAction({ command, node }) {
+  if (command === 'detail') {
+    selectedNodeId.value = node.id
+  } else {
+    handleCardCommand(node, command)
+  }
+}
+
 const loading = ref(false)
 const refreshing = ref(false)
 const pending = ref([])
 const metrics = ref({})
-const speedtests = ref({})
-const speedtesting = reactive({})
+const probesDialog = ref(false)
 
 const keyword = ref('')
-const statusFilter = ref('') // '' | 'online' | 'offline' | 'blocked'
+const statusFilter = ref('') // '' | 'online' | 'offline'
 const sortBy = ref('name')
+const viewMode = ref(window.localStorage.getItem('polaris_nodes_view_mode') || 'card')
+watch(viewMode, (v) => window.localStorage.setItem('polaris_nodes_view_mode', v))
 
 const tokenDialog = ref(false)
 const token = ref('')
@@ -63,7 +83,7 @@ const editForm = ref({
   ddns_record_ids: [],
   ddns_domains: [],
   ip_aliases: {},
-  expires_on: '', price: '', price_period: '', currency: 'USD', provider: '', provider_url: '', traffic_value: '', traffic_unit: 'MB', bandwidth: '',
+  expires_on: '', price: '', price_period: '', currency: 'USD', provider: '', provider_url: '', traffic_value: '', traffic_unit: 'MB', bandwidth: '', bandwidth_value: '', bandwidth_unit: 'Gbps',
 })
 const editTab = ref('basic')
 const editTabs = computed(() => [
@@ -100,6 +120,17 @@ function parseTrafficPlan(plan) {
   return { traffic_value: m[1], traffic_unit: m[2].toUpperCase() }
 }
 
+// 从既有 bandwidth（如 "1 Gbps" / "500 Mbps"）解析数值与单位
+function parseBandwidth(bw) {
+  const m = String(bw || '').match(/([\d.]+)\s*(Gbps|Mbps|G|M)/i)
+  if (!m) {
+    const rawNum = String(bw || '').match(/([\d.]+)/)
+    return { bandwidth_value: rawNum ? rawNum[1] : '', bandwidth_unit: 'Gbps' }
+  }
+  const unit = m[2].toUpperCase().startsWith('G') ? 'Gbps' : 'Mbps'
+  return { bandwidth_value: m[1], bandwidth_unit: unit }
+}
+
 function removeCustomEgressIP(ip) {
   if (editForm.value.ip_aliases && ip in editForm.value.ip_aliases) {
     delete editForm.value.ip_aliases[ip]
@@ -120,7 +151,6 @@ const filteredNodes = computed(() => {
   let list = appState.nodes.filter((node) => {
     if (statusFilter.value === 'online' && !node.online) return false
     if (statusFilter.value === 'offline' && node.online) return false
-    if (statusFilter.value === 'blocked' && !isNodeGFWBlocked(speedtests.value[node.id])) return false
     return includesText(
       [node.name, node.client_address, node.os, node.architecture, node.agent_version, node.sing_box_version],
       keyword.value,
@@ -198,9 +228,8 @@ function getAvatar(name) {
 }
 
 function getNodeStatus(node) {
-  const blocked = isNodeGFWBlocked(speedtests.value[node.id])
-  const status = !node.online ? 'offline' : blocked ? 'blocked' : 'online'
-  return { status, blocked, statusText: { online: '在线', offline: '离线', blocked: '端口阻断' }[status] }
+  const status = !node.online ? 'offline' : 'online'
+  return { status, statusText: { online: '在线', offline: '离线' }[status] }
 }
 
 function buildDialogHeader(node, name) {
@@ -227,20 +256,50 @@ function getPriceText(node) {
 const cards = computed(() => filteredNodes.value.map((node) => {
   const host = node.online ? metrics.value[node.id]?.host : null
   const proxy = metrics.value[node.id]?.proxy
-  const st = speedtests.value[node.id]
+  const latency = metrics.value[node.id]?.latency
   const snap = live.value.get(node.id)
-  const { status, statusText, blocked } = getNodeStatus(node)
+  const { status, statusText } = getNodeStatus(node)
   const avatar = getAvatar(node.name)
+  const used = (proxy?.received_bytes || 0) + (proxy?.sent_bytes || 0)
+
+  let trafficLimit = 0
+  if (node.traffic_plan) {
+    const m = String(node.traffic_plan).match(/([\d.]+)\s*(TB|GB|MB)/i)
+    if (m) {
+      const val = parseFloat(m[1])
+      const unit = m[2].toUpperCase()
+      if (unit === 'TB') trafficLimit = val * 1024 * 1024 * 1024 * 1024
+      else if (unit === 'GB') trafficLimit = val * 1024 * 1024 * 1024
+      else if (unit === 'MB') trafficLimit = val * 1024 * 1024
+    }
+  }
+  const trafficPct = trafficLimit > 0 ? getResourcePercent(used, trafficLimit) : null
+
   return {
     node,
     status,
     statusText,
-    blocked,
     avatar: avatar.text,
     isFlag: avatar.isFlag,
     displayName: avatar.rest || node.name,
-    platform: [node.os || 'linux', node.architecture].filter(Boolean).join(' · '),
+    platform: [node.os || 'linux', host?.virt && host?.virt !== 'none' ? host?.virt : '', node.architecture].filter(Boolean).join(' · '),
     region: node.city || node.location || '',
+    latency,
+    host,
+    cpuPercent: host?.cpu_percent ?? null,
+    cpuCores: host?.cpu_cores || 0,
+    cpuLoad: host?.load_avg || [],
+    memUsed: host?.memory_used || 0,
+    memTotal: host?.memory_total || 0,
+    memPercent: getResourcePercent(host?.memory_used, host?.memory_total),
+    diskUsed: host?.disk_used || 0,
+    diskTotal: host?.disk_total || 0,
+    diskPercent: getResourcePercent(host?.disk_used, host?.disk_total),
+    trafficUsed: used,
+    trafficLimit,
+    trafficPct,
+    tcp: host?.tcp || 0,
+    udp: host?.udp || 0,
     gauges: [
       buildGauge('cpu', 'CPU', host?.cpu_percent, Boolean(host), host ? `${host.cpu_percent.toFixed(1)}%` : '待上报', getCPUTooltip(node)),
       buildGauge('mem', '内存', getResourcePercent(host?.memory_used, host?.memory_total), Boolean(host?.memory_total),
@@ -248,13 +307,11 @@ const cards = computed(() => filteredNodes.value.map((node) => {
       buildGauge('disk', '硬盘', getResourcePercent(host?.disk_used, host?.disk_total), Boolean(host?.disk_total),
         host?.disk_total ? `${formatResourceBytes(host.disk_used)} / ${formatResourceBytes(host.disk_total)}` : '待上报', getDiskTooltip(node)),
     ],
-    rx: snap?.has_rates ? formatBytes(snap.received_rate, '/s') : '0 B/s',
-    tx: snap?.has_rates ? formatBytes(snap.sent_rate, '/s') : '0 B/s',
-    total: proxy ? formatBytes((proxy.received_bytes || 0) + (proxy.sent_bytes || 0)) : '',
+    rx: snap?.has_rates ? formatBytes(snap.received_rate, '/s') : (host?.net_rx_rate ? formatBytes(host.net_rx_rate, '/s') : '0 B/s'),
+    tx: snap?.has_rates ? formatBytes(snap.sent_rate, '/s') : (host?.net_tx_rate ? formatBytes(host.net_tx_rate, '/s') : '0 B/s'),
+    total: proxy ? formatBytes(used) : '',
     totalTip: proxy ? `累计下行 ${formatBytes(proxy.received_bytes)} · 累计上行 ${formatBytes(proxy.sent_bytes)}` : '',
     conn: snap?.connection_count ?? 0,
-    testedAt: st?.tested_at ? formatFriendlyTime(st.tested_at).replace('刚刚活跃', '刚刚') : '',
-    reportUrl: st?.report_url || '',
     price: getPriceText(node),
     expiry: getExpiry(node.expires_on),
     ddnsTip: node.ddns_enabled
@@ -270,13 +327,10 @@ const cards = computed(() => filteredNodes.value.map((node) => {
 const stats = computed(() => {
   const total = appState.nodes.length
   const online = appState.nodes.filter((n) => n.online).length
-  let gfwBlockedCount = 0
-  for (const node of appState.nodes) if (isNodeGFWBlocked(speedtests.value[node.id])) gfwBlockedCount++
   return {
     total,
     online,
     offline: total - online,
-    gfwBlockedCount,
   }
 })
 
@@ -285,83 +339,18 @@ async function load(silent = false) {
   refreshing.value = true
   if (!silent) loading.value = true
   try {
-    const [, registrations, metricResult, speedtestResult] = await Promise.all([
+    const [, registrations, metricResult] = await Promise.all([
       loadNodes(),
       isAdmin.value ? api('/registrations').catch(() => ({ registrations: [] })) : Promise.resolve({ registrations: [] }),
       api('/nodes/metrics').catch(() => ({ nodes: [] })),
-      api('/nodes/speedtests/latest').catch(() => ({ speedtests: [] })),
     ])
     pending.value = registrations.registrations || []
     metrics.value = Object.fromEntries((metricResult.nodes || []).map((entry) => [entry.node_id, entry.report]))
-    speedtests.value = Object.fromEntries((speedtestResult.speedtests || []).map((s) => [s.node_id, s]))
-    if (speedtestResult.running) {
-      for (const [nodeId, isRunning] of Object.entries(speedtestResult.running)) {
-        if (isRunning && !speedtesting[nodeId]) {
-          speedtesting[nodeId] = true
-          pollSpeedtest(nodeId)
-        }
-      }
-    }
   } finally {
     loading.value = false
     refreshing.value = false
   }
   loadSingBoxLatest().catch(() => {})
-}
-
-const speedtestPollTimers = {}
-
-function pollSpeedtest(nodeId) {
-  if (speedtestPollTimers[nodeId]) clearTimeout(speedtestPollTimers[nodeId])
-  let attempts = 0
-  const maxAttempts = 180 // Poll for up to 10.5 minutes (180 * 3.5s)
-
-  const check = async () => {
-    attempts++
-    try {
-      const res = await api(`/nodes/${nodeId}/speedtest/latest`)
-      if (res?.speedtest) {
-        speedtests.value = { ...speedtests.value, [nodeId]: res.speedtest }
-      }
-      if (res?.running === false) {
-        speedtesting[nodeId] = false
-        delete speedtestPollTimers[nodeId]
-        if (res?.speedtest) {
-          ElMessage.success('TcpQuality 综合检测完成！已生成多维度报告')
-        } else if (res?.error) {
-          ElMessage.error(`检测未完成: ${res.error}`)
-        }
-        return
-      }
-    } catch {
-      // Continue polling
-    }
-    if (attempts >= maxAttempts) {
-      speedtesting[nodeId] = false
-      delete speedtestPollTimers[nodeId]
-      ElMessage.warning('TcpQuality 检测超时，请检查该节点服务器环境及网络连通性')
-      return
-    }
-    speedtestPollTimers[nodeId] = setTimeout(check, 3500)
-  }
-  speedtestPollTimers[nodeId] = setTimeout(check, 3500)
-}
-
-async function runSpeedtest(node) {
-  if (speedtesting[node.id]) return
-  speedtesting[node.id] = true
-  try {
-    const res = await post(`/nodes/${node.id}/speedtest`, {})
-    ElMessage.info(res?.message || 'TcpQuality 综合质量检测已在后台启动（预计耗时 1~3 分钟）')
-    pollSpeedtest(node.id)
-  } catch (error) {
-    speedtesting[node.id] = false
-    ElMessage.error(error instanceof Error ? error.message : '启动网络质量检测失败')
-  }
-}
-
-function isNodeGFWBlocked(st) {
-  return false
 }
 
 function getResourcePercent(used, total) {
@@ -648,6 +637,7 @@ async function openEdit(node) {
     expires_on: node.expires_on || '', price: node.price || '', price_period: node.price_period || '', currency: node.currency || 'USD',
     provider: node.provider || '', provider_url: node.provider_url || '',
     ...parseTrafficPlan(node.traffic_plan),
+    ...parseBandwidth(node.bandwidth),
     bandwidth: node.bandwidth || '',
   }
   editTab.value = 'basic'
@@ -671,7 +661,7 @@ async function saveEdit() {
       expires_on: editForm.value.expires_on, price: editForm.value.price, price_period: editForm.value.price_period, currency: editForm.value.currency,
       provider: editForm.value.provider, provider_url: editForm.value.provider_url,
       traffic_plan: [editForm.value.traffic_value, editForm.value.traffic_unit].filter(Boolean).join(' '),
-      bandwidth: editForm.value.bandwidth,
+      bandwidth: editForm.value.bandwidth_value ? `${editForm.value.bandwidth_value} ${editForm.value.bandwidth_unit}` : '',
     })
     ElMessage.success('服务器信息已保存')
     editDialog.value = false
@@ -853,18 +843,26 @@ function handleCardCommand(node, command) {
   else if (command === 'upgradeAgent') upgradeAgent(node)
   else if (command === 'upgradeSingBox') upgradeSingBox(node)
   else if (command === 'revoke') revoke(node)
-  else if (command === 'tcpquality') runSpeedtest(node)
-  else if (command === 'viewReport') {
-    const st = speedtests.value[node.id]
-    if (st?.report_url) {
-      window.open(st.report_url, '_blank')
-    }
-  }
   else if (command === 'syncDDNS') triggerManualDDNS(node)
 }
 
+function onAuthSuccess() {
+  load(true)
+}
+
+watch(
+  () => appState.nodes,
+  (nodes) => {
+    if (nodes && nodes.length > 0 && Object.keys(metrics.value).length === 0) {
+      load(true)
+    }
+  },
+  { deep: true },
+)
+
 onMounted(() => {
   load()
+  window.addEventListener('sb:authenticated', onAuthSuccess)
   stopConnections = subscribeConnections(() => {})
   stopLive = subscribeLive((event) => {
     if (event.kind === 'node') load(true).catch(() => {})
@@ -872,6 +870,7 @@ onMounted(() => {
 })
 
 onBeforeUnmount(() => {
+  window.removeEventListener('sb:authenticated', onAuthSuccess)
   stopLive?.()
   stopConnections?.()
 })
@@ -880,243 +879,165 @@ onBeforeUnmount(() => {
 <template>
   <div class="page-shell">
     <PageHeader title="服务器">
+      <el-button v-if="canWrite" :icon="Connection" @click="probesDialog = true">探针</el-button>
       <el-button :icon="Refresh" :loading="refreshing" @click="load">刷新</el-button>
-      <el-button v-if="isAdmin" type="primary" :icon="Plus" @click="generateToken">接入服务器</el-button>
+      <el-button v-if="isAdmin" type="primary" :icon="Plus" @click="generateToken">新增</el-button>
     </PageHeader>
 
+    <el-dialog v-model="probesDialog" title="探针" width="960px" destroy-on-close>
+      <ProbeManager v-if="probesDialog" />
+    </el-dialog>
+
     <main v-loading="loading" class="page-content page-content--tight">
-      <div class="nodes-toolbar">
-        <div class="toolbar-left">
-          <el-input
-            v-model="keyword"
-            clearable
-            :prefix-icon="Search"
-            placeholder="搜索节点名称、IP地址、系统或架构..."
-            style="width: 280px"
+      <!-- 0. 节点详情视图 (点击任意卡片或列表行进入) -->
+      <NodeDetail
+        v-if="selectedNode"
+        :node="selectedNode"
+        :metrics="metrics[selectedNode.id] || {}"
+        @back="selectedNodeId = null"
+        @edit="openEdit"
+        @probe="openNetworkProbe"
+      />
+
+      <!-- 主视图：概览 + 工具栏 + 服务器网格/列表 -->
+      <template v-else>
+        <!-- 1. 顶部监控大盘概览卡片 (SummaryCards + NodeMap) -->
+        <SummaryCards :nodes="appState.nodes" :metrics="metrics" :live="live" @open="(id) => selectedNodeId = id" />
+
+        <!-- 2. 工具栏与视图切换器 -->
+        <div class="nodes-toolbar neu-track">
+          <div class="toolbar-left">
+            <el-input
+              v-model="keyword"
+              clearable
+              :prefix-icon="Search"
+              placeholder="搜索节点名称、IP地址、系统或架构..."
+              style="width: 280px"
+            />
+
+            <!-- 快速状态分段筛选胶囊 -->
+            <div class="status-segmented neu-track">
+              <button
+                class="seg-btn neu-press"
+                :class="{ active: statusFilter === '' }"
+                @click="statusFilter = ''"
+              >
+                全部 ({{ stats.total }})
+              </button>
+              <button
+                class="seg-btn neu-press"
+                :class="{ active: statusFilter === 'online' }"
+                @click="statusFilter = 'online'"
+              >
+                在线 ({{ stats.online }})
+              </button>
+              <button
+                v-if="stats.offline > 0"
+                class="seg-btn neu-press"
+                :class="{ active: statusFilter === 'offline' }"
+                @click="statusFilter = 'offline'"
+              >
+                离线 ({{ stats.offline }})
+              </button>
+            </div>
+
+            <el-select v-model="sortBy" placeholder="排序方式" style="width: 140px">
+              <el-option label="服务器名称" value="name" />
+              <el-option label="活跃时间优先" value="last_seen" />
+              <el-option label="连接数最高" value="conn" />
+              <el-option label="CPU 负载最高" value="cpu" />
+              <el-option label="内存占用最高" value="mem" />
+            </el-select>
+          </div>
+
+          <!-- 卡片 / 列表视图切换器 与 主题切换 -->
+          <div class="toolbar-right">
+            <div class="view-switcher neu-track">
+              <button
+                class="view-btn neu-press"
+                :class="{ active: viewMode === 'card' }"
+                title="卡片视图"
+                @click="viewMode = 'card'"
+              >
+                <el-icon><Grid /></el-icon>
+              </button>
+              <button
+                class="view-btn neu-press"
+                :class="{ active: viewMode === 'list' }"
+                title="列表视图"
+                @click="viewMode = 'list'"
+              >
+                <el-icon><Tickets /></el-icon>
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <!-- 3. 等待接入审核卡片 (Pending) -->
+        <template v-if="pending.length">
+          <div class="pending-section-banner">
+            <div class="banner-title">
+              <span class="status-indicator pending pulse-sm" />
+              <span>待批准接入的服务器</span>
+              <span class="badge-pending-count">{{ pending.length }}</span>
+            </div>
+          </div>
+          <div class="pending-grid">
+            <div v-for="item in filteredPending" :key="item.id" class="pending-card neu">
+              <div class="pending-header">
+                <div class="pending-title">
+                  <span class="flag-icon">⚡</span>
+                  <strong>{{ item.node_name }}</strong>
+                </div>
+                <el-button type="primary" size="small" @click="approve(item)">批准接入</el-button>
+              </div>
+              <div class="pending-body">
+                <div class="pending-line">
+                  <span class="pending-label">支持特性:</span>
+                  <span class="pending-val">{{ item.capabilities || '基础代理转发' }}</span>
+                </div>
+                <div class="pending-line">
+                  <span class="pending-label">接入申请:</span>
+                  <span class="pending-val font-mono">{{ formatDateTime(item.created_at) }}</span>
+                </div>
+              </div>
+            </div>
+          </div>
+        </template>
+
+        <!-- 4. 节点列表：卡片视图 (Card View) 与 列表视图 (List View) -->
+        <div v-if="filteredNodes.length === 0" class="empty-cards-box">
+          <el-empty description="未找到符合条件的服务器" />
+        </div>
+
+        <!-- 4A. 卡片视图 (Card View - 100% 对齐 Openlat Micro-neomorphic uniform grid) -->
+        <div v-else-if="viewMode === 'card'" class="openlat-cards-grid">
+          <NodeCard
+            v-for="node in filteredNodes"
+            :key="node.id"
+            :node="node"
+            :metrics="metrics[node.id] || {}"
+            :can-manage="canWrite || isAdmin"
+            @open="selectedNodeId = node.id"
+            @action="handleCardAction"
           />
-
-          <!-- 快速状态分段筛选胶囊 -->
-          <div class="status-segmented">
-            <button
-              class="seg-btn"
-              :class="{ active: statusFilter === '' }"
-              @click="statusFilter = ''"
-            >
-              全部 ({{ stats.total }})
-            </button>
-            <button
-              class="seg-btn"
-              :class="{ active: statusFilter === 'online' }"
-              @click="statusFilter = 'online'"
-            >
-              在线 ({{ stats.online }})
-            </button>
-            <button
-              v-if="stats.offline > 0"
-              class="seg-btn"
-              :class="{ active: statusFilter === 'offline' }"
-              @click="statusFilter = 'offline'"
-            >
-              离线 ({{ stats.offline }})
-            </button>
-            <button
-              v-if="stats.gfwBlockedCount > 0"
-              class="seg-btn seg-blocked"
-              :class="{ active: statusFilter === 'blocked' }"
-              @click="statusFilter = 'blocked'"
-            >
-              被墙 ({{ stats.gfwBlockedCount }})
-            </button>
-          </div>
-
-          <el-select v-model="sortBy" placeholder="排序方式" style="width: 140px">
-            <el-option label="服务器名称" value="name" />
-            <el-option label="活跃时间优先" value="last_seen" />
-            <el-option label="连接数最高" value="conn" />
-            <el-option label="CPU 负载最高" value="cpu" />
-            <el-option label="内存占用最高" value="mem" />
-          </el-select>
         </div>
-      </div>
 
-      <!-- 3. 等待接入审核卡片 (Pending) -->
-      <template v-if="pending.length">
-        <div class="pending-section-banner">
-          <div class="banner-title">
-            <span class="status-indicator pending pulse-sm" />
-            <span>待批准接入的服务器</span>
-            <span class="badge-pending-count">{{ pending.length }}</span>
-          </div>
-        </div>
-        <div class="pending-grid">
-          <div v-for="item in filteredPending" :key="item.id" class="pending-card">
-            <div class="pending-header">
-              <div class="pending-title">
-                <span class="flag-icon">⚡</span>
-                <strong>{{ item.node_name }}</strong>
-              </div>
-              <el-button type="primary" size="small" @click="approve(item)">批准接入</el-button>
-            </div>
-            <div class="pending-body">
-              <div class="pending-line">
-                <span class="pending-label">支持特性:</span>
-                <span class="pending-val">{{ item.capabilities || '基础代理转发' }}</span>
-              </div>
-              <div class="pending-line">
-                <span class="pending-label">接入申请:</span>
-                <span class="pending-val font-mono">{{ formatDateTime(item.created_at) }}</span>
-              </div>
-            </div>
-          </div>
+        <!-- 4B. 列表视图 (List View - 100% 对齐 Openlat Micro-neomorphic stacked row) -->
+        <div v-else class="openlat-list-rows">
+          <NodeRow
+            v-for="node in filteredNodes"
+            :key="node.id"
+            :node="node"
+            :metrics="metrics[node.id] || {}"
+            @open="selectedNodeId = node.id"
+          />
         </div>
       </template>
-
-      <div v-if="cards.length === 0" class="empty-cards-box">
-        <el-empty description="未找到符合条件的服务器" />
-      </div>
-
-      <div v-else class="n-grid">
-        <article v-for="card in cards" :key="card.node.id" class="n-card" :class="`is-${card.status}`">
-          <header class="n-head">
-            <span class="n-avatar" :class="{ 'is-flag': card.isFlag }">{{ card.avatar }}</span>
-            <div class="n-title">
-              <div class="n-name-row">
-                <h3 class="n-name" :title="card.node.name">{{ card.displayName }}</h3>
-                <span class="srv-status" :class="`is-${card.status}`" :title="card.statusText"><i class="srv-status-dot" /></span>
-              </div>
-            </div>
-            <div class="n-ops">
-              <el-tooltip v-if="canWrite && card.node.online" content="网络质量检测 (TcpQuality)" placement="top">
-                <button class="srv-icon-btn" :disabled="Boolean(speedtesting[card.node.id])" @click="runSpeedtest(card.node)">
-                  <el-icon :class="{ 'is-loading': speedtesting[card.node.id] }"><Odometer /></el-icon>
-                </button>
-              </el-tooltip>
-              <el-dropdown v-if="canWrite || isAdmin" trigger="click" @command="handleCardCommand(card.node, $event)">
-                <button class="srv-icon-btn" title="更多操作"><el-icon><MoreFilled /></el-icon></button>
-                <template #dropdown>
-                  <el-dropdown-menu>
-                    <el-dropdown-item v-if="canWrite" command="edit"><el-icon><Edit /></el-icon>配置节点</el-dropdown-item>
-                    <el-dropdown-item v-if="canWrite && card.node.online" command="tcpquality"><el-icon><Odometer /></el-icon>网络质量检测 (TcpQuality)</el-dropdown-item>
-                    <el-dropdown-item v-if="card.node.online" command="networkProbe"><el-icon><Connection /></el-icon>线路与丢包排查</el-dropdown-item>
-                    <el-dropdown-item v-if="card.reportUrl" command="viewReport"><el-icon><Link /></el-icon>查看质量报告</el-dropdown-item>
-                    <el-dropdown-item v-if="canWrite && card.node.ddns_enabled" command="syncDDNS"><el-icon><Refresh /></el-icon>同步 DDNS</el-dropdown-item>
-                    <el-dropdown-item v-if="isAdmin && agentUpdateAvailable(card.node)" command="upgradeAgent"><el-icon><Top /></el-icon>升级 Agent</el-dropdown-item>
-                    <el-dropdown-item v-if="isAdmin && singBoxUpdateAvailable(card.node)" command="upgradeSingBox"><el-icon><Top /></el-icon>升级 sing-box</el-dropdown-item>
-                    <el-dropdown-item v-if="isAdmin" command="revoke" divided class="danger-item"><el-icon><RemoveFilled /></el-icon>移除服务器</el-dropdown-item>
-                  </el-dropdown-menu>
-                </template>
-              </el-dropdown>
-            </div>
-          </header>
-
-          <div class="n-meta font-mono">
-            <span>{{ card.platform }}</span>
-            <span v-if="card.region" class="n-region" :title="card.region"> · {{ card.region }}</span>
-            <span> · v{{ card.node.agent_version || '—' }}</span>
-          </div>
-
-          <div class="n-chips font-mono">
-            <button v-if="card.node.client_address" class="n-chip is-address" :title="`点击复制: ${card.node.client_address}`" @click="copyAddress(card.node.client_address)">
-              <span class="n-chip-txt">{{ card.node.client_address }}</span><el-icon><CopyDocument /></el-icon>
-            </button>
-            <span v-else class="n-chip is-danger">未配置连接地址</span>
-            <el-tooltip v-if="card.ddnsTip" raw-content :content="card.ddnsTip" placement="top">
-              <span class="n-chip is-violet"><span class="n-chip-txt">{{ card.node.last_observed_ip || 'DDNS 同步中' }}</span></span>
-            </el-tooltip>
-            <el-tooltip v-if="card.ipTip" raw-content :content="card.ipTip" placement="top">
-              <span class="n-chip"><span class="n-chip-txt">{{ card.node.ip_addresses.length }} 出口</span></span>
-            </el-tooltip>
-          </div>
-
-          <div class="n-gauges">
-            <el-tooltip v-for="g in card.gauges" :key="g.key" :content="g.tip" placement="top">
-              <div class="n-gauge" :class="{ 'is-empty': !g.available }">
-                <div class="n-g-top font-mono"><span>{{ g.label }}</span><b :style="{ color: g.color }">{{ g.text }}<i v-if="g.available">%</i></b></div>
-                <div class="n-g-track"><i :style="{ width: `${g.p}%`, background: g.color }" /></div>
-              </div>
-            </el-tooltip>
-          </div>
-
-          <div class="n-net font-mono">
-            <span class="is-down">↓{{ card.rx }}</span>
-            <span class="is-up">↑{{ card.tx }}</span>
-            <el-tooltip v-if="card.totalTip" :content="card.totalTip" placement="top">
-              <span class="is-total">{{ card.total }}</span>
-            </el-tooltip>
-            <span v-else class="is-total">累计 —</span>
-            <span class="n-conn" :class="{ 'is-active': card.conn > 0 }">{{ card.conn }} 连</span>
-          </div>
-
-          <div class="n-quality font-mono">
-            <template v-if="speedtesting[card.node.id]">
-              <div class="n-quality-row is-testing">
-                <el-icon class="is-loading"><Loading /></el-icon>
-                <span>TcpQuality 检测中 (约需 1~3 分钟)…</span>
-              </div>
-            </template>
-            <template v-else-if="card.reportUrl">
-              <div class="n-quality-row has-report">
-                <span class="n-quality-tag">质量报告</span>
-                <a :href="card.reportUrl" target="_blank" rel="noopener noreferrer" class="n-quality-link" title="点击查看 TcpQuality 在线测试报告">
-                  <span>查看报告</span>
-                </a>
-                <button class="n-quality-btn" title="复制报告链接" @click.stop="copyAddress(card.reportUrl)">
-                  <el-icon><CopyDocument /></el-icon>
-                </button>
-                <button
-                  v-if="card.node.online"
-                  class="n-quality-btn is-probe"
-                  title="排查客户端及各节点间网络线路与丢包"
-                  @click.stop="openNetworkProbe(card.node)"
-                >
-                  <el-icon><Connection /></el-icon>
-                  <span>线路排查</span>
-                </button>
-                <span v-if="card.testedAt" class="n-quality-time">{{ card.testedAt }}</span>
-              </div>
-            </template>
-            <template v-else>
-              <div class="n-quality-row is-empty">
-                <span class="n-quality-tag">网络质量</span>
-                <span class="n-quality-dim">暂无检测报告</span>
-                <button
-                  v-if="canWrite && card.node.online"
-                  class="n-link"
-                  :disabled="Boolean(speedtesting[card.node.id])"
-                  @click="runSpeedtest(card.node)"
-                >
-                  立即检测
-                </button>
-                <button
-                  v-if="card.node.online"
-                  class="n-quality-btn is-probe"
-                  title="排查客户端及各节点间网络线路与丢包"
-                  @click.stop="openNetworkProbe(card.node)"
-                >
-                  <el-icon><Connection /></el-icon>
-                  <span>线路排查</span>
-                </button>
-              </div>
-            </template>
-          </div>
-
-          <footer class="n-foot">
-            <span class="n-plan">
-              <a v-if="card.node.provider && card.node.provider_url" :href="card.node.provider_url" target="_blank" rel="noopener noreferrer" class="n-provider" :title="card.node.provider">{{ card.node.provider }}</a>
-              <span v-else-if="card.node.provider" class="n-provider" :title="card.node.provider">{{ card.node.provider }}</span>
-              <span v-if="card.price">{{ card.price }}</span>
-              <span v-if="card.expiry" :class="card.expiry.level && `is-${card.expiry.level}`" :title="card.expiry.title">{{ card.expiry.text }}</span>
-            </span>
-            <span class="n-time font-mono" :title="formatDateTime(card.node.last_seen_at)">
-              {{ formatFriendlyTime(card.node.last_seen_at) }}<template v-if="card.node.online"> · {{ formatUptimeText(metrics[card.node.id]?.host?.uptime_seconds) }}</template>
-            </span>
-          </footer>
-        </article>
-      </div>
     </main>
 
     <!-- 添加节点 Token 弹窗 -->
-    <el-dialog v-model="tokenDialog" title="接入新服务器" width="560px" append-to-body>
+    <el-dialog v-model="tokenDialog" title="新增服务器" width="560px" append-to-body>
       <div style="margin-bottom: 14px">
         <div style="font-size: 13px; font-weight: 500; margin-bottom: 6px; color: var(--sb-text-1)">
           Master 地址（Agent 拨号连接的主机或 IP）
@@ -1137,7 +1058,7 @@ onBeforeUnmount(() => {
       </div>
       <div style="margin-top: 14px; display: flex; justify-content: flex-end; gap: 8px">
         <el-button @click="tokenDialog = false">关闭</el-button>
-        <el-button type="primary" :icon="CopyDocument" @click="copyInstallCommand">复制命令</el-button>
+        <el-button type="primary" :icon="CopyDocument" @click="copyInstallCommand">复制</el-button>
       </div>
     </el-dialog>
 
@@ -1241,7 +1162,13 @@ onBeforeUnmount(() => {
               </div>
             </el-form-item>
             <el-form-item label="带宽大小">
-              <el-input v-model="editForm.bandwidth" placeholder="例如：1 Gbps" />
+              <div class="dlg-inline">
+                <el-input v-model="editForm.bandwidth_value" placeholder="例如：1" />
+                <el-select v-model="editForm.bandwidth_unit" style="width: 110px">
+                  <el-option label="Mbps" value="Mbps" />
+                  <el-option label="Gbps" value="Gbps" />
+                </el-select>
+              </div>
             </el-form-item>
             <el-form-item label="到期日期" class="dlg-span-2">
               <el-date-picker
@@ -1315,9 +1242,8 @@ onBeforeUnmount(() => {
 
       <template #footer>
         <div class="dlg-foot">
-          <span class="dlg-foot-hint">三个分页的修改会一起保存</span>
           <el-button @click="editDialog = false">取消</el-button>
-          <el-button type="primary" :loading="editSaving" @click="saveEdit">保存配置</el-button>
+          <el-button type="primary" :loading="editSaving" @click="saveEdit">保存</el-button>
         </div>
       </template>
     </el-dialog>
@@ -1653,7 +1579,7 @@ onBeforeUnmount(() => {
   100% { transform: scale(0.9); opacity: 0; }
 }
 
-/* ── 工具栏 ─────────────────────────────────────────────── */
+/* ── 工具栏与视图切换 ───────────────────────────────────── */
 .nodes-toolbar {
   display: flex;
   align-items: center;
@@ -1661,10 +1587,7 @@ onBeforeUnmount(() => {
   gap: 12px;
   margin-bottom: 18px;
   padding: 10px 14px;
-  background: rgba(14, 21, 36, 0.7);
-  border: 1px solid var(--sb-line);
-  border-radius: 10px;
-  backdrop-filter: blur(10px);
+  border-radius: 12px;
 }
 .toolbar-left {
   display: flex;
@@ -1672,13 +1595,15 @@ onBeforeUnmount(() => {
   flex-wrap: wrap;
   gap: 10px;
 }
+.toolbar-right {
+  display: flex;
+  align-items: center;
+}
 .status-segmented {
   display: inline-flex;
   align-items: center;
-  padding: 2px;
-  background: rgba(0, 0, 0, 0.35);
-  border: 1px solid rgba(255, 255, 255, 0.08);
-  border-radius: 8px;
+  padding: 3px;
+  border-radius: 9px;
 }
 .seg-btn {
   padding: 4px 10px;
@@ -1694,13 +1619,64 @@ onBeforeUnmount(() => {
   color: var(--sb-text);
 }
 .seg-btn.active {
-  background: rgba(56, 189, 248, 0.18);
+  background: rgba(56, 189, 248, 0.2);
   color: var(--sb-accent);
   font-weight: 600;
+  box-shadow: 0 0 10px rgba(56, 189, 248, 0.2);
 }
 .seg-btn.seg-blocked.active {
-  background: rgba(244, 63, 94, 0.2);
+  background: rgba(244, 63, 94, 0.22);
   color: var(--sb-danger);
+  box-shadow: 0 0 10px rgba(244, 63, 94, 0.25);
+}
+
+.toolbar-right {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.theme-btn {
+  display: grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  border-radius: 9px;
+  border: 1px solid var(--sb-line);
+  color: var(--sb-muted);
+  cursor: pointer;
+  font-size: 15px;
+  transition: all 0.2s ease;
+}
+.theme-btn:hover {
+  color: var(--sb-accent);
+  border-color: var(--sb-accent);
+}
+.view-switcher {
+  display: inline-flex;
+  align-items: center;
+  padding: 3px;
+  border-radius: 9px;
+  gap: 3px;
+}
+.view-btn {
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  border: none;
+  background: transparent;
+  color: var(--sb-muted);
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 14px;
+}
+.view-btn:hover {
+  color: var(--sb-text);
+}
+.view-btn.active {
+  background: rgba(56, 189, 248, 0.22);
+  color: var(--sb-accent);
+  box-shadow: 0 0 10px rgba(56, 189, 248, 0.2);
 }
 
 /* ── 3. 待接入横幅 (Pending Section) ────────────────────── */
@@ -1764,8 +1740,17 @@ onBeforeUnmount(() => {
   color: var(--sb-text-2);
 }
 
-/* ── 服务器卡片 ─────────────────────────────────────────── */
-/* ── 服务器卡片 ─────────────────────────────────────────── */
+/* ── 服务器卡片与列表视图 (Openlat micro-neomorphic) ─────── */
+.openlat-cards-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(350px, 1fr));
+  gap: 16px;
+}
+.openlat-list-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
 .n-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
@@ -1773,44 +1758,50 @@ onBeforeUnmount(() => {
 }
 .n-card {
   --tone: var(--sb-success);
-  --tone-soft: rgba(52, 211, 153, .1);
   position: relative;
   display: flex;
   flex-direction: column;
-  gap: 7px;
+  gap: 8px;
   min-width: 0;
-  padding: 11px 14px 9px;
-  border: 1px solid var(--sb-line);
-  border-radius: var(--sb-radius);
-  background: var(--sb-surface);
+  padding: 14px;
+  border-radius: 16px;
   overflow: hidden;
-  transition: transform .18s ease, border-color .18s ease, box-shadow .18s ease;
-}
-.n-card::before {
-  content: '';
-  position: absolute;
-  inset: 0 0 auto;
-  height: 2px;
-  background: var(--tone);
-  opacity: .55;
+  transition: transform .2s ease, border-color .2s ease, box-shadow .2s ease;
 }
 .n-card:hover {
   transform: translateY(-2px);
   border-color: rgba(56, 189, 248, .45);
-  box-shadow: var(--sb-shadow);
+  box-shadow: var(--sh-neu), 0 0 24px rgba(56, 189, 248, .12);
 }
+.n-card-blob {
+  position: absolute;
+  top: -30px;
+  right: -30px;
+  width: 130px;
+  height: 130px;
+  border-radius: 50%;
+  filter: blur(40px);
+  pointer-events: none;
+  opacity: 0.16;
+}
+.n-card-blob.is-online { background: #34d399; }
+.n-card-blob.is-offline { background: #94a3b8; }
+.n-card-blob.is-blocked { background: #fb7185; }
+
 .n-card.is-offline {
   --tone: var(--sb-muted);
-  --tone-soft: rgba(148, 163, 184, .08);
 }
 .n-card.is-offline .n-gauges,
-.n-card.is-offline .n-net,
-.n-card.is-offline .n-quality {
-  opacity: .6;
+.n-card.is-offline .n-net-pill,
+.n-card.is-offline .n-card-latency {
+  opacity: .65;
 }
 .n-card.is-blocked {
   --tone: var(--sb-danger);
-  --tone-soft: rgba(251, 113, 133, .12);
+}
+
+.n-card-latency {
+  margin-top: 2px;
 }
 
 .n-head {
@@ -1823,17 +1814,17 @@ onBeforeUnmount(() => {
   display: grid;
   place-items: center;
   flex-shrink: 0;
-  width: 30px;
-  height: 30px;
-  border-radius: var(--sb-radius-sm);
+  width: 32px;
+  height: 32px;
+  border-radius: 8px;
   background: var(--sb-surface-3);
   border: 1px solid var(--sb-line);
   color: var(--sb-text-2);
-  font-size: 12px;
+  font-size: 13px;
   font-weight: 700;
 }
 .n-avatar.is-flag {
-  font-size: 14px;
+  font-size: 16px;
   font-weight: 400;
   background: transparent;
   border-color: transparent;
@@ -1853,19 +1844,27 @@ onBeforeUnmount(() => {
   margin: 0;
   min-width: 0;
   color: var(--sb-text);
-  font-size: 14px;
+  font-size: 14.5px;
   font-weight: 600;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 .n-meta {
-  display: block;
+  display: flex;
+  align-items: center;
+  gap: 6px;
   color: var(--sb-muted);
   font-size: 11px;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  margin-top: 2px;
+}
+.n-os-icon {
+  width: 14px;
+  height: 14px;
+  flex-shrink: 0;
 }
 .n-meta .n-region {
   flex-shrink: 0;
@@ -1878,15 +1877,15 @@ onBeforeUnmount(() => {
   flex-shrink: 0;
 }
 .n-ops .srv-icon-btn {
-  width: 26px;
-  height: 26px;
-  border-radius: 7px;
+  width: 28px;
+  height: 28px;
+  border-radius: 8px;
 }
 
 .n-chips {
   display: flex;
   flex-wrap: nowrap;
-  gap: 4px;
+  gap: 5px;
   min-width: 0;
 }
 .n-chip {
@@ -1896,13 +1895,12 @@ onBeforeUnmount(() => {
   max-width: 100%;
   min-width: 0;
   overflow: hidden;
-  padding: 2.5px 6px;
-  border-radius: 6px;
+  padding: 3px 8px;
+  border-radius: 7px;
   border: 1px solid var(--sb-line);
-  background: var(--sb-surface-2);
   color: var(--sb-text-2);
   font-size: 11px;
-  line-height: 1.6;
+  line-height: 1.5;
 }
 .n-chip-txt {
   overflow: hidden;
@@ -1911,12 +1909,10 @@ onBeforeUnmount(() => {
 }
 .n-chip .el-icon {
   flex-shrink: 0;
-  font-size: 10px;
+  font-size: 11px;
   opacity: .7;
 }
 .n-chip.is-address {
-  border-color: rgba(56, 189, 248, .26);
-  background: var(--sb-accent-soft);
   color: var(--sb-accent);
   cursor: pointer;
   text-align: left;
@@ -1925,12 +1921,12 @@ onBeforeUnmount(() => {
 .n-chip.is-address:hover { border-color: var(--sb-accent); }
 .n-chip.is-violet {
   border-color: rgba(168, 85, 247, .3);
-  background: rgba(168, 85, 247, .1);
+  background: rgba(168, 85, 247, .12);
   color: #d8b4fe;
 }
 .n-chip.is-danger {
   border-color: rgba(251, 113, 133, .35);
-  background: rgba(251, 113, 133, .1);
+  background: rgba(251, 113, 133, .12);
   color: var(--sb-danger);
 }
 
@@ -1962,124 +1958,240 @@ onBeforeUnmount(() => {
   font-style: normal;
 }
 .n-g-track {
-  height: 3px;
+  height: 4px;
   margin-top: 4px;
   overflow: hidden;
-  border-radius: 2px;
-  background: rgba(148, 163, 184, .16);
+  border-radius: 999px;
 }
 .n-g-track i {
   display: block;
   height: 100%;
-  border-radius: 2px;
+  border-radius: 999px;
   transition: width .4s ease, background-color .3s ease;
 }
 
-.n-net {
+.n-net-pill {
   display: flex;
-  align-items: baseline;
-  gap: 12px;
-  font-size: 11.5px;
-}
-.n-net > span {
-  flex-shrink: 0;
-  white-space: nowrap;
-}
-.n-net .is-down {
-  color: var(--sb-success);
-  font-weight: 600;
-}
-.n-net .is-up {
-  color: var(--sb-accent);
-  font-weight: 600;
-}
-.n-net .is-total {
-  color: var(--sb-muted);
-  font-size: 11px;
-  cursor: default;
-}
-.n-conn {
-  margin-left: auto;
-  padding: 0 8px;
-  border-radius: 999px;
-  background: rgba(148, 163, 184, .1);
-  color: var(--sb-muted);
-  font-size: 10.5px;
-  line-height: 18px;
-}
-.n-conn.is-active {
-  background: rgba(52, 211, 153, .12);
-  color: var(--sb-success);
-}
-
-.n-quality {
-  display: flex;
-  flex-direction: column;
-  justify-content: center;
-  min-height: 48px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
   padding: 6px 10px;
-  border-radius: var(--sb-radius-sm);
-  border: 1px solid var(--sb-line);
-  background: var(--sb-surface-2);
+  border-radius: 8px;
+  font-size: 11px;
 }
-.n-quality-row {
+.net-pill-left {
   display: flex;
   align-items: center;
   gap: 8px;
-  font-size: 11px;
 }
-.n-quality-tag {
-  flex-shrink: 0;
-  padding: 1px 6px;
-  border-radius: 4px;
+.net-pill-right {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.is-down { color: #38bdf8; font-weight: 600; }
+.is-up { color: #f59e0b; font-weight: 600; }
+.is-total { color: var(--sb-muted); font-size: 10.5px; }
+.n-conn {
+  padding: 0 6px;
+  border-radius: 999px;
+  background: rgba(148, 163, 184, .12);
+  color: var(--sb-muted);
   font-size: 10px;
-  font-weight: 700;
-  background: rgba(56, 189, 248, .1);
-  color: var(--sb-accent);
+  line-height: 16px;
 }
-.n-quality-link {
-  display: inline-flex;
+.n-conn.is-active {
+  background: rgba(52, 211, 153, .16);
+  color: var(--sb-success);
+}
+
+/* ── 列表视图样式 (List View Grid) ──────────────────────── */
+.n-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.n-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1.3fr) minmax(0, 1.5fr) minmax(0, 0.85fr) minmax(0, 0.8fr) minmax(0, 1fr) minmax(0, 0.7fr) auto;
   align-items: center;
-  gap: 3px;
-  color: var(--sb-text-1);
+  gap: 12px;
+  padding: 9px 14px;
+  border-radius: 12px;
+}
+.n-row.is-offline {
+  opacity: 0.7;
+}
+
+.n-row-node {
+  min-width: 0;
+}
+.n-row-head {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+.n-row-avatar {
+  font-size: 14px;
+}
+.n-row-name {
+  font-size: 13.5px;
   font-weight: 600;
-  text-decoration: none;
-  transition: color .15s ease;
+  color: var(--sb-text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
-.n-quality-link:hover {
-  color: var(--sb-accent);
-  text-decoration: underline;
-}
-.n-quality-btn {
-  display: inline-flex;
+.n-row-sub {
+  display: flex;
   align-items: center;
-  justify-content: center;
-  padding: 2px 5px;
-  border: 1px solid var(--sb-line);
-  border-radius: 4px;
-  background: transparent;
+  gap: 5px;
+  margin-top: 2px;
+  padding-left: 14px;
+  font-size: 10px;
   color: var(--sb-muted);
-  cursor: pointer;
-  font-size: 11px;
-  transition: all .15s ease;
 }
-.n-quality-btn:hover {
-  color: var(--sb-text-1);
-  border-color: var(--sb-muted);
+.n-row-os-icon {
+  width: 13px;
+  height: 13px;
+  flex-shrink: 0;
 }
-.n-quality-time {
-  margin-left: auto;
-  color: var(--sb-muted);
-  font-size: 10.5px;
+.n-row-plat {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
-.n-quality-dim {
-  color: var(--sb-muted);
-  font-size: 11px;
+
+.n-row-hard {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
 }
-.n-quality-row.is-testing {
-  color: var(--sb-accent);
+.hard-row {
+  display: flex;
+  align-items: center;
   gap: 6px;
+  font-size: 10px;
+  line-height: 1;
 }
+.hard-label {
+  width: 26px;
+  flex-shrink: 0;
+  color: var(--sb-muted);
+}
+.hard-track {
+  flex: 1;
+  min-width: 0;
+  height: 5px;
+  overflow: hidden;
+  border-radius: 999px;
+}
+.hard-fill {
+  display: block;
+  height: 100%;
+  border-radius: 999px;
+  transition: width 0.4s ease;
+}
+.hard-pct {
+  width: 28px;
+  flex-shrink: 0;
+  text-align: right;
+  font-weight: 600;
+}
+.hard-detail {
+  width: 90px;
+  flex-shrink: 0;
+  text-align: right;
+  color: var(--sb-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.n-row-traffic {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+.row-meta-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 10px;
+  line-height: 1;
+}
+
+.n-row-net {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+  font-size: 10px;
+}
+.net-line {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  line-height: 1;
+  white-space: nowrap;
+}
+.net-line.is-down { color: #38bdf8; }
+.net-line.is-up { color: #f59e0b; }
+.net-line.is-sockets { color: var(--sb-muted); }
+
+.n-row-latency {
+  min-width: 0;
+}
+
+.n-row-expiry {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+  font-size: 10.5px;
+  text-align: right;
+}
+.expiry-line {
+  font-weight: 550;
+  white-space: nowrap;
+}
+.price-line {
+  white-space: nowrap;
+}
+
+.n-row-ops {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  flex-shrink: 0;
+}
+.n-row-ops .srv-icon-btn {
+  width: 28px;
+  height: 28px;
+  border-radius: 8px;
+}
+
+@media (max-width: 1200px) {
+  .n-row {
+    grid-template-columns: minmax(0, 1.2fr) minmax(0, 1.4fr) minmax(0, 0.9fr) minmax(0, 1fr) auto;
+  }
+  .n-row-traffic,
+  .n-row-expiry {
+    display: none;
+  }
+}
+@media (max-width: 800px) {
+  .n-row {
+    grid-template-columns: minmax(0, 1.2fr) minmax(0, 1.4fr) auto;
+  }
+  .n-row-net,
+  .n-row-latency {
+    display: none;
+  }
+}
+
 .n-link {
   flex-shrink: 0;
   margin-left: auto;
@@ -2252,16 +2364,18 @@ onBeforeUnmount(() => {
 }
 
 .terminal-box {
-  padding: 12px 14px;
-  background: rgba(0, 0, 0, 0.6);
-  border: 1px solid rgba(255, 255, 255, 0.08);
-  border-radius: 6px;
-  color: var(--sb-accent);
+  padding: 14px 16px;
+  background: var(--neu-inset-bg, rgba(23, 27, 44, 0.9));
+  border: 1px solid var(--sb-line-strong);
+  border-radius: var(--sb-radius-sm);
+  color: var(--sb-text-2, #E2E8F0);
+  font-family: "Cascadia Code", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
   font-size: 12px;
-  line-height: 1.5;
+  line-height: 1.6;
   word-break: break-all;
   white-space: pre-wrap;
   user-select: all;
+  box-shadow: var(--sh-inset);
 }
 
 /* ── 弹窗通用外壳 ───────────────────────────────────────── */
@@ -2480,19 +2594,26 @@ onBeforeUnmount(() => {
   gap: 12px;
   margin-bottom: 14px;
   padding: 14px 16px;
-  border: 1px solid rgba(148, 163, 184, .12);
-  border-radius: 14px;
-  background: rgba(2, 6, 15, .24);
+  border: 1px solid var(--sb-line);
+  border-radius: 12px;
+  background: var(--sb-surface-2);
   transition: border-color .2s;
 }
-.dlg-block.is-on { border-color: rgba(168, 85, 247, .3); }
+.dlg-block.is-on {
+  border-color: color-mix(in oklab, var(--sb-accent) 35%, transparent);
+}
 .dlg-block-head {
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
   gap: 16px;
 }
-.dlg-block-head .dlg-help { margin-top: 3px; }
+.dlg-block-head .dlg-help {
+  margin-top: 3px;
+  color: var(--sb-muted);
+  font-size: 12px;
+  line-height: 1.4;
+}
 .dlg-block-title {
   color: var(--sb-text);
   font-size: 13px;
@@ -2507,19 +2628,26 @@ onBeforeUnmount(() => {
   display: flex;
   align-items: center;
   gap: 10px;
-  padding: 6px 8px 6px 10px;
-  border-radius: 10px;
-  background: rgba(148, 163, 184, .05);
+  padding: 6px 10px;
+  border-radius: 8px;
+  border: 1px solid var(--sb-line);
+  background: var(--sb-surface-3);
 }
 .dlg-ip-kind {
   flex-shrink: 0;
   padding: 1px 6px;
-  border-radius: 5px;
-  font-size: 10.5px;
-  font-weight: 700;
+  border-radius: 4px;
+  font-size: 11px;
+  font-weight: 600;
 }
-.dlg-ip-kind.is-v4 { background: rgba(52, 211, 153, .14); color: #6ee7b7; }
-.dlg-ip-kind.is-v6 { background: rgba(251, 191, 36, .14); color: #fcd34d; }
+.dlg-ip-kind.is-v4 {
+  background: color-mix(in oklab, var(--sb-success) 14%, transparent);
+  color: var(--sb-success);
+}
+.dlg-ip-kind.is-v6 {
+  background: color-mix(in oklab, var(--sb-warning) 14%, transparent);
+  color: var(--sb-warning);
+}
 .dlg-ip-addr {
   min-width: 140px;
   color: var(--sb-text);
@@ -2528,9 +2656,10 @@ onBeforeUnmount(() => {
 }
 .dlg-ip-alias { flex: 1; }
 .dlg-empty {
-  padding: 12px;
-  border-radius: 10px;
-  background: rgba(148, 163, 184, .05);
+  padding: 14px;
+  border-radius: 8px;
+  border: 1px dashed var(--sb-line);
+  background: var(--sb-surface-2);
   color: var(--sb-muted);
   font-size: 12px;
   text-align: center;
@@ -2538,12 +2667,9 @@ onBeforeUnmount(() => {
 .dlg-foot {
   display: flex;
   align-items: center;
-  gap: 8px;
-}
-.dlg-foot-hint {
-  margin-right: auto;
-  color: var(--sb-muted);
-  font-size: 12px;
+  justify-content: flex-end;
+  gap: 10px;
+  width: 100%;
 }
 @media (max-width: 700px) {
   .dlg-grid, .dlg-facts { grid-template-columns: minmax(0, 1fr); }
@@ -2877,14 +3003,4 @@ onBeforeUnmount(() => {
 .cell-val.is-loss { color: var(--sb-warning); font-weight: 600; }
 .cell-val.is-fail { color: var(--sb-danger); }
 .cell-val.is-dim { color: var(--sb-muted); font-size: 11.5px; }
-.n-quality-btn.is-probe {
-  margin-left: 2px;
-  color: var(--sb-text-2);
-  border: 1px solid var(--sb-line);
-}
-.n-quality-btn.is-probe:hover {
-  color: var(--sb-accent);
-  border-color: var(--sb-accent);
-  background: rgba(56, 189, 248, 0.08);
-}
 </style>

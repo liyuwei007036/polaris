@@ -91,6 +91,10 @@ function openSettings() { Object.assign(config, { zone_id: settings.value.zone_i
 // Saving verifies the zone and token upstream, so a rejection has to reach the
 // operator with its reason instead of closing the dialog as if it worked.
 async function saveSettings() {
+  if (!config.zone_id || !config.api_token) {
+    ElMessage.warning('请填写区域编号（Zone ID）与访问令牌（API Token）')
+    return
+  }
   try {
     await put('/cloudflare/settings', config)
     settingsOpen.value = false
@@ -101,6 +105,11 @@ async function saveSettings() {
   }
 }
 function addRecord() {
+  if (!settings.value.connected && !settings.value.zone_id) {
+    ElMessage.warning('请先点击右上角「设置」配置 Cloudflare 区域与访问令牌')
+    openSettings()
+    return
+  }
   Object.assign(record, { id: '', type: 'A', name: '', content: '', ttl: 1, proxied: false })
   recordOpen.value = true
 }
@@ -195,7 +204,7 @@ onMounted(load)
       </el-tag>
       <el-button :icon="Refresh" @click="load">刷新</el-button>
       <el-button v-if="isAdmin && tab === 'records'" :icon="Setting" @click="openSettings">设置</el-button>
-      <el-button v-if="isAdmin && tab === 'records'" type="primary" :icon="Plus" :disabled="!settings.connected" @click="addRecord">新建</el-button>
+      <el-button v-if="isAdmin && tab === 'records'" type="primary" :icon="Plus" @click="addRecord">新建</el-button>
       <el-button v-if="isAdmin && tab === 'certificates'" type="primary" :icon="Plus" @click="addCertificate">新建</el-button>
     </PageHeader>
     <main class="page-content page-content--tight">
@@ -279,7 +288,7 @@ onMounted(load)
       </el-form>
       <template #footer>
         <el-button @click="settingsOpen = false">取消</el-button>
-        <el-button type="primary" :disabled="!config.zone_id || !config.api_token" @click="saveSettings">保存</el-button>
+        <el-button type="primary" @click="saveSettings">保存</el-button>
       </template>
     </el-dialog>
 

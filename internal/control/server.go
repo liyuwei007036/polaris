@@ -378,6 +378,7 @@ func (s *Server) registerBrowserRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("PUT /api/v1/nodes/{id}/client-address", s.setNodeClientAddress)
 	mux.HandleFunc("GET /api/v1/nodes/metrics", s.allNodeMetrics)
 	mux.HandleFunc("GET /api/v1/nodes/{id}/metrics", s.nodeMetrics)
+	mux.HandleFunc("GET /api/v1/nodes/{id}/history", s.nodeHistory)
 	// Network protection is read from and written to the servers themselves;
 	// none of it is stored here. See server_security.go.
 	mux.HandleFunc("GET /api/v1/firewall/rules", s.listFirewall)
@@ -435,6 +436,9 @@ func (s *Server) registerBrowserRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/v1/nodes/{id}/nginx/publish", s.publishNodeNginx)
 	mux.HandleFunc("GET /api/v1/system/update", s.systemUpdateStatus)
 	mux.HandleFunc("POST /api/v1/system/update/apply", s.applySystemUpdate)
+	mux.HandleFunc("POST /api/v1/db/vacuum", s.vacuumDatabase)
+	mux.HandleFunc("GET /api/v1/db/backup", s.downloadDatabaseBackup)
+	mux.HandleFunc("POST /api/v1/db/restore", s.restoreDatabase)
 	mux.HandleFunc("POST /api/v1/nodes/{id}/agent/upgrade", s.upgradeNodeAgent)
 	mux.HandleFunc("GET /api/v1/sing-box/releases", s.listSingBoxReleases)
 	mux.HandleFunc("GET /api/v1/sing-box/latest", s.latestSingBoxRelease)
@@ -448,6 +452,11 @@ func (s *Server) registerBrowserRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/v1/alerts/test", s.testAlert)
 	mux.HandleFunc("POST /api/v1/probes/run-gfw-check", s.handleRunGFWCheck)
 	mux.HandleFunc("POST /api/v1/nodes/{id}/speedtest", s.handleRunNodeSpeedtest)
+	mux.HandleFunc("GET /api/v1/ping-tasks", s.listPingTasks)
+	mux.HandleFunc("POST /api/v1/ping-tasks", s.savePingTask)
+	mux.HandleFunc("PUT /api/v1/ping-tasks/{id}", s.updatePingTask)
+	mux.HandleFunc("DELETE /api/v1/ping-tasks/{id}", s.deletePingTask)
+	mux.HandleFunc("PUT /api/v1/ping-tasks/order", s.reorderPingTasks)
 	mux.HandleFunc("GET /api/v1/ping", s.handlePing)
 	mux.HandleFunc("GET /api/v1/client-info", s.handleClientInfo)
 	mux.HandleFunc("POST /api/v1/nodes/{id}/probe-peers", s.handleProbeNodePeers)
@@ -1371,11 +1380,12 @@ func (s *Server) enrichNodeLocation(node *Node) {
 		if parsed == nil || parsed.IsLoopback() || parsed.IsPrivate() || parsed.IsLinkLocalUnicast() || parsed.IsUnspecified() {
 			continue
 		}
-		loc := s.ipLocator.Locate(ipStr)
-		city := s.ipLocator.LocateCity(ipStr)
+		info := s.ipLocator.Lookup(ipStr)
+		loc := info.Location
 		if loc != "" && loc != "未知" {
 			node.Location = loc
-			node.City = city
+			node.City = info.City
+			node.CountryCode = info.CountryCode
 			return
 		}
 	}

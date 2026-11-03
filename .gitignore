@@ -13,3 +13,6 @@ webui/test-results/
 服务器信息.txt
 *.crt
 sbm-*
+ref/
+*.exe
+*.exe~

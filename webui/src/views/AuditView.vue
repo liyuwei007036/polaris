@@ -7,6 +7,7 @@ import PageHeader from '../components/PageHeader.vue'
 
 const appState = inject('appState')
 const isAdmin = inject('isAdmin')
+const loadNodes = inject('loadNodes')
 const loading = ref(false)
 const tab = ref('tasks')
 const tasks = ref([])
@@ -102,7 +103,11 @@ async function loadAudit() {
   } finally { loading.value = false }
 }
 function resetTaskPage() { taskQuery.page = 1; loadTasks() }
-onMounted(() => { loadTasks(); loadAudit() })
+onMounted(async () => {
+  await loadNodes?.().catch(() => {})
+  loadTasks()
+  loadAudit()
+})
 </script>
 
 <template>

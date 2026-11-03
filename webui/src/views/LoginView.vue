@@ -53,6 +53,7 @@ async function finishAuthentication(result) {
   setCsrfToken(result.csrf_token)
   const session = await api('/auth/me')
   emit('authenticated', session)
+  window.dispatchEvent(new CustomEvent('sb:authenticated'))
 }
 </script>
 

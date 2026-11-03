@@ -27,18 +27,32 @@ type Status struct {
 	Metrics           MetricReport
 	IPAddresses       []string
 	IPMappings        map[string]string
+	PingResults       []wire.PingResult
 }
 
 // MetricReport deliberately separates host-interface counters from
 // protocol-level measurements. Unavailable fields remain absent instead of
 // being estimated from unrelated traffic.
 type HostResources struct {
-	CPUPercent    float64 `json:"cpu_percent"`
-	MemoryTotal   uint64  `json:"memory_total"`
-	MemoryUsed    uint64  `json:"memory_used"`
-	DiskTotal     uint64  `json:"disk_total"`
-	DiskUsed      uint64  `json:"disk_used"`
-	UptimeSeconds uint64  `json:"uptime_seconds,omitempty"`
+	CPUPercent    float64    `json:"cpu_percent"`
+	LoadAvg       [3]float64 `json:"load_avg"`
+	MemoryTotal   uint64     `json:"memory_total"`
+	MemoryUsed    uint64     `json:"memory_used"`
+	SwapTotal     uint64     `json:"swap_total"`
+	SwapUsed      uint64     `json:"swap_used"`
+	DiskTotal     uint64     `json:"disk_total"`
+	DiskUsed      uint64     `json:"disk_used"`
+	UptimeSeconds uint64     `json:"uptime_seconds,omitempty"`
+	TCP           uint32     `json:"tcp"`
+	UDP           uint32     `json:"udp"`
+	Procs         uint32     `json:"procs"`
+	NetRxRate     uint64     `json:"net_rx_rate"`
+	NetTxRate     uint64     `json:"net_tx_rate"`
+	OSName        string     `json:"os_name,omitempty"`
+	Kernel        string     `json:"kernel,omitempty"`
+	Virt          string     `json:"virt,omitempty"`
+	CPUName       string     `json:"cpu_name,omitempty"`
+	CPUCores      uint32     `json:"cpu_cores,omitempty"`
 }
 
 type MetricReport struct {
@@ -165,6 +179,7 @@ func DefaultStatus(singBoxVersion, dataDir string) Status {
 		Metrics:     CollectMetrics(),
 		IPAddresses: publicIPs,
 		IPMappings:  ipMappings,
+		PingResults: GetLatestPingResults(),
 	}
 }
 
@@ -476,12 +491,26 @@ func toWireStatus(local Status) wire.Status {
 	if local.Metrics.Host != nil {
 		st.HasHostTotals = true
 		st.CPUPercent = local.Metrics.Host.CPUPercent
+		st.LoadAvg = local.Metrics.Host.LoadAvg
 		st.MemoryTotal = local.Metrics.Host.MemoryTotal
 		st.MemoryUsed = local.Metrics.Host.MemoryUsed
+		st.SwapTotal = local.Metrics.Host.SwapTotal
+		st.SwapUsed = local.Metrics.Host.SwapUsed
 		st.DiskTotal = local.Metrics.Host.DiskTotal
 		st.DiskUsed = local.Metrics.Host.DiskUsed
 		st.UptimeSeconds = local.Metrics.Host.UptimeSeconds
+		st.TCP = local.Metrics.Host.TCP
+		st.UDP = local.Metrics.Host.UDP
+		st.Procs = local.Metrics.Host.Procs
+		st.NetRxRate = local.Metrics.Host.NetRxRate
+		st.NetTxRate = local.Metrics.Host.NetTxRate
+		st.OSName = local.Metrics.Host.OSName
+		st.Kernel = local.Metrics.Host.Kernel
+		st.Virt = local.Metrics.Host.Virt
+		st.CPUName = local.Metrics.Host.CPUName
+		st.CPUCores = local.Metrics.Host.CPUCores
 	}
+	st.PingResults = local.PingResults
 	return st
 }
 

@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -80,8 +81,23 @@ func CollectMetrics() MetricReport {
 	return report
 }
 
+var skipIfaces = []string{
+	"lo", "docker", "veth", "br-", "virbr", "tap", "tun", "wg",
+	"tailscale", "cni", "flannel", "podman", "fwbr", "fwpr", "fwln",
+	"ifb", "gretap", "erspan", "kube", "cali", "nerdctl", "lxc", "cilium", "zt",
+}
+
+func shouldSkipIface(name string) bool {
+	for _, p := range skipIfaces {
+		if strings.HasPrefix(name, p) {
+			return true
+		}
+	}
+	return false
+}
+
 // NodeTrafficCounters reads the host's cumulative non-loopback interface
-// byte counters. ok is false when /proc/net/dev cannot be read at all.
+// byte counters, filtering virtual/container interfaces per monitor-probe spec.
 func NodeTrafficCounters() (received, sent uint64, ok bool) {
 	file, err := os.Open("/proc/net/dev")
 	if err != nil {
@@ -94,7 +110,8 @@ func NodeTrafficCounters() (received, sent uint64, ok bool) {
 		if len(parts) != 2 {
 			continue
 		}
-		if strings.TrimSpace(parts[0]) == "lo" {
+		iface := strings.TrimSpace(parts[0])
+		if shouldSkipIface(iface) {
 			continue
 		}
 		fields := strings.Fields(parts[1])
@@ -108,8 +125,47 @@ func NodeTrafficCounters() (received, sent uint64, ok bool) {
 		}
 		received += rx
 		sent += tx
+		ok = true
 	}
-	return received, sent, true
+	return received, sent, ok
+}
+
+var (
+	netRateMu   sync.Mutex
+	lastNetTime time.Time
+	lastNetRx   uint64
+	lastNetTx   uint64
+)
+
+// ReadNetRates computes instantaneous rx and tx bytes per second across samples.
+func ReadNetRates() (rxRate, txRate uint64) {
+	rx, tx, ok := NodeTrafficCounters()
+	if !ok {
+		return 0, 0
+	}
+	netRateMu.Lock()
+	defer netRateMu.Unlock()
+	now := time.Now()
+	if lastNetTime.IsZero() || now.Before(lastNetTime) {
+		lastNetTime = now
+		lastNetRx = rx
+		lastNetTx = tx
+		return 0, 0
+	}
+	duration := now.Sub(lastNetTime).Seconds()
+	if duration < 0.5 {
+		return 0, 0
+	}
+	if rx >= lastNetRx {
+		rxRate = uint64(float64(rx-lastNetRx) / duration)
+	}
+	if tx >= lastNetTx {
+		txRate = uint64(float64(tx-lastNetTx) / duration)
+	}
+	lastNetTime = now
+	lastNetRx = rx
+	lastNetTx = tx
+	return rxRate, txRate
 }
 
 func collectSingBoxServiceHealth(ctx context.Context) string {

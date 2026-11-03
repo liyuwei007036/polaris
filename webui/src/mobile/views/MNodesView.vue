@@ -11,6 +11,9 @@ import MPage from '../components/MPage.vue'
 import MSegmented from '../components/MSegmented.vue'
 import MSheet from '../components/MSheet.vue'
 import MActionSheet from '../components/MActionSheet.vue'
+import StatusDot from '../../components/StatusDot.vue'
+import OsIcon from '../../components/OsIcon.vue'
+import LatencyPanel from '../../components/LatencyPanel.vue'
 
 const MASTER_HOST_KEY = 'polaris_master_host'
 const appState = inject('appState')
@@ -418,10 +421,11 @@ onBeforeUnmount(() => {
 
     <div class="m-section">已接入服务器（{{ filteredNodes.length }}）</div>
     <!-- 整条就是详情入口：完整字段和编辑、升级、移除都在弹出的抽屉里。 -->
-    <article v-for="node in shownNodes" :key="node.id" class="m-item">
+    <article v-for="node in shownNodes" :key="node.id" class="m-item neu">
       <button type="button" class="m-item__hit" @click="openActions(node)">
         <div class="m-item__head">
-          <span class="m-item__dot" :class="{ 'is-on': node.online }" />
+          <StatusDot :online="node.online" />
+          <OsIcon :os="node.os" style="width: 15px; height: 15px; flex-shrink: 0;" />
           <span class="m-item__title">
             {{ node.name }}
           </span>
@@ -434,6 +438,7 @@ onBeforeUnmount(() => {
           <span class="m-stat"><b :class="{ 'is-muted': !node.online }">{{ statOf(node, 'connections') }}</b><small>活动连接</small></span>
         </div>
         <div class="m-item__meta">{{ addressText(node) }} · {{ totalText(node) }}</div>
+        <LatencyPanel v-if="metrics[node.id]?.latency" :latency="metrics[node.id]?.latency" :compact="true" style="margin-top: 6px;" />
         <div v-if="node.expires_on || node.provider || node.price_period || node.traffic_plan || node.bandwidth" class="m-item__meta">
           <span v-if="node.provider" :role="node.provider_url ? 'link' : undefined" :tabindex="node.provider_url ? 0 : undefined" @click.stop="openProvider(node)" @keydown.enter.stop="openProvider(node)">{{ node.provider }}</span>
           {{ [node.expires_on ? `到期 ${node.expires_on}` : '', node.price_period === 'free' ? '免费' : (node.price_period ? `${node.currency || 'USD'} ${node.price}/${({day:'天',month:'月',quarter:'季',year:'年'})[node.price_period] || node.price_period}` : ''), node.traffic_plan ? `流量 ${node.traffic_plan}` : '', node.bandwidth ? `带宽 ${node.bandwidth}` : ''].filter(Boolean).join(' · ') }}
@@ -594,7 +599,7 @@ onBeforeUnmount(() => {
       <p class="m-field__hint">令牌有效期至：{{ formatDateTime(expiresAt) }}。命令执行后该服务器会出现在「等待确认的服务器」，需在本页点「接入」批准。</p>
       <template #footer>
         <el-button @click="tokenSheet = false">完成</el-button>
-        <el-button type="primary" @click="copyInstallCommand">复制命令</el-button>
+        <el-button type="primary" @click="copyInstallCommand">复制</el-button>
       </template>
     </MSheet>
 

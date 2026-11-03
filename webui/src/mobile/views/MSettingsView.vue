@@ -447,11 +447,6 @@ onBeforeUnmount(() => {
           <div class="m-field__hint">定时探测节点客户端连接端口是否被阻断。</div>
         </div>
 
-        <div class="m-field">
-          <label class="m-field__label">三网线路检测周期 (小时)</label>
-          <el-input-number v-model="alertSettings.probe_speedtest_interval_hours" :min="1" :max="168" :step="1" style="width: 100%" />
-          <div class="m-field__hint">定期检测电信、联通、移动 TCP 延迟及回国线路。</div>
-        </div>
 
         <div class="m-field m-field--inline" style="padding: 6px 0">
           <label class="m-field__label">

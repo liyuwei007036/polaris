@@ -128,6 +128,7 @@ type Node struct {
 	IPMappings     map[string]string `json:"ip_mappings"`
 	Location       string            `json:"location,omitempty"`
 	City           string            `json:"city,omitempty"`
+	CountryCode    string            `json:"country_code,omitempty"`
 	ExpiresOn      string            `json:"expires_on"`
 	Price          string            `json:"price"`
 	PricePeriod    string            `json:"price_period"`
@@ -1605,7 +1606,7 @@ func (s *Store) CreateTask(ctx context.Context, task Task) (Task, error) {
 	}
 	// Network protection asks its questions over the session directly and stores
 	// nothing, so its kinds are deliberately absent here. See Server.AskNode.
-	if task.Kind != "singbox.apply_config" && task.Kind != "singbox.install" && task.Kind != "singbox.upgrade" && task.Kind != "nginx.apply_config" && task.Kind != "outbound.test" && task.Kind != "agent.upgrade" && task.Kind != "dns.update" {
+	if task.Kind != "singbox.apply_config" && task.Kind != "singbox.install" && task.Kind != "singbox.upgrade" && task.Kind != "nginx.apply_config" && task.Kind != "outbound.test" && task.Kind != "agent.upgrade" && task.Kind != "dns.update" && task.Kind != "probe.configure" {
 		return Task{}, errors.New("unsupported task kind")
 	}
 	if task.OperatorID != "" {
@@ -2674,6 +2675,16 @@ CREATE TABLE IF NOT EXISTS subscription_rules (
 CREATE TABLE IF NOT EXISTS node_metrics (
   node_id TEXT PRIMARY KEY REFERENCES nodes(id), report TEXT NOT NULL, updated_at INTEGER NOT NULL
 );
+CREATE TABLE IF NOT EXISTS node_latency_points (
+  node_id TEXT NOT NULL REFERENCES nodes(id),
+  probe_id TEXT NOT NULL,
+  probe_name TEXT NOT NULL DEFAULT '',
+  target TEXT NOT NULL,
+  ts INTEGER NOT NULL,
+  latency_ms INTEGER NOT NULL,
+  PRIMARY KEY (node_id, probe_id, target, ts)
+);
+CREATE INDEX IF NOT EXISTS idx_node_latency_points_node_ts ON node_latency_points(node_id, ts);
 -- Network protection is read from and written to the servers themselves. These
 -- tables held a copy of what the console believed each server enforced, and a
 -- copy is exactly what could be — and was — out of step with the kernel doing
@@ -2713,6 +2724,15 @@ CREATE INDEX IF NOT EXISTS idx_subscription_rules_subscription ON subscription_r
 CREATE INDEX IF NOT EXISTS idx_subscription_access_time ON subscription_access_logs(accessed_at DESC);
 CREATE INDEX IF NOT EXISTS idx_subscription_access_config ON subscription_access_logs(config_id, accessed_at DESC);
 CREATE INDEX IF NOT EXISTS idx_node_metrics_updated ON node_metrics(updated_at);
+CREATE INDEX IF NOT EXISTS idx_node_latency_points_node_ts ON node_latency_points(node_id, ts DESC);
+CREATE TABLE IF NOT EXISTS node_metric_points (
+  node_id TEXT NOT NULL REFERENCES nodes(id), ts INTEGER NOT NULL,
+  cpu REAL NOT NULL DEFAULT 0, mem_used INTEGER NOT NULL DEFAULT 0, mem_total INTEGER NOT NULL DEFAULT 0,
+  disk_used INTEGER NOT NULL DEFAULT 0, disk_total INTEGER NOT NULL DEFAULT 0,
+  net_rx INTEGER NOT NULL DEFAULT 0, net_tx INTEGER NOT NULL DEFAULT 0,
+  PRIMARY KEY (node_id, ts)
+);
+CREATE INDEX IF NOT EXISTS idx_node_metric_points_node_ts ON node_metric_points(node_id, ts DESC);
 CREATE INDEX IF NOT EXISTS idx_conn_records_started_at ON connection_records(started_at DESC);
 CREATE INDEX IF NOT EXISTS idx_conn_records_source_ip ON connection_records(source_ip, started_at DESC);
 CREATE INDEX IF NOT EXISTS idx_conn_records_user ON connection_records(user, started_at DESC);

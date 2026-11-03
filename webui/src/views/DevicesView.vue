@@ -63,7 +63,6 @@ onMounted(() => {
   <div class="page-shell">
     <PageHeader title="热门设备">
       <span class="subtle" style="margin-right: 12px">数据保留最近 30 天 · {{ timeZoneLabel }}</span>
-      <el-button :icon="Clock" @click="navigate('connection-history')">历史连接明细</el-button>
       <el-button :icon="Refresh" :loading="popularLoading" @click="refreshAll">刷新</el-button>
     </PageHeader>
 
@@ -101,9 +100,6 @@ onMounted(() => {
               <el-radio-button label="7d">最近 7 天</el-radio-button>
               <el-radio-button label="30d">最近 30 天</el-radio-button>
             </el-radio-group>
-            <el-button link type="primary" :icon="Clock" style="margin-left: 14px" @click="navigate('connection-history')">
-              查看全部历史明细 &rarr;
-            </el-button>
           </div>
         </div>
 
@@ -149,7 +145,7 @@ onMounted(() => {
           </el-table-column>
           <el-table-column label="操作" width="130" align="center">
             <template #default="{ row }">
-              <el-button link type="primary" size="small" :icon="Filter" @click="filterByIP(row.source_ip)">
+              <el-button link size="small" :icon="Filter" @click="filterByIP(row.source_ip)">
                 查此 IP 连接
               </el-button>
             </template>
@@ -186,7 +182,7 @@ onMounted(() => {
   align-items: center;
 }
 .device-ip {
-  color: var(--el-color-primary);
+  color: var(--sb-text);
 }
 .clickable {
   cursor: pointer;

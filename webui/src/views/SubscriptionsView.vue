@@ -1,7 +1,7 @@
 <script setup>
 import { computed, inject, onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { ArrowDown, ArrowLeft, ArrowUp, CopyDocument, Delete, DocumentCopy, Download, Edit, Grid, Plus, Refresh, RefreshRight, Search } from '@element-plus/icons-vue'
+import { ArrowDown, ArrowLeft, ArrowUp, CopyDocument, Delete, DocumentCopy, Download, Edit, Grid, MoreFilled, Plus, Refresh, RefreshRight, Search } from '@element-plus/icons-vue'
 import { api, del, post, put } from '../api'
 import { writeClipboard } from '../clipboard'
 import { formatDateTime, includesText } from '../format'
@@ -415,6 +415,13 @@ async function remove(config) {
   await load()
 }
 
+function handleActionCommand(cmd, row) {
+  if (cmd === 'clash') importToClash(row)
+  else if (cmd === 'copyConfig') copyConfig(row)
+  else if (cmd === 'rotate') rotateSubscription(row)
+  else if (cmd === 'delete') remove(row)
+}
+
 onMounted(() => { load(); loadAccess() })
 </script>
 
@@ -459,20 +466,31 @@ onMounted(() => { load(); loadAccess() })
           <el-table-column label="分流规则" min-width="150" show-overflow-tooltip>
             <template #default="{ row }">{{ row.rule_mode === 'text' ? '高级文本' : '表格配置' }} · {{ row.rules?.length || 0 }} 条 · {{ row.rule_providers?.length || 0 }} 个供应商</template>
           </el-table-column>
-          <el-table-column label="状态" width="82">
+          <el-table-column label="状态" width="88" align="center">
             <template #default="{ row }">
               <el-switch :model-value="row.enabled" inline-prompt active-text="启用" inactive-text="停用" :loading="changingState === row.id" :disabled="changingState === row.id || !canWrite" @change="setEnabled(row, $event)" />
             </template>
           </el-table-column>
-          <el-table-column label="操作" width="538" fixed="right" class-name="action-column">
+          <el-table-column label="操作" width="320" fixed="right" class-name="action-column">
             <template #default="{ row }">
-              <el-button link :icon="CopyDocument" @click="copySubscription(row)">复制</el-button>
-              <el-button link :icon="Grid" @click="showQrCode(row)">二维码</el-button>
-              <el-button link :icon="Download" @click="importToClash(row)">导入 Clash</el-button>
-              <el-button v-if="canWrite" link :icon="DocumentCopy" @click="copyConfig(row)">复制配置</el-button>
-              <el-button v-if="canWrite" link :icon="RefreshRight" @click="rotateSubscription(row)">更换</el-button>
-              <el-button v-if="canWrite" link :icon="Edit" @click="openForm(row)">编辑</el-button>
-              <el-button v-if="isAdmin" link type="danger" :icon="Delete" @click="remove(row)">删除</el-button>
+              <div class="row-actions">
+                <el-button link :icon="CopyDocument" @click="copySubscription(row)">复制</el-button>
+                <el-button link :icon="Grid" @click="showQrCode(row)">二维码</el-button>
+                <el-button v-if="canWrite" link :icon="Edit" @click="openForm(row)">编辑</el-button>
+                <el-dropdown trigger="click" @command="(cmd) => handleActionCommand(cmd, row)">
+                  <el-button link class="more-action-btn">
+                    更多<el-icon class="el-icon--right"><ArrowDown /></el-icon>
+                  </el-button>
+                  <template #dropdown>
+                    <el-dropdown-menu>
+                      <el-dropdown-item command="clash" :icon="Download">导入 Clash</el-dropdown-item>
+                      <el-dropdown-item v-if="canWrite" command="copyConfig" :icon="DocumentCopy">复制配置</el-dropdown-item>
+                      <el-dropdown-item v-if="canWrite" command="rotate" :icon="RefreshRight">更换订阅</el-dropdown-item>
+                      <el-dropdown-item v-if="isAdmin" command="delete" :icon="Delete" divided style="color: var(--sb-danger, #ef4444)">删除配置</el-dropdown-item>
+                    </el-dropdown-menu>
+                  </template>
+                </el-dropdown>
+              </div>
             </template>
           </el-table-column>
         </PagedTable>
@@ -701,6 +719,17 @@ onMounted(() => { load(); loadAccess() })
 </template>
 
 <style scoped>
+.row-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  white-space: nowrap;
+  flex-wrap: nowrap;
+}
+.row-actions :deep(.el-button) {
+  margin: 0 !important;
+  padding: 4px 6px !important;
+}
 .group-tag { margin: 3px 6px 3px 0; }
 .access-row { display: flex; align-items: center; gap: 8px; width: 100%; }
 .option-meta { float: right; margin-left: 18px; color: var(--sb-muted); font-size: 12px; }
@@ -713,20 +742,29 @@ onMounted(() => { load(); loadAccess() })
   display: flex;
   flex-direction: column;
   gap: 3px;
-  padding: 11px 14px;
+  padding: 12px 14px;
   border: 1px solid transparent;
-  border-radius: var(--sb-radius);
+  border-radius: var(--sb-radius-sm);
   background: transparent;
   color: var(--sb-muted);
   font: inherit;
   text-align: left;
   cursor: pointer;
-  transition: background .15s ease, color .15s ease, border-color .15s ease;
+  transition: all .15s ease;
 }
-.form-nav__item:hover { background: var(--sb-panel-solid); color: var(--el-text-color-primary); }
-.form-nav__item.active { border-color: var(--sb-line); background: var(--sb-panel-solid); color: #fff; }
-.form-nav__label { display: flex; align-items: center; gap: 8px; font-size: 14px; font-weight: 550; }
-.form-nav__hint { font-size: 12px; line-height: 1.4; opacity: .75; }
+.form-nav__item:hover {
+  background: var(--sb-surface-2);
+  color: var(--sb-text);
+  border-color: var(--sb-line);
+}
+.form-nav__item.active {
+  border-color: var(--sb-line-strong);
+  background: var(--sb-panel-solid);
+  color: var(--sb-text) !important;
+  box-shadow: var(--sh-neu-sm);
+}
+.form-nav__label { display: flex; align-items: center; gap: 8px; font-size: 14px; font-weight: 550; color: inherit; }
+.form-nav__hint { font-size: 12px; line-height: 1.4; color: var(--sb-muted); }
 .form-body { flex: 1 1 auto; min-width: 0; overflow: auto; }
 .form-body__inner { width: 100%; max-width: none; }
 .raw-config-editor { display: block; width: 100%; }
@@ -734,9 +772,11 @@ onMounted(() => { load(); loadAccess() })
   min-height: clamp(360px, calc(100vh - 250px), 900px) !important;
   padding: 18px 20px;
   border-radius: 10px;
-  background: #0b111c;
+  background: var(--sb-panel-solid);
+  color: var(--sb-text);
+  border: 1px solid var(--sb-line);
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
-  font-size: 14px;
+  font-size: 13.5px;
   line-height: 1.7;
   tab-size: 2;
   resize: vertical;

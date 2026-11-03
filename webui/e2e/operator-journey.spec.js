@@ -109,7 +109,7 @@ test('浏览器页面回归：真实登录，核心工作区 API 使用路由替
   await page.getByRole('button', { name: '当前连接', exact: true }).click()
   await expect(page.locator('.page-shell')).toHaveCount(1)
   await expect(page.locator('.page-shell').getByText('全部服务器', { exact: true })).toBeVisible()
-  await page.getByRole('button', { name: '网络防护', exact: true }).click()
+  await page.getByRole('button', { name: '安全中心', exact: true }).click()
   await expect(page.locator('.page-shell')).toHaveCount(1)
   await expect(page.locator('.page-shell').getByText('全部服务器', { exact: true })).toBeVisible()
   // The page opens on the verdict each server's own firewall holds on each

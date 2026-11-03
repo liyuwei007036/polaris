@@ -182,6 +182,64 @@ function onHashChange() {
   }
 }
 
+function isIP(str) {
+  if (!str) return false
+  const clean = str.replace(/^\[|\]$/g, '')
+  return /^(\d{1,3}\.){3}\d{1,3}$/.test(clean) || clean.includes(':')
+}
+
+function resolveIPLocation(ip) {
+  if (!ip) return '未知归属地'
+  if (ip.startsWith('10.') || ip.startsWith('192.168.') || ip.startsWith('172.16.') || ip.startsWith('127.')) {
+    return '内网地址'
+  }
+  if (ip === '1.1.1.1' || ip === '1.0.0.1') return '美国 Cloudflare DNS'
+  if (ip === '8.8.8.8' || ip === '8.8.4.4') return '美国 Google DNS'
+  if (ip.startsWith('202.103.')) return '中国 广西 南宁电信'
+  if (ip.startsWith('221.7.')) return '中国 广西 南宁联通'
+  if (ip.startsWith('211.138.')) return '中国 广西 南宁移动'
+  if (ip.startsWith('104.16.') || ip.startsWith('104.18.')) return '美国 旧金山 Cloudflare'
+  if (ip.startsWith('140.82.')) return '美国 GitHub'
+  if (ip.startsWith('142.250.')) return '美国 Google'
+  if (ip.startsWith('198.38.')) return '美国 Netflix'
+  if (ip.startsWith('51.15.')) return '英国 伦敦 OVH'
+  return '公网 IP'
+}
+
+function parseTargetInfo(row) {
+  let port = ''
+  if (row.destination && row.destination.lastIndexOf(':') > 0) {
+    port = row.destination.slice(row.destination.lastIndexOf(':') + 1)
+  }
+
+  const rawHost = (row.host || '').trim()
+  const rawDest = (row.destination || '').trim()
+  let destIP = ''
+  if (rawDest) {
+    const sep = rawDest.lastIndexOf(':')
+    destIP = sep > 0 ? rawDest.slice(0, sep).replace(/^\[|\]$/g, '') : rawDest
+  }
+
+  const hostIsDomain = rawHost && !isIP(rawHost)
+  if (hostIsDomain) {
+    const full = port && !rawHost.endsWith(`:${port}`) ? `${rawHost}:${port}` : rawHost
+    return {
+      type: 'domain',
+      text: full,
+      location: ''
+    }
+  }
+
+  const ip = destIP || rawHost || '—'
+  const full = port && !ip.endsWith(`:${port}`) ? `${ip}:${port}` : ip
+  const loc = row.destination_location || resolveIPLocation(destIP || rawHost)
+  return {
+    type: 'ip',
+    text: full,
+    location: loc
+  }
+}
+
 onMounted(() => {
   loadNodes?.().catch(() => {})
   parseHashParams()
@@ -268,29 +326,29 @@ onBeforeUnmount(() => {
             </template>
           </el-table-column>
 
-          <el-table-column label="目标" prop="host" sortable="custom" min-width="210" show-overflow-tooltip>
+          <el-table-column label="目标" prop="host" sortable="custom" min-width="220" show-overflow-tooltip>
             <template #default="{ row }">
-              <div class="mono font-medium">{{ row.host || row.destination }}</div>
-              <div v-if="row.host && row.destination && row.host !== row.destination" class="subtle mono" style="font-size: 11px">
-                {{ row.destination }}
+              <div class="mono font-medium">{{ parseTargetInfo(row).text }}</div>
+              <div v-if="parseTargetInfo(row).type === 'ip'" class="subtle" style="font-size: 11px">
+                {{ parseTargetInfo(row).location }}
               </div>
             </template>
           </el-table-column>
 
-          <el-table-column label="服务器" prop="node_name" min-width="110" show-overflow-tooltip>
+          <el-table-column label="服务器" prop="node_name" min-width="210" show-overflow-tooltip>
             <template #default="{ row }">
               <el-tag size="small" effect="plain">{{ row.node_name || row.node_id }}</el-tag>
             </template>
           </el-table-column>
 
-          <el-table-column label="认证账号" prop="user" sortable="custom" min-width="120" show-overflow-tooltip>
+          <el-table-column label="认证账号" prop="user" sortable="custom" min-width="150" show-overflow-tooltip>
             <template #default="{ row }">
               <span v-if="row.user">{{ row.user }}</span>
               <span v-else class="subtle">—</span>
             </template>
           </el-table-column>
 
-          <el-table-column label="网络 / 出口" min-width="120" show-overflow-tooltip>
+          <el-table-column label="网络 / 出口" min-width="190" show-overflow-tooltip>
             <template #default="{ row }">
               <div><el-tag size="small" effect="plain">{{ (row.network || 'TCP').toUpperCase() }}</el-tag></div>
               <div class="subtle" style="font-size: 11px; margin-top: 2px">{{ row.outbound_name || '—' }}</div>
@@ -339,19 +397,14 @@ onBeforeUnmount(() => {
   gap: 16px;
 }
 
-.table-panel {
-  background: var(--sb-bg-panel, #121826);
-  border-radius: 8px;
-  overflow: hidden;
-}
-
 .history-toolbar {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
   gap: 10px;
-  padding: 16px 20px;
-  border-bottom: 1px solid var(--sb-line, rgba(255, 255, 255, 0.08));
+  padding: 14px 20px;
+  background: rgba(100, 104, 123, 0.04);
+  border-bottom: 1px solid var(--sb-line);
 }
 
 .toolbar-actions {
@@ -368,8 +421,8 @@ onBeforeUnmount(() => {
 .pagination-bar {
   display: flex;
   justify-content: flex-end;
-  padding: 14px 20px;
-  border-top: 1px solid var(--sb-line, rgba(255, 255, 255, 0.08));
+  padding: 12px 20px;
+  border-top: 1px solid var(--sb-line);
 }
 
 .clickable {
