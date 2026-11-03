@@ -27,7 +27,7 @@ const props = defineProps({
   },
   probes: {
     type: Number,
-    default: 1,
+    default: 0,
   },
   compact: {
     type: Boolean,

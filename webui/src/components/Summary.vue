@@ -191,8 +191,10 @@ const txSparkPoints = computed(() => {
 const totalRx = computed(() => {
   let sum = 0
   for (const n of props.nodes) {
-    const m = props.metrics[n.id]
-    if (m?.node?.received_bytes) sum += m.node.received_bytes
+    const p = props.metrics[n.id]?.proxy || props.metrics[n.id]?.node
+    if (p && p.monthly_received_bytes !== undefined) {
+      sum += Number(p.monthly_received_bytes)
+    }
   }
   return sum
 })
@@ -200,8 +202,10 @@ const totalRx = computed(() => {
 const totalTx = computed(() => {
   let sum = 0
   for (const n of props.nodes) {
-    const m = props.metrics[n.id]
-    if (m?.node?.sent_bytes) sum += m.node.sent_bytes
+    const p = props.metrics[n.id]?.proxy || props.metrics[n.id]?.node
+    if (p && p.monthly_sent_bytes !== undefined) {
+      sum += Number(p.monthly_sent_bytes)
+    }
   }
   return sum
 })

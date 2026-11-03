@@ -396,10 +396,9 @@ func (s *Server) EnsurePingTasks(ctx context.Context) error {
 			name   string
 			target string
 		}{
-			{name: "广西电信", target: "202.103.224.68:53"},
-			{name: "广西联通", target: "221.7.128.68:53"},
-			{name: "广西移动", target: "211.138.242.18:53"},
-			{name: "Cloudflare", target: "1.1.1.1:443"},
+			{name: "江苏电信", target: "218.2.135.1:53"},
+			{name: "江苏联通", target: "221.6.4.66:53"},
+			{name: "江苏移动", target: "221.131.143.69:53"},
 		}
 		for idx, dt := range defaultTasks {
 			_, _ = s.store.db.ExecContext(ctx, `INSERT INTO ping_tasks (name, target, interval, auto_join, node_ids, sort, created_at) VALUES (?, ?, 60, 1, '[]', ?, ?)`, dt.name, dt.target, idx, now)
@@ -554,10 +553,13 @@ func (s *Server) EnsureDemoNodes(ctx context.Context) error {
 				CPUName:       d.CPUName,
 				CPUCores:      d.CPUCores,
 			},
-			Latency: &latencyReport,
+			Latency:      &latencyReport,
+			CurrentMonth: time.Now().UTC().Format("2006-01"),
 			Proxy: map[string]uint64{
-				"received_bytes": uint64(rand.Int63n(800000000000) + 200000000000), // 200GB - 1TB
-				"sent_bytes":     uint64(rand.Int63n(3000000000000) + 800000000000), // 800GB - 3.8TB
+				"received_bytes":         uint64(rand.Int63n(800000000000) + 200000000000), // 200GB - 1TB
+				"sent_bytes":             uint64(rand.Int63n(3000000000000) + 800000000000), // 800GB - 3.8TB
+				"monthly_received_bytes": uint64(rand.Int63n(30000000000) + 3000000000),   // 3GB - 33GB
+				"monthly_sent_bytes":     uint64(rand.Int63n(90000000000) + 10000000000),  // 10GB - 100GB
 			},
 			Health: &storedHealth{
 				Status:            "healthy",
@@ -636,10 +638,9 @@ func (s *Server) EnsureDemoNodes(ctx context.Context) error {
 			name   string
 			target string
 		}{
-			{name: "广西电信", target: "202.103.224.68:53"},
-			{name: "广西联通", target: "221.7.128.68:53"},
-			{name: "广西移动", target: "211.138.242.18:53"},
-			{name: "Cloudflare", target: "1.1.1.1:443"},
+			{name: "江苏电信", target: "218.2.135.1:53"},
+			{name: "江苏联通", target: "221.6.4.66:53"},
+			{name: "江苏移动", target: "221.131.143.69:53"},
 		}
 		for idx, dt := range defaultTasks {
 			_, _ = s.store.db.ExecContext(ctx, `INSERT INTO ping_tasks (name, target, interval, auto_join, node_ids, sort, created_at) VALUES (?, ?, 60, 1, '[]', ?, ?)`, dt.name, dt.target, idx, now)

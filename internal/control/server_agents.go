@@ -315,6 +315,19 @@ func (s *Server) handleAgentMessage(ctx context.Context, node Node, msgType byte
 		s.reconcileNodeDDNS(ctx, node.ID)
 		if err := s.mergeNodeMetrics(ctx, node.ID, func(m *storedMetrics) {
 			m.CollectedAt = st.CollectedAt
+			// Check if calendar month has rolled over, resetting monthly counters on the 1st
+			currentMonth := time.Now().UTC().Format("2006-01")
+			if m.CurrentMonth != currentMonth {
+				m.CurrentMonth = currentMonth
+				if m.Proxy != nil {
+					m.Proxy["monthly_received_bytes"] = 0
+					m.Proxy["monthly_sent_bytes"] = 0
+				}
+				if m.Node != nil {
+					m.Node["monthly_received_bytes"] = 0
+					m.Node["monthly_sent_bytes"] = 0
+				}
+			}
 			// Connections are real-time only and live in connectionsHub; drop
 			// any list an older build persisted so nothing stale is served.
 			m.Connections = nil
@@ -592,15 +605,16 @@ type HostResources struct {
 }
 
 type storedMetrics struct {
-	CollectedAt string             `json:"collected_at"`
-	Node        map[string]uint64  `json:"node,omitempty"`
-	Proxy       map[string]uint64  `json:"proxy,omitempty"`
-	RawNode     map[string]uint64  `json:"raw_node,omitempty"`
-	RawProxy    map[string]uint64  `json:"raw_proxy,omitempty"`
-	Connections []storedConnection `json:"connections,omitempty"`
-	Health      *storedHealth      `json:"health,omitempty"`
-	Host        *HostResources     `json:"host,omitempty"`
-	Latency     *storedLatency     `json:"latency,omitempty"`
+	CollectedAt  string             `json:"collected_at"`
+	CurrentMonth string             `json:"current_month,omitempty"`
+	Node         map[string]uint64  `json:"node,omitempty"`
+	Proxy        map[string]uint64  `json:"proxy,omitempty"`
+	RawNode      map[string]uint64  `json:"raw_node,omitempty"`
+	RawProxy     map[string]uint64  `json:"raw_proxy,omitempty"`
+	Connections  []storedConnection `json:"connections,omitempty"`
+	Health       *storedHealth      `json:"health,omitempty"`
+	Host         *HostResources     `json:"host,omitempty"`
+	Latency      *storedLatency     `json:"latency,omitempty"`
 }
 
 func accumulateMetric(totals map[string]uint64, rawTotals map[string]uint64, curRx, curTx uint64) (map[string]uint64, map[string]uint64) {
@@ -648,6 +662,8 @@ func accumulateMetric(totals map[string]uint64, rawTotals map[string]uint64, cur
 
 	totals["received_bytes"] += deltaRx
 	totals["sent_bytes"] += deltaTx
+	totals["monthly_received_bytes"] += deltaRx
+	totals["monthly_sent_bytes"] += deltaTx
 	rawTotals["received_bytes"] = curRx
 	rawTotals["sent_bytes"] = curTx
 

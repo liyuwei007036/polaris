@@ -24,7 +24,7 @@
           <span v-if="jitter !== null" :class="jitterToneClass">波动 {{ Math.round(jitter) }}ms</span>
           <span v-if="jitter !== null && targetCount > 0" class="subtle-divider"> · </span>
           <span v-if="targetCount > 0" class="subtle-text">{{ targetCount }} 个探测</span>
-          <span v-else-if="jitter === null" class="subtle-text">连续探测</span>
+          <span v-else class="subtle-text">未配置探针</span>
         </template>
       </span>
     </div>
@@ -111,7 +111,7 @@ const targets = computed(() => {
   return []
 })
 
-const targetCount = computed(() => targets.value.length || 1)
+const targetCount = computed(() => targets.value.length)
 
 const targetTitles = computed(() => {
   if (!targets.value.length) return ''

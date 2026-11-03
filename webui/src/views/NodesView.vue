@@ -337,7 +337,8 @@ const stats = computed(() => {
 async function load(silent = false) {
   if (refreshing.value) return
   refreshing.value = true
-  if (!silent) loading.value = true
+  const isColdLoad = (!appState.nodes || appState.nodes.length === 0) || Object.keys(metrics.value).length === 0
+  if (!silent && isColdLoad) loading.value = true
   try {
     const [, registrations, metricResult] = await Promise.all([
       loadNodes(),
@@ -346,6 +347,14 @@ async function load(silent = false) {
     ])
     pending.value = registrations.registrations || []
     metrics.value = Object.fromEntries((metricResult.nodes || []).map((entry) => [entry.node_id, entry.report]))
+    if (metricResult.nodes && metricResult.nodes.length) {
+      for (const entry of metricResult.nodes) {
+        if (entry.live && entry.node_id) {
+          connectionSnapshots.value.set(entry.node_id, entry.live)
+        }
+      }
+      connectionSnapshots.value = new Map(connectionSnapshots.value)
+    }
   } finally {
     loading.value = false
     refreshing.value = false
@@ -860,16 +869,24 @@ watch(
   { deep: true },
 )
 
+let liveDebounceTimer = null
+
 onMounted(() => {
   load()
   window.addEventListener('sb:authenticated', onAuthSuccess)
   stopConnections = subscribeConnections(() => {})
   stopLive = subscribeLive((event) => {
-    if (event.kind === 'node') load(true).catch(() => {})
+    if (event.kind === 'node') {
+      if (liveDebounceTimer) clearTimeout(liveDebounceTimer)
+      liveDebounceTimer = setTimeout(() => {
+        load(true).catch(() => {})
+      }, 500)
+    }
   })
 })
 
 onBeforeUnmount(() => {
+  if (liveDebounceTimer) clearTimeout(liveDebounceTimer)
   window.removeEventListener('sb:authenticated', onAuthSuccess)
   stopLive?.()
   stopConnections?.()
@@ -888,12 +905,13 @@ onBeforeUnmount(() => {
       <ProbeManager v-if="probesDialog" />
     </el-dialog>
 
-    <main v-loading="loading" class="page-content page-content--tight">
+    <main v-loading.lock="loading" class="page-content page-content--tight">
       <!-- 0. 节点详情视图 (点击任意卡片或列表行进入) -->
       <NodeDetail
         v-if="selectedNode"
         :node="selectedNode"
         :metrics="metrics[selectedNode.id] || {}"
+        :live="live.get(selectedNode.id) || null"
         @back="selectedNodeId = null"
         @edit="openEdit"
         @probe="openNetworkProbe"
@@ -1017,6 +1035,7 @@ onBeforeUnmount(() => {
             :key="node.id"
             :node="node"
             :metrics="metrics[node.id] || {}"
+            :live="live.get(node.id) || null"
             :can-manage="canWrite || isAdmin"
             @open="selectedNodeId = node.id"
             @action="handleCardAction"
@@ -1030,6 +1049,7 @@ onBeforeUnmount(() => {
             :key="node.id"
             :node="node"
             :metrics="metrics[node.id] || {}"
+            :live="live.get(node.id) || null"
             @open="selectedNodeId = node.id"
           />
         </div>

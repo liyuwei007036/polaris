@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"net"
+	"strings"
 	"sync"
 	"time"
 
@@ -136,10 +137,18 @@ func (r *PingProbeRunner) runProbe() {
 }
 
 // measureTCPPing measures the TCP handshake connect time to a host:port.
+// If no port is specified, port 53 (DNS TCP standard) is assumed.
 // Returns latency in milliseconds, or -1 if the connection timed out or failed.
 func measureTCPPing(target string, timeout time.Duration) int {
+	addr := strings.TrimSpace(target)
+	if addr == "" {
+		return -1
+	}
+	if _, _, err := net.SplitHostPort(addr); err != nil {
+		addr = net.JoinHostPort(addr, "53")
+	}
 	start := time.Now()
-	conn, err := net.DialTimeout("tcp", target, timeout)
+	conn, err := net.DialTimeout("tcp", addr, timeout)
 	if err != nil {
 		return -1
 	}

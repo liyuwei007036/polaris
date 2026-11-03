@@ -123,6 +123,7 @@
         :pct="trafficPercent"
         :foot="trafficFootText"
         empty="∞"
+        :title="`本月实际消耗: ${formatBytes(trafficUsedBytes)} · 上线以来累计: ${formatBytes(lifetimeTrafficBytes)}`"
       >
         <template #icon>
           <svg class="size-3.5 text-muted" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -173,8 +174,10 @@
         </dd>
       </div>
       <div class="dl-row">
-        <dt>连接</dt>
-        <dd>{{ tcpCount }} / {{ udpCount }}</dd>
+        <dt title="sing-box 当前活跃代理连接数">连接</dt>
+        <dd class="tnum" :title="`sing-box 活跃代理连接: ${activeConnections} (系统底层 TCP: ${tcpCount} · UDP: ${udpCount})`">
+          {{ activeConnections }}
+        </dd>
       </div>
       <div class="dl-row">
         <dt>续费</dt>
@@ -229,6 +232,10 @@ const props = defineProps({
   metrics: {
     type: Object,
     default: () => ({}),
+  },
+  live: {
+    type: Object,
+    default: null,
   },
   canManage: {
     type: Boolean,
@@ -373,22 +380,44 @@ const trafficLimitBytes = computed(() => {
   return parseTrafficLimitBytes(props.node.traffic_plan)
 })
 
+const trafficUsedBytes = computed(() => {
+  const p = props.metrics?.proxy
+  if (p && (p.monthly_received_bytes !== undefined || p.monthly_sent_bytes !== undefined)) {
+    return Number(p.monthly_received_bytes || 0) + Number(p.monthly_sent_bytes || 0)
+  }
+  const n = props.metrics?.node
+  if (n && (n.monthly_received_bytes !== undefined || n.monthly_sent_bytes !== undefined)) {
+    return Number(n.monthly_received_bytes || 0) + Number(n.monthly_sent_bytes || 0)
+  }
+  return 0
+})
+
+const lifetimeTrafficBytes = computed(() => {
+  const totals = props.metrics?.proxy || props.metrics?.node || {}
+  return Number(totals.received_bytes || 0) + Number(totals.sent_bytes || 0)
+})
+
 const trafficPercent = computed(() => {
   const limit = trafficLimitBytes.value
   if (!limit || limit <= 0) return null
-  const totals = props.metrics?.proxy || props.metrics?.node || {}
-  const used = (totals.received_bytes || 0) + (totals.sent_bytes || 0)
+  const used = trafficUsedBytes.value
   return Math.min(100, Math.round((used / limit) * 100))
 })
 
 const trafficFootText = computed(() => {
-  const totals = props.metrics?.proxy || props.metrics?.node || {}
-  const used = (totals.received_bytes || 0) + (totals.sent_bytes || 0)
+  const used = trafficUsedBytes.value
   const limit = trafficLimitBytes.value
   if (limit > 0) {
     return `${formatBytes(used)} / ${formatBytes(limit)}`
   }
   return `${formatBytes(used)} / ∞`
+})
+
+const activeConnections = computed(() => {
+  if (!props.node.online) return 0
+  if (props.live?.connection_count !== undefined) return props.live.connection_count
+  if (Array.isArray(props.metrics?.connections)) return props.metrics.connections.length
+  return 0
 })
 
 const netRxRate = computed(() => {

@@ -1914,8 +1914,10 @@ func (s *Server) allNodeMetrics(w http.ResponseWriter, r *http.Request) {
 		snapshot.Connections = nil
 		live[snapshot.NodeID] = snapshot
 	}
+	currentMonth := time.Now().UTC().Format("2006-01")
 	nodes := make([]map[string]any, 0, len(reports))
 	for nodeID, report := range reports {
+		report = s.ensureMonthlyReportCounters(r.Context(), nodeID, report, currentMonth)
 		entry := map[string]any{"node_id": nodeID, "updated_at": updated[nodeID], "report": report}
 		if snapshot, ok := live[nodeID]; ok {
 			entry["live"] = snapshot
@@ -1930,12 +1932,61 @@ func (s *Server) nodeMetrics(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
-	report, updatedAt, err := s.store.NodeMetrics(r.Context(), r.PathValue("id"))
+	nodeID := r.PathValue("id")
+	report, updatedAt, err := s.store.NodeMetrics(r.Context(), nodeID)
 	if err != nil {
 		writeError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"node_id": r.PathValue("id"), "updated_at": updatedAt, "report": report})
+	currentMonth := time.Now().UTC().Format("2006-01")
+	report = s.ensureMonthlyReportCounters(r.Context(), nodeID, report, currentMonth)
+	writeJSON(w, http.StatusOK, map[string]any{"node_id": nodeID, "updated_at": updatedAt, "report": report})
+}
+
+func (s *Server) ensureMonthlyReportCounters(ctx context.Context, nodeID string, rawReport json.RawMessage, currentMonth string) json.RawMessage {
+	if len(rawReport) == 0 {
+		return rawReport
+	}
+	var sm storedMetrics
+	if err := json.Unmarshal(rawReport, &sm); err != nil {
+		return rawReport
+	}
+	changed := false
+	if sm.CurrentMonth != currentMonth {
+		sm.CurrentMonth = currentMonth
+		if sm.Proxy != nil {
+			sm.Proxy["monthly_received_bytes"] = 0
+			sm.Proxy["monthly_sent_bytes"] = 0
+			changed = true
+		}
+		if sm.Node != nil {
+			sm.Node["monthly_received_bytes"] = 0
+			sm.Node["monthly_sent_bytes"] = 0
+			changed = true
+		}
+	} else {
+		if sm.Proxy != nil {
+			if _, ok := sm.Proxy["monthly_received_bytes"]; !ok {
+				sm.Proxy["monthly_received_bytes"] = 0
+				sm.Proxy["monthly_sent_bytes"] = 0
+				changed = true
+			}
+		}
+		if sm.Node != nil {
+			if _, ok := sm.Node["monthly_received_bytes"]; !ok {
+				sm.Node["monthly_received_bytes"] = 0
+				sm.Node["monthly_sent_bytes"] = 0
+				changed = true
+			}
+		}
+	}
+	if changed {
+		if encoded, err := json.Marshal(sm); err == nil {
+			_ = s.store.UpdateNodeMetrics(ctx, nodeID, string(encoded))
+			return json.RawMessage(encoded)
+		}
+	}
+	return rawReport
 }
 
 func (s *Server) publishNodeConfiguration(w http.ResponseWriter, r *http.Request) {

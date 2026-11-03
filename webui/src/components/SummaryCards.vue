@@ -134,7 +134,7 @@
           <span class="tile-unit">在线</span>
         </div>
         <div class="tile-sub font-mono">
-          <span v-if="monthlySpendText">折合 {{ monthlySpendText }}</span>
+          <span v-if="monthlySpendText" :title="`月均续费折合换算（按参考汇率 1 USD ≈ 7.23 CNY）`">{{ monthlySpendText }}</span>
           <span v-else>{{ offlineCount }} 离线</span>
         </div>
       </div>
@@ -194,7 +194,9 @@ const totalRx = computed(() => {
   let sum = 0
   for (const n of props.nodes) {
     const p = props.metrics[n.id]?.proxy
-    if (p?.received_bytes) sum += Number(p.received_bytes)
+    if (p && p.monthly_received_bytes !== undefined) {
+      sum += Number(p.monthly_received_bytes)
+    }
   }
   return sum
 })
@@ -203,7 +205,9 @@ const totalTx = computed(() => {
   let sum = 0
   for (const n of props.nodes) {
     const p = props.metrics[n.id]?.proxy
-    if (p?.sent_bytes) sum += Number(p.sent_bytes)
+    if (p && p.monthly_sent_bytes !== undefined) {
+      sum += Number(p.monthly_sent_bytes)
+    }
   }
   return sum
 })
@@ -337,10 +341,17 @@ const monthlySpendText = computed(() => {
     if (n.currency === 'CNY') cny += p * factor
     else usd += p * factor
   }
-  const parts = []
-  if (usd > 0) parts.push(`$${usd.toFixed(1)}/月`)
-  if (cny > 0) parts.push(`¥${cny.toFixed(1)}/月`)
-  return parts.join(' · ')
+  if (usd === 0 && cny === 0) return ''
+  const USD_TO_CNY = 7.23
+  if (usd > 0 && cny > 0) {
+    const totalCny = cny + usd * USD_TO_CNY
+    return `折合 ¥${totalCny.toFixed(1)}/月 ($${usd.toFixed(1)} + ¥${cny.toFixed(1)})`
+  }
+  if (usd > 0) {
+    const inCny = usd * USD_TO_CNY
+    return `$${usd.toFixed(1)}/月 (折合 ¥${inCny.toFixed(1)})`
+  }
+  return `¥${cny.toFixed(1)}/月`
 })
 </script>
 

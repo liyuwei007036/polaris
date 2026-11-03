@@ -101,8 +101,10 @@
 
     <!-- Col 5: Connections -->
     <div class="row-col col-conns">
-      <span class="col-label">连接</span>
-      <span class="tnum font-mono">{{ tcpCount }} / {{ udpCount }}</span>
+      <span class="col-label" title="sing-box 活跃代理连接数">连接</span>
+      <span class="tnum font-mono" :title="`sing-box 活跃代理连接: ${activeConnections} (系统底层 TCP: ${tcpCount} · UDP: ${udpCount})`">
+        {{ activeConnections }}
+      </span>
     </div>
 
     <!-- Col 6: 24h Dual Mini Heat Tracks -->
@@ -130,6 +132,10 @@ const props = defineProps({
   metrics: {
     type: Object,
     default: () => ({}),
+  },
+  live: {
+    type: Object,
+    default: null,
   },
 })
 
@@ -224,10 +230,17 @@ const diskDetail = computed(() => {
 })
 
 const trafficText = computed(() => {
-  const totals = props.metrics?.proxy || props.metrics?.node || {}
-  const rx = totals.received_bytes || 0
-  const tx = totals.sent_bytes || 0
-  return formatBytes(rx + tx)
+  const p = props.metrics?.proxy || props.metrics?.node || {}
+  const rx = p.monthly_received_bytes !== undefined ? p.monthly_received_bytes : p.received_bytes || 0
+  const tx = p.monthly_sent_bytes !== undefined ? p.monthly_sent_bytes : p.sent_bytes || 0
+  return formatBytes(Number(rx) + Number(tx))
+})
+
+const activeConnections = computed(() => {
+  if (!props.node.online) return 0
+  if (props.live?.connection_count !== undefined) return props.live.connection_count
+  if (Array.isArray(props.metrics?.connections)) return props.metrics.connections.length
+  return 0
 })
 
 const netRxRate = computed(() => props.node.online && hostMetrics.value ? hostMetrics.value.net_rx_rate || 0 : 0)

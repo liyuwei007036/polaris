@@ -60,9 +60,9 @@
         <span class="stat-sub">{{ formatBytes(host.memory_used) }} / {{ formatBytes(host.disk_used) }}</span>
       </div>
       <div class="stat-card neu">
-        <span class="stat-label">TCP / UDP</span>
-        <strong class="stat-value">{{ host.tcp ?? 0 }} / {{ host.udp ?? 0 }}</strong>
-        <span class="stat-sub">{{ host.procs ?? 0 }} 个进程</span>
+        <span class="stat-label">活跃连接</span>
+        <strong class="stat-value text-primary font-mono">{{ activeConnections }}</strong>
+        <span class="stat-sub">系统 TCP {{ host.tcp ?? 0 }} · UDP {{ host.udp ?? 0 }}</span>
       </div>
       <div class="stat-card neu">
         <span class="stat-label">当前延迟</span>
@@ -299,6 +299,7 @@ import { summarizePing } from '../latency'
 const props = defineProps({
   node: { type: Object, required: true },
   metrics: { type: Object, default: () => ({}) },
+  live: { type: Object, default: null },
 })
 defineEmits(['back', 'edit', 'probe'])
 
@@ -330,6 +331,13 @@ const ranges = computed(() => (tab.value === 'latency' ? LATENCY_RANGES : RESOUR
 
 const host = computed(() => props.metrics.host || {})
 const latency = computed(() => props.metrics.latency || null)
+
+const activeConnections = computed(() => {
+  if (!props.node.online) return 0
+  if (props.live?.connection_count !== undefined) return props.live.connection_count
+  if (Array.isArray(props.metrics?.connections)) return props.metrics.connections.length
+  return 0
+})
 // 与 ref 一致：延迟页的探测统计来自按所选时间范围拉取的原始 ping 历史，
 // 列表页的 24 小时概览仍用实时上报里的汇总。
 const pingSummary = computed(() => (pingHistory.value ? summarizePing(pingHistory.value) : null))
@@ -529,16 +537,19 @@ const factGroups = computed(() => {
     icon: 'activity',
     facts: [
       { label: '负载 (1/5/15 分)', value: Array.isArray(m.load_avg) ? m.load_avg.map((v) => Number(v).toFixed(2)).join('  ') : '' },
-      { label: '进程 / TCP / UDP', value: m.procs != null ? `${m.procs} / ${m.tcp} / ${m.udp}` : '' },
+      { label: '系统套接字 / 进程', value: m.procs != null ? `TCP ${m.tcp} · UDP ${m.udp} · ${m.procs} 进程` : '' },
       { label: '在线时长', value: m.uptime_seconds ? formatDuration(m.uptime_seconds) : '' },
       { label: 'Agent', value: node.agent_version ? `v${String(node.agent_version).replace(/^v/, '')}` : '' },
     ].filter((f) => f.value),
   })
 
   // 3. 网络与流量
-  const totals = props.metrics.node || {}
+  const totals = props.metrics.proxy || props.metrics.node || {}
+  const monthlyRx = totals.monthly_received_bytes || 0
+  const monthlyTx = totals.monthly_sent_bytes || 0
   const netFacts = [
-    { label: '累计流量', value: `↓ ${formatBytes(totals.received_bytes)} · ↑ ${formatBytes(totals.sent_bytes)}` },
+    { label: '本月流量', value: `↓ ${formatBytes(monthlyRx)} · ↑ ${formatBytes(monthlyTx)}` },
+    { label: '累计流量', value: `↓ ${formatBytes(totals.received_bytes || 0)} · ↑ ${formatBytes(totals.sent_bytes || 0)}` },
     { label: '机器带宽', value: node.bandwidth || '1 Gbps' },
     { label: '主机地址', value: node.client_address },
     { label: '出口 IP', value: (node.ip_addresses || []).join(' · ') || node.last_observed_ip, cls: 'font-mono' },
