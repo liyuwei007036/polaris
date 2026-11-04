@@ -1386,6 +1386,9 @@ func (s *Server) enrichNodeLocation(node *Node) {
 			node.Location = loc
 			node.City = info.City
 			node.CountryCode = info.CountryCode
+			node.Latitude = info.Latitude
+			node.Longitude = info.Longitude
+			node.HasCoords = info.HasCoords
 			return
 		}
 	}
@@ -1426,6 +1429,9 @@ func (s *Server) handleIPLookup(w http.ResponseWriter, r *http.Request) {
 		"province":     info.Province,
 		"isp":          info.ISP,
 		"asn":          info.ASN,
+		"latitude":     info.Latitude,
+		"longitude":    info.Longitude,
+		"has_coords":   info.HasCoords,
 		"source":       info.Source,
 		"is_anycast":   info.IsAnycast,
 		"is_domestic":  info.IsDomestic,

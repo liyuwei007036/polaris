@@ -54,7 +54,7 @@
     <!-- Card Header Row 2: Full-width Meta & Badges -->
     <div class="node-meta">
       <span class="country-flag shrink-0">{{ countryFlag }}</span>
-      <span class="country-name shrink-0">{{ countryName }}</span>
+      <span class="country-name shrink-0" :title="fullLocationTip">{{ locationName }}</span>
       <span class="meta-divider shrink-0">&middot;</span>
       <OsIcon :os="node.os_name || node.os" class="meta-os-icon shrink-0" />
       <span class="node-system-text truncate min-w-0 flex-1">{{ systemInfoText }}</span>
@@ -285,7 +285,25 @@ const countryFlag = computed(() => {
   return getNodeFlag(props.node.name)
 })
 
-const countryName = computed(() => {
+const locationName = computed(() => {
+  // 1. 优先使用具体城市位置 (例如: 洛杉矶, 圣何塞, 纽约, 深圳, 东京)
+  if (props.node.city && props.node.city.trim()) {
+    return props.node.city.trim()
+  }
+
+  // 2. 其次提取 location 字符串中的具体地名
+  if (props.node.location && props.node.location.trim()) {
+    const loc = props.node.location.trim()
+    if (loc !== '未知' && loc !== '本机' && loc !== '内网') {
+      const parts = loc.split(/\s+/)
+      if (parts.length >= 2) {
+        return parts[parts.length - 1]
+      }
+      return loc
+    }
+  }
+
+  // 3. 兜底回退：若无任何城市数据，才显示国家名称
   const code = props.node.country || props.node.country_code
   if (code && /^[A-Za-z]{2}$/.test(code)) {
     try {
@@ -295,7 +313,12 @@ const countryName = computed(() => {
       return code
     }
   }
-  return props.node.city || '全球节点'
+
+  return '未知位置'
+})
+
+const fullLocationTip = computed(() => {
+  return props.node.location || props.node.city || locationName.value
 })
 
 const systemInfoText = computed(() => {
@@ -620,7 +643,7 @@ function formatRate(bps) {
 }
 
 .country-name {
-  max-width: 90px;
+  max-width: 120px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;

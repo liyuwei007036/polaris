@@ -18,6 +18,8 @@
         </span>
       </div>
       <div class="os-line">
+        <span v-if="locationName" class="location-tag shrink-0" :title="node.location || locationName">{{ locationName }}</span>
+        <span v-if="locationName" class="meta-dot">·</span>
         <OsIcon :os="node.os_name || node.os" class="os-icon-sm" />
         <span class="system-text truncate">{{ systemInfoText }}</span>
         <template v-if="node.provider">
@@ -179,6 +181,25 @@ const countryFlag = computed(() => {
     if (f && f !== '🌐') return f
   }
   return getNodeFlag(props.node.name)
+})
+
+const locationName = computed(() => {
+  if (props.node.city && props.node.city.trim()) return props.node.city.trim()
+  if (props.node.location && props.node.location.trim() && props.node.location !== '未知') {
+    const parts = props.node.location.trim().split(/\s+/)
+    if (parts.length >= 2) return parts[parts.length - 1]
+    return props.node.location.trim()
+  }
+  const code = props.node.country || props.node.country_code
+  if (code && /^[A-Za-z]{2}$/.test(code)) {
+    try {
+      const dn = new Intl.DisplayNames(['zh-CN'], { type: 'region' })
+      return dn.of(code.toUpperCase()) || code
+    } catch {
+      return code
+    }
+  }
+  return ''
 })
 
 const systemInfoText = computed(() => {

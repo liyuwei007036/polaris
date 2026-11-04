@@ -11,7 +11,7 @@
       <h2 class="detail-name truncate">{{ node.name }}</h2>
       <span class="country-label">
         <span class="country-flag">{{ flag }}</span>
-        <span>{{ countryName }}</span>
+        <span :title="fullLocationTip">{{ locationName }}</span>
       </span>
       <span class="status-pill" :class="node.online ? 'is-online' : 'is-offline'">
         <span class="status-dot-pulse" />
@@ -418,7 +418,20 @@ const flag = computed(() => {
   return getNodeFlag(props.node.name)
 })
 
-const countryName = computed(() => {
+const locationName = computed(() => {
+  if (props.node.city && props.node.city.trim()) {
+    return props.node.city.trim()
+  }
+  if (props.node.location && props.node.location.trim()) {
+    const loc = props.node.location.trim()
+    if (loc !== '未知' && loc !== '本机' && loc !== '内网') {
+      const parts = loc.split(/\s+/)
+      if (parts.length >= 2) {
+        return parts[parts.length - 1]
+      }
+      return loc
+    }
+  }
   const code = props.node.country || props.node.country_code
   if (code && /^[A-Za-z]{2}$/.test(code)) {
     try {
@@ -428,7 +441,11 @@ const countryName = computed(() => {
       return code
     }
   }
-  return props.node.city || '全球节点'
+  return '未知位置'
+})
+
+const fullLocationTip = computed(() => {
+  return props.node.location || props.node.city || locationName.value
 })
 const uptimeText = computed(() => (host.value.uptime_seconds ? formatDuration(host.value.uptime_seconds) : ''))
 const loadText = computed(() => {
@@ -605,6 +622,7 @@ const factGroups = computed(() => {
     { label: '累计流量', value: `↓ ${formatBytes(totals.received_bytes || 0)} · ↑ ${formatBytes(totals.sent_bytes || 0)}` },
     { label: '机器带宽', value: node.bandwidth || '1 Gbps' },
     { label: '主机地址', value: node.client_address },
+    { label: '地理位置', value: node.location || node.city },
     { label: '出口 IP', value: (node.ip_addresses || []).join(' · ') || node.last_observed_ip, cls: 'font-mono' },
   ]
   groups.push({

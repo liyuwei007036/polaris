@@ -221,3 +221,50 @@ func TestIPDatabaseHTTPHandlers(t *testing.T) {
 	destPath := filepath.Join(store.DataDir(), "test.mmdb")
 	_ = os.Remove(destPath)
 }
+
+func TestIPLocatorDynamicCoordinates(t *testing.T) {
+	locator, err := newIPLocator()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// 1. Domestic IP: Shenzhen (via embedded ip2region + china_cities.json)
+	infoSZ := locator.Lookup("183.14.135.1")
+	if !infoSZ.HasCoords || infoSZ.Latitude == 0 || infoSZ.Longitude == 0 {
+		t.Fatalf("expected Shenzhen coordinates, got %+v", infoSZ)
+	}
+	if infoSZ.Latitude < 22 || infoSZ.Latitude > 23 || infoSZ.Longitude < 113 || infoSZ.Longitude > 115 {
+		t.Fatalf("unexpected Shenzhen coordinates: %f, %f", infoSZ.Latitude, infoSZ.Longitude)
+	}
+
+	// 2. Domestic IP: Shanghai
+	infoSH := locator.Lookup("202.96.209.133")
+	if !infoSH.HasCoords || infoSH.Latitude == 0 || infoSH.Longitude == 0 {
+		t.Fatalf("expected Shanghai coordinates, got %+v", infoSH)
+	}
+	if infoSH.Latitude < 30 || infoSH.Latitude > 32 || infoSH.Longitude < 120 || infoSH.Longitude > 122 {
+		t.Fatalf("unexpected Shanghai coordinates: %f, %f", infoSH.Latitude, infoSH.Longitude)
+	}
+
+	// 3. Private / Loopback IP should have HasCoords = false
+	infoPrivate := locator.Lookup("192.168.1.1")
+	if infoPrivate.HasCoords {
+		t.Fatalf("private IP should not have coordinates, got %+v", infoPrivate)
+	}
+	infoLoopback := locator.Lookup("127.0.0.1")
+	if infoLoopback.HasCoords {
+		t.Fatalf("loopback IP should not have coordinates, got %+v", infoLoopback)
+	}
+
+	// 4. Test with MMDB loaded if available
+	mmdbPath := filepath.Join("..", "..", "data", "GeoLite2-City.mmdb")
+	if _, err := os.Stat(mmdbPath); err == nil {
+		if err := locator.LoadMMDB(mmdbPath); err != nil {
+			t.Fatal(err)
+		}
+		infoGoogle := locator.Lookup("8.8.8.8")
+		if !infoGoogle.HasCoords || infoGoogle.Latitude == 0 || infoGoogle.Longitude == 0 {
+			t.Fatalf("expected Google coordinates with MMDB loaded, got %+v", infoGoogle)
+		}
+	}
+}

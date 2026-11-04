@@ -2,6 +2,7 @@ package control
 
 import (
 	_ "embed"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net"
@@ -20,19 +21,25 @@ var ipRegionV4 []byte
 //go:embed ipdb/ip2region_v6.xdb
 var ipRegionV6 []byte
 
+//go:embed ipdb/china_cities.json
+var chinaCitiesJSON []byte
+
 // LocationInfo represents rich, structured geolocation and network information for an IP address.
 type LocationInfo struct {
-	IP          string `json:"ip"`
-	Location    string `json:"location"`
-	City        string `json:"city"`
-	Country     string `json:"country,omitempty"`
-	CountryCode string `json:"country_code,omitempty"`
-	Province    string `json:"province,omitempty"`
-	ISP         string `json:"isp,omitempty"`
-	ASN         string `json:"asn,omitempty"`
-	Source      string `json:"source"` // "mmdb", "ip2region", "system"
-	IsAnycast   bool   `json:"is_anycast"`
-	IsDomestic  bool   `json:"is_domestic"`
+	IP          string  `json:"ip"`
+	Location    string  `json:"location"`
+	City        string  `json:"city"`
+	Country     string  `json:"country,omitempty"`
+	CountryCode string  `json:"country_code,omitempty"`
+	Province    string  `json:"province,omitempty"`
+	ISP         string  `json:"isp,omitempty"`
+	ASN         string  `json:"asn,omitempty"`
+	Latitude    float64 `json:"latitude"`
+	Longitude   float64 `json:"longitude"`
+	HasCoords   bool    `json:"has_coords"`
+	Source      string  `json:"source"` // "mmdb", "ip2region", "system"
+	IsAnycast   bool    `json:"is_anycast"`
+	IsDomestic  bool    `json:"is_domestic"`
 }
 
 type ipLocator struct {
@@ -44,8 +51,94 @@ type ipLocator struct {
 	v4    *xdb.Searcher
 	v6    *xdb.Searcher
 
+	chinaCities map[string][2]float64
+
 	cache      sync.Map // string (IP) -> LocationInfo
 	searchDirs []string
+}
+
+func normalizeRegionName(name string) string {
+	name = strings.TrimSpace(name)
+	name = strings.TrimSuffix(name, "市")
+	name = strings.TrimSuffix(name, "区")
+	name = strings.TrimSuffix(name, "县")
+	name = strings.TrimSuffix(name, "特别行政区")
+	name = strings.TrimSuffix(name, "自治州")
+	name = strings.TrimSuffix(name, "地区")
+	name = strings.TrimSuffix(name, "盟")
+	return name
+}
+
+func loadChinaCities(embedded []byte, searchDirs ...string) map[string][2]float64 {
+	out := make(map[string][2]float64, 500)
+	applyJSON := func(data []byte) {
+		if len(data) == 0 {
+			return
+		}
+		var raw map[string][2]float64
+		if err := json.Unmarshal(data, &raw); err != nil {
+			return
+		}
+		for k, v := range raw {
+			out[k] = v
+			norm := normalizeRegionName(k)
+			if norm != "" && norm != k {
+				out[norm] = v
+			}
+		}
+	}
+	applyJSON(embedded)
+
+	candidates := []string{
+		"data/china_cities.json",
+		"china_cities.json",
+		filepath.Join("data", "china_cities.json"),
+		filepath.Join("ipdb", "china_cities.json"),
+	}
+	for _, dir := range searchDirs {
+		if dir != "" {
+			candidates = append(candidates, filepath.Join(dir, "china_cities.json"))
+			candidates = append(candidates, filepath.Join(dir, "data", "china_cities.json"))
+			candidates = append(candidates, filepath.Join(dir, "ipdb", "china_cities.json"))
+		}
+	}
+	for _, cand := range candidates {
+		if b, err := os.ReadFile(cand); err == nil && len(b) > 0 {
+			applyJSON(b)
+			break
+		}
+	}
+	return out
+}
+
+func (l *ipLocator) coordsOfChinaCity(city, province string) (float64, float64, bool) {
+	if l.chinaCities == nil {
+		return 0, 0, false
+	}
+	check := func(name string) (float64, float64, bool) {
+		name = strings.TrimSpace(name)
+		if name == "" || name == "0" {
+			return 0, 0, false
+		}
+		if coords, ok := l.chinaCities[name]; ok {
+			return coords[0], coords[1], true
+		}
+		norm := normalizeRegionName(name)
+		if norm != "" {
+			if coords, ok := l.chinaCities[norm]; ok {
+				return coords[0], coords[1], true
+			}
+		}
+		return 0, 0, false
+	}
+
+	if lat, lon, ok := check(city); ok {
+		return lat, lon, true
+	}
+	if lat, lon, ok := check(province); ok {
+		return lat, lon, true
+	}
+	return 0, 0, false
 }
 
 func newIPLocator(searchDirs ...string) (*ipLocator, error) {
@@ -59,9 +152,10 @@ func newIPLocator(searchDirs ...string) (*ipLocator, error) {
 	}
 
 	locator := &ipLocator{
-		v4:         v4,
-		v6:         v6,
-		searchDirs: searchDirs,
+		v4:          v4,
+		v6:          v6,
+		chinaCities: loadChinaCities(chinaCitiesJSON, searchDirs...),
+		searchDirs:  searchDirs,
 	}
 
 	// Auto-discover standard MMDB files in search paths
@@ -237,6 +331,16 @@ func (l *ipLocator) Lookup(value string) LocationInfo {
 			res.IsAnycast = mmdbRes.IsAnycast
 			res.Source = "ip2region+mmdb"
 		}
+		// Coordinate resolution for China:
+		if lat, lon, ok := l.coordsOfChinaCity(res.City, res.Province); ok {
+			res.Latitude = lat
+			res.Longitude = lon
+			res.HasCoords = true
+		} else if mmdbMatched && mmdbRes.HasCoords && !(mmdbRes.Latitude > 34.77 && mmdbRes.Latitude < 34.78 && mmdbRes.Longitude > 113.72 && mmdbRes.Longitude < 113.73) {
+			res.Latitude = mmdbRes.Latitude
+			res.Longitude = mmdbRes.Longitude
+			res.HasCoords = true
+		}
 	} else {
 		// International / Overseas: MMDB is the global authority for international geography and Anycast.
 		if mmdbMatched && (mmdbRes.Country != "" || mmdbRes.City != "") {
@@ -246,6 +350,11 @@ func (l *ipLocator) Lookup(value string) LocationInfo {
 			}
 		} else {
 			res = ip2regRes
+		}
+		if mmdbMatched && mmdbRes.HasCoords {
+			res.Latitude = mmdbRes.Latitude
+			res.Longitude = mmdbRes.Longitude
+			res.HasCoords = true
 		}
 	}
 
@@ -323,6 +432,10 @@ func (l *ipLocator) lookupMMDB(reader *geoip2.Reader, ip net.IP) (LocationInfo, 
 		ispStr = asnRecord.AutonomousSystemOrganization
 	}
 
+	lat := record.Location.Latitude
+	lon := record.Location.Longitude
+	hasCoords := lat != 0 || lon != 0
+
 	return LocationInfo{
 		IP:          ip.String(),
 		Country:     countryName,
@@ -332,6 +445,9 @@ func (l *ipLocator) lookupMMDB(reader *geoip2.Reader, ip net.IP) (LocationInfo, 
 		Location:    locStr,
 		ISP:         ispStr,
 		ASN:         asnStr,
+		Latitude:    lat,
+		Longitude:   lon,
+		HasCoords:   hasCoords,
 		Source:      "mmdb",
 		IsAnycast:   record.Traits.IsAnycast,
 		IsDomestic:  isDomestic,

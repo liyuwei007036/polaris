@@ -142,7 +142,7 @@
   </div>
 
   <!-- Right Side: Openlat World Node Distribution Map -->
-  <NodeMap :nodes="nodes" class="summary-map" @open="(id) => $emit('open', id)" />
+  <NodeMap :nodes="nodes" :live="live" class="summary-map" @open="(id) => $emit('open', id)" />
 </div>
 </template>
 

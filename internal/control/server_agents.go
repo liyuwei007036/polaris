@@ -748,6 +748,9 @@ type storedConnection struct {
 	Source              string   `json:"source,omitempty"`
 	SourceIP            string   `json:"source_ip,omitempty"`
 	SourceLocation      string   `json:"source_location,omitempty"`
+	SourceLat           float64  `json:"source_lat,omitempty"`
+	SourceLon           float64  `json:"source_lon,omitempty"`
+	HasSourceCoords     bool     `json:"has_source_coords,omitempty"`
 	Destination         string   `json:"destination,omitempty"`
 	DestinationLocation string   `json:"destination_location,omitempty"`
 	Host                string   `json:"host,omitempty"`
@@ -830,9 +833,21 @@ func (s *Server) convertConnections(ctx context.Context, nodeID string, in []wir
 			destLoc = s.ipLocator.Locate(destIP)
 		}
 
+		var srcLoc string
+		var srcLat, srcLon float64
+		var hasSrcCoords bool
+		if s.ipLocator != nil && ip != "" {
+			srcInfo := s.ipLocator.Lookup(ip)
+			srcLoc = srcInfo.Location
+			srcLat = srcInfo.Latitude
+			srcLon = srcInfo.Longitude
+			hasSrcCoords = srcInfo.HasCoords
+		}
+
 		out = append(out, storedConnection{
 			ID: c.ID, Inbound: c.Inbound, Network: c.Network, Source: c.Source, Destination: c.Destination,
-			SourceIP: ip, SourceLocation: s.ipLocator.Locate(ip), DestinationLocation: destLoc, Host: c.Host, Upload: c.Upload, Download: c.Download,
+			SourceIP: ip, SourceLocation: srcLoc, SourceLat: srcLat, SourceLon: srcLon, HasSourceCoords: hasSrcCoords,
+			DestinationLocation: destLoc, Host: c.Host, Upload: c.Upload, Download: c.Download,
 			StartedAt: c.StartedAt, Outbound: c.Outbound, Rule: c.Rule, RulePayload: c.RulePayload, Chains: c.Chains,
 			ListenerName: names[listenerID], User: user, OutboundName: outboundDisplayName(c.Outbound, egress),
 			IsChainRelay: isChainRelay, RelayUpstreamNodeID: relayUpstreamNodeID, ChainedTarget: chainedTarget,

@@ -129,6 +129,9 @@ type Node struct {
 	Location       string            `json:"location,omitempty"`
 	City           string            `json:"city,omitempty"`
 	CountryCode    string            `json:"country_code,omitempty"`
+	Latitude       float64           `json:"latitude,omitempty"`
+	Longitude      float64           `json:"longitude,omitempty"`
+	HasCoords      bool              `json:"has_coords,omitempty"`
 	ExpiresOn      string            `json:"expires_on"`
 	Price          string            `json:"price"`
 	PricePeriod    string            `json:"price_period"`
