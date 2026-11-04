@@ -113,7 +113,10 @@ onBeforeUnmount(() => {
             </template>
           </el-table-column>
           <el-table-column label="目标" min-width="200" show-overflow-tooltip>
-            <template #default="{ row }"><strong>{{ row.target }}</strong></template>
+            <template #default="{ row }">
+              <strong>{{ row.target }}</strong>
+              <div v-if="row.destination_location" class="subtle" style="font-size: 11px">{{ row.destination_location }}</div>
+            </template>
           </el-table-column>
           <el-table-column label="入站节点" min-width="160" show-overflow-tooltip>
             <template #default="{ row }">

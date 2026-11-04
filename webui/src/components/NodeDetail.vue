@@ -105,11 +105,11 @@
     <div v-if="tab === 'resources'" class="chart-grid">
       <section class="chart-panel neu">
         <h4>CPU 使用率</h4>
-        <TrendChart :points="series.cpu" color="var(--sb-chart-1)" :format="(v) => `${v.toFixed(1)}%`" />
+        <TrendChart :points="series.cpu" color="var(--sb-chart-1)" :min="0" :max="100" :format="formatCpuTick" />
       </section>
       <section class="chart-panel neu">
         <h4>内存 · {{ formatBytes(host.memory_total) }}</h4>
-        <TrendChart :points="series.mem" color="var(--sb-chart-2)" :format="(v) => formatBytes(v)" />
+        <TrendChart :points="series.mem" color="var(--sb-chart-2)" :min="0" :max="host.memory_total || undefined" :format="(v) => formatBytes(v)" />
       </section>
       <section class="chart-panel neu">
         <h4>网络速率</h4>
@@ -118,18 +118,19 @@
             { points: series.rx, color: 'var(--sb-info)' },
             { points: series.tx, color: 'var(--sb-chart-4)' },
           ]"
+          :min="0"
           :format="(v) => formatBytes(v, '/s')"
         />
       </section>
       <section class="chart-panel neu">
         <h4>硬盘 · {{ formatBytes(host.disk_total) }}</h4>
-        <TrendChart :points="series.disk" color="var(--sb-chart-3)" :format="(v) => formatBytes(v)" />
+        <TrendChart :points="series.disk" color="var(--sb-chart-3)" :min="0" :max="host.disk_total || undefined" :format="(v) => formatBytes(v)" />
       </section>
     </div>
 
     <!-- 网络延迟 -->
     <div v-else class="latency-tab">
-      <LatencyPanel v-if="latency" :latency="latency" />
+      <LatencyPanel v-if="effectiveLatency" :latency="effectiveLatency" />
       <p v-if="latencyFailed" class="detail-empty">读取历史数据失败：{{ latencyFailed }}</p>
       <p v-else-if="latencyLoading && !probes.length" class="detail-empty">正在读取延迟历史…</p>
       <p v-else-if="!probes.length" class="detail-empty">
@@ -148,6 +149,7 @@
           :series="latencySeries"
           :height="230"
           :area="false"
+          :min="0"
           :format="(v) => `${Math.round(v)} ms`"
         />
         <p v-else class="detail-empty">已隐藏全部探测曲线</p>
@@ -329,8 +331,8 @@ const latencyLoading = ref(false)
 const latencyFailed = ref('')
 const ranges = computed(() => (tab.value === 'latency' ? LATENCY_RANGES : RESOURCE_RANGES))
 
-const host = computed(() => props.metrics.host || {})
-const latency = computed(() => props.metrics.latency || null)
+const host = computed(() => props.live?.host || props.metrics.host || {})
+const latency = computed(() => props.live?.latency || props.metrics.latency || null)
 
 const activeConnections = computed(() => {
   if (!props.node.online) return 0
@@ -342,8 +344,44 @@ const activeConnections = computed(() => {
 // 列表页的 24 小时概览仍用实时上报里的汇总。
 const pingSummary = computed(() => (pingHistory.value ? summarizePing(pingHistory.value) : null))
 const probes = computed(() => {
-  if (tab.value === 'latency' && pingSummary.value) return pingSummary.value.probes
+  if (pingSummary.value) return pingSummary.value.probes
   return latency.value?.probes || []
+})
+
+const selectedProbe = computed(() => {
+  if (only.value === null) return null
+  return probes.value.find((p) => p.id === only.value) || null
+})
+
+const effectiveLatency = computed(() => {
+  if (selectedProbe.value) {
+    const p = selectedProbe.value
+    return {
+      latency: p.latency,
+      loss: p.loss,
+      probe: p.name,
+      jitter: p.jitter,
+      avgLatency: p.avgLatency ?? p.latency,
+      avgLoss: p.avgLoss ?? p.loss,
+      probes: [p],
+      hours: p.hours || [],
+    }
+  }
+  if (shownProbes.value.length === 1) {
+    const p = shownProbes.value[0]
+    return {
+      latency: p.latency,
+      loss: p.loss,
+      probe: p.name,
+      jitter: p.jitter,
+      avgLatency: p.avgLatency ?? p.latency,
+      avgLoss: p.avgLoss ?? p.loss,
+      probes: [p],
+      hours: p.hours || [],
+    }
+  }
+  if (pingSummary.value) return pingSummary.value
+  return latency.value
 })
 
 function getNodeFlag(name) {
@@ -401,16 +439,31 @@ const memoryPct = computed(() => percent(host.value.memory_used, host.value.memo
 const diskPct = computed(() => percent(host.value.disk_used, host.value.disk_total))
 
 const latencyText = computed(() => {
-  const value = latency.value?.latency ?? latency.value?.avgLatency
+  const lat = effectiveLatency.value
+  const value = lat?.latency ?? lat?.avgLatency ?? lat?.average_latency_ms
   return value == null ? '—' : `${Math.round(value)} ms`
 })
 const latencySub = computed(() => {
-  if (!latency.value || latency.value.none) return '无探测任务'
-  return [latency.value.probe, latency.value.jitter != null ? `波动 ${Math.round(latency.value.jitter)} ms` : '']
-    .filter(Boolean)
-    .join(' · ')
+  const lat = effectiveLatency.value
+  if (!lat || lat.none) return '无探测任务'
+  const probeName = lat.probe || (Array.isArray(lat.targets) && lat.targets[0]?.target) || ''
+  const jitterVal = lat.jitter ?? lat.jitter_ms
+  const parts = []
+  if (probeName) parts.push(probeName)
+  if (jitterVal != null) parts.push(`波动 ${Math.round(jitterVal)} ms`)
+  if (selectedProbe.value && selectedProbe.value.loss) parts.push(`丢包 ${Math.round(selectedProbe.value.loss)}%`)
+  return parts.join(' · ') || '正常'
 })
-const latencyTone = computed(() => toneOf(latency.value?.latency ?? latency.value?.avgLatency, latency.value?.loss))
+const latencyTone = computed(() => {
+  const lat = effectiveLatency.value
+  const val = lat?.latency ?? lat?.avgLatency ?? lat?.average_latency_ms
+  const loss = lat?.loss ?? lat?.avgLoss ?? lat?.average_loss_percent
+  return toneOf(val, loss)
+})
+
+function formatCpuTick(v) {
+  return `${Number(v).toFixed(v % 1 === 0 ? 0 : 1)}%`
+}
 
 const series = computed(() => ({
   cpu: history.value.map((p) => ({ ts: p.ts, v: p.cpu })),
@@ -659,8 +712,18 @@ async function loadHistory() {
     return
   }
   try {
-    const result = await api(`/nodes/${props.node.id}/history?hours=${hours.value}`)
-    history.value = result.metrics || []
+    const [resResult, pingResult] = await Promise.allSettled([
+      api(`/nodes/${props.node.id}/history?hours=${hours.value}`),
+      api(`/nodes/${props.node.id}/history?hours=${hours.value}&series=ping&points=240`),
+    ])
+    if (resResult.status === 'fulfilled') {
+      history.value = resResult.value.metrics || []
+    } else {
+      history.value = []
+    }
+    if (pingResult.status === 'fulfilled') {
+      pingHistory.value = pingResult.value
+    }
   } catch {
     history.value = []
   }

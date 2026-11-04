@@ -38,6 +38,21 @@ const query = reactive({
 })
 
 const records = ref([])
+const ipLocationCache = reactive({})
+const inFlightIPs = new Set()
+
+async function fetchIPLocation(ip) {
+  if (!ip || ipLocationCache[ip] || inFlightIPs.has(ip)) return
+  inFlightIPs.add(ip)
+  try {
+    const res = await api(`/ip/lookup?ip=${encodeURIComponent(ip)}`)
+    ipLocationCache[ip] = res.location || res.city || res.country || '未知归属地'
+  } catch {
+    ipLocationCache[ip] = '未知归属地'
+  } finally {
+    inFlightIPs.delete(ip)
+  }
+}
 
 const dateShortcuts = [
   { text: '今天', value: () => [new Date(new Date().setHours(0, 0, 0, 0)), new Date()] },
@@ -188,22 +203,17 @@ function isIP(str) {
   return /^(\d{1,3}\.){3}\d{1,3}$/.test(clean) || clean.includes(':')
 }
 
-function resolveIPLocation(ip) {
+function resolveIPLocation(ip, row) {
+  if (row?.destination_location) return row.destination_location
   if (!ip) return '未知归属地'
   if (ip.startsWith('10.') || ip.startsWith('192.168.') || ip.startsWith('172.16.') || ip.startsWith('127.')) {
     return '内网地址'
   }
-  if (ip === '1.1.1.1' || ip === '1.0.0.1') return '美国 Cloudflare DNS'
-  if (ip === '8.8.8.8' || ip === '8.8.4.4') return '美国 Google DNS'
-  if (ip.startsWith('202.103.')) return '中国 广西 南宁电信'
-  if (ip.startsWith('221.7.')) return '中国 广西 南宁联通'
-  if (ip.startsWith('211.138.')) return '中国 广西 南宁移动'
-  if (ip.startsWith('104.16.') || ip.startsWith('104.18.')) return '美国 旧金山 Cloudflare'
-  if (ip.startsWith('140.82.')) return '美国 GitHub'
-  if (ip.startsWith('142.250.')) return '美国 Google'
-  if (ip.startsWith('198.38.')) return '美国 Netflix'
-  if (ip.startsWith('51.15.')) return '英国 伦敦 OVH'
-  return '公网 IP'
+  if (ipLocationCache[ip]) {
+    return ipLocationCache[ip]
+  }
+  fetchIPLocation(ip)
+  return '查询中...'
 }
 
 function parseTargetInfo(row) {
@@ -232,7 +242,7 @@ function parseTargetInfo(row) {
 
   const ip = destIP || rawHost || '—'
   const full = port && !ip.endsWith(`:${port}`) ? `${ip}:${port}` : ip
-  const loc = row.destination_location || resolveIPLocation(destIP || rawHost)
+  const loc = row.destination_location || resolveIPLocation(destIP || rawHost, row)
   return {
     type: 'ip',
     text: full,

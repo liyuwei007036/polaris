@@ -85,7 +85,7 @@ const details = computed(() => {
   const row = detailTarget.value
   if (!row) return []
   return [
-    { label: '目标', value: row.target, mono: true },
+    { label: '目标', value: [row.target, row.destination_location].filter(Boolean).join(' · '), mono: true },
     { label: '服务器', value: row.node_name },
     { label: '入站节点', value: row.entry },
     { label: '出口', value: row.exit },
@@ -154,6 +154,7 @@ onBeforeUnmount(() => {
             <span class="m-item__title m-item__title--mono">{{ row.target }}</span>
             <span class="m-pill m-pill--info">{{ (row.network || '').toUpperCase() || '—' }}</span>
           </div>
+          <div v-if="row.destination_location" class="subtle" style="font-size: 11px; margin-top: 1px">{{ row.destination_location }}</div>
           <!-- 出口占掉右边一截后，三格速率会把「4.60 MB/s」截成「4.60 M…」。
                TCP/UDP 是个短标签，挪到标题行；留下的两格才装得下完整的数。 -->
           <div class="m-item__stats">

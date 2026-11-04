@@ -45,12 +45,14 @@ const props = defineProps({
   height: { type: Number, default: 176 },
   area: { type: Boolean, default: true },
   format: { type: Function, default: (v) => String(Math.round(v * 10) / 10) },
+  min: { type: Number, default: undefined },
+  max: { type: Number, default: undefined },
 })
 
 const root = ref(null)
 const W = ref(600)
 const H = computed(() => Math.max(80, props.height - 16))
-const PAD_LEFT = 38
+const PAD_LEFT = 52
 const PAD_RIGHT = 6
 const PAD_TOP = 10
 const PAD_BOTTOM = 6
@@ -90,10 +92,25 @@ const hasData = computed(() => validPoints.value.length > 0)
 
 const bounds = computed(() => {
   const values = validPoints.value.map((p) => p.v)
-  if (!values.length) return { min: 0, max: 1 }
-  const max = Math.max(...values)
-  const min = Math.min(...values)
-  return { min: min === max ? 0 : min, max: max === min ? (max || 1) * 1.2 : max }
+  const dataMin = values.length ? Math.min(...values) : 0
+  const dataMax = values.length ? Math.max(...values) : 1
+
+  let min = props.min !== undefined ? Math.min(props.min, dataMin) : (dataMin < 0 ? dataMin : 0)
+  let max = props.max !== undefined ? Math.max(props.max, dataMax) : dataMax
+
+  if (props.max === undefined) {
+    if (dataMax <= min) {
+      max = min > 0 ? min * 1.2 : min + 1
+    } else {
+      max = min + (dataMax - min) * 1.15
+    }
+  }
+
+  if (max <= min) {
+    max = min + 1
+  }
+
+  return { min, max }
 })
 
 // 以时间戳作为横轴：不同探测的缺失点不会把曲线挤错位。
@@ -158,7 +175,8 @@ const xLabels = computed(() => {
 function onMove(event) {
   if (!hasData.value) return
   const rect = event.currentTarget.getBoundingClientRect()
-  const ratio = Math.min(Math.max((event.clientX - rect.left) / rect.width, 0), 1)
+  const mouseX = ((event.clientX - rect.left) / rect.width) * W.value
+  const ratio = Math.min(Math.max((mouseX - PAD_LEFT) / (plotWidth.value || 1), 0), 1)
   const targetTs = domain.value.min + ratio * (domain.value.max - domain.value.min)
   const dots = []
   const values = []
@@ -175,7 +193,7 @@ function onMove(event) {
   }
   if (!reference) return
   hover.value = {
-    x: dots[0]?.x ?? 0,
+    x: dots[0]?.x ?? mouseX,
     dots,
     values,
     time: new Date(Number(reference.ts) * 1000).toLocaleString('zh-CN'),
@@ -189,7 +207,7 @@ function onMove(event) {
 .trend-grid { stroke: var(--sb-line); stroke-dasharray: 3 3; stroke-width: 1; }
 .trend-axis { fill: var(--sb-muted); font-size: 10px; }
 .trend-cursor { stroke: var(--sb-muted); stroke-dasharray: 3 3; stroke-width: 1; }
-.trend-x { display: flex; justify-content: space-between; margin-top: 4px; padding: 0 1% 0 6.3%; color: var(--sb-muted); font-size: 10.5px; }
+.trend-x { display: flex; justify-content: space-between; margin-top: 4px; padding: 0 6px 0 52px; color: var(--sb-muted); font-size: 10.5px; }
 .trend-tip { position: absolute; top: -6px; transform: translateX(-50%); padding: 4px 8px; border-radius: 8px; background: var(--sb-surface); border: 1px solid var(--sb-line); box-shadow: var(--sb-shadow); display: grid; gap: 1px; pointer-events: none; }
 .trend-tip strong { display: flex; align-items: center; gap: 5px; font-size: 12px; color: var(--sb-text); font-variant-numeric: tabular-nums; font-weight: 600; }
 .trend-swatch { width: 7px; height: 7px; border-radius: 2px; }

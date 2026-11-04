@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"strconv"
 	"time"
@@ -285,11 +286,6 @@ func (s *Server) exportDeviceConnections(w http.ResponseWriter, r *http.Request)
 			strconv.FormatInt(rec.Download, 10),
 			strconv.FormatInt(rec.Upload+rec.Download, 10),
 			rec.StartedAt,
-			rec.ClosedAt,
-			dur,
-		}); err != nil {
-			return err
-		}
 			rec.ClosedAt,
 			dur,
 		}); err != nil {

@@ -64,6 +64,7 @@
         v-if="selectedNode"
         :node="selectedNode"
         :metrics="selectedMetrics"
+        :live="connectionSnapshots.get(selectedNode.id) || null"
         @back="closeDetail"
       />
 
@@ -158,6 +159,7 @@ import Summary from './Summary.vue'
 import Toolbar from './Toolbar.vue'
 import { api } from '../api'
 import { subscribeLive, liveStatus } from '../live'
+import { connectionSnapshots, subscribeConnections } from '../connections'
 import { isDark, toggleTheme } from '../theme'
 import { brandName } from '../brand'
 
@@ -353,7 +355,7 @@ function closeDetail() {
   openNodeId.value = null
 }
 
-let stopLive, pollTimer
+let stopLive, stopConns, pollTimer
 
 onMounted(async () => {
   await loadNodes().catch((e) => { error.value = e?.message || '' })
@@ -362,11 +364,13 @@ onMounted(async () => {
   stopLive = subscribeLive((event) => {
     if (event.kind === 'node') loadMetrics()
   })
+  stopConns = subscribeConnections(() => {})
   pollTimer = window.setInterval(loadMetrics, 8000)
 })
 
 onBeforeUnmount(() => {
   stopLive?.()
+  stopConns?.()
   window.clearInterval(pollTimer)
 })
 </script>
