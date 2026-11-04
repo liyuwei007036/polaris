@@ -24,9 +24,36 @@
         </svg>
         <span>带宽 {{ node.bandwidth }}</span>
       </span>
-      <span v-if="node.agent_version" class="agent-badge font-mono">agent {{ node.agent_version }}</span>
+      <span v-if="node.agent_version" class="agent-badge font-mono" :class="{ 'has-upgrade': agentUpdateAvailable }">
+        agent {{ node.agent_version }}
+        <span v-if="agentUpdateAvailable" class="agent-upgrade-hint">可升级至 v{{ appState?.systemUpdate?.latest_version }}</span>
+      </span>
 
       <div class="detail-actions">
+        <button
+          v-if="isAdmin && agentUpdateAvailable"
+          type="button"
+          class="action-btn action-btn--upgrade neu-track neu-press"
+          :title="`升级 Agent 到 v${appState?.systemUpdate?.latest_version}`"
+          @click="$emit('upgrade-agent', node)"
+        >
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="size-3.5">
+            <polyline points="18 15 12 9 6 15" />
+          </svg>
+          升级 Agent
+        </button>
+        <button
+          v-if="isAdmin && singBoxUpdateAvailable"
+          type="button"
+          class="action-btn action-btn--upgrade neu-track neu-press"
+          :title="`升级 sing-box 到 ${singBoxLatest?.[node.architecture]}`"
+          @click="$emit('upgrade-singbox', node)"
+        >
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="size-3.5">
+            <polyline points="18 15 12 9 6 15" />
+          </svg>
+          升级 sing-box
+        </button>
         <button type="button" class="action-btn neu-track neu-press" @click="$emit('edit', node)">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="size-3.5">
             <path d="M12 20h9" />
@@ -290,7 +317,7 @@
 </template>
 
 <script setup>
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, inject, onMounted, ref, watch } from 'vue'
 import { ElMessage } from 'element-plus'
 import LatencyPanel from './LatencyPanel.vue'
 import TrendChart from './TrendChart.vue'
@@ -302,8 +329,22 @@ const props = defineProps({
   node: { type: Object, required: true },
   metrics: { type: Object, default: () => ({}) },
   live: { type: Object, default: null },
+  singBoxLatest: { type: Object, default: () => ({}) },
 })
-defineEmits(['back', 'edit', 'probe'])
+defineEmits(['back', 'edit', 'probe', 'upgrade-agent', 'upgrade-singbox'])
+
+const appState = inject('appState', null)
+const isAdmin = inject('isAdmin', { value: false })
+
+const agentUpdateAvailable = computed(() => {
+  const latest = appState?.systemUpdate?.latest_version
+  return Boolean(latest && props.node.agent_version && props.node.agent_version !== latest)
+})
+
+const singBoxUpdateAvailable = computed(() => {
+  const latest = props.singBoxLatest?.[props.node.architecture]
+  return Boolean(latest && props.node.sing_box_version && props.node.sing_box_version !== latest)
+})
 
 const TABS = [
   { key: 'resources', label: '资源' },
@@ -609,7 +650,18 @@ const factGroups = computed(() => {
       { label: '负载 (1/5/15 分)', value: Array.isArray(m.load_avg) ? m.load_avg.map((v) => Number(v).toFixed(2)).join('  ') : '' },
       { label: '系统套接字 / 进程', value: m.procs != null ? `TCP ${m.tcp} · UDP ${m.udp} · ${m.procs} 进程` : '' },
       { label: '在线时长', value: m.uptime_seconds ? formatDuration(m.uptime_seconds) : '' },
-      { label: 'Agent', value: node.agent_version ? `v${String(node.agent_version).replace(/^v/, '')}` : '' },
+      {
+        label: 'Agent',
+        value: node.agent_version
+          ? `v${String(node.agent_version).replace(/^v/, '')}${agentUpdateAvailable.value ? ` (可升级至 v${appState?.systemUpdate?.latest_version})` : ''}`
+          : '',
+      },
+      {
+        label: 'sing-box',
+        value: node.sing_box_version
+          ? `${node.sing_box_version}${singBoxUpdateAvailable.value ? ` (可升级至 ${props.singBoxLatest?.[node.architecture]})` : ''}`
+          : '',
+      },
     ].filter((f) => f.value),
   })
 
@@ -770,6 +822,15 @@ onMounted(loadHistory)
 .country-label { display: inline-flex; align-items: center; gap: 5px; font-size: 13px; color: var(--sb-muted); }
 .status-uptime { margin-left: 4px; opacity: .8; font-weight: 500; }
 .agent-badge { padding: 2px 8px; border: 1px solid var(--sb-line); border-radius: 999px; font-size: 11px; color: var(--sb-muted); }
+.agent-badge.has-upgrade {
+  border-color: color-mix(in oklab, var(--sb-warning, #f59e0b) 40%, transparent);
+  color: var(--sb-warning, #f59e0b);
+  background: color-mix(in oklab, var(--sb-warning, #f59e0b) 8%, transparent);
+}
+.agent-upgrade-hint {
+  margin-left: 4px;
+  font-weight: 600;
+}
 .bw-badge {
   display: inline-flex;
   align-items: center;
@@ -785,6 +846,16 @@ onMounted(loadHistory)
 .detail-actions { margin-left: auto; display: flex; align-items: center; gap: 8px; }
 .action-btn { display: inline-flex; align-items: center; gap: 6px; height: 32px; padding: 0 12px; border: 1px solid var(--sb-line); border-radius: 10px; background: var(--sb-surface-2); color: var(--sb-text); font-size: 13px; cursor: pointer; font-weight: 500; transition: border-color 0.15s ease, color 0.15s ease; }
 .action-btn:hover { border-color: var(--sb-accent); color: var(--sb-accent); }
+.action-btn--upgrade {
+  border-color: color-mix(in oklab, var(--sb-warning, #f59e0b) 40%, transparent);
+  color: var(--sb-warning, #f59e0b);
+  background: color-mix(in oklab, var(--sb-warning, #f59e0b) 8%, transparent);
+}
+.action-btn--upgrade:hover {
+  border-color: var(--sb-warning, #f59e0b) !important;
+  color: var(--sb-warning, #f59e0b) !important;
+  background: color-mix(in oklab, var(--sb-warning, #f59e0b) 16%, transparent) !important;
+}
 
 .stat-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; }
 .stat-card { display: flex; flex-direction: column; gap: 3px; padding: 14px 16px; border-radius: 14px; border: 1px solid var(--sb-line); }

@@ -40,6 +40,7 @@ const appState = inject('appState')
 const isAdmin = inject('isAdmin')
 const canWrite = inject('canWrite')
 const loadNodes = inject('loadNodes')
+const loadSystemUpdate = inject('loadSystemUpdate', null)
 
 const selectedNodeId = ref(null)
 const selectedNode = computed(() => appState.nodes.find((n) => n.id === selectedNodeId.value) || null)
@@ -359,6 +360,7 @@ async function load(silent = false) {
     loading.value = false
     refreshing.value = false
   }
+  if (loadSystemUpdate) loadSystemUpdate().catch(() => {})
   loadSingBoxLatest().catch(() => {})
 }
 
@@ -910,9 +912,12 @@ onBeforeUnmount(() => {
         :node="selectedNode"
         :metrics="metrics[selectedNode.id] || {}"
         :live="live.get(selectedNode.id) || null"
+        :sing-box-latest="singBoxLatest"
         @back="selectedNodeId = null"
         @edit="openEdit"
         @probe="openNetworkProbe"
+        @upgrade-agent="upgradeAgent"
+        @upgrade-singbox="upgradeSingBox"
       />
 
       <!-- 主视图：概览 + 工具栏 + 服务器网格/列表 -->
@@ -1035,6 +1040,7 @@ onBeforeUnmount(() => {
             :metrics="metrics[node.id] || {}"
             :live="live.get(node.id) || null"
             :can-manage="canWrite || isAdmin"
+            :sing-box-latest="singBoxLatest"
             @open="selectedNodeId = node.id"
             @action="handleCardAction"
           />
@@ -1048,6 +1054,7 @@ onBeforeUnmount(() => {
             :node="node"
             :metrics="metrics[node.id] || {}"
             :live="live.get(node.id) || null"
+            :sing-box-latest="singBoxLatest"
             @open="selectedNodeId = node.id"
           />
         </div>
