@@ -44,6 +44,8 @@
               <el-dropdown-item command="edit"><el-icon><Edit /></el-icon>配置</el-dropdown-item>
               <el-dropdown-item v-if="node.online" command="networkProbe"><el-icon><Connection /></el-icon>线路排查</el-dropdown-item>
               <el-dropdown-item v-if="node.ddns_enabled" command="syncDDNS"><el-icon><Refresh /></el-icon>同步 DDNS</el-dropdown-item>
+              <el-dropdown-item v-if="isAdmin && agentUpdateAvailable" command="upgradeAgent"><el-icon><Top /></el-icon>升级 Agent</el-dropdown-item>
+              <el-dropdown-item v-if="isAdmin && singBoxUpdateAvailable" command="upgradeSingBox"><el-icon><Top /></el-icon>升级 sing-box</el-dropdown-item>
               <el-dropdown-item command="revoke" divided class="danger-item"><el-icon><RemoveFilled /></el-icon>移除</el-dropdown-item>
             </el-dropdown-menu>
           </template>
@@ -58,6 +60,14 @@
       <span class="meta-divider shrink-0">&middot;</span>
       <OsIcon :os="node.os_name || node.os" class="meta-os-icon shrink-0" />
       <span class="node-system-text truncate min-w-0 flex-1">{{ systemInfoText }}</span>
+      <span
+        v-if="agentUpdateAvailable || singBoxUpdateAvailable"
+        class="node-tag upgrade-tag shrink-0"
+        :title="upgradeTooltip"
+      >
+        <span class="upgrade-dot" />
+        <span>可升级</span>
+      </span>
       <span
         v-if="node.ddns_enabled"
         class="node-tag ddns-tag shrink-0"
@@ -212,13 +222,14 @@
 </template>
 
 <script setup>
-import { computed } from 'vue'
+import { computed, inject } from 'vue'
 import {
   Connection,
   Edit,
   InfoFilled,
   Refresh,
   RemoveFilled,
+  Top,
 } from '@element-plus/icons-vue'
 import OsIcon from './OsIcon.vue'
 import Meter from './Meter.vue'
@@ -241,9 +252,39 @@ const props = defineProps({
     type: Boolean,
     default: false,
   },
+  singBoxLatest: {
+    type: Object,
+    default: () => ({}),
+  },
 })
 
 defineEmits(['open', 'action'])
+
+const appState = inject('appState', null)
+const isAdmin = inject('isAdmin', { value: false })
+
+const agentUpdateAvailable = computed(() => {
+  const latest = appState?.systemUpdate?.latest_version
+  return Boolean(latest && props.node.agent_version && props.node.agent_version !== latest)
+})
+
+const singBoxUpdateAvailable = computed(() => {
+  const latest = props.singBoxLatest?.[props.node.architecture]
+  return Boolean(latest && props.node.sing_box_version && props.node.sing_box_version !== latest)
+})
+
+const upgradeTooltip = computed(() => {
+  if (agentUpdateAvailable.value && singBoxUpdateAvailable.value) {
+    return `Agent 与 sing-box 均可升级 (Agent: v${appState?.systemUpdate?.latest_version} · sing-box: ${props.singBoxLatest?.[props.node.architecture]})`
+  }
+  if (agentUpdateAvailable.value) {
+    return `有新版本 Agent 可升级至 v${appState?.systemUpdate?.latest_version}`
+  }
+  if (singBoxUpdateAvailable.value) {
+    return `有新版本 sing-box 可升级至 ${props.singBoxLatest?.[props.node.architecture]}`
+  }
+  return ''
+})
 
 function countryCodeToFlag(code) {
   if (!code || code.length !== 2) return ''
