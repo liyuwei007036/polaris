@@ -12,6 +12,14 @@
         <span class="status-dot" :class="node.online ? 'is-online' : 'is-offline'" />
         <span class="country-flag">{{ countryFlag }}</span>
         <span class="node-name truncate" :title="node.name">{{ node.name }}</span>
+        <span
+          v-if="agentUpdateAvailable || singBoxUpdateAvailable"
+          class="row-tag upgrade-tag shrink-0"
+          :title="upgradeTooltip"
+        >
+          <span class="upgrade-dot" />
+          <span>可升级</span>
+        </span>
         <span v-if="node.ddns_enabled" class="row-tag ddns-tag" :title="ddnsTooltip">
           <span class="ddns-dot" />
           <span>DDNS</span>
@@ -122,7 +130,7 @@
 </template>
 
 <script setup>
-import { computed } from 'vue'
+import { computed, inject } from 'vue'
 import OsIcon from './OsIcon.vue'
 import LatencyPanel from './LatencyPanel.vue'
 
@@ -139,9 +147,38 @@ const props = defineProps({
     type: Object,
     default: null,
   },
+  singBoxLatest: {
+    type: Object,
+    default: () => ({}),
+  },
 })
 
 defineEmits(['open'])
+
+const appState = inject('appState', null)
+
+const agentUpdateAvailable = computed(() => {
+  const latest = appState?.systemUpdate?.latest_version
+  return Boolean(latest && props.node.agent_version && props.node.agent_version !== latest)
+})
+
+const singBoxUpdateAvailable = computed(() => {
+  const latest = props.singBoxLatest?.[props.node.architecture]
+  return Boolean(latest && props.node.sing_box_version && props.node.sing_box_version !== latest)
+})
+
+const upgradeTooltip = computed(() => {
+  if (agentUpdateAvailable.value && singBoxUpdateAvailable.value) {
+    return `Agent 与 sing-box 均可升级 (Agent: v${appState?.systemUpdate?.latest_version} · sing-box: ${props.singBoxLatest?.[props.node.architecture]})`
+  }
+  if (agentUpdateAvailable.value) {
+    return `有新版本 Agent 可升级至 v${appState?.systemUpdate?.latest_version}`
+  }
+  if (singBoxUpdateAvailable.value) {
+    return `有新版本 sing-box 可升级至 ${props.singBoxLatest?.[props.node.architecture]}`
+  }
+  return ''
+})
 
 function countryCodeToFlag(code) {
   if (!code || code.length !== 2) return '🌐'
@@ -334,6 +371,20 @@ function formatRate(bps) {
   line-height: 1.2;
   font-weight: 550;
   flex-shrink: 0;
+}
+
+.row-tag.upgrade-tag {
+  color: var(--sb-warning, #f59e0b);
+  border-color: color-mix(in oklab, var(--sb-warning, #f59e0b) 30%, transparent);
+  background: color-mix(in oklab, var(--sb-warning, #f59e0b) 10%, transparent);
+  font-weight: 550;
+}
+
+.row-tag .upgrade-dot {
+  width: 3.5px;
+  height: 3.5px;
+  border-radius: 50%;
+  background: var(--sb-warning, #f59e0b);
 }
 
 .row-tag.ddns-tag {
