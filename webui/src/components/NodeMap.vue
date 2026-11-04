@@ -323,38 +323,32 @@ function extractActiveLinks() {
   return [...linkMap.values()]
 }
 
-// 动态发射粒子：流星发射频率严格由该航线上的真实连接数与网速共同驱动
+// 动态发射粒子：单链路单流星机制，保持优雅从容的呼吸节奏（绝非密不透风的连珠发射）
 function updateAndSpawnParticles(links, now) {
   if (links.length === 0) return
 
   for (const link of links) {
-    // 发弹间隔由该链路聚合的真实连接数量(count)与网速综合决定：
-    // 1条连接：约 1200ms 发送 1 颗流星
-    // 10条连接：约 400ms 发送 1 颗
-    // 50条以上连接（如大流量并发）：约 80ms~150ms 密集发射粒子流，真实呈现高并发流量
-    const countScale = Math.max(1, Math.min(30, link.count))
-    const baseInterval = Math.max(80, Math.floor(1200 / countScale))
-    const speedBoost = link.totalRate > 1024 * 1024 ? 0.7 : 1
-    const interval = Math.max(60, Math.floor(baseInterval * speedBoost))
+    // 铁律：同一条航线上同一时间最多只允许 1 颗流星在途飞行！
+    // 杜绝前一颗未落、后一颗又出的“连珠串”或“机关枪”现象
+    const inFlight = activeParticles.some((p) => p.linkKey === link.key)
+    if (inFlight) continue
+
+    // 冷却间隔：有真实吞吐时每 3 秒优雅发射 1 颗；无吞吐闲置时每 8 秒发射 1 颗作为微光心跳
+    const interval = link.totalRate > 0 ? 3000 : 8000
 
     const lastSpawn = linkSpawnTimestamps.get(link.key) || 0
     if (now - lastSpawn >= interval) {
       linkSpawnTimestamps.set(link.key, now)
 
-      // 粒子的飞翔速度与线宽
-      const speed = Math.min(0.024, 0.012 + (link.totalRate / (5 * 1024 * 1024)) * 0.008)
-      const lineWidth = Math.min(2.5, 1.0 + Math.min(link.count / 20, 1.0) + (link.totalRate / (2 * 1024 * 1024)) * 0.5)
-
-      // 多连接并发时引入微妙的侧向微扰（±2px），呈现真实的多车道粒子束，而非死板的一根细线
-      const jitter = link.count > 1 ? (Math.random() - 0.5) * Math.min(4, link.count * 0.2) : 0
+      // 粒子的飞翔速度：约 1.4 秒平稳划过半球
+      const speed = 0.012
 
       activeParticles.push({
+        linkKey: link.key,
         sourceXY: link.sourceXY,
         targetXY: link.targetXY,
         t: 0,
         speed,
-        lineWidth,
-        jitter,
         trail: [],
       })
     }
@@ -443,7 +437,7 @@ function renderFrame() {
     const dist = Math.hypot(x2 - x1, y2 - y1)
     const arcHeight = Math.min(38, Math.max(10, dist * 0.26))
     const cx = mx
-    const cy = Math.min(y1, y2) - arcHeight + (p.jitter || 0)
+    const cy = Math.min(y1, y2) - arcHeight
 
     // 贝塞尔当前飞行坐标
     const it = 1 - p.t
@@ -451,7 +445,7 @@ function renderFrame() {
     const py = it * it * y1 + 2 * it * p.t * cy + p.t * p.t * y2
 
     p.trail.push({ x: px, y: py })
-    if (p.trail.length > 12) p.trail.shift()
+    if (p.trail.length > 10) p.trail.shift()
 
     // 绘制流星动态渐变拖尾（翠绿色系 #10b981，坚决不含任何蓝色）
     if (p.trail.length > 1) {
@@ -465,7 +459,7 @@ function renderFrame() {
         ctx.lineTo(p.trail[j].x, p.trail[j].y)
       }
       ctx.strokeStyle = grad
-      ctx.lineWidth = p.lineWidth
+      ctx.lineWidth = 1.6
       ctx.lineCap = 'round'
       ctx.stroke()
     }
