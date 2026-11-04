@@ -15,6 +15,7 @@ import {
   Refresh,
   RemoveFilled,
   Search,
+  Share,
   Tickets,
   Top,
 } from '@element-plus/icons-vue'
@@ -31,6 +32,7 @@ import NodeCard from '../components/NodeCard.vue'
 import NodeRow from '../components/NodeRow.vue'
 import NodeDetail from '../components/NodeDetail.vue'
 import ProbeManager from '../components/ProbeManager.vue'
+import ShareDialog from '../components/ShareDialog.vue'
 
 const MASTER_HOST_KEY = 'polaris_master_host'
 const PERIOD_LABELS = { day: '天', month: '月', quarter: '季', year: '年' }
@@ -43,6 +45,7 @@ const loadNodes = inject('loadNodes')
 const loadSystemUpdate = inject('loadSystemUpdate', null)
 
 const selectedNodeId = ref(null)
+const shareOpen = ref(false)
 const selectedNode = computed(() => appState.nodes.find((n) => n.id === selectedNodeId.value) || null)
 
 function handleCardAction({ command, node }) {
@@ -898,8 +901,11 @@ onBeforeUnmount(() => {
     <PageHeader title="服务器">
       <el-button v-if="canWrite" :icon="Connection" @click="probesDialog = true">探针</el-button>
       <el-button :icon="Refresh" :loading="refreshing" @click="load">刷新</el-button>
+      <el-button v-if="canWrite" :icon="Share" @click="shareOpen = true">分享</el-button>
       <el-button v-if="isAdmin" type="primary" :icon="Plus" @click="generateToken">新增</el-button>
     </PageHeader>
+
+    <ShareDialog v-model="shareOpen" page="nodes" />
 
     <el-dialog v-model="probesDialog" title="探针" width="960px" destroy-on-close>
       <ProbeManager v-if="probesDialog" />

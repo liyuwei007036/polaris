@@ -364,6 +364,13 @@ func (s *Server) registerBrowserRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/v1/auth/2fa/enable", s.enableOwnTOTP)
 	mux.HandleFunc("POST /api/v1/auth/2fa/disable", s.disableOwnTOTP)
 	mux.HandleFunc("POST /api/v1/auth/logout", s.logout)
+	// Read-only share links are the one public management surface: the token
+	// in the URL is the credential, and the response is always a masked
+	// projection rather than a stored record.
+	mux.HandleFunc("POST /api/v1/shares", s.createShareLink)
+	mux.HandleFunc("GET /api/v1/shares", s.listShareLinks)
+	mux.HandleFunc("DELETE /api/v1/shares/{id}", s.revokeShareLink)
+	mux.HandleFunc("GET /api/v1/shares/access/{token}", s.publicShareLink)
 	mux.HandleFunc("GET /api/v1/operators", s.listOperators)
 	mux.HandleFunc("POST /api/v1/operators", s.createOperator)
 	mux.HandleFunc("PUT /api/v1/operators/{id}", s.updateOperator)
@@ -506,6 +513,7 @@ func (s *Server) registerBrowserRoutes(mux *http.ServeMux) {
 
 func (s *Server) dashboard(w http.ResponseWriter, r *http.Request) {
 	asset := strings.TrimPrefix(path.Clean(r.URL.Path), "/")
+	sharePage := asset == "share" || strings.HasPrefix(asset, "share/")
 	if asset == "." || asset == "" {
 		asset = "index.html"
 	}
@@ -525,7 +533,10 @@ func (s *Server) dashboard(w http.ResponseWriter, r *http.Request) {
 	if contentType != "" {
 		w.Header().Set("Content-Type", contentType)
 	}
-	if strings.HasPrefix(asset, "assets/") {
+	if sharePage {
+		w.Header().Set("Cache-Control", "no-store")
+		w.Header().Set("X-Robots-Tag", "noindex, nofollow")
+	} else if strings.HasPrefix(asset, "assets/") {
 		w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
 	} else {
 		w.Header().Set("Cache-Control", "no-cache")

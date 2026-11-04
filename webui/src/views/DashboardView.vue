@@ -1,6 +1,6 @@
 <script setup>
 import { computed, inject, nextTick, onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vue'
-import { Refresh } from '@element-plus/icons-vue'
+import { Refresh, Share } from '@element-plus/icons-vue'
 import { BarChart, LineChart, PieChart } from 'echarts/charts'
 import { GridComponent, LegendComponent, TitleComponent, TooltipComponent } from 'echarts/components'
 import { init, use } from 'echarts/core'
@@ -13,11 +13,13 @@ import { FLAG_FONT_FAMILY } from '../flags'
 import { isDark } from '../theme'
 import PageHeader from '../components/PageHeader.vue'
 import SummaryCards from '../components/SummaryCards.vue'
+import ShareDialog from '../components/ShareDialog.vue'
 
 use([BarChart, LineChart, PieChart, GridComponent, LegendComponent, TitleComponent, TooltipComponent, CanvasRenderer])
 
 const appState = inject('appState')
 const loadNodes = inject('loadNodes')
+const canWrite = inject('canWrite', false)
 const loading = ref(false)
 const endpointCount = ref(0)
 const metrics = ref({})
@@ -26,6 +28,7 @@ const cumulative = ref({ download: 0, upload: 0 })
 const trafficHistory = shallowRef([])
 const connectionHistory = shallowRef([])
 const dismissedOffline = ref(readDismissed('sb_dashboard_offline'))
+const shareOpen = ref(false)
 const refreshing = ref(false)
 const trafficChart = ref()
 const totalChart = ref()
@@ -329,8 +332,10 @@ onBeforeUnmount(() => {
 <template>
   <div class="page-shell">
     <PageHeader title="运行概览">
+      <el-button v-if="canWrite" :icon="Share" @click="shareOpen = true">分享</el-button>
       <el-button :icon="Refresh" @click="load">刷新</el-button>
     </PageHeader>
+    <ShareDialog v-model="shareOpen" page="dashboard" />
     <main v-loading="loading" class="page-content dashboard-content">
       <el-alert v-if="offline > 0 && dismissedOffline !== offline" :title="`${offline} 台服务器离线`" type="warning" show-icon closable @close="dismiss('sb_dashboard_offline', dismissedOffline, offline)" />
 
