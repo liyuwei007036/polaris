@@ -189,8 +189,8 @@ const systemInfoText = computed(() => {
   return parts.length ? parts.join(' · ') : 'Linux'
 })
 
-const hostMetrics = computed(() => props.node.online ? props.metrics?.host : null)
-const latencyData = computed(() => props.metrics?.latency || null)
+const hostMetrics = computed(() => props.node.online ? (props.live?.host || props.metrics?.host) : null)
+const latencyData = computed(() => props.live?.latency || props.metrics?.latency || null)
 
 const cpuPercent = computed(() => {
   if (!props.node.online || !hostMetrics.value) return null

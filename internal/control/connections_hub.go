@@ -253,15 +253,18 @@ func (a *nodeActivity) pruneLocked(now time.Time) {
 // would mean a full read-modify-write of the metrics blob every few seconds
 // per node.
 type nodeConnectionsSnapshot struct {
-	NodeID          string             `json:"node_id"`
-	CollectedAt     string             `json:"collected_at"`
-	Connections     json.RawMessage    `json:"connections"`
-	RawConns        []storedConnection `json:"-"`
-	ConnectionCount int                `json:"connection_count"`
-	Protocols       map[string]int     `json:"protocols"`
-	HasRates        bool               `json:"has_rates"`
-	ReceivedRate    float64            `json:"received_rate"`
-	SentRate        float64            `json:"sent_rate"`
+	NodeID          string                `json:"node_id"`
+	CollectedAt     string                `json:"collected_at"`
+	Connections     json.RawMessage       `json:"connections,omitempty"`
+	RawConns        []storedConnection    `json:"-"`
+	ConnectionCount int                   `json:"connection_count"`
+	Protocols       map[string]int        `json:"protocols,omitempty"`
+	HasRates        bool                  `json:"has_rates"`
+	ReceivedRate    float64               `json:"received_rate"`
+	SentRate        float64               `json:"sent_rate"`
+	Host            *HostResources     `json:"host,omitempty"`
+	Latency         *storedLatency     `json:"latency,omitempty"`
+	Health          *storedHealth      `json:"health,omitempty"`
 }
 
 // connectionsHub fans out real-time snapshots from agents to every connected
@@ -515,6 +518,26 @@ func (h *connectionsHub) node(nodeID string) (nodeConnectionsSnapshot, bool) {
 func (h *connectionsHub) update(snap nodeConnectionsSnapshot) {
 	now := time.Now()
 	h.mu.Lock()
+	if prev, ok := h.latest[snap.NodeID]; ok {
+		if snap.Host == nil && prev.Host != nil {
+			snap.Host = prev.Host
+		}
+		if snap.Latency == nil && prev.Latency != nil {
+			snap.Latency = prev.Latency
+		}
+		if snap.Health == nil && prev.Health != nil {
+			snap.Health = prev.Health
+		}
+		if snap.Connections == nil && prev.Connections != nil {
+			snap.Connections = prev.Connections
+			snap.RawConns = prev.RawConns
+			snap.ConnectionCount = prev.ConnectionCount
+			snap.Protocols = prev.Protocols
+			snap.ReceivedRate = prev.ReceivedRate
+			snap.SentRate = prev.SentRate
+			snap.HasRates = prev.HasRates
+		}
+	}
 	h.latest[snap.NodeID] = snap
 	h.receivedAt[snap.NodeID] = now
 	stale := h.pruneLocked(now)
@@ -535,6 +558,19 @@ func (h *connectionsHub) update(snap nodeConnectionsSnapshot) {
 	for _, id := range stale {
 		broadcast(nodeConnectionsSnapshot{NodeID: id, Connections: json.RawMessage("[]")})
 	}
+}
+
+// updateHostMetrics updates a node's telemetry metrics (CPU, RAM, disk, network, ping, health)
+// and pushes it incrementally over SSE without querying the database or triggering full reloads.
+func (h *connectionsHub) updateHostMetrics(nodeID string, host *HostResources, latency *storedLatency, health *storedHealth) {
+	snap := nodeConnectionsSnapshot{
+		NodeID:      nodeID,
+		CollectedAt: time.Now().UTC().Format(time.RFC3339),
+		Host:        host,
+		Latency:     latency,
+		Health:      health,
+	}
+	h.update(snap)
 }
 
 func (h *connectionsHub) subscribe() chan nodeConnectionsSnapshot {

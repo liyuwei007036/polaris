@@ -19,6 +19,7 @@ type trackedConnection struct {
 type connectionRecorder struct {
 	mu           sync.Mutex
 	store        *Store
+	locator      *ipLocator
 	active       map[string]*trackedConnection  // key: nodeID + ":" + connID
 	nodeConns    map[string]map[string]struct{} // nodeID -> set of connID
 	dirty        map[string]ConnectionRecord    // key -> record to save
@@ -28,9 +29,14 @@ type connectionRecorder struct {
 	batchTrigger chan struct{}
 }
 
-func newConnectionRecorder(store *Store) *connectionRecorder {
+func newConnectionRecorder(store *Store, locator ...*ipLocator) *connectionRecorder {
+	var loc *ipLocator
+	if len(locator) > 0 {
+		loc = locator[0]
+	}
 	return &connectionRecorder{
 		store:        store,
+		locator:      loc,
 		active:       make(map[string]*trackedConnection),
 		nodeConns:    make(map[string]map[string]struct{}),
 		dirty:        make(map[string]ConnectionRecord),
@@ -38,6 +44,12 @@ func newConnectionRecorder(store *Store) *connectionRecorder {
 		doneCh:       make(chan struct{}),
 		batchTrigger: make(chan struct{}, 1),
 	}
+}
+
+func (r *connectionRecorder) SetIPLocator(locator *ipLocator) {
+	r.mu.Lock()
+	r.locator = locator
+	r.mu.Unlock()
 }
 
 func (r *connectionRecorder) Start(ctx context.Context) {
@@ -116,23 +128,33 @@ func (r *connectionRecorder) RecordPush(nodeID, nodeName string, connections []s
 				startedAt = nowRFC
 			}
 
+			destIP := addressIP(c.Destination)
+			if destIP == "" && c.Host != "" && net.ParseIP(c.Host) != nil {
+				destIP = c.Host
+			}
+			destLocation := c.DestinationLocation
+			if destLocation == "" && destIP != "" && r.locator != nil {
+				destLocation = r.locator.Locate(destIP)
+			}
+
 			rec := ConnectionRecord{
-				ID:             key,
-				NodeID:         nodeID,
-				NodeName:       nodeName,
-				ConnectionID:   c.ID,
-				SourceIP:       c.SourceIP,
-				SourcePort:     sourcePort,
-				SourceLocation: c.SourceLocation,
-				Destination:    c.Destination,
-				Host:           c.Host,
-				Network:        strings.ToLower(c.Network),
-				User:           c.User,
-				ListenerName:   c.ListenerName,
-				OutboundName:   c.OutboundName,
-				Upload:         c.Upload,
-				Download:       c.Download,
-				StartedAt:      startedAt,
+				ID:                  key,
+				NodeID:              nodeID,
+				NodeName:            nodeName,
+				ConnectionID:        c.ID,
+				SourceIP:            c.SourceIP,
+				SourcePort:          sourcePort,
+				SourceLocation:      c.SourceLocation,
+				Destination:         c.Destination,
+				DestinationLocation: destLocation,
+				Host:                c.Host,
+				Network:             strings.ToLower(c.Network),
+				User:                c.User,
+				ListenerName:        c.ListenerName,
+				OutboundName:        c.OutboundName,
+				Upload:              c.Upload,
+				Download:            c.Download,
+				StartedAt:           startedAt,
 			}
 			r.active[key] = &trackedConnection{record: rec, lastSeen: now}
 			r.dirty[key] = rec

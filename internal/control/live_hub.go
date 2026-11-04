@@ -3,9 +3,13 @@ package control
 import "sync"
 
 type liveEvent struct {
-	Kind   string `json:"kind"`
-	NodeID string `json:"node_id,omitempty"`
-	TaskID string `json:"task_id,omitempty"`
+	Kind           string `json:"kind"`
+	NodeID         string `json:"node_id,omitempty"`
+	TaskID         string `json:"task_id,omitempty"`
+	Action         string `json:"action,omitempty"`
+	Online         *bool  `json:"online,omitempty"`
+	ClientAddress  string `json:"client_address,omitempty"`
+	LastObservedIP string `json:"last_observed_ip,omitempty"`
 }
 
 type liveHub struct {

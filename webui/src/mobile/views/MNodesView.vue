@@ -383,7 +383,8 @@ onMounted(() => {
   load()
   stopConnections = subscribeConnections(() => {})
   stopLive = subscribeLive((event) => {
-    if (event.kind === 'node') load(true).catch(() => {})
+    // 节点状态变更通过 MobileApp.vue 增量 patch，性能指标通过 connections SSE 增量推流
+    if (event.kind === 'registration') load(true).catch(() => {})
   })
 })
 

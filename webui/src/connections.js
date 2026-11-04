@@ -27,7 +27,8 @@ function notify() {
 
 function applyNode(item) {
   if (!item?.node_id) return
-  connectionSnapshots.value.set(item.node_id, item)
+  const prev = connectionSnapshots.value.get(item.node_id) || {}
+  connectionSnapshots.value.set(item.node_id, { ...prev, ...item })
 }
 
 function ensureSource() {

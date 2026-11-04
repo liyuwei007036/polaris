@@ -204,6 +204,17 @@ func (s *Server) listDeviceConnections(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
+	for i := range records {
+		if records[i].DestinationLocation == "" && s.ipLocator != nil {
+			destIP := addressIP(records[i].Destination)
+			if destIP == "" && records[i].Host != "" && net.ParseIP(records[i].Host) != nil {
+				destIP = records[i].Host
+			}
+			if destIP != "" {
+				records[i].DestinationLocation = s.ipLocator.Locate(destIP)
+			}
+		}
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"records": records,
 		"total":   total,
@@ -230,7 +241,7 @@ func (s *Server) exportDeviceConnections(w http.ResponseWriter, r *http.Request)
 	flusher, _ := w.(http.Flusher)
 	writer := csv.NewWriter(w)
 	_ = writer.Write([]string{
-		"记录ID", "来源IP", "来源端口", "归属地", "目标主机", "目标地址",
+		"记录ID", "来源IP", "来源端口", "来源归属地", "目标主机", "目标地址", "目标归属地",
 		"服务器节点", "认证账号", "入站名", "出站出口", "网络协议",
 		"上行流量(字节)", "下行流量(字节)", "总流量(字节)", "开始时间", "结束时间", "持续时长(秒)",
 	})
@@ -247,6 +258,16 @@ func (s *Server) exportDeviceConnections(w http.ResponseWriter, r *http.Request)
 		} else {
 			dur = "连接中"
 		}
+		destLoc := rec.DestinationLocation
+		if destLoc == "" && s.ipLocator != nil {
+			destIP := addressIP(rec.Destination)
+			if destIP == "" && rec.Host != "" && net.ParseIP(rec.Host) != nil {
+				destIP = rec.Host
+			}
+			if destIP != "" {
+				destLoc = s.ipLocator.Locate(destIP)
+			}
+		}
 		if err := writer.Write([]string{
 			rec.ID,
 			rec.SourceIP,
@@ -254,6 +275,7 @@ func (s *Server) exportDeviceConnections(w http.ResponseWriter, r *http.Request)
 			rec.SourceLocation,
 			rec.Host,
 			rec.Destination,
+			destLoc,
 			rec.NodeName,
 			rec.User,
 			rec.ListenerName,
@@ -263,6 +285,11 @@ func (s *Server) exportDeviceConnections(w http.ResponseWriter, r *http.Request)
 			strconv.FormatInt(rec.Download, 10),
 			strconv.FormatInt(rec.Upload+rec.Download, 10),
 			rec.StartedAt,
+			rec.ClosedAt,
+			dur,
+		}); err != nil {
+			return err
+		}
 			rec.ClosedAt,
 			dur,
 		}); err != nil {

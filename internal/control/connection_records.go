@@ -13,16 +13,17 @@ import (
 const ConnectionRecordsRetention = 30 * 24 * time.Hour
 
 type ConnectionRecord struct {
-	ID              string `json:"id"`
-	NodeID          string `json:"node_id"`
-	NodeName        string `json:"node_name"`
-	ConnectionID    string `json:"connection_id"`
-	SourceIP        string `json:"source_ip"`
-	SourcePort      string `json:"source_port"`
-	SourceLocation  string `json:"source_location"`
-	Destination     string `json:"destination"`
-	Host            string `json:"host"`
-	Network         string `json:"network"`
+	ID                  string `json:"id"`
+	NodeID              string `json:"node_id"`
+	NodeName            string `json:"node_name"`
+	ConnectionID        string `json:"connection_id"`
+	SourceIP            string `json:"source_ip"`
+	SourcePort          string `json:"source_port"`
+	SourceLocation      string `json:"source_location"`
+	Destination         string `json:"destination"`
+	DestinationLocation string `json:"destination_location"`
+	Host                string `json:"host"`
+	Network             string `json:"network"`
 	User            string `json:"user"`
 	ListenerName    string `json:"listener_name"`
 	OutboundName    string `json:"outbound_name"`
@@ -80,14 +81,15 @@ func (s *Store) SaveConnectionRecords(ctx context.Context, records []ConnectionR
 	stmt, err := tx.PrepareContext(ctx, `
 		INSERT INTO connection_records (
 			id, node_id, node_name, connection_id, source_ip, source_port, source_location,
-			destination, host, network, user, listener_name, outbound_name,
+			destination, destination_location, host, network, user, listener_name, outbound_name,
 			upload, download, started_at, closed_at, created_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(id) DO UPDATE SET
 			upload = MAX(connection_records.upload, excluded.upload),
 			download = MAX(connection_records.download, excluded.download),
 			closed_at = CASE WHEN excluded.closed_at > 0 THEN excluded.closed_at ELSE connection_records.closed_at END,
-			node_name = CASE WHEN excluded.node_name != '' THEN excluded.node_name ELSE connection_records.node_name END
+			node_name = CASE WHEN excluded.node_name != '' THEN excluded.node_name ELSE connection_records.node_name END,
+			destination_location = CASE WHEN excluded.destination_location != '' THEN excluded.destination_location ELSE connection_records.destination_location END
 	`)
 	if err != nil {
 		return fmt.Errorf("prepare save connection records statement: %w", err)
@@ -111,7 +113,7 @@ func (s *Store) SaveConnectionRecords(ctx context.Context, records []ConnectionR
 
 		_, err = stmt.ExecContext(ctx,
 			r.ID, r.NodeID, r.NodeName, r.ConnectionID, r.SourceIP, r.SourcePort, r.SourceLocation,
-			r.Destination, r.Host, r.Network, r.User, r.ListenerName, r.OutboundName,
+			r.Destination, r.DestinationLocation, r.Host, r.Network, r.User, r.ListenerName, r.OutboundName,
 			r.Upload, r.Download, startedAt, closedAt, now,
 		)
 		if err != nil {
@@ -156,8 +158,8 @@ func buildConnectionRecordsWhereAndOrder(filter ConnectionRecordFilter) (string,
 	}
 	if v := strings.TrimSpace(filter.Keyword); v != "" {
 		kw := "%" + v + "%"
-		where += " AND (source_ip LIKE ? OR destination LIKE ? OR host LIKE ? OR user LIKE ? OR listener_name LIKE ? OR outbound_name LIKE ? OR node_name LIKE ?)"
-		args = append(args, kw, kw, kw, kw, kw, kw, kw)
+		where += " AND (source_ip LIKE ? OR destination LIKE ? OR destination_location LIKE ? OR host LIKE ? OR user LIKE ? OR listener_name LIKE ? OR outbound_name LIKE ? OR node_name LIKE ?)"
+		args = append(args, kw, kw, kw, kw, kw, kw, kw, kw)
 	}
 
 	orderCol := "started_at"
@@ -212,7 +214,7 @@ func (s *Store) ListConnectionRecords(ctx context.Context, filter ConnectionReco
 
 	querySQL := fmt.Sprintf(`
 		SELECT id, node_id, node_name, connection_id, source_ip, source_port, source_location,
-		       destination, host, network, user, listener_name, outbound_name,
+		       destination, destination_location, host, network, user, listener_name, outbound_name,
 		       upload, download, started_at, closed_at
 		FROM connection_records%s
 		ORDER BY %s %s, id DESC
@@ -231,7 +233,7 @@ func (s *Store) ListConnectionRecords(ctx context.Context, filter ConnectionReco
 		var startedAt, closedAt int64
 		err := rows.Scan(
 			&r.ID, &r.NodeID, &r.NodeName, &r.ConnectionID, &r.SourceIP, &r.SourcePort, &r.SourceLocation,
-			&r.Destination, &r.Host, &r.Network, &r.User, &r.ListenerName, &r.OutboundName,
+			&r.Destination, &r.DestinationLocation, &r.Host, &r.Network, &r.User, &r.ListenerName, &r.OutboundName,
 			&r.Upload, &r.Download, &startedAt, &closedAt,
 		)
 		if err != nil {
@@ -261,7 +263,7 @@ func (s *Store) StreamConnectionRecords(ctx context.Context, filter ConnectionRe
 
 	querySQL := fmt.Sprintf(`
 		SELECT id, node_id, node_name, connection_id, source_ip, source_port, source_location,
-		       destination, host, network, user, listener_name, outbound_name,
+		       destination, destination_location, host, network, user, listener_name, outbound_name,
 		       upload, download, started_at, closed_at
 		FROM connection_records%s
 		ORDER BY %s %s, id DESC
@@ -277,7 +279,7 @@ func (s *Store) StreamConnectionRecords(ctx context.Context, filter ConnectionRe
 		var startedAt, closedAt int64
 		err := rows.Scan(
 			&r.ID, &r.NodeID, &r.NodeName, &r.ConnectionID, &r.SourceIP, &r.SourcePort, &r.SourceLocation,
-			&r.Destination, &r.Host, &r.Network, &r.User, &r.ListenerName, &r.OutboundName,
+			&r.Destination, &r.DestinationLocation, &r.Host, &r.Network, &r.User, &r.ListenerName, &r.OutboundName,
 			&r.Upload, &r.Download, &startedAt, &closedAt,
 		)
 		if err != nil {

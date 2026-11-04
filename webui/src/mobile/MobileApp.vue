@@ -70,12 +70,21 @@ const activeTab = computed(() => (tabs.some((tab) => tab.id === currentView.valu
 const canWrite = computed(() => appState.role === 'admin' || appState.role === 'operator')
 const isAdmin = computed(() => appState.role === 'admin')
 let stopAppLive
+let inFlightNodesPromise = null
 
 async function loadNodes() {
   if (!authenticated.value) return []
-  const result = await api('/nodes')
-  appState.nodes = result.nodes || []
-  return appState.nodes
+  if (inFlightNodesPromise) return inFlightNodesPromise
+  inFlightNodesPromise = (async () => {
+    try {
+      const result = await api('/nodes')
+      appState.nodes = result.nodes || []
+      return appState.nodes
+    } finally {
+      inFlightNodesPromise = null
+    }
+  })()
+  return inFlightNodesPromise
 }
 
 async function loadSystemUpdate(refresh = false) {
@@ -107,7 +116,14 @@ function setAuthenticated(session) {
   loadSystemUpdate().catch(() => {})
   stopAppLive?.()
   stopAppLive = subscribeLive((event) => {
-    if (event.kind === 'node') loadNodes().catch(() => {})
+    if (event.kind === 'node' && event.node_id) {
+      const node = appState.nodes.find((n) => n.id === event.node_id)
+      if (node) {
+        if (event.online !== undefined) node.online = event.online
+        if (event.client_address !== undefined) node.client_address = event.client_address
+        if (event.last_observed_ip !== undefined) node.last_observed_ip = event.last_observed_ip
+      }
+    }
   })
 }
 

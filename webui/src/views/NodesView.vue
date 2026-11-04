@@ -869,24 +869,22 @@ watch(
   { deep: true },
 )
 
-let liveDebounceTimer = null
-
 onMounted(() => {
   load()
   window.addEventListener('sb:authenticated', onAuthSuccess)
   stopConnections = subscribeConnections(() => {})
   stopLive = subscribeLive((event) => {
-    if (event.kind === 'node') {
-      if (liveDebounceTimer) clearTimeout(liveDebounceTimer)
-      liveDebounceTimer = setTimeout(() => {
-        load(true).catch(() => {})
-      }, 500)
+    // 节点状态变更通过 App.vue 增量 patch，性能指标通过 connections SSE 增量推流
+    // 禁止全量调用 load() 重复查询数据库，仅当注册审批变动时轻量同步审批列表
+    if (event.kind === 'registration' && isAdmin.value) {
+      api('/registrations').then((res) => {
+        pending.value = res.registrations || []
+      }).catch(() => {})
     }
   })
 })
 
 onBeforeUnmount(() => {
-  if (liveDebounceTimer) clearTimeout(liveDebounceTimer)
   window.removeEventListener('sb:authenticated', onAuthSuccess)
   stopLive?.()
   stopConnections?.()

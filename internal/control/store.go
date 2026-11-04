@@ -2700,7 +2700,7 @@ CREATE TABLE IF NOT EXISTS connection_records (
   id TEXT PRIMARY KEY, node_id TEXT NOT NULL, node_name TEXT NOT NULL DEFAULT '',
   connection_id TEXT NOT NULL DEFAULT '', source_ip TEXT NOT NULL DEFAULT '',
   source_port TEXT NOT NULL DEFAULT '', source_location TEXT NOT NULL DEFAULT '',
-  destination TEXT NOT NULL DEFAULT '', host TEXT NOT NULL DEFAULT '',
+  destination TEXT NOT NULL DEFAULT '', destination_location TEXT NOT NULL DEFAULT '', host TEXT NOT NULL DEFAULT '',
   network TEXT NOT NULL DEFAULT '', user TEXT NOT NULL DEFAULT '',
   listener_name TEXT NOT NULL DEFAULT '', outbound_name TEXT NOT NULL DEFAULT '',
   upload INTEGER NOT NULL DEFAULT 0, download INTEGER NOT NULL DEFAULT 0,
@@ -2843,6 +2843,13 @@ INSERT OR IGNORE INTO alert_settings (id, updated_at) VALUES (1, unixepoch());
 		"scan_alert_enabled INTEGER NOT NULL DEFAULT 0",
 	} {
 		if err := s.addAlertSettingsColumn(ctx, column); err != nil {
+			return err
+		}
+	}
+	for _, column := range []string{
+		"destination_location TEXT NOT NULL DEFAULT ''",
+	} {
+		if err := s.addConnectionRecordsColumn(ctx, column); err != nil {
 			return err
 		}
 	}
@@ -3076,6 +3083,14 @@ func (s *Store) addAlertSettingsColumn(ctx context.Context, definition string) e
 		return nil
 	}
 	return fmt.Errorf("migrate alert_settings table: %w", err)
+}
+
+func (s *Store) addConnectionRecordsColumn(ctx context.Context, definition string) error {
+	_, err := s.db.ExecContext(ctx, "ALTER TABLE connection_records ADD COLUMN "+definition)
+	if err == nil || strings.Contains(err.Error(), "duplicate column name") {
+		return nil
+	}
+	return fmt.Errorf("migrate connection_records table: %w", err)
 }
 
 func (s *Store) addTaskColumn(ctx context.Context, definition string) error {

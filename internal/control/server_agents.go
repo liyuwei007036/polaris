@@ -43,27 +43,29 @@ func (s *Server) handleAgentConn(ctx context.Context, raw net.Conn) {
 	_ = raw.SetDeadline(time.Now().Add(15 * time.Second))
 	conn, peerPub, err := wire.AcceptXK(raw, s.noiseKeypair)
 	if err != nil {
-		// Handshake failed (unknown/wrong key, tampered message, etc). There
-		// is nothing more to do — and nothing more to send, since the peer
-		// isn't authenticated — so just drop the connection.
+		log.Printf("[AGENT_HANDSHAKE] Handshake failed from %s: %v", raw.RemoteAddr(), err)
 		return
 	}
 	msgType, body, err := conn.ReadMessage()
 	if err != nil || msgType != wire.MsgRegister {
+		log.Printf("[AGENT_HANDSHAKE] Read register message failed from %s: type=%d, err=%v", raw.RemoteAddr(), msgType, err)
 		return
 	}
 	var req wire.RegisterRequest
 	if err := wire.Decode(body, &req); err != nil {
+		log.Printf("[AGENT_HANDSHAKE] Decode register failed from %s: %v", raw.RemoteAddr(), err)
 		return
 	}
 
 	node, err := s.store.NodeForPublicKey(ctx, peerPub[:])
 	if err != nil {
+		log.Printf("[AGENT_HANDSHAKE] Unrecognized node key from %s, handling registration attempt", raw.RemoteAddr())
 		s.handleRegistrationAttempt(ctx, conn, peerPub, req)
 		return
 	}
 	releaseKeyPEM, err := s.store.ReleaseSigningPublicKeyPEM()
 	if err != nil {
+		log.Printf("[AGENT_HANDSHAKE] Release signing key error for node %s (%s): %v", node.ID, node.Name, err)
 		return
 	}
 	ackBody, err := wire.Encode(wire.RegisterAck{
@@ -74,6 +76,7 @@ func (s *Server) handleAgentConn(ctx context.Context, raw net.Conn) {
 		return
 	}
 	if err := conn.WriteMessage(wire.MsgRegisterAck, ackBody); err != nil {
+		log.Printf("[AGENT_HANDSHAKE] Write register ack failed for node %s (%s): %v", node.ID, node.Name, err)
 		return
 	}
 	// The address the agent dialled in from is the one clients can reach it
@@ -86,6 +89,7 @@ func (s *Server) handleAgentConn(ctx context.Context, raw net.Conn) {
 		}
 	}
 	_ = raw.SetDeadline(time.Time{})
+	log.Printf("[AGENT_HANDSHAKE] SUCCESS: node %s (%s) connected from %s (observed address=%s)", node.ID, node.Name, raw.RemoteAddr(), address)
 	s.runAgentSession(ctx, conn, node, address)
 }
 
@@ -151,10 +155,21 @@ func (s *Server) runAgentSession(ctx context.Context, conn *wire.Conn, node Node
 	}
 	s.controlMu.Lock()
 	if previous := s.controls[node.ID]; previous != nil {
+		log.Printf("[AGENT_SESSION] Node %s (%s) superseding previous session from %s (new session from %s)",
+			node.ID, node.Name, previous.remoteAddr, remoteAddr)
 		close(previous.done)
 	}
 	s.controls[node.ID] = session
 	s.controlMu.Unlock()
+	isOnline := true
+	s.liveHub.publish(liveEvent{
+		Kind:           "node",
+		NodeID:         node.ID,
+		Action:         "online",
+		Online:         &isOnline,
+		ClientAddress:  remoteAddr,
+		LastObservedIP: remoteAddr,
+	})
 	if remoteAddr != "" {
 		go s.triggerNodeDDNS(context.Background(), node.ID, remoteAddr)
 	}
@@ -166,10 +181,24 @@ func (s *Server) runAgentSession(ctx context.Context, conn *wire.Conn, node Node
 	}
 	defer func() {
 		s.controlMu.Lock()
-		if s.controls[node.ID] == session {
+		isCurrent := (s.controls[node.ID] == session)
+		if isCurrent {
 			delete(s.controls, node.ID)
 		}
 		s.controlMu.Unlock()
+		if !isCurrent {
+			log.Printf("[AGENT_SESSION] Node %s (%s) superseded session from %s completed, NOT marking offline (newer session active)",
+				node.ID, node.Name, remoteAddr)
+			return
+		}
+		log.Printf("[AGENT_SESSION] Node %s (%s) session from %s genuinely closed, marking offline", node.ID, node.Name, remoteAddr)
+		isOffline := false
+		s.liveHub.publish(liveEvent{
+			Kind:   "node",
+			NodeID: node.ID,
+			Action: "offline",
+			Online: &isOffline,
+		})
 		_ = s.store.FailInterruptedTasks(context.Background(), node.ID)
 		if s.alertEngine != nil && ctx.Err() == nil {
 			s.alertEngine.NotifyNodeOffline(node.ID, node.Name)
@@ -215,21 +244,27 @@ func (s *Server) runAgentSession(ctx context.Context, conn *wire.Conn, node Node
 	for {
 		select {
 		case <-ctx.Done():
+			log.Printf("[AGENT_EXIT] Node %s (%s) ctx.Done", node.ID, node.Name)
 			return
 		case <-session.done:
+			log.Printf("[AGENT_EXIT] Node %s (%s) session.done (superseded by newer session)", node.ID, node.Name)
 			return
-		case <-readErr:
+		case err := <-readErr:
+			log.Printf("[AGENT_EXIT] Node %s (%s) readErr from %s: %v", node.ID, node.Name, remoteAddr, err)
 			return
 		case msg := <-incoming:
 			if !s.handleAgentMessage(ctx, node, msg.msgType, msg.body) {
+				log.Printf("[AGENT_EXIT] Node %s (%s) handleAgentMessage returned false, closing session", node.ID, node.Name)
 				return
 			}
 		case <-session.watch:
 			if !s.sendWatchState(conn, s.fleetStreamingState()) {
+				log.Printf("[AGENT_EXIT] Node %s (%s) sendWatchState failed", node.ID, node.Name)
 				return
 			}
 		case task := <-session.tasks:
 			if !s.sendTask(conn, node.ID, task) {
+				log.Printf("[AGENT_EXIT] Node %s (%s) sendTask failed", node.ID, node.Name)
 				return
 			}
 		case question := <-session.questions:
@@ -238,10 +273,12 @@ func (s *Server) runAgentSession(ctx context.Context, conn *wire.Conn, node Node
 				continue
 			}
 			if err := conn.WriteMessage(wire.MsgTask, body); err != nil {
+				log.Printf("[AGENT_EXIT] Node %s (%s) sendQuestion failed: %v", node.ID, node.Name, err)
 				return
 			}
 		case <-ticker.C:
 			if err := conn.WriteMessage(wire.MsgKeepalive, nil); err != nil {
+				log.Printf("[AGENT_EXIT] Node %s (%s) keepalive write failed: %v", node.ID, node.Name, err)
 				return
 			}
 		}
@@ -306,13 +343,14 @@ func (s *Server) handleAgentMessage(ctx context.Context, node Node, msgType byte
 			return false
 		}
 		if err := s.store.UpdateNodeIdentityWithIPs(ctx, node.ID, st.AgentVersion, st.OS, st.Architecture, st.SingBoxVersion, string(capsJSON), st.IPAddresses, st.IPMappings); err != nil {
-			return false
+			log.Printf("UpdateNodeIdentityWithIPs error for node %s (%s): %v", node.ID, node.Name, err)
 		}
 		s.maybeInstallSingBox(ctx, node.ID, st.OS, st.Architecture, st.SingBoxVersion)
 		if st.Capabilities["configuration_hashes"] == "true" {
 			s.reconcileNodeDesiredState(ctx, node.ID, st.SingBoxVersion, st.SingBoxConfigHash, st.NginxConfigHash)
 		}
 		s.reconcileNodeDDNS(ctx, node.ID)
+		var currentLatency *storedLatency
 		if err := s.mergeNodeMetrics(ctx, node.ID, func(m *storedMetrics) {
 			m.CollectedAt = st.CollectedAt
 			// Check if calendar month has rolled over, resetting monthly counters on the 1st
@@ -361,21 +399,46 @@ func (s *Server) handleAgentMessage(ctx context.Context, node Node, msgType byte
 				}
 			}
 			m.Latency = s.recordNodePingResults(node.ID, st.PingResults, m.Latency)
+			currentLatency = m.Latency
 			m.Health = &storedHealth{
 				Status: st.HealthStatus, Message: st.HealthMessage, SingBoxService: st.SingBoxService,
 				ClashAPIAvailable: st.ClashAPIAvailable, TrafficAvailable: st.TrafficAvailable,
 			}
 		}); err != nil {
-			return false
+			log.Printf("mergeNodeMetrics error for node %s (%s): %v", node.ID, node.Name, err)
 		}
+		var hostRes *HostResources
 		if st.HasHostTotals {
-			s.recordNodeMetricPoint(node.ID, &HostResources{
-				CPUPercent: st.CPUPercent, MemoryTotal: st.MemoryTotal, MemoryUsed: st.MemoryUsed,
-				DiskTotal: st.DiskTotal, DiskUsed: st.DiskUsed,
-				NetRxRate: st.NetRxRate, NetTxRate: st.NetTxRate,
-			})
+			hostRes = &HostResources{
+				CPUPercent:    st.CPUPercent,
+				LoadAvg:       st.LoadAvg,
+				MemoryTotal:   st.MemoryTotal,
+				MemoryUsed:    st.MemoryUsed,
+				SwapTotal:     st.SwapTotal,
+				SwapUsed:      st.SwapUsed,
+				DiskTotal:     st.DiskTotal,
+				DiskUsed:      st.DiskUsed,
+				UptimeSeconds: st.UptimeSeconds,
+				TCP:           st.TCP,
+				UDP:           st.UDP,
+				Procs:         st.Procs,
+				NetRxRate:     st.NetRxRate,
+				NetTxRate:     st.NetTxRate,
+				OSName:        st.OSName,
+				Kernel:        st.Kernel,
+				Virt:          st.Virt,
+				CPUName:       st.CPUName,
+				CPUCores:      st.CPUCores,
+			}
+			s.recordNodeMetricPoint(node.ID, hostRes)
 		}
-		s.liveHub.publish(liveEvent{Kind: "node", NodeID: node.ID})
+		healthRes := &storedHealth{
+			Status: st.HealthStatus, Message: st.HealthMessage, SingBoxService: st.SingBoxService,
+			ClashAPIAvailable: st.ClashAPIAvailable, TrafficAvailable: st.TrafficAvailable,
+		}
+		if s.connHub != nil {
+			s.connHub.updateHostMetrics(node.ID, hostRes, currentLatency, healthRes)
+		}
 	case wire.MsgTaskResult:
 		var res wire.TaskResult
 		if err := wire.Decode(body, &res); err != nil {
@@ -394,12 +457,12 @@ func (s *Server) handleAgentMessage(ctx context.Context, node Node, msgType byte
 			return true
 		}
 		if err := s.store.CompleteTask(ctx, task.ID, node.ID, res.Status, res.Summary); err != nil {
-			return false
+			log.Printf("CompleteTask error for task %s (node %s): %v, keeping session alive", task.ID, node.ID, err)
 		}
 		s.liveHub.publish(liveEvent{Kind: "task", NodeID: node.ID, TaskID: task.ID})
 		if res.Status == "succeeded" && res.SingBoxVersion != "" {
 			if err := s.store.SetNodeSingBoxVersion(ctx, node.ID, res.SingBoxVersion); err != nil {
-				return false
+				log.Printf("SetNodeSingBoxVersion error for node %s: %v", node.ID, err)
 			}
 		}
 		if task.OperatorID != "" {
@@ -679,15 +742,16 @@ type storedHealth struct {
 }
 
 type storedConnection struct {
-	ID             string   `json:"id,omitempty"`
-	Inbound        string   `json:"inbound,omitempty"`
-	Network        string   `json:"network,omitempty"`
-	Source         string   `json:"source,omitempty"`
-	SourceIP       string   `json:"source_ip,omitempty"`
-	SourceLocation string   `json:"source_location,omitempty"`
-	Destination    string   `json:"destination,omitempty"`
-	Host           string   `json:"host,omitempty"`
-	Upload         int64    `json:"upload"`
+	ID                  string   `json:"id,omitempty"`
+	Inbound             string   `json:"inbound,omitempty"`
+	Network             string   `json:"network,omitempty"`
+	Source              string   `json:"source,omitempty"`
+	SourceIP            string   `json:"source_ip,omitempty"`
+	SourceLocation      string   `json:"source_location,omitempty"`
+	Destination         string   `json:"destination,omitempty"`
+	DestinationLocation string   `json:"destination_location,omitempty"`
+	Host                string   `json:"host,omitempty"`
+	Upload              int64    `json:"upload"`
 	Download       int64    `json:"download"`
 	StartedAt      string   `json:"started_at,omitempty"`
 	Outbound       string   `json:"outbound,omitempty"`
@@ -757,9 +821,18 @@ func (s *Server) convertConnections(ctx context.Context, nodeID string, in []wir
 			}
 		}
 
+		destIP := addressIP(c.Destination)
+		if destIP == "" && c.Host != "" && net.ParseIP(c.Host) != nil {
+			destIP = c.Host
+		}
+		var destLoc string
+		if destIP != "" && s.ipLocator != nil {
+			destLoc = s.ipLocator.Locate(destIP)
+		}
+
 		out = append(out, storedConnection{
 			ID: c.ID, Inbound: c.Inbound, Network: c.Network, Source: c.Source, Destination: c.Destination,
-			SourceIP: ip, SourceLocation: s.ipLocator.Locate(ip), Host: c.Host, Upload: c.Upload, Download: c.Download,
+			SourceIP: ip, SourceLocation: s.ipLocator.Locate(ip), DestinationLocation: destLoc, Host: c.Host, Upload: c.Upload, Download: c.Download,
 			StartedAt: c.StartedAt, Outbound: c.Outbound, Rule: c.Rule, RulePayload: c.RulePayload, Chains: c.Chains,
 			ListenerName: names[listenerID], User: user, OutboundName: outboundDisplayName(c.Outbound, egress),
 			IsChainRelay: isChainRelay, RelayUpstreamNodeID: relayUpstreamNodeID, ChainedTarget: chainedTarget,

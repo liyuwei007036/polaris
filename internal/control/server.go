@@ -142,7 +142,7 @@ func NewServer(store *Store, secureCookies bool) (*Server, error) {
 		speedtestErrors:        make(map[string]string),
 		latestSingBoxReleaseFn: LatestOfficialSingBoxRelease,
 		connHub:                newConnectionsHub(), connRates: newConnectionRates(), connActivity: newNodeActivity(),
-		connRecorder: newConnectionRecorder(store),
+		connRecorder: newConnectionRecorder(store, ipLocator),
 		liveHub:      newLiveHub(), ipLocator: ipLocator,
 		connectionsInterval: DefaultConnectionsInterval,
 		subscriptionLimiter: newRateLimiter(subscriptionRateWindow, subscriptionRateLimit, subscriptionRateMaxKeys),
@@ -1731,9 +1731,11 @@ func (s *Server) listNodes(w http.ResponseWriter, r *http.Request) {
 				nodes[i].LastObservedIP = session.remoteAddr
 			}
 		}
-		s.enrichNodeLocation(&nodes[i])
 	}
 	s.controlMu.Unlock()
+	for i := range nodes {
+		s.enrichNodeLocation(&nodes[i])
+	}
 	writeJSON(w, http.StatusOK, map[string]any{"nodes": nodes})
 }
 

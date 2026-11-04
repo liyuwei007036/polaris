@@ -311,11 +311,11 @@ const systemInfoText = computed(() => {
 })
 
 const hostMetrics = computed(() => {
-  return props.node.online ? props.metrics?.host : null
+  return props.node.online ? (props.live?.host || props.metrics?.host) : null
 })
 
 const latencyData = computed(() => {
-  return props.metrics?.latency || null
+  return props.live?.latency || props.metrics?.latency || null
 })
 
 const cpuPercent = computed(() => {

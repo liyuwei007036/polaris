@@ -280,7 +280,7 @@ onMounted(async () => {
   document.fonts?.ready.then(scheduleRender)
   stopTotals = subscribeFleetTotals(appendTotals)
   stopLive = subscribeLive((event) => {
-    if (event.kind === 'node' || event.kind === 'task') scheduleLoad()
+    if (event.kind === 'task') scheduleLoad()
   })
 })
 
