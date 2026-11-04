@@ -115,7 +115,7 @@
 <script setup>
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { LAND_POSITIONS, MAP_H, MAP_W, project } from '../geo'
-import { connectionSnapshots, mergeChainedConnections, subscribeConnections } from '../connections'
+import { connectionSnapshots, subscribeConnections } from '../connections'
 
 const props = defineProps({
   nodes: {
@@ -254,91 +254,99 @@ function onGlobalClick(e) {
 // 记录每条链路的上一次发弹时间戳 (ms)
 const linkSpawnTimestamps = new Map()
 
-// 提取当前真正产生实时吞吐的活跃链路：(真实客户端经纬度 -> 目标服务器节点经纬度)
+// 提取当前全部真实连接链路：从 sing-box 上报的所有连接 1:1 完整提取
 function extractActiveLinks() {
   const nodeMap = new Map((props.nodes || []).map((n) => [n.id, n]))
   const rawSnapshots = props.live && props.live.size > 0 ? props.live : connectionSnapshots.value
   if (!rawSnapshots || rawSnapshots.size === 0) return []
 
-  // 1. 扁平化所有节点连接
-  const flat = [...rawSnapshots.values()].flatMap((result) => {
-    const node = nodeMap.get(result.node_id)
-    return (result.connections || []).map((c) => ({
-      ...c,
-      node_id: result.node_id,
-      node_name: node?.name || result.node_id,
-    }))
-  })
-
-  // 2. 结合节点关系合并代理链，彻底剔除内部中继跳（严禁将节点之间的中继当成客户端打飞线）
-  const merged = mergeChainedConnections(flat, props.nodes)
+  // 集群节点 IP 映射表（用于解析节点之间的中继或互联流量来源）
+  const fleetByIP = new Map()
+  for (const n of props.nodes || []) {
+    if (n.ip) fleetByIP.set(n.ip, n)
+    if (n.last_observed_ip) fleetByIP.set(n.last_observed_ip, n)
+    if (n.client_address) fleetByIP.set(n.client_address.split(':')[0], n)
+  }
 
   const linkMap = new Map()
 
-  for (const c of merged) {
-    // 铁律：只有真正产生实时流量传输（速率 > 50 B/s）的连接才生成飞线；
-    // 零速率、闲置连接或死连接坚决不发弹，绝不留常驻假线！
-    const rate = (c.download_rate || 0) + (c.upload_rate || 0)
-    if (rate <= 50) continue
-
-    const sLat = Number(c.source_lat)
-    const sLon = Number(c.source_lon)
-    const hasSrc = Boolean(c.has_source_coords || (!isNaN(sLat) && !isNaN(sLon) && (sLat !== 0 || sLon !== 0)))
-    if (!hasSrc) continue
-
-    const node = nodeMap.get(c.node_id)
+  for (const snapshot of rawSnapshots.values()) {
+    const node = nodeMap.get(snapshot.node_id)
     if (!node) continue
 
     const nLat = Number(node.latitude)
     const nLon = Number(node.longitude)
     if (isNaN(nLat) || isNaN(nLon) || (nLat === 0 && nLon === 0)) continue
-
-    const sourceXY = project(sLat, sLon)
     const targetXY = project(nLat, nLon)
 
-    // 过滤客户端与服务端完全重合的点
-    if (Math.hypot(targetXY[0] - sourceXY[0], targetXY[1] - sourceXY[1]) < 2) continue
+    // 100% 忠实遍历 sing-box 上报的每条连接，严禁以链式代理为由丢弃任何连接
+    for (const c of snapshot.connections || []) {
+      let sLat = Number(c.source_lat)
+      let sLon = Number(c.source_lon)
+      let hasSrc = Boolean(c.has_source_coords || (!isNaN(sLat) && !isNaN(sLon) && (sLat !== 0 || sLon !== 0)))
 
-    const linkKey = `${sourceXY[0].toFixed(1)},${sourceXY[1].toFixed(1)}->${targetXY[0].toFixed(1)},${targetXY[1].toFixed(1)}`
-
-    let link = linkMap.get(linkKey)
-    if (!link) {
-      link = {
-        key: linkKey,
-        sourceXY,
-        targetXY,
-        totalRate: 0,
-        count: 0,
+      // 若来源无经纬度，检查是否来自集群内其他节点（中继/级联）
+      if (!hasSrc && c.source_ip) {
+        const fromNode = fleetByIP.get(c.source_ip)
+        if (fromNode && fromNode.has_coords) {
+          sLat = Number(fromNode.latitude)
+          sLon = Number(fromNode.longitude)
+          hasSrc = !isNaN(sLat) && !isNaN(sLon) && (sLat !== 0 || sLon !== 0)
+        }
       }
-      linkMap.set(linkKey, link)
+
+      if (!hasSrc) continue
+
+      const sourceXY = project(sLat, sLon)
+      // 过滤完全重合的同物理点
+      if (Math.hypot(targetXY[0] - sourceXY[0], targetXY[1] - sourceXY[1]) < 2) continue
+
+      const linkKey = `${sourceXY[0].toFixed(1)},${sourceXY[1].toFixed(1)}->${targetXY[0].toFixed(1)},${targetXY[1].toFixed(1)}`
+      const rate = (c.download_rate || 0) + (c.upload_rate || 0)
+
+      let link = linkMap.get(linkKey)
+      if (!link) {
+        link = {
+          key: linkKey,
+          sourceXY,
+          targetXY,
+          totalRate: 0,
+          count: 0,
+        }
+        linkMap.set(linkKey, link)
+      }
+      link.totalRate += rate
+      link.count++
     }
-    link.totalRate += rate
-    link.count++
   }
 
   return [...linkMap.values()]
 }
 
-// 动态发射粒子：只在有真实流量脉冲时发射流星粒子，完成后自毁
+// 动态发射粒子：流星发射频率严格由该航线上的真实连接数与网速共同驱动
 function updateAndSpawnParticles(links, now) {
   if (links.length === 0) return
 
   for (const link of links) {
-    // 根据实时网速自适应发弹间隔（网速越快，流星流越密集）
-    let interval = 1400
-    if (link.totalRate > 1024 * 1024) {
-      interval = 350
-    } else if (link.totalRate > 100 * 1024) {
-      interval = 700
-    }
+    // 发弹间隔由该链路聚合的真实连接数量(count)与网速综合决定：
+    // 1条连接：约 1200ms 发送 1 颗流星
+    // 10条连接：约 400ms 发送 1 颗
+    // 50条以上连接（如大流量并发）：约 80ms~150ms 密集发射粒子流，真实呈现高并发流量
+    const countScale = Math.max(1, Math.min(30, link.count))
+    const baseInterval = Math.max(80, Math.floor(1200 / countScale))
+    const speedBoost = link.totalRate > 1024 * 1024 ? 0.7 : 1
+    const interval = Math.max(60, Math.floor(baseInterval * speedBoost))
 
     const lastSpawn = linkSpawnTimestamps.get(link.key) || 0
     if (now - lastSpawn >= interval) {
       linkSpawnTimestamps.set(link.key, now)
 
-      // 粒子的飞翔速度根据网速自适应（60FPS 下约 0.8s ~ 1.3s 飞完全程）
-      const speed = Math.min(0.022, 0.012 + (link.totalRate / (5 * 1024 * 1024)) * 0.008)
-      const lineWidth = Math.min(2.4, 1.0 + (link.totalRate / (2 * 1024 * 1024)) * 0.8)
+      // 粒子的飞翔速度与线宽
+      const speed = Math.min(0.024, 0.012 + (link.totalRate / (5 * 1024 * 1024)) * 0.008)
+      const lineWidth = Math.min(2.5, 1.0 + Math.min(link.count / 20, 1.0) + (link.totalRate / (2 * 1024 * 1024)) * 0.5)
+
+      // 多连接并发时引入微妙的侧向微扰（±2px），呈现真实的多车道粒子束，而非死板的一根细线
+      const jitter = link.count > 1 ? (Math.random() - 0.5) * Math.min(4, link.count * 0.2) : 0
 
       activeParticles.push({
         sourceXY: link.sourceXY,
@@ -346,13 +354,14 @@ function updateAndSpawnParticles(links, now) {
         t: 0,
         speed,
         lineWidth,
+        jitter,
         trail: [],
       })
     }
   }
 
   // 释放过期链路的时间戳防止内存泄漏
-  if (linkSpawnTimestamps.size > 50) {
+  if (linkSpawnTimestamps.size > 100) {
     const activeKeys = new Set(links.map((l) => l.key))
     for (const k of linkSpawnTimestamps.keys()) {
       if (!activeKeys.has(k)) linkSpawnTimestamps.delete(k)
@@ -360,7 +369,7 @@ function updateAndSpawnParticles(links, now) {
   }
 }
 
-// Canvas 60 FPS 渲染循环
+// Canvas 60 FPS 渲染循环 (严禁任何蓝色，采用翠绿 #10b981 与白亮微光)
 function renderFrame() {
   if (!isVisible) {
     animationFrameId = requestAnimationFrame(renderFrame)
@@ -409,21 +418,21 @@ function renderFrame() {
   const links = extractActiveLinks()
   updateAndSpawnParticles(links, now)
 
-  // 1. 更新并绘制所有在途流星粒子 (只在有真实流量时飞行，绝无静态常驻线)
+  // 1. 更新并绘制所有在途流星粒子 (严禁常驻死线，严禁蓝色，采用高雅翠绿 #10b981)
   for (let i = activeParticles.length - 1; i >= 0; i--) {
     const p = activeParticles[i]
     p.t += p.speed
 
     // 到达终点
     if (p.t >= 1) {
-      // 抵达目标服务器节点，触发能量吸收波纹
+      // 抵达目标服务器节点，触发翠绿能量吸收波纹
       targetRipples.push({
         x: p.targetXY[0],
         y: p.targetXY[1],
         r: 1.5,
         alpha: 0.85,
       })
-      // 粒子完成使命，彻底销毁（绝不原地无限循环！）
+      // 粒子完成单次飞行使命，彻底销毁（不留常驻死线）
       activeParticles.splice(i, 1)
       continue
     }
@@ -434,7 +443,7 @@ function renderFrame() {
     const dist = Math.hypot(x2 - x1, y2 - y1)
     const arcHeight = Math.min(38, Math.max(10, dist * 0.26))
     const cx = mx
-    const cy = Math.min(y1, y2) - arcHeight
+    const cy = Math.min(y1, y2) - arcHeight + (p.jitter || 0)
 
     // 贝塞尔当前飞行坐标
     const it = 1 - p.t
@@ -444,11 +453,11 @@ function renderFrame() {
     p.trail.push({ x: px, y: py })
     if (p.trail.length > 12) p.trail.shift()
 
-    // 绘制流星动态渐变拖尾
+    // 绘制流星动态渐变拖尾（翠绿色系 #10b981，坚决不含任何蓝色）
     if (p.trail.length > 1) {
       const grad = ctx.createLinearGradient(p.trail[0].x, p.trail[0].y, px, py)
-      grad.addColorStop(0, 'rgba(56, 189, 248, 0)')
-      grad.addColorStop(1, 'rgba(56, 189, 248, 0.95)')
+      grad.addColorStop(0, 'rgba(16, 185, 129, 0)')
+      grad.addColorStop(1, 'rgba(16, 185, 129, 0.95)')
 
       ctx.beginPath()
       ctx.moveTo(p.trail[0].x, p.trail[0].y)
@@ -464,7 +473,7 @@ function renderFrame() {
     // 绘制流星头部微光晕与白亮核
     ctx.beginPath()
     ctx.arc(px, py, 2.2, 0, Math.PI * 2)
-    ctx.fillStyle = 'rgba(56, 189, 248, 0.45)'
+    ctx.fillStyle = 'rgba(16, 185, 129, 0.45)'
     ctx.fill()
 
     ctx.beginPath()
@@ -473,7 +482,7 @@ function renderFrame() {
     ctx.fill()
   }
 
-  // 2. 绘制终点服务器波纹扩散
+  // 2. 绘制终点服务器波纹扩散（翠绿色系）
   for (let i = targetRipples.length - 1; i >= 0; i--) {
     const rip = targetRipples[i]
     rip.r += 0.22
@@ -486,7 +495,7 @@ function renderFrame() {
 
     ctx.beginPath()
     ctx.arc(rip.x, rip.y, rip.r, 0, Math.PI * 2)
-    ctx.strokeStyle = `rgba(56, 189, 248, ${rip.alpha})`
+    ctx.strokeStyle = `rgba(16, 185, 129, ${rip.alpha})`
     ctx.lineWidth = 0.85
     ctx.stroke()
   }
