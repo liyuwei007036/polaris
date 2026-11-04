@@ -699,6 +699,61 @@ onUnmounted(() => {
   pointer-events: none;
 }
 
+.map-fullscreen-btn {
+  position: absolute;
+  right: 8px;
+  bottom: 8px;
+  z-index: 6;
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 1px solid var(--sb-line);
+  border-radius: 8px;
+  background: color-mix(in oklab, var(--sb-surface-2, #1b1e26) 78%, transparent);
+  color: var(--sb-muted);
+  cursor: pointer;
+  backdrop-filter: blur(6px);
+  transition: color 0.15s ease, background-color 0.15s ease, border-color 0.15s ease;
+}
+
+.map-fullscreen-btn:hover {
+  color: var(--sb-success, #10b981);
+  border-color: color-mix(in oklab, var(--sb-success, #10b981) 45%, transparent);
+  background: color-mix(in oklab, var(--sb-success, #10b981) 14%, transparent);
+}
+
+.map-fullscreen-btn svg {
+  width: 14px;
+  height: 14px;
+}
+
+/* 全屏时让地图铺满整个视口 */
+.node-map-card:fullscreen,
+.node-map-card.is-fullscreen {
+  width: 100vw;
+  height: 100vh;
+  max-width: none;
+  max-height: none;
+  padding: 22px 26px;
+  border-radius: 0;
+  background: var(--sb-bg, #0e1015);
+}
+
+.node-map-card:fullscreen .map-canvas-wrap,
+.node-map-card.is-fullscreen .map-canvas-wrap {
+  flex: 1;
+  min-height: 0;
+}
+
+.node-map-card:fullscreen .map-svg,
+.node-map-card.is-fullscreen .map-svg {
+  width: 100%;
+  height: 100%;
+  max-height: none;
+}
+
 .land-dots circle {
   fill: var(--sb-muted);
   opacity: 0.3;
