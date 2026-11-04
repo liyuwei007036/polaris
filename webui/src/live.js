@@ -1,5 +1,6 @@
 import { ref } from 'vue'
 import { friendlyError } from './api'
+import { isShareMode, shareStreamPath } from './share'
 
 export const liveStatus = ref('connecting')
 
@@ -8,7 +9,12 @@ const subscribers = new Set()
 
 function ensureSource() {
   if (source) return
-  source = new EventSource('/api/v1/events/live', { withCredentials: true })
+  // Share viewers use the public stream, which publishes the same invalidation
+  // events with node addresses masked. Everything else is unchanged.
+  source = new EventSource(
+    isShareMode ? shareStreamPath('/events/live') : '/api/v1/events/live',
+    { withCredentials: !isShareMode },
+  )
   source.addEventListener('open', () => { liveStatus.value = 'connected' })
   source.addEventListener('ready', () => { liveStatus.value = 'connected' })
   source.addEventListener('change', (event) => {

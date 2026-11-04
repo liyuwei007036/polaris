@@ -371,6 +371,16 @@ func (s *Server) registerBrowserRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/v1/shares", s.listShareLinks)
 	mux.HandleFunc("DELETE /api/v1/shares/{id}", s.revokeShareLink)
 	mux.HandleFunc("GET /api/v1/shares/access/{token}", s.publicShareLink)
+	// The share endpoints mirror the console API shapes so the real pages can
+	// run unchanged. Every response is a masked projection; writes never exist.
+	mux.HandleFunc("GET /api/v1/shares/access/{token}/nodes", s.shareNodes)
+	mux.HandleFunc("GET /api/v1/shares/access/{token}/nodes/metrics", s.shareNodeMetrics)
+	mux.HandleFunc("GET /api/v1/shares/access/{token}/nodes/{id}/history", s.shareNodeHistory)
+	mux.HandleFunc("GET /api/v1/shares/access/{token}/listeners", s.shareListeners)
+	mux.HandleFunc("GET /api/v1/shares/access/{token}/fleet", s.shareFleet)
+	mux.HandleFunc("GET /api/v1/shares/access/{token}/events/connections", s.shareConnectionsStream)
+	mux.HandleFunc("GET /api/v1/shares/access/{token}/events/live", s.shareLiveStream)
+	mux.HandleFunc("GET /api/v1/shares/access/{token}/{path...}", s.shareFallback)
 	mux.HandleFunc("GET /api/v1/operators", s.listOperators)
 	mux.HandleFunc("POST /api/v1/operators", s.createOperator)
 	mux.HandleFunc("PUT /api/v1/operators/{id}", s.updateOperator)

@@ -59,10 +59,8 @@ window.addEventListener('unhandledrejection', (event) => {
 })
 
 // 两套界面各自成块：手机不会下载桌面版的表格与图表代码，反之亦然。
-// /share/<token> 是只读分享入口，任何设备都只加载分享页，绝不进入登录流程。
-const sharePath = /^\/share\/[^/?#]+\/?$/.test(window.location.pathname)
-const root = sharePath
-  ? defineAsyncComponent(() => import('./ShareApp.vue'))
-  : defineAsyncComponent(() => (isMobileUI() ? import('./mobile/MobileApp.vue') : import('./App.vue')))
+// /share/<token> 也走同一套真实界面，由 api.js 把请求改写到只读分享端点，
+// 页面本身与登录后的控制台完全一致。
+const root = defineAsyncComponent(() => (isMobileUI() ? import('./mobile/MobileApp.vue') : import('./App.vue')))
 
 createApp(root).use(ElementPlus, { locale: zhCn }).mount('#app')

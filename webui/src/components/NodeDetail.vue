@@ -54,14 +54,14 @@
           </svg>
           升级 sing-box
         </button>
-        <button type="button" class="action-btn neu-track neu-press" @click="$emit('edit', node)">
+        <button v-if="canWrite" type="button" class="action-btn neu-track neu-press" @click="$emit('edit', node)">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="size-3.5">
             <path d="M12 20h9" />
             <path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z" />
           </svg>
           配置
         </button>
-        <button v-if="node.online" type="button" class="action-btn neu-track neu-press" @click="$emit('probe', node)">
+        <button v-if="canWrite && node.online" type="button" class="action-btn neu-track neu-press" @click="$emit('probe', node)">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="size-3.5">
             <circle cx="12" cy="12" r="10" />
             <path d="m4.93 4.93 4.24 4.24" />
@@ -267,7 +267,7 @@
             <span>{{ group.label }}</span>
           </h4>
           <button
-            v-if="group.action"
+            v-if="canWrite && group.action"
             type="button"
             class="fact-action-btn neu-track neu-press"
             :disabled="group.actionLoading"
@@ -324,6 +324,7 @@ import TrendChart from './TrendChart.vue'
 import { api, post } from '../api'
 import { formatBytes, formatDuration } from '../format'
 import { summarizePing } from '../latency'
+import { isShareMode } from '../share'
 
 const props = defineProps({
   node: { type: Object, required: true },
@@ -335,6 +336,7 @@ defineEmits(['back', 'edit', 'probe', 'upgrade-agent', 'upgrade-singbox'])
 
 const appState = inject('appState', null)
 const isAdmin = inject('isAdmin', { value: false })
+const canWrite = inject('canWrite', ref(false))
 
 const agentUpdateAvailable = computed(() => {
   const latest = appState?.systemUpdate?.latest_version
@@ -590,6 +592,7 @@ const PERIOD_LABELS = { day: '天', month: '月', quarter: '季', year: '年' }
 const CURRENCY_SYMBOLS = { USD: '$', CNY: '¥', EUR: '€', CAD: 'C$' }
 
 function getPriceText(node) {
+  if (isShareMode) return ''
   if (!node.price_period) return ''
   if (node.price_period === 'free' || node.price === '0' || node.price === '0.00') return '免费'
   const symbol = CURRENCY_SYMBOLS[node.currency] || `${node.currency} `
@@ -597,6 +600,7 @@ function getPriceText(node) {
 }
 
 function getExpiryInfo(expiresOn) {
+  if (isShareMode) return { text: '已隐藏', cls: '' }
   if (!expiresOn) return { text: '永不到期', cls: 'is-ok' }
   if (expiresOn === '2035-01-01') return { text: '永久免费', cls: 'is-ok' }
   const end = new Date(`${expiresOn}T00:00:00`)
@@ -672,7 +676,7 @@ const factGroups = computed(() => {
   const netFacts = [
     { label: '本月流量', value: `↓ ${formatBytes(monthlyRx)} · ↑ ${formatBytes(monthlyTx)}` },
     { label: '累计流量', value: `↓ ${formatBytes(totals.received_bytes || 0)} · ↑ ${formatBytes(totals.sent_bytes || 0)}` },
-    { label: '机器带宽', value: node.bandwidth || '1 Gbps' },
+    { label: '机器带宽', value: isShareMode ? '已隐藏' : (node.bandwidth || '1 Gbps') },
     { label: '主机地址', value: node.client_address },
     { label: '地理位置', value: node.location || node.city },
     { label: '出口 IP', value: (node.ip_addresses || []).join(' · ') || node.last_observed_ip, cls: 'font-mono' },

@@ -132,7 +132,7 @@
         tone="net"
         :pct="trafficPercent"
         :foot="trafficFootText"
-        empty="∞"
+        :empty="trafficEmptyText"
         :title="`本月实际消耗: ${formatBytes(trafficUsedBytes)} · 上线以来累计: ${formatBytes(lifetimeTrafficBytes)}`"
       >
         <template #icon>
@@ -234,6 +234,7 @@ import {
 import OsIcon from './OsIcon.vue'
 import Meter from './Meter.vue'
 import LatencyPanel from './LatencyPanel.vue'
+import { isShareMode } from '../share'
 
 const props = defineProps({
   node: {
@@ -468,9 +469,16 @@ const trafficPercent = computed(() => {
   return Math.min(100, Math.round((used / limit) * 100))
 })
 
+// The traffic plan is masked in share mode, so the meter must not fall back to
+// "∞" — that would read as an unmetered plan rather than hidden data.
+const trafficEmptyText = computed(() => (isShareMode ? '已隐藏' : '∞'))
+
 const trafficFootText = computed(() => {
   const used = trafficUsedBytes.value
   const limit = trafficLimitBytes.value
+  if (isShareMode) {
+    return `${formatBytes(used)} / 已隐藏`
+  }
   if (limit > 0) {
     return `${formatBytes(used)} / ${formatBytes(limit)}`
   }
@@ -512,6 +520,7 @@ const expiryDays = computed(() => {
 })
 
 const expiryText = computed(() => {
+  if (isShareMode) return '已隐藏'
   if (props.node.expires_on === '2035-01-01' || !props.node.expires_on || props.node.price === '0.00' || props.node.price === '0') {
     return '永久免费'
   }
@@ -528,6 +537,7 @@ const expiryToneClass = computed(() => {
 })
 
 const priceText = computed(() => {
+  if (isShareMode) return '已隐藏'
   const p = props.node.price
   if (!p || p === '0.00' || p === '0') return '免费'
   const sym = props.node.currency === 'CNY' ? '¥' : props.node.currency === 'EUR' ? '€' : '$'

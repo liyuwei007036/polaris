@@ -1,4 +1,5 @@
 import { shallowRef } from 'vue'
+import { isShareMode, shareStreamPath } from './share'
 
 // One shared connections stream for the whole console. Every page that shows
 // real-time data reads the same snapshot map instead of opening its own
@@ -33,7 +34,12 @@ function applyNode(item) {
 
 function ensureSource() {
   if (source) return
-  source = new EventSource('/api/v1/events/connections', { withCredentials: true })
+  // The public share stream carries the same snapshot / node / totals events
+  // as the authenticated one, with per-node connection details stripped.
+  source = new EventSource(
+    isShareMode ? shareStreamPath('/events/connections') : '/api/v1/events/connections',
+    { withCredentials: !isShareMode },
+  )
   source.addEventListener('snapshot', (event) => {
     let payload
     try { payload = JSON.parse(event.data) } catch { return }

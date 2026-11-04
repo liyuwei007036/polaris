@@ -55,13 +55,19 @@ func (s *Server) nodeHistory(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
-	nodeID := r.PathValue("id")
+	s.serveNodeHistory(w, r, r.PathValue("id"), false)
+}
+
+// serveNodeHistory is shared by the authenticated console and the read-only
+// share endpoint. Only the share caller asks for masking, which replaces probe
+// labels and their keys with opaque values.
+func (s *Server) serveNodeHistory(w http.ResponseWriter, r *http.Request, nodeID string, mask bool) {
 	hours, _ := strconv.Atoi(r.URL.Query().Get("hours"))
 	if hours <= 0 || hours > 24*30 {
 		hours = 6
 	}
 	if r.URL.Query().Get("series") == "ping" {
-		s.nodePingHistory(w, r, nodeID, hours)
+		s.nodePingHistory(w, r, nodeID, hours, mask)
 		return
 	}
 	cutoff := time.Now().Add(-time.Duration(hours) * time.Hour).Unix()
@@ -101,7 +107,7 @@ type pingHistoryPoint struct {
 // nodePingHistory returns probe samples for the requested window. Samples are
 // averaged into at most `points` buckets per probe so a 24 hour window stays a
 // few hundred points instead of tens of thousands.
-func (s *Server) nodePingHistory(w http.ResponseWriter, r *http.Request, nodeID string, hours int) {
+func (s *Server) nodePingHistory(w http.ResponseWriter, r *http.Request, nodeID string, hours int, mask bool) {
 	limit, _ := strconv.Atoi(r.URL.Query().Get("points"))
 	if limit <= 0 || limit > 2000 {
 		limit = 240
@@ -159,15 +165,25 @@ func (s *Server) nodePingHistory(w http.ResponseWriter, r *http.Request, nodeID 
 	points := make([]pingHistoryPoint, 0, len(order)*limit)
 	probes := make(map[string]string, len(order))
 	losses := make(map[string]float64, len(order))
-	for _, key := range order {
+	for index, key := range order {
 		entry := series[key]
-		probes[key] = entry.name
+		outputKey := key
+		if mask {
+			// A probe id is often the target address when no explicit probe id
+			// exists, so the share response re-keys everything opaquely.
+			outputKey = "probe-" + strconv.Itoa(index+1)
+		}
+		name := entry.name
+		if mask {
+			name = maskShareLabel(name)
+		}
+		probes[outputKey] = name
 
 		type accum struct {
-			latSum  float64
-			latN    int
-			lossN   int
-			total   int
+			latSum float64
+			latN   int
+			lossN  int
+			total  int
 		}
 		buckets := make(map[int64]*accum)
 		lost := 0
@@ -188,7 +204,7 @@ func (s *Server) nodePingHistory(w http.ResponseWriter, r *http.Request, nodeID 
 			}
 		}
 		if len(entry.points) > 0 {
-			losses[key] = round1(float64(lost) / float64(len(entry.points)) * 100)
+			losses[outputKey] = round1(float64(lost) / float64(len(entry.points)) * 100)
 		}
 
 		slots := make([]int64, 0, len(buckets))
@@ -199,6 +215,9 @@ func (s *Server) nodePingHistory(w http.ResponseWriter, r *http.Request, nodeID 
 		for _, slot := range slots {
 			acc := buckets[slot]
 			point := pingHistoryPoint{TaskID: taskIDValue(key), TS: slot}
+			if mask {
+				point.TaskID = outputKey
+			}
 			if acc.latN > 0 {
 				lat := round1(acc.latSum / float64(acc.latN))
 				point.Latency = &lat

@@ -1,4 +1,5 @@
 import { ref } from 'vue'
+import { isShareMode, shareAPIPath } from './share'
 
 export const csrfToken = ref(localStorage.getItem('polaris_csrf') || '')
 
@@ -27,11 +28,19 @@ export function friendlyError(message) {
 
 export async function api(path, options = {}) {
   const { method = 'GET', body, silentUnauthorized = false, onTask } = options
+  // A share link only ever reads. Reject writes before they leave the browser
+  // so a viewer cannot reach an authenticated endpoint even by opening the
+  // console from a browser that happens to be logged in as an operator.
+  if (isShareMode && method.toUpperCase() !== 'GET') {
+    const error = new Error('这是只读分享页面，无法执行此操作')
+    error.code = 'read_only_share'
+    throw error
+  }
   const headers = { 'Content-Type': 'application/json' }
-  if (csrfToken.value) headers['X-CSRF-Token'] = csrfToken.value
-  const response = await fetch(`/api/v1${path}`, {
+  if (csrfToken.value && !isShareMode) headers['X-CSRF-Token'] = csrfToken.value
+  const response = await fetch(isShareMode ? shareAPIPath(path) : `/api/v1${path}`, {
     method,
-    credentials: 'same-origin',
+    credentials: isShareMode ? 'omit' : 'same-origin',
     headers,
     body: body === undefined ? undefined : JSON.stringify(body),
   })
@@ -62,6 +71,11 @@ export const put = (path, body, options) => api(path, { ...options, method: 'PUT
 export const del = (path) => api(path, { method: 'DELETE' })
 
 export async function uploadFile(path, formData) {
+  if (isShareMode) {
+    const error = new Error('这是只读分享页面，无法执行此操作')
+    error.code = 'read_only_share'
+    throw error
+  }
   const headers = {}
   if (csrfToken.value) headers['X-CSRF-Token'] = csrfToken.value
   const response = await fetch(`/api/v1${path}`, {

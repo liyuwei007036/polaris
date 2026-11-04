@@ -30,6 +30,7 @@ import { isDark, toggleTheme } from './theme'
 import { api, post, setCsrfToken } from './api'
 import { closeLiveEvents, subscribeLive } from './live'
 import { closeConnectionEvents } from './connections'
+import { isShareMode } from './share'
 import { brandName, brandTagline } from './brand'
 import BrandMark from './components/BrandMark.vue'
 import AdminManagementView from './views/AdminManagementView.vue'
@@ -38,6 +39,11 @@ import PasswordChangeView from './views/PasswordChangeView.vue'
 
 const authenticated = ref(false)
 const checking = ref(true)
+// In share mode the console is not logged in at all. These refs let the same
+// shell render the real page with a read-only viewer session instead of
+// sending the visitor to the login form.
+const shareError = ref('')
+const sharePage = ref('')
 const viewAliases = {
   'ingress-routes': 'inbounds',
   history: 'connection-history',
@@ -162,6 +168,10 @@ async function loadNodes() {
 
 async function loadSystemUpdate(refresh = false) {
   if (!authenticated.value) return null
+  if (isShareMode) {
+    appState.systemUpdate = null
+    return null
+  }
   appState.systemUpdate = await api(refresh ? '/system/update?refresh=1' : '/system/update')
   return appState.systemUpdate
 }
@@ -202,16 +212,7 @@ async function checkSession() {
   }
 }
 
-function setAuthenticated(session) {
-  setCsrfToken(session.csrf_token)
-  appState.username = session.username
-  appState.role = session.role
-  appState.totp_enabled = Boolean(session.totp_enabled)
-  appState.must_change_password = Boolean(session.must_change_password)
-  authenticated.value = true
-  if (appState.must_change_password) return
-  loadNodes().catch(() => {})
-  loadSystemUpdate().catch(() => {})
+function startLiveSubscription() {
   stopAppLive?.()
   stopAppLive = subscribeLive((event) => {
     if (event.kind === 'node' && event.node_id) {
@@ -223,6 +224,45 @@ function setAuthenticated(session) {
       }
     }
   })
+}
+
+function setAuthenticated(session) {
+  setCsrfToken(session.csrf_token)
+  appState.username = session.username
+  appState.role = session.role
+  appState.totp_enabled = Boolean(session.totp_enabled)
+  appState.must_change_password = Boolean(session.must_change_password)
+  authenticated.value = true
+  if (appState.must_change_password) return
+  loadNodes().catch(() => {})
+  loadSystemUpdate().catch(() => {})
+  startLiveSubscription()
+}
+
+// Share visitors get a viewer session and the real page. The backend has
+// already masked the data; here we only make sure the console never tries to
+// authenticate, write, or navigate somewhere the link does not cover.
+async function initShareMode() {
+  checking.value = true
+  try {
+    const meta = await api('')
+    sharePage.value = meta?.page === 'dashboard' ? 'dashboard' : 'nodes'
+    appState.username = '只读分享'
+    appState.role = 'viewer'
+    appState.totp_enabled = false
+    appState.must_change_password = false
+    authenticated.value = true
+    currentView.value = sharePage.value
+    location.hash = `#/${sharePage.value}`
+    await loadNodes()
+    startLiveSubscription()
+    shareError.value = ''
+  } catch (error) {
+    shareError.value = error?.message || '分享链接不存在或已过期'
+    authenticated.value = false
+  } finally {
+    checking.value = false
+  }
 }
 
 function clearSession() {
@@ -249,11 +289,21 @@ async function logout() {
 
 function navigate(view, query = '') {
   const resolved = viewAliases[view] || view
+  if (isShareMode && resolved !== sharePage.value) {
+    ElMessage.warning('这是只读分享页面，仅包含分享的页面')
+    return
+  }
   currentView.value = views[resolved] ? resolved : 'dashboard'
   location.hash = `#/${currentView.value}${query ? `?${query}` : ''}`
 }
 
 function onHashChange() {
+  if (isShareMode) {
+    const page = sharePage.value || 'nodes'
+    currentView.value = page
+    if (location.hash !== `#/${page}`) location.hash = `#/${page}`
+    return
+  }
   const raw = location.hash.replace(/^#\/?/, '') || 'dashboard'
   const [view] = raw.split('?')
   const resolved = viewAliases[view] || view
@@ -276,7 +326,8 @@ provide('navigate', navigate)
 onMounted(() => {
   window.addEventListener('hashchange', onHashChange)
   window.addEventListener('sb:unauthorized', onUnauthorized)
-  checkSession()
+  if (isShareMode) initShareMode()
+  else checkSession()
 })
 
 onBeforeUnmount(() => {
@@ -291,6 +342,12 @@ onBeforeUnmount(() => {
     <span>正在载入</span>
   </div>
 
+  <div v-else-if="shareError" class="boot-screen share-error">
+    <el-icon :size="28"><Lock /></el-icon>
+    <strong>{{ shareError }}</strong>
+    <span>请向分享者确认链接是否完整，或让分享者重新生成。</span>
+  </div>
+
   <LoginView v-else-if="!authenticated" @authenticated="setAuthenticated" />
 
   <PasswordChangeView
@@ -302,7 +359,7 @@ onBeforeUnmount(() => {
   <el-container class="app-layout">
     <el-aside :width="sidebarCollapsed ? '64px' : '224px'" class="app-sidebar" :class="{ 'is-collapsed': sidebarCollapsed }">
       <div class="sidebar-header">
-        <el-popover placement="right-start" :width="308" trigger="click" popper-class="update-popover">
+        <el-popover placement="right-start" :width="308" trigger="click" :disabled="isShareMode" popper-class="update-popover">
           <template #reference>
             <button
               type="button"
@@ -332,7 +389,7 @@ onBeforeUnmount(() => {
             </p>
             <p v-else>已是最新版本。打开控制台时会自动检查。</p>
             <div class="update-pop__actions">
-              <el-button size="small" :loading="updateChecking" @click="checkSystemUpdate">重新检查</el-button>
+              <el-button v-if="!isShareMode" size="small" :loading="updateChecking" @click="checkSystemUpdate">重新检查</el-button>
               <el-button
                 v-if="isAdmin && appState.systemUpdate?.update_available"
                 size="small" type="primary" :loading="updateApplying"
@@ -396,7 +453,7 @@ onBeforeUnmount(() => {
             </button>
           </el-tooltip>
 
-          <el-tooltip content="退出登录" placement="top">
+          <el-tooltip v-if="!isShareMode" content="退出登录" placement="top">
             <el-button text circle :icon="SwitchButton" @click="logout" />
           </el-tooltip>
         </template>
@@ -436,6 +493,13 @@ onBeforeUnmount(() => {
   color: var(--sb-muted);
   letter-spacing: 1px;
 }
+.share-error {
+  flex-direction: column;
+  text-align: center;
+  padding: 24px;
+}
+.share-error strong { color: var(--sb-text); font-size: 16px; }
+.share-error span { max-width: 420px; font-size: 13px; line-height: 1.6; }
 .app-layout { width: 100%; height: 100%; }
 .app-sidebar {
   position: relative;
