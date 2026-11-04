@@ -644,6 +644,20 @@ function formatRate(bps) {
   flex-shrink: 0;
 }
 
+.upgrade-tag {
+  color: var(--sb-warning, #f59e0b);
+  border-color: color-mix(in oklab, var(--sb-warning, #f59e0b) 30%, transparent);
+  background: color-mix(in oklab, var(--sb-warning, #f59e0b) 10%, transparent);
+  font-weight: 550;
+}
+
+.upgrade-dot {
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: var(--sb-warning, #f59e0b);
+}
+
 .provider-tag {
   color: var(--sb-text);
   font-weight: 500;
