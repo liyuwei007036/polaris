@@ -1,5 +1,5 @@
 <template>
-  <div class="node-map-card neu" :class="className">
+  <div ref="cardRef" class="node-map-card neu" :class="[className, { 'is-fullscreen': isFullscreen }]">
     <div class="map-head">
       <div class="head-left">
         <span class="globe-badge">
@@ -12,22 +12,13 @@
         <span class="head-title">节点分布</span>
       </div>
       <div class="head-right">
-        <span class="tnum head-stat">
-          {{ mappedCount }} 个节点 · {{ places.length }} 个地区
+        <span class="tnum head-stat" title="事件驱动：只有新建立的连接才会发射一颗流星，已存在的长连接不会重复飞线">
+          {{ mappedCount }} 个节点 · {{ places.length }} 个地区 · {{ liveConnectionCount }} 条实时连接
         </span>
       </div>
     </div>
 
     <div class="map-sub">
-      <span class="tnum status-count">
-        在线 <span class="text-ok font-semibold">{{ onlineCount }}</span>
-        <template v-if="offlineCount > 0">
-          · 离线 <span class="text-danger font-semibold">{{ offlineCount }}</span>
-        </template>
-        <template v-if="unmappedCount > 0">
-          · 未定位 <span class="text-muted font-medium">{{ unmappedCount }}</span>
-        </template>
-      </span>
       <div class="legend-wrap">
         <span v-for="item in LEGEND" :key="item.tone" class="legend-item" :class="`is-${item.tone}`">
           <span class="legend-dot" :class="item.dotClass" />
@@ -85,6 +76,27 @@
         class="map-fly-canvas"
       />
 
+      <!-- 全屏切换 -->
+      <button
+        class="map-fullscreen-btn"
+        :title="isFullscreen ? '退出全屏' : '全屏'"
+        :aria-label="isFullscreen ? '退出全屏' : '全屏'"
+        @click.stop="toggleFullscreen"
+      >
+        <svg v-if="!isFullscreen" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M8 3H5a2 2 0 0 0-2 2v3" />
+          <path d="M21 8V5a2 2 0 0 0-2-2h-3" />
+          <path d="M3 16v3a2 2 0 0 0 2 2h3" />
+          <path d="M16 21h3a2 2 0 0 0 2-2v-3" />
+        </svg>
+        <svg v-else viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M8 3v3a2 2 0 0 1-2 2H3" />
+          <path d="M21 8h-3a2 2 0 0 1-2-2V3" />
+          <path d="M3 16h3a2 2 0 0 1 2 2v3" />
+          <path d="M16 21v-3a2 2 0 0 1 2-2h3" />
+        </svg>
+      </button>
+
       <!-- Region Popup on marker click -->
       <transition name="pop-fade">
         <div v-if="activePlace" class="place-popup neu" @click.stop>
@@ -140,19 +152,35 @@ const LEGEND = [
   { tone: 'none', label: '全部离线', dotClass: 'tone-none' },
 ]
 
+const cardRef = ref(null)
 const wrapRef = ref(null)
 const svgRef = ref(null)
 const canvasRef = ref(null)
 const selectedKey = ref(null)
+const isFullscreen = ref(false)
 
 let unsubConnections = null
 let animationFrameId = null
 let resizeObserver = null
 let isVisible = true
 
-// 内部活跃粒子队列与终点波纹
-const activeParticles = []
+// 终点波纹：流星抵达目标服务器时触发
 const targetRipples = []
+
+// 已登记过的连接：key -> 最后一次在快照中出现的时间。
+// 用 node_id + connection.id 组合，避免不同节点之间的 ID 冲突。
+const emittedConnections = new Map()
+// 连接从快照消失后仍保留一段时间，防止两次推送之间的抖动导致重复发射。
+const EMITTED_RETENTION_MS = 60_000
+// 每个节点的首轮快照只登记已有连接、不发射，避免打开页面或新增节点时爆出流星。
+const seededNodes = new Set()
+// 数据同步节流：SSE 约每秒推送一次，没必要每帧重新解析整张连接表
+const CONNECTION_SYNC_INTERVAL_MS = 300
+let lastConnectionSyncAt = 0
+
+// 在途流星：每条“新连接”一颗，飞完即删
+const meteors = []
+const liveConnectionCount = ref(0)
 
 function countryCodeToFlag(code) {
   if (!code || code.length !== 2) return '🌐'
@@ -220,18 +248,6 @@ const mappedCount = computed(() => {
   return places.value.reduce((sum, p) => sum + p.nodes.length, 0)
 })
 
-const onlineCount = computed(() => {
-  return places.value.reduce((sum, p) => sum + p.online, 0)
-})
-
-const offlineCount = computed(() => {
-  return mappedCount.value - onlineCount.value
-})
-
-const unmappedCount = computed(() => {
-  return Math.max(0, props.nodes.length - mappedCount.value)
-})
-
 function toggleSelect(key) {
   selectedKey.value = selectedKey.value === key ? null : key
 }
@@ -247,19 +263,63 @@ function onGlobalClick(e) {
   }
 }
 
+// 全屏切换：整张地图卡片进入全屏，SVG 与 Canvas 由渲染循环自动适配新尺寸
+function onFullscreenChange() {
+  isFullscreen.value = Boolean(
+    document.fullscreenElement === cardRef.value ||
+    document.webkitFullscreenElement === cardRef.value
+  )
+}
+
+async function toggleFullscreen() {
+  const card = cardRef.value
+  if (!card) return
+
+  const active = document.fullscreenElement || document.webkitFullscreenElement
+  try {
+    if (active) {
+      if (document.exitFullscreen) await document.exitFullscreen()
+      else if (document.webkitExitFullscreen) document.webkitExitFullscreen()
+    } else if (card.requestFullscreen) {
+      await card.requestFullscreen()
+    } else if (card.webkitRequestFullscreen) {
+      card.webkitRequestFullscreen()
+    }
+  } catch {
+    // 浏览器拒绝全屏（如 iframe 权限不足）时保持原状
+  }
+}
+
 // ─────────────────────────────────────────────────────────────
-// 流量与飞线引擎 (Flow & Flying Lines System)
+// 事件驱动飞线 (Event-Driven Connection Arcs)
+//
+// 只在一条真实连接“第一次出现”时发射一颗流星，流星飞完即销毁。
+// 同一个 connection.id 只发射一次；长连接建立后不会持续刷屏。
+//   · 新连接出现   →  发射一颗流星
+//   · 连接保持打开 →  不再重复发射
+//   · 连接关闭     →  流星早已飞完，画布自然静默
+// 首轮快照只登记已有连接、不发射，避免打开页面时一次爆出上百颗流星。
+// 链式中继段 (is_chain_relay) 是服务器之间的内部跳转，不是用户连接，
+// 与页面上的“活动连接”计数口径保持一致，予以排除。
 // ─────────────────────────────────────────────────────────────
 
-// 记录每条链路的上一次发弹时间戳 (ms)
-const linkSpawnTimestamps = new Map()
+// 连接的唯一标识：node_id + connection.id。
+// 极少数旧版 agent 可能没有 id，用连接五元组兜底；仍然拿不到就放弃，
+// 宁可少画一颗，也不凭空重复发射。
+function connectionKey(nodeID, c) {
+  if (c.id) return `${nodeID}:${c.id}`
+  const fingerprint = [c.source_ip, c.source, c.destination, c.network, c.started_at]
+    .filter(Boolean)
+    .join('|')
+  return fingerprint ? `${nodeID}:${fingerprint}` : ''
+}
 
-// 提取当前全部真实连接链路：从 sing-box 上报的所有连接 1:1 完整提取
-function extractActiveLinks() {
-  const nodeMap = new Map((props.nodes || []).map((n) => [n.id, n]))
+// 扫描最新快照，返回本轮新出现的、且能定位画线的连接。
+function collectNewConnections(now) {
   const rawSnapshots = props.live && props.live.size > 0 ? props.live : connectionSnapshots.value
-  if (!rawSnapshots || rawSnapshots.size === 0) return []
+  if (!rawSnapshots || rawSnapshots.size === 0) return { fresh: [], connectionCount: 0 }
 
+  const nodeMap = new Map((props.nodes || []).map((n) => [n.id, n]))
   // 集群节点 IP 映射表（用于解析节点之间的中继或互联流量来源）
   const fleetByIP = new Map()
   for (const n of props.nodes || []) {
@@ -268,24 +328,43 @@ function extractActiveLinks() {
     if (n.client_address) fleetByIP.set(n.client_address.split(':')[0], n)
   }
 
-  const linkMap = new Map()
+  const present = new Set()
+  const fresh = []
+  let connectionCount = 0
 
   for (const snapshot of rawSnapshots.values()) {
     const node = nodeMap.get(snapshot.node_id)
     if (!node) continue
 
+    // 该节点是否是第一次出现在快照里：首轮只登记，不发射
+    const nodeIsNew = !seededNodes.has(snapshot.node_id)
+
     const nLat = Number(node.latitude)
     const nLon = Number(node.longitude)
-    if (isNaN(nLat) || isNaN(nLon) || (nLat === 0 && nLon === 0)) continue
-    const targetXY = project(nLat, nLon)
+    const hasTarget = !(isNaN(nLat) || isNaN(nLon) || (nLat === 0 && nLon === 0))
+    const targetXY = hasTarget ? project(nLat, nLon) : null
 
-    // 100% 忠实遍历 sing-box 上报的每条连接，严禁以链式代理为由丢弃任何连接
     for (const c of snapshot.connections || []) {
+      if (c.is_chain_relay) continue
+      // 真实连接数按页面“活动连接”的口径统计：非中继段全部计入，
+      // 即使某条连接暂时没有来源经纬度、画不出流星，也仍然是一条真实连接。
+      connectionCount++
+
+      const key = connectionKey(snapshot.node_id, c)
+      if (!key) continue
+
+      present.add(key)
+      const alreadyKnown = emittedConnections.has(key)
+      emittedConnections.set(key, now)
+      if (alreadyKnown || nodeIsNew) continue
+
+      // 新连接：节点或来源没有经纬度就画不出流星，只登记不发射
+      if (!hasTarget) continue
+
       let sLat = Number(c.source_lat)
       let sLon = Number(c.source_lon)
       let hasSrc = Boolean(c.has_source_coords || (!isNaN(sLat) && !isNaN(sLon) && (sLat !== 0 || sLon !== 0)))
 
-      // 若来源无经纬度，检查是否来自集群内其他节点（中继/级联）
       if (!hasSrc && c.source_ip) {
         const fromNode = fleetByIP.get(c.source_ip)
         if (fromNode && fromNode.has_coords) {
@@ -294,73 +373,81 @@ function extractActiveLinks() {
           hasSrc = !isNaN(sLat) && !isNaN(sLon) && (sLat !== 0 || sLon !== 0)
         }
       }
-
       if (!hasSrc) continue
 
       const sourceXY = project(sLat, sLon)
       // 过滤完全重合的同物理点
       if (Math.hypot(targetXY[0] - sourceXY[0], targetXY[1] - sourceXY[1]) < 2) continue
 
-      const linkKey = `${sourceXY[0].toFixed(1)},${sourceXY[1].toFixed(1)}->${targetXY[0].toFixed(1)},${targetXY[1].toFixed(1)}`
-      const rate = (c.download_rate || 0) + (c.upload_rate || 0)
-
-      let link = linkMap.get(linkKey)
-      if (!link) {
-        link = {
-          key: linkKey,
-          sourceXY,
-          targetXY,
-          totalRate: 0,
-          count: 0,
-        }
-        linkMap.set(linkKey, link)
-      }
-      link.totalRate += rate
-      link.count++
+      fresh.push({ sourceXY, targetXY })
     }
+
+    // 该节点本轮已登记完毕，后续快照里再出现的连接才算“新连接”
+    seededNodes.add(snapshot.node_id)
   }
 
-  return [...linkMap.values()]
+  // 清理已经离开快照很久的登记，防止 Map 无限增长
+  for (const [key, at] of emittedConnections) {
+    if (!present.has(key) && now - at > EMITTED_RETENTION_MS) emittedConnections.delete(key)
+  }
+
+  return { fresh, connectionCount }
 }
 
-// 动态发射粒子：单链路单流星机制，保持优雅从容的呼吸节奏（绝非密不透风的连珠发射）
-function updateAndSpawnParticles(links, now) {
-  if (links.length === 0) return
+// 二次贝塞尔曲线参数，保证与旧版弧线形状一致
+function arcGeometry(arc) {
+  const [x1, y1] = arc.sourceXY
+  const [x2, y2] = arc.targetXY
+  const dist = Math.hypot(x2 - x1, y2 - y1)
+  const arcHeight = Math.min(38, Math.max(10, dist * 0.26))
+  return { x1, y1, x2, y2, cx: (x1 + x2) / 2, cy: Math.min(y1, y2) - arcHeight }
+}
 
-  for (const link of links) {
-    // 铁律：同一条航线上同一时间最多只允许 1 颗流星在途飞行！
-    // 杜绝前一颗未落、后一颗又出的“连珠串”或“机关枪”现象
-    const inFlight = activeParticles.some((p) => p.linkKey === link.key)
-    if (inFlight) continue
+function bezierPoint(g, t) {
+  const it = 1 - t
+  return [
+    it * it * g.x1 + 2 * it * t * g.cx + t * t * g.x2,
+    it * it * g.y1 + 2 * it * t * g.cy + t * t * g.y2,
+  ]
+}
 
-    // 冷却间隔：有真实吞吐时每 3 秒优雅发射 1 颗；无吞吐闲置时每 8 秒发射 1 颗作为微光心跳
-    const interval = link.totalRate > 0 ? 3000 : 8000
-
-    const lastSpawn = linkSpawnTimestamps.get(link.key) || 0
-    if (now - lastSpawn >= interval) {
-      linkSpawnTimestamps.set(link.key, now)
-
-      // 粒子的飞翔速度：约 1.4 秒平稳划过半球
-      const speed = 0.012
-
-      activeParticles.push({
-        linkKey: link.key,
-        sourceXY: link.sourceXY,
-        targetXY: link.targetXY,
-        t: 0,
-        speed,
-        trail: [],
-      })
-    }
+// 沿真实连接弧线绘制一颗流星（翠绿拖尾 + 白亮核）
+function drawMeteor(ctx, g, t) {
+  const TRAIL_STEPS = 10
+  const STEP = 0.012
+  const pts = []
+  for (let i = TRAIL_STEPS; i >= 0; i--) {
+    const tt = t - i * STEP
+    if (tt < 0) continue
+    pts.push(bezierPoint(g, tt))
   }
 
-  // 释放过期链路的时间戳防止内存泄漏
-  if (linkSpawnTimestamps.size > 100) {
-    const activeKeys = new Set(links.map((l) => l.key))
-    for (const k of linkSpawnTimestamps.keys()) {
-      if (!activeKeys.has(k)) linkSpawnTimestamps.delete(k)
-    }
+  if (pts.length > 1) {
+    const tail = pts[0]
+    const head = pts[pts.length - 1]
+    const grad = ctx.createLinearGradient(tail[0], tail[1], head[0], head[1])
+    grad.addColorStop(0, 'rgba(16, 185, 129, 0)')
+    grad.addColorStop(1, 'rgba(16, 185, 129, 0.9)')
+
+    ctx.beginPath()
+    ctx.moveTo(tail[0], tail[1])
+    for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i][0], pts[i][1])
+    ctx.strokeStyle = grad
+    ctx.lineWidth = 1.5
+    ctx.lineCap = 'round'
+    ctx.stroke()
   }
+
+  const [hx, hy] = bezierPoint(g, t)
+  ctx.beginPath()
+  ctx.arc(hx, hy, 2.1, 0, Math.PI * 2)
+  ctx.fillStyle = 'rgba(16, 185, 129, 0.45)'
+  ctx.fill()
+
+  ctx.beginPath()
+  ctx.arc(hx, hy, 1.2, 0, Math.PI * 2)
+  ctx.fillStyle = '#ffffff'
+  ctx.fill()
 }
 
 // Canvas 60 FPS 渲染循环 (严禁任何蓝色，采用翠绿 #10b981 与白亮微光)
@@ -409,71 +496,35 @@ function renderFrame() {
   ctx.setTransform(scale * dpr, 0, 0, scale * dpr, offsetX * dpr, offsetY * dpr)
 
   const now = performance.now()
-  const links = extractActiveLinks()
-  updateAndSpawnParticles(links, now)
 
-  // 1. 更新并绘制所有在途流星粒子 (严禁常驻死线，严禁蓝色，采用高雅翠绿 #10b981)
-  for (let i = activeParticles.length - 1; i >= 0; i--) {
-    const p = activeParticles[i]
-    p.t += p.speed
-
-    // 到达终点
-    if (p.t >= 1) {
-      // 抵达目标服务器节点，触发翠绿能量吸收波纹
-      targetRipples.push({
-        x: p.targetXY[0],
-        y: p.targetXY[1],
-        r: 1.5,
-        alpha: 0.85,
+  // 节流扫描真实连接：每 300ms 一次，足够跟上约 1Hz 的 SSE 推送
+  if (now - lastConnectionSyncAt >= CONNECTION_SYNC_INTERVAL_MS) {
+    const { fresh, connectionCount } = collectNewConnections(now)
+    for (const conn of fresh) {
+      meteors.push({
+        sourceXY: conn.sourceXY,
+        targetXY: conn.targetXY,
+        // 同一批新连接稍微错开出发，避免完全重叠成一条粗线
+        bornAt: now + Math.random() * 300,
+        duration: 1400,
       })
-      // 粒子完成单次飞行使命，彻底销毁（不留常驻死线）
-      activeParticles.splice(i, 1)
+    }
+    if (liveConnectionCount.value !== connectionCount) liveConnectionCount.value = connectionCount
+    lastConnectionSyncAt = now
+  }
+
+  // 1. 绘制在途流星：每颗流星对应一条件“刚刚建立”的真实连接，飞完即销毁
+  for (let i = meteors.length - 1; i >= 0; i--) {
+    const m = meteors[i]
+    const t = (now - m.bornAt) / m.duration
+    if (t < 0) continue
+    if (t >= 1) {
+      // 抵达目标服务器节点，触发翠绿能量吸收波纹
+      targetRipples.push({ x: m.targetXY[0], y: m.targetXY[1], r: 1.5, alpha: 0.85 })
+      meteors.splice(i, 1)
       continue
     }
-
-    const [x1, y1] = p.sourceXY
-    const [x2, y2] = p.targetXY
-    const mx = (x1 + x2) / 2
-    const dist = Math.hypot(x2 - x1, y2 - y1)
-    const arcHeight = Math.min(38, Math.max(10, dist * 0.26))
-    const cx = mx
-    const cy = Math.min(y1, y2) - arcHeight
-
-    // 贝塞尔当前飞行坐标
-    const it = 1 - p.t
-    const px = it * it * x1 + 2 * it * p.t * cx + p.t * p.t * x2
-    const py = it * it * y1 + 2 * it * p.t * cy + p.t * p.t * y2
-
-    p.trail.push({ x: px, y: py })
-    if (p.trail.length > 10) p.trail.shift()
-
-    // 绘制流星动态渐变拖尾（翠绿色系 #10b981，坚决不含任何蓝色）
-    if (p.trail.length > 1) {
-      const grad = ctx.createLinearGradient(p.trail[0].x, p.trail[0].y, px, py)
-      grad.addColorStop(0, 'rgba(16, 185, 129, 0)')
-      grad.addColorStop(1, 'rgba(16, 185, 129, 0.95)')
-
-      ctx.beginPath()
-      ctx.moveTo(p.trail[0].x, p.trail[0].y)
-      for (let j = 1; j < p.trail.length; j++) {
-        ctx.lineTo(p.trail[j].x, p.trail[j].y)
-      }
-      ctx.strokeStyle = grad
-      ctx.lineWidth = 1.6
-      ctx.lineCap = 'round'
-      ctx.stroke()
-    }
-
-    // 绘制流星头部微光晕与白亮核
-    ctx.beginPath()
-    ctx.arc(px, py, 2.2, 0, Math.PI * 2)
-    ctx.fillStyle = 'rgba(16, 185, 129, 0.45)'
-    ctx.fill()
-
-    ctx.beginPath()
-    ctx.arc(px, py, 1.25, 0, Math.PI * 2)
-    ctx.fillStyle = '#ffffff'
-    ctx.fill()
+    drawMeteor(ctx, arcGeometry(m), t)
   }
 
   // 2. 绘制终点服务器波纹扩散（翠绿色系）
@@ -505,6 +556,8 @@ function handleVisibilityChange() {
 onMounted(() => {
   window.addEventListener('click', onGlobalClick)
   document.addEventListener('visibilitychange', handleVisibilityChange)
+  document.addEventListener('fullscreenchange', onFullscreenChange)
+  document.addEventListener('webkitfullscreenchange', onFullscreenChange)
 
   // 自动订阅全局实时连接 SSE 流
   unsubConnections = subscribeConnections(() => {})
@@ -516,6 +569,8 @@ onMounted(() => {
 onUnmounted(() => {
   window.removeEventListener('click', onGlobalClick)
   document.removeEventListener('visibilitychange', handleVisibilityChange)
+  document.removeEventListener('fullscreenchange', onFullscreenChange)
+  document.removeEventListener('webkitfullscreenchange', onFullscreenChange)
 
   if (animationFrameId) {
     cancelAnimationFrame(animationFrameId)
@@ -585,22 +640,15 @@ onUnmounted(() => {
 
 .map-sub {
   margin-top: 6px;
-  padding-left: 32px;
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  justify-content: space-between;
+  justify-content: flex-end;
   gap: 8px;
   font-size: 11px;
 }
 
-.status-count {
-  color: var(--sb-muted);
-}
-
 .text-ok { color: var(--sb-success, #10b981); }
-.text-danger { color: var(--sb-danger, #ef4444); }
-.text-muted { color: var(--sb-muted); }
 
 .legend-wrap {
   display: flex;
