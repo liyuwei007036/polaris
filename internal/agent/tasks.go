@@ -130,7 +130,7 @@ func executeTask(ctx context.Context, task Task, options TaskOptions) TaskResult
 	case "probe.tcp", "probe.network", "network.probe":
 		return runNetworkProbe(ctx, task)
 	case "probe.configure":
-		return configurePingProbes(task)
+		return configurePingProbes(task, options.DataDir)
 	case "dns.update":
 		return updateDNS(ctx, task)
 	default:
@@ -138,7 +138,7 @@ func executeTask(ctx context.Context, task Task, options TaskOptions) TaskResult
 	}
 }
 
-func configurePingProbes(task Task) TaskResult {
+func configurePingProbes(task Task, dataDir string) TaskResult {
 	var payload []struct {
 		ID     string `json:"id"`
 		Name   string `json:"name"`
@@ -151,7 +151,7 @@ func configurePingProbes(task Task) TaskResult {
 	for _, probe := range payload {
 		targets = append(targets, PingTargetConfig{ID: probe.ID, Name: probe.Name, Addr: probe.Target})
 	}
-	ConfigurePingTargets(targets)
+	ConfigurePingTargets(targets, dataDir)
 	return TaskResult{Status: "succeeded", Summary: "延迟监控已下发"}
 }
 

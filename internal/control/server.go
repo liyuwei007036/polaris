@@ -117,8 +117,9 @@ type controlSession struct {
 	// questions carries the request-response tasks a screen asks on demand.
 	// They are never stored, so they travel on their own channel rather than
 	// through the task table. See AskNode.
-	questions  chan wire.Task
-	remoteAddr string
+	questions          chan wire.Task
+	remoteAddr         string
+	lastProbeReconcile time.Time
 }
 
 func NewServer(store *Store, secureCookies bool) (*Server, error) {

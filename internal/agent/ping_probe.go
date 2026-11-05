@@ -2,7 +2,10 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"net"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -10,18 +13,21 @@ import (
 	"github.com/liyuwei007036/polaris/internal/wire"
 )
 
+const pingTargetsFileName = "ping_targets.json"
+
 // PingProbeRunner manages background periodic TCP latency probes.
 type PingProbeRunner struct {
 	mu      sync.RWMutex
 	targets []pingTarget
 	results []wire.PingResult
 	cancel  context.CancelFunc
+	dataDir string
 }
 
 type pingTarget struct {
-	ID   string
-	Name string
-	Addr string
+	ID   string `json:"id"`
+	Name string `json:"name"`
+	Addr string `json:"addr"`
 }
 
 var globalPingRunner = func() *PingProbeRunner {
@@ -33,6 +39,29 @@ var globalPingRunner = func() *PingProbeRunner {
 	go r.loop(ctx)
 	return r
 }()
+
+// InitPingRunner initializes the global runner with the agent data directory and loads cached targets from disk.
+func InitPingRunner(dataDir string) {
+	globalPingRunner.initDataDir(dataDir)
+}
+
+func (r *PingProbeRunner) initDataDir(dataDir string) {
+	if dataDir == "" {
+		return
+	}
+	r.mu.Lock()
+	r.dataDir = dataDir
+	filePath := filepath.Join(dataDir, pingTargetsFileName)
+	data, err := os.ReadFile(filePath)
+	if err == nil && len(data) > 0 {
+		var list []pingTarget
+		if json.Unmarshal(data, &list) == nil && len(list) > 0 {
+			r.targets = list
+		}
+	}
+	r.mu.Unlock()
+	r.runProbe()
+}
 
 // GetLatestPingResults returns a snapshot of the most recent probe results.
 func GetLatestPingResults() []wire.PingResult {
@@ -48,12 +77,17 @@ func defaultPingTargetList() []pingTarget {
 	return []pingTarget{}
 }
 
-func ConfigurePingTargets(targets []PingTargetConfig) {
+func ConfigurePingTargets(targets []PingTargetConfig, dataDir ...string) {
 	list := make([]pingTarget, 0, len(targets))
 	for _, target := range targets {
 		if target.ID != "" && target.Addr != "" {
 			list = append(list, pingTarget{ID: target.ID, Name: target.Name, Addr: target.Addr})
 		}
+	}
+	if len(dataDir) > 0 && dataDir[0] != "" {
+		globalPingRunner.mu.Lock()
+		globalPingRunner.dataDir = dataDir[0]
+		globalPingRunner.mu.Unlock()
 	}
 	globalPingRunner.configure(list)
 }
@@ -63,7 +97,14 @@ type PingTargetConfig struct{ ID, Name, Addr string }
 func (r *PingProbeRunner) configure(targets []pingTarget) {
 	r.mu.Lock()
 	r.targets = targets
+	dataDir := r.dataDir
 	r.mu.Unlock()
+
+	if dataDir != "" {
+		if data, err := json.MarshalIndent(targets, "", "  "); err == nil {
+			_ = os.WriteFile(filepath.Join(dataDir, pingTargetsFileName), data, 0o644)
+		}
+	}
 	r.runProbe()
 }
 

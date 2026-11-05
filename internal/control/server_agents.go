@@ -437,6 +437,23 @@ func (s *Server) handleAgentMessage(ctx context.Context, node *Node, msgType byt
 		}); err != nil {
 			log.Printf("mergeNodeMetrics error for node %s (%s): %v", node.ID, node.Name, err)
 		}
+		if len(st.PingResults) == 0 {
+			s.controlMu.Lock()
+			session := s.controls[node.ID]
+			shouldReconcile := false
+			if session != nil && time.Since(session.lastProbeReconcile) > 60*time.Second {
+				session.lastProbeReconcile = time.Now()
+				shouldReconcile = true
+			}
+			s.controlMu.Unlock()
+			if shouldReconcile {
+				go func(nid string) {
+					if probeTasks, err := s.store.ListPingTasks(context.Background()); err == nil && len(probeTasks) > 0 {
+						_ = s.reconcilePingTasksNode(context.Background(), nid, probeTasks, "")
+					}
+				}(node.ID)
+			}
+		}
 		var hostRes *HostResources
 		if st.HasHostTotals {
 			hostRes = &HostResources{
