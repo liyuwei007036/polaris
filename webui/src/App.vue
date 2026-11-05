@@ -33,6 +33,7 @@ import { closeConnectionEvents } from './connections'
 import { isShareMode } from './share'
 import { brandName, brandTagline } from './brand'
 import BrandMark from './components/BrandMark.vue'
+import AccountSecurityPanel from './components/AccountSecurityPanel.vue'
 import AdminManagementView from './views/AdminManagementView.vue'
 import LoginView from './views/LoginView.vue'
 import PasswordChangeView from './views/PasswordChangeView.vue'
@@ -69,6 +70,7 @@ const appState = reactive({
 // 事，藏进系统设置反而要多点两下。
 const updateChecking = ref(false)
 const updateApplying = ref(false)
+const accountOpen = ref(false)
 const sidebarCollapsed = ref(localStorage.getItem('polaris_sidebar_collapsed') === 'true')
 
 function toggleSidebar() {
@@ -109,12 +111,17 @@ const groups = [
     items: [
       { id: 'security', label: '安全中心', icon: Lock },
       { id: 'cloudflare', label: '域名解析', icon: Document },
-      { id: 'settings', label: '系统设置', icon: Setting },
+      { id: 'settings', label: '系统设置', icon: Setting, adminOnly: true },
     ],
   },
 ]
 
-const visibleGroups = computed(() => groups)
+const visibleGroups = computed(() => groups
+  .map((group) => ({
+    ...group,
+    items: group.items.filter((item) => !item.adminOnly || appState.role === 'admin'),
+  }))
+  .filter((group) => group.items.length))
 
 // Views load on demand. Bundling them together meant every visitor
 // downloaded the charting and QR-code libraries before the first page could
@@ -437,11 +444,13 @@ onBeforeUnmount(() => {
 
       <div class="operator-panel">
         <template v-if="!sidebarCollapsed">
-          <span class="operator-avatar"><User /></span>
-          <span class="operator-info">
-            <strong>{{ appState.username }}</strong>
-            <small>{{ roleLabel }}</small>
-          </span>
+          <button type="button" class="operator-account" aria-label="账户安全" title="账户安全" @click="accountOpen = true">
+            <span class="operator-avatar"><User /></span>
+            <span class="operator-info">
+              <strong>{{ appState.username }}</strong>
+              <small>{{ roleLabel }}</small>
+            </span>
+          </button>
 
           <el-tooltip :content="isDark ? '切换到浅色模式' : '切换到深色模式'" placement="top">
             <button
@@ -480,6 +489,10 @@ onBeforeUnmount(() => {
         <component :is="activeComponent" :key="currentView" />
       </transition>
     </el-main>
+
+    <el-dialog v-model="accountOpen" title="账户安全" width="520px" destroy-on-close>
+      <AccountSecurityPanel />
+    </el-dialog>
   </el-container>
 </template>
 
@@ -690,6 +703,20 @@ onBeforeUnmount(() => {
   padding: 0 14px;
   border-top: 1px solid var(--sb-line);
 }
+.operator-account {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 0;
+  color: inherit;
+  background: transparent;
+  border: 0;
+  text-align: left;
+  cursor: pointer;
+}
+.operator-account:hover .operator-info strong { color: var(--sb-accent); }
 .operator-avatar {
   width: 34px;
   height: 34px;

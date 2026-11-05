@@ -439,7 +439,7 @@ onMounted(() => { load(); loadAccess() })
               <el-input v-model="keyword" clearable :prefix-icon="Search" placeholder="搜索配置或分组" style="width: 260px" />
               <el-select v-model="selectedStatus" clearable placeholder="全部状态" style="width: 140px"><el-option label="启用" value="true" /><el-option label="停用" value="false" /></el-select>
             </div>
-        <PagedTable :rows="filteredConfigs" empty-text="还没有客户端配置">
+        <PagedTable :rows="filteredConfigs" :empty-text="loading ? '' : '还没有客户端配置'">
           <el-table-column label="配置名称" min-width="165">
             <template #default="{ row }">
               {{ row.name }}

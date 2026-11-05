@@ -2,7 +2,6 @@
 import { computed, inject, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Plus, Search } from '@element-plus/icons-vue'
-import QRCode from 'qrcode'
 import { api, post, put } from '../../api'
 import { formatDateTime, includesText } from '../../format'
 import MPage from '../components/MPage.vue'
@@ -11,20 +10,17 @@ import MSheet from '../components/MSheet.vue'
 import MPicker from '../components/MPicker.vue'
 import MActionSheet from '../components/MActionSheet.vue'
 
-const appState = inject('appState')
 const isAdmin = inject('isAdmin')
 const loading = ref(false)
 
 const initialTab = () => {
   const hash = location.hash || ''
   if (hash.includes('alerts')) return 'alerts'
-  if (hash.includes('operators')) return 'operators'
-  return 'account'
+  return 'operators'
 }
 const tab = ref(initialTab())
 const operators = ref([])
 const operatorSheet = ref(false)
-const totpSetup = reactive({ open: false, loading: false, secret: '', qr: '', code: '' })
 const operator = reactive({ username: '', password: '', role: 'operator' })
 const operatorKeyword = ref('')
 const actionsOpen = ref(false)
@@ -33,7 +29,7 @@ const roleSheet = ref(false)
 const roleTarget = ref(null)
 const roleDraft = ref('operator')
 
-// 告警配置相关状态
+// 通知设置相关状态
 const alertSettings = reactive({
   bark_server: 'https://api.day.app',
   bark_device_key: '',
@@ -60,9 +56,6 @@ const alertSettings = reactive({
 })
 const alertSaving = ref(false)
 const testSending = ref(false)
-const gfwProbing = ref(false)
-const gfwResults = ref([])
-const gfwSheet = ref(false)
 
 const soundOptions = [
   { value: 'minuet.caf', label: 'minuet (清脆小步舞曲 - 推荐)', desc: '轻快清爽，推荐日常使用' },
@@ -82,9 +75,10 @@ const roles = [
 ]
 const roleNames = Object.fromEntries(roles.map((role) => [role.value, role.label]))
 const filteredOperators = computed(() => operators.value.filter((row) => includesText([row.username, roleNames[row.role]], operatorKeyword.value)))
-const tabs = computed(() => (isAdmin.value
-  ? [{ value: 'account', label: '登录安全' }, { value: 'operators', label: '管理账户' }, { value: 'alerts', label: '告警配置' }]
-  : [{ value: 'account', label: '登录安全' }]))
+const tabs = computed(() => [
+  { value: 'operators', label: '管理账户' },
+  { value: 'alerts', label: '通知设置' },
+])
 
 function syncTabFromHash() {
   const hash = location.hash || ''
@@ -119,7 +113,7 @@ async function saveAlertSettings() {
     if (res?.settings) {
       Object.assign(alertSettings, res.settings)
     }
-    ElMessage.success('告警配置已保存')
+    ElMessage.success('通知设置已保存')
   } catch (error) {
     ElMessage.error(error instanceof Error ? error.message : '保存失败')
   } finally {
@@ -146,21 +140,6 @@ async function sendTestAlert() {
     ElMessage.error(error instanceof Error ? error.message : '发送测试通知失败')
   } finally {
     testSending.value = false
-  }
-}
-
-async function triggerGFWCheck() {
-  gfwProbing.value = true
-  try {
-    const res = await post('/probes/run-gfw-check', {})
-    const items = res.nodes || res.results || []
-    gfwResults.value = items
-    gfwSheet.value = true
-    ElMessage.success('探针探测完成')
-  } catch (error) {
-    ElMessage.error(error instanceof Error ? error.message : '触发 GFW 探测失败')
-  } finally {
-    gfwProbing.value = false
   }
 }
 
@@ -248,45 +227,6 @@ async function disableOperatorTOTP(row) {
   await load()
 }
 
-async function beginTOTPSetup() {
-  totpSetup.loading = true
-  try {
-    const result = await post('/auth/2fa/setup', {})
-    totpSetup.secret = result.secret
-    totpSetup.qr = await QRCode.toDataURL(result.otpauth_uri, { width: 440, margin: 1 })
-    totpSetup.code = ''
-    totpSetup.open = true
-  } finally { totpSetup.loading = false }
-}
-
-async function enableTOTP() {
-  if (totpSetup.loading) return
-  if (!/^\d{6}$/.test(totpSetup.code)) return ElMessage.error('请输入验证器显示的 6 位数字')
-  totpSetup.loading = true
-  try {
-    await api('/auth/2fa/enable', { method: 'POST', body: { code: totpSetup.code }, silentUnauthorized: true })
-    appState.totp_enabled = true
-    totpSetup.open = false
-    ElMessage.success('两步验证已启用，后续登录需要输入动态验证码')
-    await load()
-  } catch (error) {
-    ElMessage.error(error.code === 'authentication failed'
-      ? '验证码不正确，请输入验证器当前显示的 6 位动态码'
-      : error.message)
-  } finally { totpSetup.loading = false }
-}
-
-async function disableOwnTOTP() {
-  const result = await ElMessageBox.prompt('请输入当前登录密码以确认关闭', '关闭两步验证', {
-    inputType: 'password',
-    inputValidator: (value) => Boolean(value) || '请输入当前密码',
-  })
-  await post('/auth/2fa/disable', { password: result.value })
-  appState.totp_enabled = false
-  ElMessage.success('两步验证已关闭')
-  await load()
-}
-
 onMounted(() => {
   syncTabFromHash()
   window.addEventListener('hashchange', syncTabFromHash)
@@ -300,21 +240,10 @@ onBeforeUnmount(() => {
 
 <template>
   <MPage :loading="loading">
+    <template v-if="isAdmin">
     <MSegmented v-model="tab" :options="tabs" />
 
-    <template v-if="tab === 'account'">
-      <section class="m-card">
-        <div class="m-card__top">
-          <span class="m-card__title">两步验证</span>
-          <span class="m-pill" :class="appState.totp_enabled ? 'm-pill--success' : 'm-pill--info'">{{ appState.totp_enabled ? '已启用' : '未启用' }}</span>
-        </div>
-        <div class="m-card__note">{{ appState.totp_enabled ? '登录时需要输入验证器生成的动态验证码。' : '为账户增加一层动态验证码保护。' }}</div>
-        <el-button v-if="appState.totp_enabled" type="danger" plain class="wide" @click="disableOwnTOTP">关闭两步验证</el-button>
-        <el-button v-else type="primary" class="wide" :loading="totpSetup.loading" @click="beginTOTPSetup">启用两步验证</el-button>
-      </section>
-    </template>
-
-    <template v-else-if="tab === 'operators'">
+    <template v-if="tab === 'operators'">
       <el-input v-model="operatorKeyword" clearable :prefix-icon="Search" placeholder="搜索用户名或权限" />
       <div class="m-count">共 {{ filteredOperators.length }} 个账户</div>
       <article v-for="row in filteredOperators" :key="row.id" class="m-item" :class="{ 'is-off': !row.enabled }">
@@ -430,73 +359,6 @@ onBeforeUnmount(() => {
           <el-button type="primary" :loading="alertSaving" @click="saveAlertSettings">保存配置</el-button>
         </div>
       </section>
-
-      <!-- 定时探测与三网巡检 -->
-      <section class="m-card">
-        <div class="m-card__top">
-          <span class="m-card__title">定时阻断探测与三网巡检</span>
-          <el-switch v-model="alertSettings.auto_probe_gfw_enabled" active-text="定时探测" />
-        </div>
-        <div class="m-card__note">
-          定时通过分布式真实探针探测节点连通性、三网延迟与网络路由。
-        </div>
-
-        <div class="m-field" style="margin-top: 14px">
-          <label class="m-field__label">GFW 阻断探测周期 (分钟)</label>
-          <el-input-number v-model="alertSettings.probe_gfw_interval_minutes" :min="1" :max="1440" :step="1" style="width: 100%" />
-          <div class="m-field__hint">定时探测节点客户端连接端口是否被阻断。</div>
-        </div>
-
-
-        <div class="m-field m-field--inline" style="padding: 6px 0">
-          <label class="m-field__label">
-            每次探测必推通知
-            <span class="m-field__hint">全绿推健康日报，异常推报警，随时掌握节点状态</span>
-          </label>
-          <el-switch v-model="alertSettings.probe_notify_always" />
-        </div>
-
-        <div class="m-field m-field--inline" style="padding: 6px 0">
-          <label class="m-field__label">
-            业务繁忙时避让检测
-            <span class="m-field__hint">节点带宽 > 5MB/s 时自动跳过探测，避免抢占带宽</span>
-          </label>
-          <el-switch v-model="alertSettings.probe_skip_when_busy" />
-        </div>
-
-        <div class="m-card-actions">
-          <el-button :loading="gfwProbing" @click="triggerGFWCheck">立即运行探测</el-button>
-          <el-button type="primary" :loading="alertSaving" @click="saveAlertSettings">保存配置</el-button>
-        </div>
-      </section>
-
-      <!-- GFW 探测结果展示 Sheet -->
-      <MSheet v-model="gfwSheet" title="GFW 连通性探测结果">
-        <div class="m-notice m-notice--info">
-          由分布式真实探针向目标端口发起 TCP 握手核验连通性与时延。
-        </div>
-        <div v-for="item in gfwResults" :key="item.node_id || item.node_name" class="m-item">
-          <div class="m-item__hit is-static">
-            <div class="m-item__head">
-              <span class="m-item__title">{{ item.node_name }}</span>
-              <span v-if="item.gfw_blocked" class="m-pill m-pill--danger">疑似阻断</span>
-              <span v-else-if="item.domestic_ok" class="m-pill m-pill--success">正常</span>
-              <span v-else-if="item.error || !item.probe_executed" class="m-pill m-pill--warning">探测异常</span>
-              <span v-else-if="item.overseas_ok && !item.domestic_ok" class="m-pill m-pill--danger">疑似阻断</span>
-              <span v-else class="m-pill m-pill--info">离线</span>
-            </div>
-            <div class="m-item__stats">
-              <span class="m-stat"><b>{{ item.target_port || 443 }}</b><small>端口</small></span>
-              <span class="m-stat"><b>{{ item.domestic_ok ? `${item.latency_ms} ms` : '—' }}</b><small>探针延迟</small></span>
-              <span class="m-stat"><b>{{ item.packet_loss !== undefined ? `${item.packet_loss}%` : '0%' }}</b><small>丢包率</small></span>
-            </div>
-            <div v-if="item.probe_source || item.status_desc" class="m-item__note">
-              {{ item.probe_source ? `探针来源：${item.probe_source}` : '' }} {{ item.status_desc || '' }}
-            </div>
-          </div>
-        </div>
-        <div v-if="!gfwResults.length" class="m-empty">暂无探测结果</div>
-      </MSheet>
     </template>
 
     <MActionSheet v-model="actionsOpen" :title="actionTarget?.username" :details="details" :actions="actions" @select="runAction" />
@@ -509,25 +371,6 @@ onBeforeUnmount(() => {
       <template #footer>
         <el-button @click="roleSheet = false">取消</el-button>
         <el-button type="primary" @click="saveRole">保存</el-button>
-      </template>
-    </MSheet>
-
-    <MSheet v-model="totpSetup.open" title="启用两步验证">
-      <div class="totp">
-        <p>用验证器扫描下面的二维码，或复制密钥手动添加，然后输入 6 位动态码完成绑定。</p>
-        <div class="totp__frame"><img :src="totpSetup.qr" alt="两步验证绑定二维码" data-testid="totp-qr" /></div>
-        <div class="m-field">
-          <label class="m-field__label">无法扫码时，可手动输入此密钥</label>
-          <el-input :model-value="totpSetup.secret" readonly class="m-mono" aria-label="无法扫码时，可手动输入此密钥" data-testid="totp-secret" />
-        </div>
-        <div class="m-field">
-          <label class="m-field__label">动态验证码</label>
-          <el-input v-model="totpSetup.code" maxlength="6" inputmode="numeric" aria-label="动态验证码" placeholder="000000" />
-        </div>
-      </div>
-      <template #footer>
-        <el-button @click="totpSetup.open = false">取消</el-button>
-        <el-button type="primary" :loading="totpSetup.loading" @click="enableTOTP">启用</el-button>
       </template>
     </MSheet>
 
@@ -550,6 +393,8 @@ onBeforeUnmount(() => {
         <el-button type="primary" :disabled="!operator.username || operator.password.length < 12" @click="saveOperator">创建</el-button>
       </template>
     </MSheet>
+    </template>
+    <div v-else class="m-empty">系统设置仅管理员可访问</div>
     <template v-if="isAdmin && tab === 'operators'" #fab>
       <button type="button" class="m-fab" aria-label="新建管理账户" @click="openOperator">
         <el-icon :size="24"><Plus /></el-icon>
@@ -560,12 +405,6 @@ onBeforeUnmount(() => {
 
 <style scoped>
 .wide { width: 100%; height: var(--m-tap); margin: 12px 0 0; }
-.totp { text-align: center; }
-.totp > p { margin: 0 0 16px; color: var(--sb-muted); font-size: 13px; line-height: 1.7; text-align: left; }
-/* 二维码必须黑白，深色底会让验证器扫不出来。 */
-.totp__frame { display: inline-block; padding: 10px; margin-bottom: 18px; background: #fff; border-radius: var(--m-radius); line-height: 0; }
-.totp__frame img { display: block; width: min(220px, 60vw); height: min(220px, 60vw); }
-.totp .m-field { text-align: left; }
 .m-card-actions {
   display: flex;
   gap: 10px;

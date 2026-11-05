@@ -16,6 +16,10 @@ const page = ref(1)
 const size = ref(props.pageSize)
 const total = computed(() => props.rows.length)
 const pageRows = computed(() => props.rows.slice((page.value - 1) * size.value, page.value * size.value))
+// While the first load is still in flight the table is empty, and the mask is
+// translucent — leaving the empty text underneath made it look as if the list
+// had already been fetched and really was empty.
+const emptyText = computed(() => (props.loading ? '' : props.emptyText))
 
 // Filtering or deleting can leave the current page past the end of the list.
 watch(total, () => {
@@ -27,7 +31,7 @@ watch(total, () => {
 <template>
   <div class="paged-table">
     <div class="paged-table__body">
-      <el-table v-loading="props.loading" :data="pageRows" :row-key="props.rowKey" :empty-text="props.emptyText">
+      <el-table v-loading="props.loading" :data="pageRows" :row-key="props.rowKey" :empty-text="emptyText">
         <slot />
       </el-table>
     </div>

@@ -325,7 +325,7 @@ onBeforeUnmount(() => {
           v-loading="loading"
           :data="records"
           :default-sort="{ prop: 'started_at', order: 'descending' }"
-          empty-text="未找到匹配的历史连接记录"
+          :empty-text="loading ? '' : '未找到匹配的历史连接记录'"
           class="history-table"
           @sort-change="handleSortChange"
         >

@@ -8,7 +8,7 @@ import PagedTable from '../components/PagedTable.vue'
 
 const appState = inject('appState')
 const loadNodes = inject('loadNodes')
-const loading = ref(false)
+const loading = ref(true)
 const selectedNode = ref('')
 const selectedOutbound = ref('')
 const keyword = ref('')
@@ -77,11 +77,23 @@ async function load() {
 // hundred milliseconds later. Holding the loading state until something
 // arrives — or until the wait is clearly over — keeps "no active connections"
 // from flashing past just before the list appears.
+let settleTimer
+function settle() {
+  clearTimeout(settleTimer)
+  loading.value = false
+}
+
 onMounted(async () => {
-  stopConnections = subscribeConnections()
-  await loadNodes()
+  try {
+    await loadNodes()
+  } finally {
+    stopConnections = subscribeConnections(() => { if (rows.value.length) settle() })
+    if (rows.value.length) settle()
+    else settleTimer = setTimeout(settle, 1500)
+  }
 })
 onBeforeUnmount(() => {
+  clearTimeout(settleTimer)
   stopConnections?.()
 })
 </script>

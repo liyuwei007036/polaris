@@ -376,16 +376,6 @@ var demoNodes = []demoNodeDef{
 	},
 }
 
-// ResetDemoAdminPassword ensures polaris_admin password is 123456 without mandatory change or TOTP requirement for demo.
-func (s *Server) ResetDemoAdminPassword(ctx context.Context) error {
-	hash, err := security.HashTemporaryPassword("123456")
-	if err != nil {
-		return err
-	}
-	_, err = s.store.db.ExecContext(ctx, `UPDATE operators SET password_hash = ?, totp_enabled = 0, must_change_password = 0 WHERE email = 'polaris_admin'`, hash)
-	return err
-}
-
 func (s *Server) EnsurePingTasks(ctx context.Context) error {
 	_ = s.store.initPingTasksTable(ctx)
 	var taskCount int
@@ -408,8 +398,9 @@ func (s *Server) EnsurePingTasks(ctx context.Context) error {
 }
 
 // EnsureDemoNodes seeds high-fidelity demo nodes into the store if no nodes exist.
+// It only adds sample content: operator credentials and two-factor enrollment
+// belong to the account itself and must survive a restart untouched.
 func (s *Server) EnsureDemoNodes(ctx context.Context) error {
-	_ = s.ResetDemoAdminPassword(ctx)
 	_ = s.EnsurePingTasks(ctx)
 	_ = s.EnsureDemoFleetData(ctx)
 	existing, err := s.store.ListNodes(ctx)

@@ -47,7 +47,8 @@ const clientNodes = computed(() => endpoints.value.flatMap((endpoint) => {
 const nodeStates = computed(() => Object.fromEntries(clientNodes.value.map((item) => [item.id, item])))
 const groupNames = computed(() => Object.fromEntries(groups.value.map((item) => [item.id, item.name])))
 // 一列标签挤满整行时数不出有几个，也认不出是哪几个：前几个铺开，其余折成计数。
-const memberPreviewCount = 5
+// 只铺一行，超出的收进“+N”里，行高才不会因为分组挂了多少成员而忽高忽低。
+const memberPreviewCount = 3
 const formValid = computed(() => Boolean(form.name.trim() && form.members.length))
 const filteredGroups = computed(() => groups.value.filter((group) => {
   if (selectedStrategy.value && group.strategy !== selectedStrategy.value) return false
@@ -103,10 +104,12 @@ function resolveMember(member) {
   return { key, kind: 'endpoint', name: state.label, missing: false, off: !state.enabled }
 }
 
-function memberTagType(member) {
-  if (member.missing) return 'danger'
-  if (member.off) return 'warning'
-  return member.kind === 'group' ? 'primary' : 'info'
+function memberChipClass(member) {
+  return {
+    'is-group': member.kind === 'group',
+    'is-off': member.off,
+    'is-missing': member.missing,
+  }
 }
 
 function memberLabel(member) {
@@ -166,51 +169,63 @@ onMounted(load)
       <el-button :icon="Refresh" @click="load">刷新</el-button>
       <el-button v-if="canWrite" type="primary" :icon="Plus" @click="resetForm()">新建</el-button>
     </PageHeader>
-    <main v-loading="loading" class="page-content">
+    <main class="page-content">
       <div class="search-toolbar">
         <el-input v-model="keyword" clearable :prefix-icon="Search" placeholder="搜索分组或节点" style="width: 260px" />
         <el-select v-model="selectedStrategy" clearable placeholder="全部策略" style="width: 160px"><el-option v-for="(label, value) in strategyNames" :key="value" :label="label" :value="value" /></el-select>
       </div>
       <div class="table-panel">
-        <PagedTable :rows="filteredGroups" :loading="loading" empty-text="还没有代理分组">
-          <el-table-column label="分组名称" min-width="180" prop="name" />
-          <el-table-column label="策略" width="120"><template #default="{ row }">{{ strategyNames[row.strategy] }}</template></el-table-column>
+        <PagedTable :rows="filteredGroups" :loading="loading" :empty-text="loading ? '' : '还没有代理分组'">
+          <el-table-column label="分组名称" min-width="180" prop="name" show-overflow-tooltip />
+          <el-table-column label="策略" width="118">
+            <template #default="{ row }">
+              <span class="strategy" :class="`strategy--${row.strategy}`">
+                <i class="strategy__dot" />{{ strategyNames[row.strategy] }}
+              </span>
+            </template>
+          </el-table-column>
           <!-- 数量单独成列：客户端拿到的是这些节点，有几个、坏了几个是这一页
                最先要回答的问题，藏在一列标签里得自己数。 -->
-          <el-table-column label="节点" width="112" align="center">
+          <el-table-column label="节点" width="104" align="center">
             <template #default="{ row }">
-              <span class="count">{{ summaryOf(row).nodes.length }}</span>
-              <span v-if="summaryOf(row).broken" class="count__broken">{{ summaryOf(row).broken }} 个已失效</span>
+              <div class="stat-cell">
+                <span class="stat-cell__value" :class="{ 'is-muted': !summaryOf(row).nodes.length }">{{ summaryOf(row).nodes.length }}</span>
+                <span v-if="summaryOf(row).broken" class="stat-cell__badge">{{ summaryOf(row).broken }} 个已失效</span>
+              </div>
             </template>
           </el-table-column>
           <el-table-column label="引用分组" width="96" align="center">
             <template #default="{ row }">
-              <span :class="summaryOf(row).nested.length ? 'count' : 'subtle'">{{ summaryOf(row).nested.length }}</span>
+              <span class="stat-cell__value" :class="{ 'is-muted': !summaryOf(row).nested.length }">{{ summaryOf(row).nested.length }}</span>
             </template>
           </el-table-column>
-          <el-table-column label="包含的节点" min-width="320">
+          <el-table-column label="包含的成员" min-width="360">
             <template #default="{ row }">
-              <template v-if="summaryOf(row).all.length">
-                <el-tag
+              <!-- 成员名称长短不一，铺成多行会让每行高度都不一样。这里固定
+                   只摆一行，放不下的折进“+N”，整张表才对齐。 -->
+              <div v-if="summaryOf(row).all.length" class="member-cell">
+                <span
                   v-for="member in previewMembers(row)"
                   :key="member.key"
-                  :type="memberTagType(member)"
-                  class="member-tag"
+                  :class="['member-chip', memberChipClass(member)]"
+                  :title="member.name"
                 >
-                  <span v-if="member.kind === 'group'" class="member-tag__kind">分组</span>
-                  {{ member.name }}
-                </el-tag>
+                  <span v-if="member.kind === 'group'" class="member-chip__kind">分组</span>
+                  <span class="member-chip__name">{{ member.name }}</span>
+                </span>
                 <el-tooltip v-if="restMembers(row).length" placement="top">
                   <template #content>
-                    <div v-for="member in restMembers(row)" :key="member.key">{{ member.name }}</div>
+                    <div v-for="member in restMembers(row)" :key="member.key">{{ member.kind === 'group' ? '分组 · ' : '' }}{{ member.name }}</div>
                   </template>
-                  <el-tag class="member-tag" type="info" effect="plain">还有 {{ restMembers(row).length }} 个</el-tag>
+                  <span class="member-chip member-chip--rest">+{{ restMembers(row).length }}</span>
                 </el-tooltip>
-              </template>
-              <span v-else class="subtle">还没有节点，客户端会拿到一个空分组</span>
+              </div>
+              <el-tooltip v-else content="客户端会拿到一个空分组" placement="top">
+                <span class="member-empty">空分组</span>
+              </el-tooltip>
             </template>
           </el-table-column>
-          <el-table-column label="操作" width="150" fixed="right" class-name="action-column">
+          <el-table-column label="操作" width="130" fixed="right" class-name="action-column">
             <template #default="{ row }">
               <el-button v-if="canWrite" link :icon="Edit" @click="resetForm(row)">编辑</el-button>
               <el-button v-if="isAdmin" link type="danger" :icon="Delete" @click="remove(row)">删除</el-button>
@@ -228,7 +243,7 @@ onMounted(load)
             <el-option v-for="(label, value) in strategyNames" :key="value" :label="label" :value="value" />
           </el-select>
         </el-form-item>
-        <el-form-item label="包含的节点" required>
+        <el-form-item label="包含的成员" required>
           <!-- 一个分组可能挂几十个节点，标签折叠起来，选项里带地区图标和线路信息便于分辨。 -->
           <el-select
             v-model="memberKeys"
@@ -238,7 +253,7 @@ onMounted(load)
             collapse-tags-tooltip
             :max-collapse-tags="6"
             style="width: 100%"
-            aria-label="包含的节点"
+            aria-label="包含的成员"
             placeholder="选择节点或代理分组"
           >
             <el-option-group label="接入节点">
@@ -263,10 +278,54 @@ onMounted(load)
 
 <style scoped>
 .page-alert { margin-bottom: 16px; }
-.member-tag { margin: 3px 6px 3px 0; }
-.count { display: block; font-weight: 600; font-variant-numeric: tabular-nums; }
-.count__broken { display: block; margin-top: 2px; color: var(--sb-danger); font-size: 12px; }
-.member-tag__kind { margin-right: 5px; color: var(--sb-muted); }
+/* 策略用一个小圆点区分：同一列里一眼分得开，又不会比成员名称更抢眼。 */
+.strategy { display: inline-flex; align-items: center; gap: 7px; color: var(--sb-text-2); font-size: 13px; white-space: nowrap; }
+.strategy__dot { width: 6px; height: 6px; border-radius: 50%; flex: none; background: var(--sb-muted); }
+.strategy--url-test .strategy__dot {
+  background: var(--sb-success);
+  box-shadow: 0 0 0 3px color-mix(in oklab, var(--sb-success) 18%, transparent);
+}
+.strategy--fallback .strategy__dot { background: var(--sb-warning); }
+
+.stat-cell { display: flex; flex-direction: column; align-items: center; gap: 2px; line-height: 1.25; }
+.stat-cell__value { color: var(--sb-text); font-size: 14px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.stat-cell__value.is-muted { color: var(--sb-muted); font-weight: 500; }
+.stat-cell__badge { color: var(--sb-danger); font-size: 11px; white-space: nowrap; }
+
+/* 成员只占一行：名字长短不一，铺成多行会把每行撑成不同高度。放不下的
+   收进“+N”，每个名字自己省略，鼠标悬停看全名。 */
+.member-cell { display: flex; flex-wrap: nowrap; align-items: center; gap: 6px; min-width: 0; overflow: hidden; }
+.member-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 210px;
+  height: 24px;
+  padding: 0 9px;
+  border: 1px solid var(--sb-line);
+  border-radius: 6px;
+  background: color-mix(in oklab, var(--sb-surface-3) 55%, transparent);
+  color: var(--sb-text-2);
+  font-size: 12px;
+  white-space: nowrap;
+}
+.member-chip__name { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.member-chip__kind { flex: none; color: var(--sb-muted); font-size: 11px; }
+.member-chip.is-group { border-color: color-mix(in oklab, var(--sb-accent) 22%, transparent); background: var(--sb-accent-soft); }
+.member-chip.is-off {
+  color: var(--sb-warning);
+  border-color: color-mix(in oklab, var(--sb-warning) 35%, transparent);
+  background: color-mix(in oklab, var(--sb-warning) 10%, transparent);
+}
+.member-chip.is-missing {
+  color: var(--sb-danger);
+  border-color: color-mix(in oklab, var(--sb-danger) 35%, transparent);
+  background: color-mix(in oklab, var(--sb-danger) 10%, transparent);
+}
+.member-chip--rest { flex: none; color: var(--sb-muted); border-style: dashed; background: transparent; cursor: default; }
+.member-empty { color: var(--sb-muted); font-size: 12px; }
 .option-name { display: inline-flex; align-items: center; }
 .option-meta { float: right; margin-left: 18px; color: var(--sb-muted); font-size: 12px; }
 @media (max-width: 640px) { .option-meta { display: none; } }

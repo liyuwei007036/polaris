@@ -1,20 +1,28 @@
 <script setup>
 import { computed, inject, onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Bell, Check, Download, Location, Plus, Refresh, Search, Upload, Warning } from '@element-plus/icons-vue'
-import QRCode from 'qrcode'
+import {
+  CircleClose,
+  Connection,
+  Download,
+  Odometer,
+  Plus,
+  Refresh,
+  Search,
+  Timer,
+  TrendCharts,
+  Upload,
+} from '@element-plus/icons-vue'
 import { api, post, put, uploadFile } from '../api'
 import { formatDateTime, includesText } from '../format'
 import PageHeader from '../components/PageHeader.vue'
 import PagedTable from '../components/PagedTable.vue'
 
-const appState = inject('appState')
 const isAdmin = inject('isAdmin')
 const loading = ref(false)
-const tab = ref('account')
+const tab = ref('operators')
 const operators = ref([])
 const dialog = ref('')
-const totpSetup = reactive({ open: false, loading: false, secret: '', qr: '', code: '' })
 const operator = reactive({ username: '', password: '', role: 'operator' })
 const operatorKeyword = ref('')
 const operatorStatus = ref('')
@@ -32,6 +40,7 @@ const alertSettings = reactive({
   conn_threshold_count: 200,
   single_ip_alert_enabled: true,
   single_ip_threshold_count: 60,
+  // 定时探测与节点阻断已下线，以下字段仅为兼容后端设置结构而保留，保存时原样回传。
   gfw_alert_enabled: true,
   offline_alert_enabled: true,
   cooldown_minutes: 15,
@@ -45,12 +54,49 @@ const alertSettings = reactive({
 })
 const alertSaving = ref(false)
 const testSending = ref(false)
-const gfwProbing = ref(false)
-const gfwResultDialogVisible = ref(false)
-const gfwResults = ref([])
 const realityForm = reactive({ target: 'gateway.icloud.com', port: 443 })
 const realityChecking = ref(false)
 const realityResult = ref(null)
+
+// ── 通知设置：未保存状态与通道摘要 ──────────────────────────
+const soundOptions = [
+  { value: 'minuet.caf', label: 'minuet (清脆小步舞曲 - 推荐)' },
+  { value: 'anticipate.caf', label: 'anticipate (轻快期待)' },
+  { value: 'bell.caf', label: 'bell (经典铃声)' },
+  { value: 'glass.caf', label: 'glass (清澈水滴)' },
+  { value: 'horn.caf', label: 'horn (警示号角)' },
+  { value: 'calypso.caf', label: 'calypso (欢快击鼓)' },
+  { value: 'telegraph.caf', label: 'telegraph (电报码)' },
+  { value: 'silence.caf', label: 'silence (静音仅震动)' },
+]
+
+const savedState = ref(null)
+const barkReady = computed(() => Boolean(alertSettings.bark_device_key.trim()))
+const enabledRuleCount = computed(() => [
+  alertSettings.traffic_alert_enabled,
+  alertSettings.conn_alert_enabled,
+  alertSettings.single_ip_alert_enabled,
+  alertSettings.offline_alert_enabled,
+  alertSettings.scan_alert_enabled,
+].filter(Boolean).length)
+
+// 用快照判断是否有未保存的修改，避免用户误以为改动已经生效。
+function alertSnapshot() {
+  const data = {}
+  for (const [key, value] of Object.entries(alertSettings)) {
+    if (key !== 'updated_at') data[key] = value
+  }
+  return JSON.stringify(data)
+}
+const isAlertDirty = computed(() => savedState.value !== null && alertSnapshot() !== savedState.value)
+function markAlertSaved() {
+  savedState.value = alertSnapshot()
+}
+function revertAlertSettings() {
+  if (!savedState.value) return
+  Object.assign(alertSettings, JSON.parse(savedState.value))
+  ElMessage.info('已撤销未保存的修改')
+}
 
 const filteredOperators = computed(() => operators.value.filter((row) => {
   if (operatorStatus.value && String(row.enabled) !== operatorStatus.value) return false
@@ -178,19 +224,26 @@ async function load() {
         alertSettings.bark_sound = alertSettings.bark_sound + '.caf'
       }
     }
+    markAlertSaved()
   } finally { loading.value = false }
 }
 
-async function saveAlertSettings() {
+async function saveAlertSettings(silent = false) {
   alertSaving.value = true
   try {
     const res = await put('/alerts/settings', alertSettings)
     if (res?.settings) {
       Object.assign(alertSettings, res.settings)
+      if (alertSettings.bark_sound && !alertSettings.bark_sound.endsWith('.caf')) {
+        alertSettings.bark_sound = alertSettings.bark_sound + '.caf'
+      }
     }
-    ElMessage.success('配置已保存')
+    markAlertSaved()
+    if (!silent) ElMessage.success('通知与探测配置已保存')
+    return true
   } catch (error) {
-    ElMessage.error(error instanceof Error ? error.message : '保存失败')
+    if (!silent) ElMessage.error(error instanceof Error ? error.message : '保存失败')
+    return false
   } finally {
     alertSaving.value = false
   }
@@ -202,8 +255,11 @@ async function sendTestAlert() {
   }
   testSending.value = true
   try {
-    // 自动先保存配置，避免用户刷新页面后数据丢失
-    await put('/alerts/settings', alertSettings).catch(() => {})
+    // 先保存尚未落盘的修改，避免测试用的是旧配置。
+    if (isAlertDirty.value) {
+      const saved = await saveAlertSettings(true)
+      if (!saved) return
+    }
     await post('/alerts/test', {
       server: alertSettings.bark_server,
       device_key: alertSettings.bark_device_key,
@@ -211,26 +267,11 @@ async function sendTestAlert() {
       group: alertSettings.bark_group,
       url: alertSettings.bark_url,
     })
-    ElMessage.success('测试通知已发出')
+    ElMessage.success('测试通知已发出，请查看 Bark 客户端')
   } catch (error) {
     ElMessage.error(error instanceof Error ? error.message : '发送测试通知失败')
   } finally {
     testSending.value = false
-  }
-}
-
-async function triggerGFWCheck() {
-  gfwProbing.value = true
-  try {
-    const res = await post('/probes/run-gfw-check', {})
-    const items = res.nodes || res.results || []
-    gfwResults.value = items
-    gfwResultDialogVisible.value = true
-    ElMessage.success('探针探测完成')
-  } catch (error) {
-    ElMessage.error(error instanceof Error ? error.message : '触发 GFW 探测失败')
-  } finally {
-    gfwProbing.value = false
   }
 }
 
@@ -287,45 +328,6 @@ async function disableOperatorTOTP(row) {
   await load()
 }
 
-async function beginTOTPSetup() {
-  totpSetup.loading = true
-  try {
-    const result = await post('/auth/2fa/setup', {})
-    totpSetup.secret = result.secret
-    totpSetup.qr = await QRCode.toDataURL(result.otpauth_uri, { width: 220, margin: 1 })
-    totpSetup.code = ''
-    totpSetup.open = true
-  } finally { totpSetup.loading = false }
-}
-
-async function enableTOTP() {
-  if (totpSetup.loading) return
-  if (!/^\d{6}$/.test(totpSetup.code)) return ElMessage.error('请输入验证器显示的 6 位数字')
-  totpSetup.loading = true
-  try {
-    await api('/auth/2fa/enable', { method: 'POST', body: { code: totpSetup.code }, silentUnauthorized: true })
-    appState.totp_enabled = true
-    totpSetup.open = false
-    ElMessage.success('两步验证已启用，后续登录需要输入动态验证码')
-    await load()
-  } catch (error) {
-    ElMessage.error(error.code === 'authentication failed'
-      ? '验证码不正确，请输入验证器当前显示的 6 位动态码'
-      : error.message)
-  } finally { totpSetup.loading = false }
-}
-
-async function disableOwnTOTP() {
-  const result = await ElMessageBox.prompt('请输入当前登录密码以确认关闭', '关闭两步验证', {
-    inputType: 'password',
-    inputValidator: (value) => Boolean(value) || '请输入当前密码',
-  })
-  await post('/auth/2fa/disable', { password: result.value })
-  appState.totp_enabled = false
-  ElMessage.success('两步验证已关闭')
-  await load()
-}
-
 onMounted(load)
 </script>
 
@@ -336,21 +338,8 @@ onMounted(load)
     </PageHeader>
     <main class="page-content">
       <div class="table-panel">
-        <el-tabs v-model="tab" class="panel-tabs">
-          <el-tab-pane label="登录安全" name="account">
-            <section class="security-card">
-              <div>
-                <h3>两步验证</h3>
-                <p v-if="appState.totp_enabled">登录时需要输入验证器生成的动态验证码。</p>
-                <p v-else>为账户增加一层动态验证码保护。</p>
-              </div>
-              <el-tag :type="appState.totp_enabled ? 'success' : 'info'">{{ appState.totp_enabled ? '已启用' : '未启用' }}</el-tag>
-              <el-button v-if="appState.totp_enabled" type="danger" plain @click="disableOwnTOTP">关闭</el-button>
-              <el-button v-else type="primary" :loading="totpSetup.loading" @click="beginTOTPSetup">启用</el-button>
-            </section>
-          </el-tab-pane>
-
-          <el-tab-pane v-if="isAdmin" label="管理账户" name="operators">
+        <el-tabs v-if="isAdmin" v-model="tab" class="panel-tabs">
+          <el-tab-pane label="管理账户" name="operators">
             <div class="tab-actions tab-actions--start"><el-input v-model="operatorKeyword" clearable :prefix-icon="Search" placeholder="搜索用户名或权限" style="width: 250px" /><el-select v-model="operatorStatus" clearable placeholder="全部状态" style="width: 140px"><el-option label="启用" value="true" /><el-option label="停用" value="false" /></el-select><span class="toolbar__spacer" /><el-button type="primary" :icon="Plus" @click="open('operator')">新建</el-button></div>
             <PagedTable :rows="filteredOperators" :loading="loading" empty-text="还没有管理账户">
               <el-table-column label="用户名" prop="username" min-width="180" />
@@ -362,435 +351,322 @@ onMounted(load)
             </PagedTable>
           </el-tab-pane>
 
-          <el-tab-pane v-if="isAdmin" label="Bark 告警与探测" name="alerts">
-            <div class="alerts-scroll-container">
-              <!-- 顶部常驻操作栏 -->
-              <div class="alerts-top-toolbar">
-                <div class="alerts-top-status">
-                  <span class="alerts-status-indicator" :class="{ 'is-active': alertSettings.offline_alert_enabled }"></span>
-                  <span class="alerts-status-text">Bark 告警推送与定时网络探测</span>
-                  <el-tag :type="alertSettings.offline_alert_enabled ? 'success' : 'info'" size="small">
-                    {{ alertSettings.offline_alert_enabled ? '告警已启用' : '告警未启用' }}
-                  </el-tag>
+          <el-tab-pane v-if="isAdmin" label="通知设置" name="alerts">
+            <div class="notify-page">
+              <header class="notify-bar">
+                <div class="notify-bar__status" :class="{ 'is-ready': barkReady }">
+                  <span class="notify-bar__dot"></span>
+                  <span>{{ barkReady ? 'Bark 通道已就绪' : '尚未填写 Device Key' }}</span>
+                  <span class="notify-bar__sep"></span>
+                  <span>{{ enabledRuleCount }} / 5 项告警启用</span>
                 </div>
-                <div class="alerts-top-actions">
-                  <el-button :loading="testSending" @click="sendTestAlert">测试推送</el-button>
-                  <el-button type="primary" :loading="alertSaving" @click="saveAlertSettings">保存所有配置</el-button>
+                <div class="notify-bar__actions">
+                  <span v-if="isAlertDirty" class="notify-unsaved">未保存</span>
+                  <el-button v-if="isAlertDirty" text @click="revertAlertSettings">撤销</el-button>
+                  <el-button :loading="testSending" :disabled="!barkReady" @click="sendTestAlert">发送测试</el-button>
+                  <el-button type="primary" :disabled="!isAlertDirty" :loading="alertSaving" @click="saveAlertSettings()">保存</el-button>
                 </div>
-              </div>
+              </header>
 
-              <div class="settings-grid">
-              <!-- Bark 推送配置 -->
-              <div class="settings-card">
-                <div class="card-header">
-                  <div class="card-title">
-                    <el-icon class="card-icon"><Bell /></el-icon>
-                    <div>
-                      <h3>Bark 消息推送 (Apple 原生 APNs)</h3>
-                      <p>零国内第三方 SDK、零依赖，通过 iOS 原生 Bark 客户端即时推送通知。</p>
-                    </div>
+              <div class="notify-scroll">
+                <section class="notify-section">
+                  <div class="notify-section__head">
+                    <h3>Bark 推送</h3>
+                    <p>用于发送测试与告警通知。</p>
                   </div>
-                  <el-switch v-model="alertSettings.offline_alert_enabled" active-text="离线警报开启" inactive-text="离线警报关闭" />
-                </div>
-                <el-form label-position="top" class="card-body">
-                  <el-row :gutter="16">
-                    <el-col :span="12">
-                      <el-form-item label="Bark 服务器地址">
-                        <el-input v-model="alertSettings.bark_server" placeholder="https://api.day.app" />
-                      </el-form-item>
-                    </el-col>
-                    <el-col :span="12">
-                      <el-form-item label="Device Key (设备密钥)" required>
-                        <el-input v-model="alertSettings.bark_device_key" show-password placeholder="Bark App 中的专属 Key" />
-                      </el-form-item>
-                    </el-col>
-                  </el-row>
-                  <el-row :gutter="16">
-                    <el-col :span="8">
-                      <el-form-item label="默认提示铃声">
+                  <div class="notify-card">
+                    <div class="notify-fields">
+                      <label class="notify-field">
+                        <span class="notify-field__label">服务器地址</span>
+                        <el-input v-model="alertSettings.bark_server" placeholder="https://api.day.app" clearable />
+                        <span class="notify-field__hint">使用官方 Bark 服务保持默认；自建服务填写完整地址。</span>
+                      </label>
+                      <label class="notify-field">
+                        <span class="notify-field__label">Device Key <em>*</em></span>
+                        <el-input v-model="alertSettings.bark_device_key" show-password placeholder="Bark App 首页显示的专属 Key" clearable />
+                        <span class="notify-field__hint">在手机 Bark App 首页复制。</span>
+                      </label>
+                      <label class="notify-field">
+                        <span class="notify-field__label">推送分组</span>
+                        <el-input v-model="alertSettings.bark_group" placeholder="Polaris" clearable />
+                        <span class="notify-field__hint">不同分组的通知会在 Bark 中分别归档。</span>
+                      </label>
+                      <label class="notify-field">
+                        <span class="notify-field__label">点击跳转</span>
+                        <el-input v-model="alertSettings.bark_url" placeholder="https://控制台地址" clearable />
+                        <span class="notify-field__hint">点击通知时打开的地址，可留空。</span>
+                      </label>
+                      <label class="notify-field notify-field--full">
+                        <span class="notify-field__label">默认铃声</span>
                         <el-select v-model="alertSettings.bark_sound" style="width: 100%">
-                          <el-option label="minuet (清脆小步舞曲 - 推荐)" value="minuet.caf" />
-                          <el-option label="anticipate (轻快期待)" value="anticipate.caf" />
-                          <el-option label="bell (经典铃声)" value="bell.caf" />
-                          <el-option label="glass (清澈水滴)" value="glass.caf" />
-                          <el-option label="horn (警示号角)" value="horn.caf" />
-                          <el-option label="calypso (欢快击鼓)" value="calypso.caf" />
-                          <el-option label="telegraph (电报码)" value="telegraph.caf" />
-                          <el-option label="silence (静音仅震动)" value="silence.caf" />
+                          <el-option v-for="option in soundOptions" :key="option.value" :label="option.label" :value="option.value" />
                         </el-select>
-                        <div class="form-tip">离线/阻断/防爆破等不同类型事件会自动使用专属音效（alarm、horn 等）加以区分。</div>
-                      </el-form-item>
-                    </el-col>
-                    <el-col :span="8">
-                      <el-form-item label="推送分组 (Group)">
-                        <el-input v-model="alertSettings.bark_group" placeholder="Polaris" />
-                      </el-form-item>
-                    </el-col>
-                    <el-col :span="8">
-                      <el-form-item label="点击跳转 URL (可选)">
-                        <el-input v-model="alertSettings.bark_url" placeholder="例如控制台网址" />
-                      </el-form-item>
-                    </el-col>
-                  </el-row>
-                  <div class="card-footer-action">
-                    <el-button :loading="testSending" @click="sendTestAlert">发送测试通知</el-button>
-                    <el-button type="primary" :loading="alertSaving" @click="saveAlertSettings">保存配置</el-button>
-                  </div>
-                </el-form>
-              </div>
-
-              <!-- 实时指标与阈值预警 -->
-              <div class="settings-card">
-                <div class="card-header">
-                  <div class="card-title">
-                    <el-icon class="card-icon"><Warning /></el-icon>
-                    <div>
-                      <h3>瞬时流量与连接数阈值预警</h3>
-                      <p>实时监控节点的流量突发、瞬时并发激增或单一 IP 暴力刷量行为并即时报警。</p>
+                        <span class="notify-field__hint">不同类型的告警会使用专属音效（bell、horn、alarm 等）。</span>
+                      </label>
                     </div>
                   </div>
-                  <el-switch v-model="alertSettings.traffic_alert_enabled" active-text="监控开启" inactive-text="监控关闭" />
-                </div>
-                <el-form label-position="top" class="card-body">
-                  <el-row :gutter="16">
-                    <el-col :span="12">
-                      <el-form-item label="瞬时带宽突发预警 (Mbps)">
-                        <el-input-number v-model="alertSettings.traffic_threshold_mbps" :min="0" :max="10000" :step="10" style="width: 100%" />
-                        <div class="form-tip">0 表示不限制；超过此速率持续达到观察时长即触发告警。</div>
-                      </el-form-item>
-                    </el-col>
-                    <el-col :span="12">
-                      <el-form-item label="带宽突发判定窗口 (秒)">
-                        <el-input-number v-model="alertSettings.traffic_duration_sec" :min="5" :max="300" :step="5" style="width: 100%" />
-                        <div class="form-tip">防止网络瞬间波动误报，推荐 10 ~ 60 秒。</div>
-                      </el-form-item>
-                    </el-col>
-                  </el-row>
-                  <el-row :gutter="16">
-                    <el-col :span="8">
-                      <el-form-item label="节点瞬时连接总数上限">
-                        <el-input-number v-model="alertSettings.conn_threshold_count" :min="10" :max="50000" :step="50" style="width: 100%" />
-                        <div class="form-tip">个人使用通常低于 500 个并发。</div>
-                      </el-form-item>
-                    </el-col>
-                    <el-col :span="8">
-                      <el-form-item label="单个 IP 突发并发上限">
-                        <el-input-number v-model="alertSettings.single_ip_threshold_count" :min="5" :max="5000" :step="10" style="width: 100%" />
-                        <div class="form-tip">防范单一来源 IP 大量恶意扫描或抓包。</div>
-                      </el-form-item>
-                    </el-col>
-                    <el-col :span="8">
-                      <el-form-item label="重复报警静默冷却 (分钟)">
-                        <el-input-number v-model="alertSettings.cooldown_minutes" :min="1" :max="1440" :step="5" style="width: 100%" />
-                        <div class="form-tip">同一节点同一类型的告警在此期间不重复轰炸。</div>
-                      </el-form-item>
-                    </el-col>
-                  </el-row>
-                  <el-row :gutter="16">
-                    <el-col :span="12">
-                      <el-form-item label="异常网络扫描预警 (防恶意扫网/探针)">
-                        <el-switch v-model="alertSettings.scan_alert_enabled" active-text="开启预警" inactive-text="关闭 (推荐)" />
-                        <div class="form-tip">仅在探测到多端口嗅探、高危服务端口（如 SSH/RDP/Redis）探测或纯 IP 扫段时预警，已彻底豁免正常网页与应用浏览。</div>
-                      </el-form-item>
-                    </el-col>
-                  </el-row>
-                  <div class="card-footer-action">
-                    <el-button type="primary" :loading="alertSaving" @click="saveAlertSettings">保存配置</el-button>
-                  </div>
-                </el-form>
-              </div>
+                </section>
 
-              <!-- 定时探测与三网线路检测 -->
-              <div class="settings-card">
-                <div class="card-header">
-                  <div class="card-title">
-                    <el-icon class="card-icon"><Check /></el-icon>
-                    <div>
-                      <h3>定时端口连通性探测</h3>
-                      <p>定时探测节点连接端口，按通知配置汇报连通状态。</p>
+                <section class="notify-section">
+                  <div class="notify-section__head">
+                    <h3>告警规则</h3>
+                    <p>达到条件时通过 Bark 推送。</p>
+                  </div>
+                  <div class="notify-card">
+                    <div class="rule-list">
+                      <div class="rule-row" :class="{ 'is-off': !alertSettings.traffic_alert_enabled }">
+                        <span class="rule-row__icon"><el-icon><TrendCharts /></el-icon></span>
+                        <div class="rule-row__text">
+                          <span class="rule-row__title">瞬时流量突发</span>
+                          <span class="rule-row__desc">带宽超过阈值并持续到判定窗口</span>
+                        </div>
+                        <div class="rule-row__fields">
+                          <label class="rule-row__field"><span>阈值</span><el-input-number v-model="alertSettings.traffic_threshold_mbps" :min="0" :max="10000" :step="10" controls-position="right" /><span>Mbps</span></label>
+                          <label class="rule-row__field"><span>窗口</span><el-input-number v-model="alertSettings.traffic_duration_sec" :min="5" :max="300" :step="5" controls-position="right" /><span>秒</span></label>
+                        </div>
+                        <el-switch v-model="alertSettings.traffic_alert_enabled" />
+                      </div>
+
+                      <div class="rule-row" :class="{ 'is-off': !alertSettings.conn_alert_enabled }">
+                        <span class="rule-row__icon"><el-icon><Connection /></el-icon></span>
+                        <div class="rule-row__text">
+                          <span class="rule-row__title">连接数激增</span>
+                          <span class="rule-row__desc">单节点活跃连接数超过上限</span>
+                        </div>
+                        <div class="rule-row__fields">
+                          <label class="rule-row__field"><span>上限</span><el-input-number v-model="alertSettings.conn_threshold_count" :min="10" :max="50000" :step="50" controls-position="right" /><span>条</span></label>
+                        </div>
+                        <el-switch v-model="alertSettings.conn_alert_enabled" />
+                      </div>
+
+                      <div class="rule-row" :class="{ 'is-off': !alertSettings.single_ip_alert_enabled }">
+                        <span class="rule-row__icon"><el-icon><Odometer /></el-icon></span>
+                        <div class="rule-row__text">
+                          <span class="rule-row__title">单一 IP 高并发</span>
+                          <span class="rule-row__desc">同一来源 IP 的并发连接超过上限</span>
+                        </div>
+                        <div class="rule-row__fields">
+                          <label class="rule-row__field"><span>单 IP 上限</span><el-input-number v-model="alertSettings.single_ip_threshold_count" :min="5" :max="5000" :step="10" controls-position="right" /><span>条</span></label>
+                        </div>
+                        <el-switch v-model="alertSettings.single_ip_alert_enabled" />
+                      </div>
+
+                      <div class="rule-row" :class="{ 'is-off': !alertSettings.offline_alert_enabled }">
+                        <span class="rule-row__icon"><el-icon><CircleClose /></el-icon></span>
+                        <div class="rule-row__text">
+                          <span class="rule-row__title">节点离线</span>
+                          <span class="rule-row__desc">节点与控制端失联时提醒，恢复后同步通知</span>
+                        </div>
+                        <div class="rule-row__fields"></div>
+                        <el-switch v-model="alertSettings.offline_alert_enabled" />
+                      </div>
+
+                      <div class="rule-row" :class="{ 'is-off': !alertSettings.scan_alert_enabled }">
+                        <span class="rule-row__icon"><el-icon><Search /></el-icon></span>
+                        <div class="rule-row__text">
+                          <span class="rule-row__title">异常网络扫描</span>
+                          <span class="rule-row__desc">多端口嗅探与 SSH、RDP、Redis 等高危探测</span>
+                        </div>
+                        <div class="rule-row__fields"></div>
+                        <el-switch v-model="alertSettings.scan_alert_enabled" />
+                      </div>
+
+                      <div class="rule-row">
+                        <span class="rule-row__icon"><el-icon><Timer /></el-icon></span>
+                        <div class="rule-row__text">
+                          <span class="rule-row__title">重复报警冷却</span>
+                          <span class="rule-row__desc">同类告警在冷却期内只推送一次</span>
+                        </div>
+                        <div class="rule-row__fields">
+                          <label class="rule-row__field"><span>冷却时长</span><el-input-number v-model="alertSettings.cooldown_minutes" :min="1" :max="1440" :step="5" controls-position="right" /><span>分钟</span></label>
+                        </div>
+                      </div>
                     </div>
                   </div>
-                  <el-switch v-model="alertSettings.auto_probe_gfw_enabled" active-text="定时探测开启" inactive-text="定时探测关闭" />
-                </div>
-                <el-form label-position="top" class="card-body">
-                  <el-row :gutter="16">
-                    <el-col :span="12">
-                      <el-form-item label="GFW 阻断探测周期 (分钟)">
-                        <el-input-number v-model="alertSettings.probe_gfw_interval_minutes" :min="1" :max="1440" :step="1" style="width: 100%" />
-                        <div class="form-tip">定时探测客户端连接端口是否被阻断。</div>
-                      </el-form-item>
-                    </el-col>
-                  </el-row>
-                  <el-row :gutter="16">
-                    <el-col :span="12">
-                      <el-form-item label="每次探测必推通知 (核心要求)">
-                        <el-switch v-model="alertSettings.probe_notify_always" active-text="开启 (全绿推健康日报，异常推警报)" inactive-text="仅在发生异常时推送" />
-                        <div class="form-tip">开启后，哪怕所有节点正常运行，每次探测也发送简报让您时刻心中有数。</div>
-                      </el-form-item>
-                    </el-col>
-                    <el-col :span="12">
-                      <el-form-item label="业务繁忙时避让检测">
-                        <el-switch v-model="alertSettings.probe_skip_when_busy" active-text="避让 (节点带宽 > 5MB/s 时跳过)" inactive-text="强制执行" />
-                        <div class="form-tip">避免在节点流量过高时执行探测任务。</div>
-                      </el-form-item>
-                    </el-col>
-                  </el-row>
-                  <div class="card-footer-action">
-                    <el-button :loading="gfwProbing" @click="triggerGFWCheck">立即运行 GFW 探测</el-button>
-                    <el-button type="primary" :loading="alertSaving" @click="saveAlertSettings">保存所有告警配置</el-button>
-                  </div>
-                </el-form>
+                </section>
               </div>
+            </div>
+          </el-tab-pane>
 
-              <!-- Reality 目标域名合格度探测工具 -->
-              <div class="settings-card">
-                <div class="card-header">
-                  <div class="card-title">
-                    <el-icon class="card-icon"><Search /></el-icon>
-                    <div>
-                      <h3>VLESS Reality 伪装域名检测工具</h3>
-                      <p>在配置 Reality 偷窥 SNI 之前，快速检测目标网站是否支持 TLS 1.3、h2 ALPN、证书有效期及网络延迟。</p>
-                    </div>
-                  </div>
+          <el-tab-pane v-if="isAdmin" label="网络工具" name="tools">
+            <div class="tools-scroll">
+              <section class="notify-section">
+                <div class="notify-section__head">
+                  <h3>Reality 域名检测</h3>
+                  <p>检查目标域名是否支持 TLS 1.3、h2 ALPN 及有效证书。</p>
                 </div>
-                <div class="card-body">
-                  <el-row :gutter="16" align="bottom">
-                    <el-col :span="14">
-                      <el-form-item label="待检测目标域名 (例如 gateway.icloud.com, dl.google.com)">
-                        <el-input v-model="realityForm.target" placeholder="gateway.icloud.com" clearable />
-                      </el-form-item>
-                    </el-col>
-                    <el-col :span="5">
-                      <el-form-item label="端口">
-                        <el-input-number v-model="realityForm.port" :min="1" :max="65535" style="width: 100%" />
-                      </el-form-item>
-                    </el-col>
-                    <el-col :span="5">
-                      <el-form-item label="&nbsp;">
-                        <el-button type="primary" style="width: 100%" :loading="realityChecking" @click="checkReality">开始检测</el-button>
-                      </el-form-item>
-                    </el-col>
-                  </el-row>
+                <div class="notify-card">
+                  <div class="reality-form">
+                    <el-form label-position="top" @submit.prevent="checkReality">
+                      <el-row :gutter="14" align="bottom">
+                        <el-col :xs="24" :sm="14">
+                          <el-form-item label="目标域名">
+                            <el-input v-model="realityForm.target" placeholder="gateway.icloud.com" clearable @keyup.enter="checkReality" />
+                          </el-form-item>
+                        </el-col>
+                        <el-col :xs="12" :sm="5">
+                          <el-form-item label="端口">
+                            <el-input-number v-model="realityForm.port" :min="1" :max="65535" style="width: 100%" />
+                          </el-form-item>
+                        </el-col>
+                        <el-col :xs="12" :sm="5">
+                          <el-form-item label="&nbsp;">
+                            <el-button type="primary" style="width: 100%" :loading="realityChecking" @click="checkReality">开始检测</el-button>
+                          </el-form-item>
+                        </el-col>
+                      </el-row>
+                    </el-form>
+                  </div>
 
                   <div v-if="realityResult" class="reality-result-panel">
                     <div class="result-header">
                       <div class="result-title">
-                        <strong>检测结果：{{ realityResult.target }}</strong>
-                        <el-tag :type="realityResult.compatible ? 'success' : 'danger'" size="large">
-                          {{ realityResult.compatible ? '合格 (推荐作为 Reality 偷窥域名)' : '不合格 (不建议使用)' }}
+                        <strong>{{ realityResult.target }}</strong>
+                        <el-tag :type="realityResult.compatible ? 'success' : 'danger'" size="small" effect="plain">
+                          {{ realityResult.compatible ? '可用' : '不可用' }}
                         </el-tag>
                       </div>
-                      <div class="result-latency">延迟: <strong>{{ realityResult.latency_ms }} ms</strong></div>
+                      <span class="result-latency">{{ realityResult.latency_ms }} ms</span>
                     </div>
                     <div class="result-grid">
                       <div class="result-item">
-                        <span class="label">TLS 1.3:</span>
-                        <el-tag :type="realityResult.tls_13 ? 'success' : 'danger'">{{ realityResult.tls_13 ? '支持 (TLS 1.3)' : '不支持' }}</el-tag>
+                        <span class="label">TLS 1.3</span>
+                        <el-tag :type="realityResult.tls_13 ? 'success' : 'danger'" size="small" effect="plain">{{ realityResult.tls_13 ? '支持' : '不支持' }}</el-tag>
                       </div>
                       <div class="result-item">
-                        <span class="label">ALPN 协商:</span>
-                        <el-tag :type="realityResult.alpn?.includes('h2') ? 'success' : 'warning'">{{ realityResult.alpn || '无' }}</el-tag>
+                        <span class="label">ALPN</span>
+                        <el-tag :type="realityResult.alpn?.includes('h2') ? 'success' : 'warning'" size="small" effect="plain">{{ realityResult.alpn || '无' }}</el-tag>
                       </div>
                       <div class="result-item">
-                        <span class="label">证书颁发者:</span>
+                        <span class="label">证书颁发者</span>
                         <span class="mono">{{ realityResult.cert_issuer || '—' }}</span>
                       </div>
                       <div class="result-item">
-                        <span class="label">证书到期天数:</span>
-                        <span>{{ realityResult.cert_days_left }} 天 ({{ formatDateTime(realityResult.cert_expires_at) }})</span>
+                        <span class="label">剩余有效期</span>
+                        <span>{{ realityResult.cert_days_left }} 天</span>
                       </div>
                     </div>
                     <el-alert v-if="realityResult.recommendation" :title="realityResult.recommendation" :type="realityResult.compatible ? 'success' : 'warning'" show-icon :closable="false" style="margin-top: 12px" />
                   </div>
                 </div>
-              </div>
+              </section>
             </div>
-          </div>
-        </el-tab-pane>
+          </el-tab-pane>
 
-        <el-tab-pane v-if="isAdmin" label="高精度 IP 库 (MMDB)" name="ipdb">
-          <div class="settings-grid">
-            <!-- 隐式文件上传 input -->
-            <input
-              ref="mmdbUploadInput"
-              type="file"
-              accept=".mmdb"
-              style="display: none"
-              @change="onMMDBFileSelected"
-            />
+          <el-tab-pane v-if="isAdmin" label="高精度 IP 库 (MMDB)" name="ipdb">
+            <div class="tools-scroll">
+              <input
+                ref="mmdbUploadInput"
+                type="file"
+                accept=".mmdb"
+                style="display: none"
+                @change="onMMDBFileSelected"
+              />
 
-            <!-- IP 库状态与操作卡片 -->
-            <div class="settings-card">
-              <div class="card-header">
-                <div class="card-title">
-                  <el-icon class="card-icon"><Location /></el-icon>
-                  <div>
-                    <h3>IP 地理位置与 BGP 广播识别引擎</h3>
-                    <p>支持 MaxMind GeoIP2 / GeoLite2 / IPinfo 等工业级 MMDB 格式，精准识别 Anycast 广播 IP 与跨境机房宣告落地。</p>
-                  </div>
+              <section class="notify-section">
+                <div class="notify-section__head">
+                  <h3>IP 地理位置库</h3>
+                  <p>用于识别 IP 归属地、机房、ASN 与 Anycast 广播。</p>
                 </div>
-                <el-tag :type="ipdbStatus.mmdb_loaded ? 'success' : 'warning'" size="large">
-                  {{ ipdbStatus.mmdb_loaded ? '高精 MMDB 库已生效' : '使用内置离线库 (未加载 MMDB)' }}
-                </el-tag>
-              </div>
-              <div class="card-body">
-                <el-descriptions :column="2" border style="margin-bottom: 20px">
-                  <el-descriptions-item label="MMDB 引擎状态">
-                    <el-tag :type="ipdbStatus.mmdb_loaded ? 'success' : 'info'" size="small">
-                      {{ ipdbStatus.mmdb_loaded ? '已加载生效' : '未加载' }}
-                    </el-tag>
-                  </el-descriptions-item>
-                  <el-descriptions-item label="数据库格式类型">
-                    <span class="mono">{{ ipdbStatus.mmdb_type || '—' }}</span>
-                  </el-descriptions-item>
-                  <el-descriptions-item label="当前 MMDB 文件路径" :span="2">
-                    <span class="mono">{{ ipdbStatus.mmdb_path || '无（放置于 data_dir/GeoLite2-City.mmdb 或上传即可自动生效）' }}</span>
-                  </el-descriptions-item>
-                  <el-descriptions-item label="内置 ip2region 引擎">
-                    <el-tag type="success" size="small">已就绪 (提供国内省市与运营商识别)</el-tag>
-                  </el-descriptions-item>
-                  <el-descriptions-item label="架构并发模式">
-                    <el-tag type="success" size="small">内存映射 mmap (零拷贝并发无锁)</el-tag>
-                  </el-descriptions-item>
-                </el-descriptions>
-
-                <div style="display: flex; gap: 12px; flex-wrap: wrap;">
-                  <el-button type="primary" :icon="Download" :loading="ipDownloading" @click="downloadIPDB">
-                    自动下载/更新 GeoLite2-City 离线库
-                  </el-button>
-                  <el-button :icon="Upload" :loading="ipdbLoading" @click="triggerUploadMMDB">
-                    上传本地 .mmdb 文件
-                  </el-button>
-                  <el-button :icon="Refresh" :loading="ipReloading" @click="reloadIPDB">
-                    重新扫描并重载 IP 库
-                  </el-button>
-                </div>
-                <div class="form-tip" style="margin-top: 12px">
-                  提示：系统在安装或启动时会自动从高速镜像拉取高精度离线库，开箱即用，无需申请任何 API 或准备文件。若拥有商业版数据库亦可在此手动上传覆盖。
-                </div>
-              </div>
-            </div>
-
-            <!-- IP 归属地测试工具卡片 -->
-            <div class="settings-card">
-              <div class="card-header">
-                <div class="card-title">
-                  <el-icon class="card-icon"><Search /></el-icon>
-                  <div>
-                    <h3>IP 归属地与机房广播精准测试</h3>
-                    <p>输入任意节点 IP 或外部 IP，实时验证系统识别出的物理落地机房、真实城市与自治域 ASN。</p>
-                  </div>
-                </div>
-              </div>
-              <div class="card-body">
-                <div style="display: flex; gap: 12px; max-width: 500px; margin-bottom: 20px">
-                  <el-input
-                    v-model="ipTestInput"
-                    placeholder="输入任意 IPv4 / IPv6 地址，如 1.1.1.1、8.8.8.8"
-                    clearable
-                    @keyup.enter="testIPLookup"
-                  />
-                  <el-button type="primary" :loading="ipTesting" @click="testIPLookup">测试查询</el-button>
-                </div>
-
-                <div v-if="ipTestResult" class="reality-result" style="margin-top: 0">
-                  <div class="result-grid">
-                    <div class="result-item">
-                      <span class="label">查询目标 IP:</span>
-                      <span class="mono">{{ ipTestResult.ip }}</span>
-                    </div>
-                    <div class="result-item">
-                      <span class="label">解析归属地 (Location):</span>
-                      <span style="font-weight: 600">{{ ipTestResult.location || '未知' }}</span>
-                    </div>
-                    <div class="result-item">
-                      <span class="label">落地城市 (City):</span>
-                      <span>{{ ipTestResult.city || '—' }}</span>
-                    </div>
-                    <div class="result-item">
-                      <span class="label">国家 / 地区代码:</span>
-                      <span>{{ ipTestResult.country || '—' }} ({{ ipTestResult.country_code || '—' }})</span>
-                    </div>
-                    <div class="result-item">
-                      <span class="label">运营商 / 网络组织:</span>
-                      <span>{{ ipTestResult.isp || '—' }}</span>
-                    </div>
-                    <div class="result-item">
-                      <span class="label">BGP 自治域 (ASN):</span>
-                      <span class="mono">{{ ipTestResult.asn || '—' }}</span>
-                    </div>
-                    <div class="result-item">
-                      <span class="label">识别来源引擎:</span>
-                      <el-tag size="small" :type="ipTestResult.source === 'mmdb' ? 'success' : 'info'">
-                        {{ ipTestResult.source === 'mmdb' ? 'MMDB 高精度离线库' : (ipTestResult.source === 'ip2region' ? '内置离线库' : ipTestResult.source) }}
+                <div class="notify-card">
+                  <div class="info-list">
+                    <div class="info-row">
+                      <span class="info-row__label">引擎状态</span>
+                      <el-tag :type="ipdbStatus.mmdb_loaded ? 'success' : 'warning'" size="small" effect="plain">
+                        {{ ipdbStatus.mmdb_loaded ? 'MMDB 已加载' : '内置离线库' }}
                       </el-tag>
                     </div>
-                    <div class="result-item">
-                      <span class="label">Anycast / 广播 IP:</span>
-                      <el-tag size="small" :type="ipTestResult.is_anycast ? 'warning' : 'info'">
-                        {{ ipTestResult.is_anycast ? '是 (Anycast 广播)' : '否 (单播地址)' }}
+                    <div class="info-row">
+                      <span class="info-row__label">数据库类型</span>
+                      <span class="info-row__value mono">{{ ipdbStatus.mmdb_type || '—' }}</span>
+                    </div>
+                    <div class="info-row">
+                      <span class="info-row__label">文件路径</span>
+                      <span class="info-row__value mono" :title="ipdbStatus.mmdb_path || ''">{{ ipdbStatus.mmdb_path || '未配置' }}</span>
+                    </div>
+                    <div class="info-row">
+                      <span class="info-row__label">内置引擎</span>
+                      <span class="info-row__value">ip2region · 国内省市与运营商</span>
+                    </div>
+                  </div>
+                  <div class="ipdb-actions">
+                    <el-button type="primary" :icon="Download" :loading="ipDownloading" @click="downloadIPDB">下载更新</el-button>
+                    <el-button :icon="Upload" :loading="ipdbLoading" @click="triggerUploadMMDB">上传 MMDB</el-button>
+                    <el-button :icon="Refresh" :loading="ipReloading" @click="reloadIPDB">重新加载</el-button>
+                  </div>
+                  <p class="ipdb-tip">启动时自动获取离线库，也可上传商业版数据库覆盖。</p>
+                </div>
+              </section>
+
+              <section class="notify-section">
+                <div class="notify-section__head">
+                  <h3>IP 归属地查询</h3>
+                  <p>验证系统识别出的落地城市、运营商与 ASN。</p>
+                </div>
+                <div class="notify-card">
+                  <div class="ipdb-query">
+                    <el-input
+                      v-model="ipTestInput"
+                      placeholder="输入 IPv4 / IPv6 地址，如 1.1.1.1"
+                      clearable
+                      @keyup.enter="testIPLookup"
+                    />
+                    <el-button type="primary" :loading="ipTesting" @click="testIPLookup">查询</el-button>
+                  </div>
+
+                  <div v-if="ipTestResult" class="info-list info-list--bordered">
+                    <div class="info-row">
+                      <span class="info-row__label">IP</span>
+                      <span class="info-row__value mono">{{ ipTestResult.ip }}</span>
+                    </div>
+                    <div class="info-row">
+                      <span class="info-row__label">归属地</span>
+                      <span class="info-row__value">{{ ipTestResult.location || '未知' }}</span>
+                    </div>
+                    <div class="info-row">
+                      <span class="info-row__label">城市</span>
+                      <span class="info-row__value">{{ ipTestResult.city || '—' }}</span>
+                    </div>
+                    <div class="info-row">
+                      <span class="info-row__label">国家 / 地区</span>
+                      <span class="info-row__value">{{ ipTestResult.country || '—' }} ({{ ipTestResult.country_code || '—' }})</span>
+                    </div>
+                    <div class="info-row">
+                      <span class="info-row__label">运营商</span>
+                      <span class="info-row__value">{{ ipTestResult.isp || '—' }}</span>
+                    </div>
+                    <div class="info-row">
+                      <span class="info-row__label">ASN</span>
+                      <span class="info-row__value mono">{{ ipTestResult.asn || '—' }}</span>
+                    </div>
+                    <div class="info-row">
+                      <span class="info-row__label">数据来源</span>
+                      <el-tag size="small" effect="plain" :type="ipTestResult.source === 'mmdb' ? 'success' : 'info'">
+                        {{ ipTestResult.source === 'mmdb' ? 'MMDB' : (ipTestResult.source === 'ip2region' ? 'ip2region' : ipTestResult.source) }}
+                      </el-tag>
+                    </div>
+                    <div class="info-row">
+                      <span class="info-row__label">广播类型</span>
+                      <el-tag size="small" effect="plain" :type="ipTestResult.is_anycast ? 'warning' : 'info'">
+                        {{ ipTestResult.is_anycast ? 'Anycast' : '单播' }}
                       </el-tag>
                     </div>
                   </div>
                 </div>
-              </div>
+              </section>
             </div>
-          </div>
-        </el-tab-pane>
-
+          </el-tab-pane>
         </el-tabs>
+        <section v-else class="security-card">
+          <div>
+            <h3>系统设置仅管理员可访问</h3>
+            <p>当前账户的两步验证请在左下角账户菜单中管理。</p>
+          </div>
+        </section>
       </div>
     </main>
 
-    <el-dialog v-model="totpSetup.open" title="启用两步验证" width="500px" :close-on-click-modal="false">
-      <div class="totp-setup">
-        <p>扫描二维码后，输入验证器显示的 6 位动态码完成绑定。</p>
-        <img :src="totpSetup.qr" alt="两步验证绑定二维码" data-testid="totp-qr" />
-        <el-form label-position="top" @submit.prevent="enableTOTP">
-          <el-form-item label="无法扫码时，可手动输入此密钥"><el-input :model-value="totpSetup.secret" readonly class="mono" data-testid="totp-secret" /></el-form-item>
-          <el-form-item label="动态验证码"><el-input v-model="totpSetup.code" maxlength="6" inputmode="numeric" placeholder="000000" /></el-form-item>
-        </el-form>
-      </div>
-      <template #footer><el-button @click="totpSetup.open = false">取消</el-button><el-button type="primary" :loading="totpSetup.loading" @click="enableTOTP">启用</el-button></template>
-    </el-dialog>
     <el-dialog :model-value="dialog === 'operator'" title="新建管理账户" width="540px" @close="dialog = ''"><el-form label-position="top"><el-form-item label="用户名"><el-input v-model="operator.username" placeholder="3 至 64 位，可使用字母、数字、点、下划线和短横线" /></el-form-item><el-form-item label="初始密码"><el-input v-model="operator.password" type="password" show-password /><div class="form-tip">用户首次登录时必须修改此密码。</div></el-form-item><el-form-item label="权限"><el-select v-model="operator.role" style="width: 100%"><el-option label="管理员" value="admin" /><el-option label="运维人员" value="operator" /><el-option label="只读用户" value="viewer" /></el-select></el-form-item></el-form><template #footer><el-button @click="dialog = ''">取消</el-button><el-button type="primary" :disabled="!operator.username || operator.password.length < 12" @click="saveOperator">创建</el-button></template></el-dialog>
-
-    <!-- 分布式探针检测结果对话框 -->
-    <el-dialog v-model="gfwResultDialogVisible" title="端口连通性探测详细报告 (分布式视角)" width="780px">
-      <div style="margin-bottom: 16px">
-        <el-alert
-          type="info"
-          :closable="false"
-          show-icon
-          title="分布式多点连通性探测"
-          description="探测请求由分布式真实网络探针向目标端口发起 TCP 握手，检测公网连通性与时延，精准排障。"
-        />
-      </div>
-      <el-table :data="gfwResults" style="width: 100%" stripe empty-text="未获取到探测数据">
-        <el-table-column prop="node_name" label="节点名称" min-width="120" />
-        <el-table-column prop="target_port" label="端口" width="75" align="center" />
-        <el-table-column label="节点状态" width="95" align="center">
-          <template #default="{ row }">
-            <el-tag v-if="row.overseas_ok" type="success" size="small">在线</el-tag>
-            <el-tag v-else type="danger" size="small">离线</el-tag>
-          </template>
-        </el-table-column>
-        <el-table-column label="探针连通性" width="145" align="center">
-          <template #default="{ row }">
-            <el-tag v-if="row.domestic_ok" type="success" size="small">🟢 通畅 ({{ row.latency_ms }}ms)</el-tag>
-            <el-tag v-else-if="row.gfw_blocked" type="danger" size="small">🚨 端口阻断</el-tag>
-            <el-tag v-else-if="row.error || !row.probe_executed" type="warning" size="small">⚠️ 探测异常</el-tag>
-            <el-tag v-else-if="row.overseas_ok" type="danger" size="small">🚨 端口阻断</el-tag>
-            <el-tag v-else type="info" size="small">⚪ 未监听</el-tag>
-          </template>
-        </el-table-column>
-        <el-table-column prop="probe_source" label="探针来源" min-width="170" show-overflow-tooltip />
-        <el-table-column prop="status_desc" label="判定结论" min-width="150" />
-      </el-table>
-      <template #footer>
-        <el-button type="primary" @click="gfwResultDialogVisible = false">确定</el-button>
-      </template>
-    </el-dialog>
   </div>
 </template>
 
@@ -808,10 +684,6 @@ onMounted(load)
 .security-card > div { flex: 1; }
 .security-card h3 { margin: 0 0 7px; color: var(--sb-text); font-size: 15px; font-weight: 620; }
 .security-card p { margin: 0; color: var(--sb-muted); line-height: 1.7; }
-.totp-setup { text-align: center; }
-.totp-setup > p { margin: 0 0 16px; color: var(--sb-muted); line-height: 1.7; }
-.totp-setup img { width: 220px; height: 220px; margin-bottom: 14px; padding: 8px; background: #fff; border-radius: var(--sb-radius-sm); }
-.totp-setup :deep(.el-form-item) { text-align: left; }
 .form-tip { margin-top: 6px; color: var(--sb-muted); font-size: 12px; }
 
 :deep(.el-tabs__content) {
@@ -828,167 +700,252 @@ onMounted(load)
   flex-direction: column;
 }
 
-.alerts-scroll-container {
+/* ── 通知设置 ───────────────────────────────────────────── */
+.notify-page {
   flex: 1;
   min-height: 0;
-  height: 100%;
-  overflow-y: auto !important;
-  padding: 16px 20px 80px;
-  box-sizing: border-box;
-  scrollbar-width: thin;
-  scrollbar-color: rgba(148, 163, 184, 0.3) transparent;
-}
-.alerts-scroll-container::-webkit-scrollbar {
-  width: 6px;
-}
-.alerts-scroll-container::-webkit-scrollbar-thumb {
-  background: rgba(148, 163, 184, 0.3);
-  border-radius: 4px;
-}
-
-.alerts-top-toolbar {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 12px 18px;
-  margin-bottom: 18px;
-  background: var(--sb-surface-2, #141d30);
-  border: 1px solid var(--sb-line);
-  border-radius: var(--sb-radius);
-  box-shadow: 0 4px 20px -8px rgba(0, 0, 0, 0.5);
-}
-.alerts-top-status {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-}
-.alerts-status-text {
-  font-size: 14px;
-  font-weight: 600;
-  color: var(--sb-text);
-}
-.alerts-status-indicator {
-  width: 9px;
-  height: 9px;
-  border-radius: 50%;
-  background: var(--sb-muted);
-}
-.alerts-status-indicator.is-active {
-  background: var(--sb-success, #34d399);
-  box-shadow: 0 0 10px rgba(52, 211, 153, 0.7);
-}
-.alerts-top-actions {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-}
-
-.settings-grid {
   display: flex;
   flex-direction: column;
-  gap: 20px;
-}
-.settings-card {
-  background: var(--sb-surface-2, #141d30);
-  border: 1px solid var(--sb-line);
-  border-radius: var(--sb-radius);
   overflow: hidden;
-  box-shadow: 0 4px 24px -10px rgba(0, 0, 0, 0.5);
 }
-.card-header {
+.notify-bar {
+  flex: none;
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 16px 20px;
-  background: rgba(255, 255, 255, 0.02);
+  gap: 16px;
+  padding: 12px 22px;
   border-bottom: 1px solid var(--sb-line);
+  background: color-mix(in oklab, var(--sb-surface) 82%, transparent);
+  backdrop-filter: blur(12px);
 }
-.card-title {
+.notify-bar__status {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  color: var(--sb-muted);
+  font-size: 12px;
+}
+.notify-bar__dot {
+  width: 7px;
+  height: 7px;
+  flex: none;
+  background: var(--sb-muted);
+  border-radius: 50%;
+}
+.notify-bar__status.is-ready .notify-bar__dot {
+  background: var(--sb-success);
+  box-shadow: 0 0 7px color-mix(in oklab, var(--sb-success) 70%, transparent);
+}
+.notify-bar__sep { width: 1px; height: 11px; flex: none; background: var(--sb-line-strong); }
+.notify-bar__actions { flex: none; display: flex; align-items: center; gap: 8px; }
+.notify-unsaved { color: var(--sb-warning); font-size: 12px; }
+.notify-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 22px 24px 32px;
+  scrollbar-width: thin;
+  scrollbar-color: color-mix(in oklab, var(--sb-muted) 35%, transparent) transparent;
+}
+.notify-scroll::-webkit-scrollbar { width: 6px; }
+.notify-scroll::-webkit-scrollbar-thumb {
+  background: color-mix(in oklab, var(--sb-muted) 30%, transparent);
+  border-radius: 4px;
+}
+.notify-section + .notify-section { margin-top: 24px; }
+.notify-section__head { margin-bottom: 10px; }
+.notify-section__head h3 {
+  margin: 0;
+  color: var(--sb-text);
+  font-size: 13px;
+  font-weight: 650;
+}
+.notify-section__head p {
+  margin: 4px 0 0;
+  color: var(--sb-muted);
+  font-size: 12px;
+  line-height: 1.6;
+}
+.notify-card {
+  background: var(--sb-panel-solid);
+  border: 1px solid var(--sb-line);
+  border-radius: var(--sb-radius);
+  box-shadow: var(--sb-shadow-sm);
+  overflow: hidden;
+}
+.notify-fields {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px 20px;
+  padding: 18px 20px;
+}
+.notify-field { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.notify-field--full { grid-column: 1 / -1; }
+.notify-field__label { color: var(--sb-text-2); font-size: 12px; font-weight: 600; }
+.notify-field__label em { color: var(--sb-danger); font-style: normal; }
+.notify-field__hint { color: var(--sb-muted); font-size: 11px; line-height: 1.55; }
+.notify-field :deep(.el-input__wrapper),
+.notify-field :deep(.el-select__wrapper) {
+  background-color: color-mix(in oklab, var(--sb-surface-2) 55%, transparent);
+  box-shadow: 0 0 0 1px var(--sb-line-strong) inset;
+}
+
+/* 告警规则：单列行式布局，所有行天然对齐 */
+.rule-list { display: flex; flex-direction: column; }
+.rule-row {
   display: flex;
   align-items: center;
   gap: 12px;
+  min-height: 62px;
+  padding: 10px 18px;
+  border-bottom: 1px solid var(--sb-line);
+  transition: opacity .16s ease;
 }
-.card-icon {
-  font-size: 22px;
-  color: var(--sb-accent, #38bdf8);
-}
-.card-title h3 {
-  margin: 0 0 4px;
-  font-size: 15px;
-  font-weight: 600;
-  color: var(--sb-text);
-}
-.card-title p {
-  margin: 0;
-  font-size: 13px;
+.rule-row:last-child { border-bottom: 0; }
+.rule-row.is-off { opacity: .55; }
+.rule-row__icon {
+  width: 28px;
+  height: 28px;
+  flex: none;
+  display: grid;
+  place-items: center;
   color: var(--sb-muted);
-}
-.card-body {
-  padding: 20px;
-}
-.card-body :deep(.el-form-item__label) {
-  color: var(--sb-text-2) !important;
-  font-weight: 500;
-  font-size: 13px;
-}
-.card-body :deep(.el-input__wrapper),
-.card-body :deep(.el-select__wrapper) {
-  background-color: var(--sb-surface) !important;
-  box-shadow: 0 0 0 1px var(--sb-line) inset !important;
-}
-.card-body :deep(.el-input__inner) {
-  color: var(--sb-text) !important;
-}
-.card-body :deep(.el-input-number .el-input-number__decrease),
-.card-body :deep(.el-input-number .el-input-number__increase) {
-  background-color: rgba(148, 163, 184, 0.08) !important;
-  color: var(--sb-text) !important;
-  border-color: var(--sb-line) !important;
-}
-.card-footer-action {
-  display: flex;
-  justify-content: flex-end;
-  gap: 12px;
-  margin-top: 12px;
-  padding-top: 14px;
-  border-top: 1px solid var(--sb-line);
-}
-
-.reality-result-panel {
-  margin-top: 16px;
-  padding: 16px;
-  background: var(--sb-surface, #0e1524);
+  background: var(--sb-surface-2);
   border: 1px solid var(--sb-line);
-  border-radius: var(--sb-radius-sm);
+  border-radius: 8px;
+  font-size: 14px;
+}
+.rule-row__text { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.rule-row__title { color: var(--sb-text); font-size: 13px; font-weight: 600; }
+.rule-row__desc {
+  overflow: hidden;
+  color: var(--sb-muted);
+  font-size: 11px;
+  line-height: 1.5;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.rule-row__fields {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 8px 18px;
+  margin-left: auto;
+}
+.rule-row__field { display: flex; align-items: center; gap: 7px; color: var(--sb-muted); font-size: 11px; }
+.rule-row__field :deep(.el-input-number) { width: 104px; }
+.rule-row > :deep(.el-switch) { flex: none; margin-left: 8px; }
+
+.tools-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 20px 24px 32px;
+  scrollbar-width: thin;
+}
+.tools-scroll::-webkit-scrollbar { width: 6px; }
+.tools-scroll::-webkit-scrollbar-thumb { background: color-mix(in oklab, var(--sb-muted) 30%, transparent); border-radius: 4px; }
+
+.reality-form { padding: 18px 20px; }
+.reality-result-panel {
+  padding: 16px 20px 18px;
+  background: color-mix(in oklab, var(--sb-surface-2) 35%, transparent);
+  border-top: 1px solid var(--sb-line);
 }
 .result-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: 12px;
   margin-bottom: 12px;
 }
 .result-title {
   display: flex;
   align-items: center;
-  gap: 12px;
+  gap: 10px;
+  min-width: 0;
+}
+.result-title strong {
+  overflow: hidden;
+  color: var(--sb-text);
+  font-size: 13px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .result-latency {
-  font-size: 13px;
+  flex: none;
   color: var(--sb-muted);
+  font-size: 12px;
 }
 .result-grid {
   display: grid;
-  grid-template-columns: repeat(2, 1fr);
-  gap: 10px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px 24px;
 }
 .result-item {
   display: flex;
   align-items: center;
   gap: 8px;
-  font-size: 13px;
+  min-width: 0;
+  font-size: 12px;
 }
 .result-item .label {
+  flex: none;
   color: var(--sb-muted);
+}
+.result-item .mono {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* IP 库状态与查询结果 */
+.info-list { display: flex; flex-direction: column; }
+.info-list--bordered { border-top: 1px solid var(--sb-line); }
+.info-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 20px;
+  min-height: 48px;
+  padding: 9px 20px;
+  border-bottom: 1px solid var(--sb-line);
+}
+.info-row:last-child { border-bottom: 0; }
+.info-row__label { flex: none; color: var(--sb-muted); font-size: 12px; }
+.info-row__value {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--sb-text);
+  font-size: 12.5px;
+  text-align: right;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.info-row > .el-tag { flex: none; }
+.ipdb-actions { display: flex; flex-wrap: wrap; gap: 10px; padding: 14px 20px 0; }
+.ipdb-tip { margin: 0; padding: 12px 20px 18px; color: var(--sb-muted); font-size: 11px; line-height: 1.6; }
+.ipdb-query { display: flex; gap: 10px; padding: 16px 20px; }
+.ipdb-query .el-input { max-width: 420px; }
+
+@media (max-width: 1080px) {
+  .notify-scroll { padding: 18px 18px 32px; }
+  .tools-scroll { padding: 18px 18px 28px; }
+}
+
+@media (max-width: 820px) {
+  .notify-fields { grid-template-columns: minmax(0, 1fr); }
+  .notify-field--full { grid-column: auto; }
+  .notify-bar { align-items: flex-start; flex-direction: column; gap: 10px; padding: 12px 18px; }
+  .notify-bar__actions { width: 100%; justify-content: flex-end; }
+  .rule-row { flex-wrap: wrap; }
+  .rule-row__fields { margin-left: 40px; }
+  .rule-row__field :deep(.el-input-number) { width: 96px; }
+  .ipdb-query { flex-wrap: wrap; }
+  .ipdb-query .el-input { max-width: none; flex: 1; }
 }
 
 @media (max-width: 700px) {

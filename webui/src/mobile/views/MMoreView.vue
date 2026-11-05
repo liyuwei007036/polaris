@@ -6,6 +6,7 @@ import {
 } from '@element-plus/icons-vue'
 import { isDark, toggleTheme } from '../../theme'
 import { post } from '../../api'
+import AccountSecurityPanel from '../../components/AccountSecurityPanel.vue'
 import MPage from '../components/MPage.vue'
 import MSheet from '../components/MSheet.vue'
 
@@ -45,13 +46,21 @@ const groups = [
     label: '系统管理',
     items: [
       { id: 'cloudflare', label: '域名解析', icon: Document },
-      { id: 'alerts', label: '告警配置', icon: Bell },
-      { id: 'settings', label: '系统设置', icon: Setting },
+      { id: 'alerts', label: '通知设置', icon: Bell },
+      { id: 'settings', label: '系统设置', icon: Setting, adminOnly: true },
     ],
   },
 ]
 
+const visibleGroups = computed(() => groups
+  .map((group) => ({
+    ...group,
+    items: group.items.filter((item) => !item.adminOnly || isAdmin.value),
+  }))
+  .filter((group) => group.items.length))
+
 const roleLabel = computed(() => ({ admin: '管理员', operator: '运维人员', viewer: '只读用户' })[appState.role] || appState.role)
+const accountOpen = ref(false)
 
 // 版本与更新从系统设置搬到这里：手机上没有侧栏品牌区，「更多」页顶部是
 // 跟桌面版品牌区对应的位置。
@@ -105,7 +114,17 @@ async function confirmLogout() {
       </span>
     </section>
 
-    <template v-for="group in groups" :key="group.label">
+    <div class="m-section">账户</div>
+    <div class="entry-group">
+      <button type="button" class="entry" aria-label="账户安全" @click="accountOpen = true">
+        <el-icon :size="17"><Lock /></el-icon>
+        <span>账户安全</span>
+        <em class="entry__value">{{ appState.totp_enabled ? '两步验证已启用' : '未启用两步验证' }}</em>
+        <i aria-hidden="true">›</i>
+      </button>
+    </div>
+
+    <template v-for="group in visibleGroups" :key="group.label">
       <div class="m-section">{{ group.label }}</div>
       <div class="entry-group">
         <button
@@ -146,6 +165,10 @@ async function confirmLogout() {
     </div>
 
     <el-button class="sign-out" @click="confirmLogout">退出登录</el-button>
+
+    <MSheet v-model="accountOpen" title="账户安全">
+      <AccountSecurityPanel mobile />
+    </MSheet>
 
     <MSheet v-model="updateOpen" title="版本与更新">
       <div class="m-field"><span>当前版本 v{{ systemUpdate?.current_version || '未知' }}</span></div>

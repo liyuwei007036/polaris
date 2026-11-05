@@ -103,7 +103,7 @@ onMounted(() => {
           </div>
         </div>
 
-        <el-table v-loading="popularLoading" :data="popularDevices" empty-text="当前周期内暂无热门设备记录">
+        <el-table v-loading="popularLoading" :data="popularDevices" :empty-text="popularLoading ? '' : '当前周期内暂无热门设备记录'">
           <el-table-column label="排名" width="70" align="center">
             <template #default="{ $index }">
               <el-tag :type="rankTagType($index)" size="small" effect="dark" round>

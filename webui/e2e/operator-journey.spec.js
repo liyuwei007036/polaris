@@ -34,17 +34,20 @@ test('浏览器页面回归：真实登录，核心工作区 API 使用路由替
   await page.getByPlaceholder('至少 12 位，不能与当前密码相同').fill(process.env.POLARIS_E2E_CHANGED_PASSWORD)
   await page.getByPlaceholder('请再次输入新密码').fill(process.env.POLARIS_E2E_CHANGED_PASSWORD)
   await page.getByRole('button', { name: '保存', exact: true }).click()
-  await expect(page.getByRole('heading', { name: '运行概览', exact: true })).toBeVisible()
+  await expect(page.getByRole('heading', { name: '服务器', exact: true })).toBeVisible()
   authenticated = true
 
-  await page.getByRole('button', { name: '系统设置', exact: true }).click()
-  await page.getByRole('button', { name: '启用', exact: true }).click()
-  const setupDialog = page.getByRole('dialog', { name: '启用两步验证', exact: true })
-  await expect(setupDialog.getByTestId('totp-qr')).toBeVisible()
-  const secret = await setupDialog.getByRole('textbox', { name: '无法扫码时，可手动输入此密钥' }).inputValue()
-  await setupDialog.getByPlaceholder('000000').fill(totp(secret, -1))
-  await setupDialog.getByRole('button', { name: '启用', exact: true }).click()
+  // 两步验证属于当前登录账户，入口在左下角账户菜单，不再放在系统设置里。
+  await page.getByRole('button', { name: '账户安全', exact: true }).click()
+  const securityDialog = page.getByRole('dialog', { name: '账户安全', exact: true })
+  await securityDialog.getByRole('button', { name: '启用两步验证', exact: true }).click()
+  await expect(securityDialog.getByTestId('totp-qr')).toBeVisible()
+  const secret = await securityDialog.getByRole('textbox', { name: '无法扫码时，可手动输入此密钥' }).inputValue()
+  await securityDialog.getByPlaceholder('000000').fill(totp(secret, -1))
+  await securityDialog.getByRole('button', { name: '启用', exact: true }).click()
   await expect(page.getByText('两步验证已启用，后续登录需要输入动态验证码', { exact: true })).toBeVisible()
+  await securityDialog.locator('.el-dialog__headerbtn').click()
+  await expect(securityDialog).toBeHidden()
 
   await page.locator('.operator-panel .el-button').click()
   authenticated = false

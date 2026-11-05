@@ -126,7 +126,7 @@ onMounted(async () => {
                 <el-option v-for="(item, value) in taskStatuses" :key="value" :label="item[0]" :value="value" />
               </el-select>
             </div>
-            <el-table v-loading="loading" :data="filteredTasks">
+            <el-table v-loading="loading" :data="filteredTasks" :empty-text="loading ? '' : '还没有系统操作记录'">
               <el-table-column label="操作内容" min-width="190"><template #default="{ row }"><strong>{{ taskKinds[row.kind] || '其他系统操作' }}</strong></template></el-table-column>
               <el-table-column label="服务器" min-width="150"><template #default="{ row }">{{ nodeNames[row.node_id] || row.node_id }}</template></el-table-column>
               <el-table-column label="状态" width="110"><template #default="{ row }"><el-tag :type="taskStatuses[row.status]?.[1] || 'info'">{{ taskStatuses[row.status]?.[0] || row.status }}</el-tag></template></el-table-column>
@@ -137,7 +137,7 @@ onMounted(async () => {
           </el-tab-pane>
           <el-tab-pane v-if="isAdmin" label="管理员修改记录" name="audit">
             <div class="tab-actions tab-actions--start"><el-input v-model="auditKeyword" clearable :prefix-icon="Search" placeholder="搜索操作人、内容或对象" style="width: 280px" /></div>
-            <el-table v-loading="loading" :data="filteredEvents">
+            <el-table v-loading="loading" :data="filteredEvents" :empty-text="loading ? '' : '还没有管理员修改记录'">
               <el-table-column label="操作人" prop="operator_username" min-width="180" />
               <el-table-column label="修改内容" min-width="210"><template #default="{ row }">{{ auditAction(row) }}</template></el-table-column>
               <el-table-column label="修改对象" min-width="260"><template #default="{ row }">{{ auditTarget(row) }}</template></el-table-column>

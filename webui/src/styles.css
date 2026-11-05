@@ -213,7 +213,7 @@ html.light, html:not(.dark) {
   --el-fill-color-lighter: rgba(100, 104, 123, .05);
   --el-fill-color-extra-light: rgba(100, 104, 123, .03);
   --el-fill-color-blank: #ffffff;
-  --el-mask-color: rgba(15, 23, 42, .45);
+  --el-mask-color: rgba(255, 255, 255, .78);
   --el-box-shadow-light: var(--sb-shadow);
   --el-box-shadow: var(--sb-shadow);
   --el-border-radius-base: 8px;
