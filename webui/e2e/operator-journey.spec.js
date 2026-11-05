@@ -166,10 +166,11 @@ test('浏览器页面回归：真实登录，核心工作区 API 使用路由替
   const zoneDNSRecords = [
     {
       id: 'record-1', name: 'httpupgrade.example.com', type: 'A', content: '203.0.113.10', ttl: 1, proxied: false,
+      zone_id: 'zone1', zone_name: 'example.com',
       bindings: [{ node_name: '测试服务器', listener_name: 'httpupgrade 接入', listener_port: 18444 }],
     },
-    { id: 'remote-1', name: 'cdn.example.com', type: 'CNAME', content: 'httpupgrade.example.com', ttl: 1, proxied: true, bindings: [] },
-    { id: 'remote-2', name: 'other.example.com', type: 'A', content: '198.51.100.7', ttl: 300, proxied: false, bindings: [] },
+    { id: 'remote-1', name: 'cdn.example.com', type: 'CNAME', content: 'httpupgrade.example.com', ttl: 1, proxied: true, zone_id: 'zone1', zone_name: 'example.com', bindings: [] },
+    { id: 'remote-2', name: 'other.example.com', type: 'A', content: '198.51.100.7', ttl: 300, proxied: false, zone_id: 'zone1', zone_name: 'example.com', bindings: [] },
   ]
   let proxyGroupSequence = 0
   let rejectFirstProxyGroup = true
@@ -194,8 +195,8 @@ test('浏览器页面回归：真实登录，核心工作区 API 使用路由替
     if (request.method() === 'GET' && path === '/api/v1/outbounds') return route.fulfill({ json: { outbounds: [] } })
     if (request.method() === 'GET' && path === '/api/v1/cloudflare/settings') {
       return route.fulfill({ json: cloudflareConnected
-        ? { configured: true, connected: true, zone_id: 'zone1', zone_name: 'example.com', token_masked: 'test…7890' }
-        : { configured: true, connected: false, error: 'Cloudflare 接口返回错误：Invalid API Token', zone_id: 'zone1', zone_name: 'example.com' } })
+        ? { configured: true, connected: true, zone_id: 'zone1', zone_name: 'example.com', token_masked: 'test…7890', zones: [{ zone_id: 'zone1', zone_name: 'example.com', connected: true, token_masked: 'test…7890' }] }
+        : { configured: true, connected: false, error: 'Cloudflare 接口返回错误：Invalid API Token', zone_id: 'zone1', zone_name: 'example.com', zones: [{ zone_id: 'zone1', zone_name: 'example.com', connected: false, error: 'Cloudflare 接口返回错误：Invalid API Token' }] } })
     }
     if (request.method() === 'GET' && path === '/api/v1/cloudflare/records') return route.fulfill({ json: { records: cloudflareConnected ? zoneDNSRecords : [] } })
     if (request.method() === 'GET' && path === '/api/v1/cloudflare/origin-certificates') return route.fulfill({ json: { certificates: [] } })

@@ -41,19 +41,6 @@ async function run() {
     await page.waitForTimeout(800)
   }
 
-  // Open 测速配置 dialog
-  const probeBtn = page.locator('button:has-text("测速配置")').first()
-  if (await probeBtn.isVisible()) {
-    await probeBtn.click()
-    await page.waitForTimeout(800)
-    await page.screenshot({ path: path.join(artifactDir, 'dialog-speedtest-config-light.png') })
-    console.log('Saved dialog-speedtest-config-light.png')
-
-    // Close dialog
-    await page.locator('.el-dialog__headerbtn, button:has-text("关闭")').first().click()
-    await page.waitForTimeout(500)
-  }
-
   // Open 添加服务器 dialog
   const addServerBtn = page.locator('button:has-text("添加服务器")').first()
   if (await addServerBtn.isVisible()) {

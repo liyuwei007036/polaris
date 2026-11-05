@@ -107,9 +107,12 @@ func (s *Server) executeNodeDDNS(ctx context.Context, nodeID, currentIP string) 
 		return nil
 	}
 
-	zoneID, _, client, err := s.store.CloudflareZone(ctx)
+	zones, err := s.store.CloudflareZones(ctx)
 	if err != nil {
 		return fmt.Errorf("cloudflare zone not configured: %w", err)
+	}
+	if len(zones) == 0 {
+		return errors.New("cloudflare zone not configured")
 	}
 
 	isIPv4 := ip.To4() != nil
@@ -122,7 +125,7 @@ func (s *Server) executeNodeDDNS(ctx context.Context, nodeID, currentIP string) 
 		if recID == "" {
 			continue
 		}
-		record, err := client.GetRecord(ctx, zoneID, recID)
+		record, zone, err := findCloudflareRecordInZones(ctx, zones, recID)
 		if err != nil {
 			log.Printf("ddns: get cloudflare record %s for node %s failed: %v", recID, node.Name, err)
 			lastErr = err
@@ -142,9 +145,9 @@ func (s *Server) executeNodeDDNS(ctx context.Context, nodeID, currentIP string) 
 			if record.TTL > 120 {
 				record.TTL = 60
 			}
-			updated, err := s.store.UpdateCloudflareRecord(ctx, record)
+			updated, err := zone.Client.UpdateRecord(ctx, zone.ID, record)
 			if err != nil {
-				log.Printf("ddns: update cloudflare record %s (%s) failed: %v", record.Name, recID, err)
+				log.Printf("ddns: update cloudflare record %s (%s) in %s failed: %v", record.Name, recID, zone.Name, err)
 				lastErr = err
 				continue
 			}

@@ -33,6 +33,10 @@ const alertSettings = reactive({
   bark_sound: 'minuet.caf',
   bark_group: 'Polaris',
   bark_url: '',
+  telegram_enabled: false,
+  telegram_server: 'https://api.telegram.org',
+  telegram_bot_token: '',
+  telegram_chat_id: '',
   traffic_alert_enabled: true,
   traffic_threshold_mbps: 150,
   traffic_duration_sec: 10,
@@ -40,16 +44,8 @@ const alertSettings = reactive({
   conn_threshold_count: 200,
   single_ip_alert_enabled: true,
   single_ip_threshold_count: 60,
-  // 定时探测与节点阻断已下线，以下字段仅为兼容后端设置结构而保留，保存时原样回传。
-  gfw_alert_enabled: true,
   offline_alert_enabled: true,
   cooldown_minutes: 15,
-  auto_probe_gfw_enabled: true,
-  probe_gfw_interval_minutes: 30,
-  auto_probe_speedtest_enabled: true,
-  probe_speedtest_interval_hours: 6,
-  probe_skip_when_busy: true,
-  probe_notify_always: true,
   scan_alert_enabled: false,
 })
 const alertSaving = ref(false)
@@ -72,6 +68,18 @@ const soundOptions = [
 
 const savedState = ref(null)
 const barkReady = computed(() => Boolean(alertSettings.bark_device_key.trim()))
+const telegramReady = computed(() => Boolean(
+  alertSettings.telegram_enabled
+  && alertSettings.telegram_bot_token.trim()
+  && alertSettings.telegram_chat_id.trim(),
+))
+const notifierReady = computed(() => barkReady.value || telegramReady.value)
+const channelSummary = computed(() => {
+  const channels = []
+  if (barkReady.value) channels.push('Bark')
+  if (telegramReady.value) channels.push('Telegram')
+  return channels.length ? `${channels.join(' + ')} 通道已就绪` : '尚未配置任何推送通道'
+})
 const enabledRuleCount = computed(() => [
   alertSettings.traffic_alert_enabled,
   alertSettings.conn_alert_enabled,
@@ -239,7 +247,7 @@ async function saveAlertSettings(silent = false) {
       }
     }
     markAlertSaved()
-    if (!silent) ElMessage.success('通知与探测配置已保存')
+    if (!silent) ElMessage.success('通知配置已保存')
     return true
   } catch (error) {
     if (!silent) ElMessage.error(error instanceof Error ? error.message : '保存失败')
@@ -250,8 +258,8 @@ async function saveAlertSettings(silent = false) {
 }
 
 async function sendTestAlert() {
-  if (!alertSettings.bark_device_key.trim()) {
-    return ElMessage.warning('请先填写 Bark Device Key')
+  if (!notifierReady.value) {
+    return ElMessage.warning('请先填写 Bark Device Key，或启用并配置 Telegram')
   }
   testSending.value = true
   try {
@@ -260,14 +268,17 @@ async function sendTestAlert() {
       const saved = await saveAlertSettings(true)
       if (!saved) return
     }
-    await post('/alerts/test', {
+    const res = await post('/alerts/test', {
       server: alertSettings.bark_server,
       device_key: alertSettings.bark_device_key,
       sound: alertSettings.bark_sound,
       group: alertSettings.bark_group,
       url: alertSettings.bark_url,
+      telegram_server: alertSettings.telegram_server,
+      telegram_bot_token: alertSettings.telegram_bot_token,
+      telegram_chat_id: alertSettings.telegram_chat_id,
     })
-    ElMessage.success('测试通知已发出，请查看 Bark 客户端')
+    ElMessage.success(res?.message || '测试通知已发出')
   } catch (error) {
     ElMessage.error(error instanceof Error ? error.message : '发送测试通知失败')
   } finally {
@@ -354,16 +365,16 @@ onMounted(load)
           <el-tab-pane v-if="isAdmin" label="通知设置" name="alerts">
             <div class="notify-page">
               <header class="notify-bar">
-                <div class="notify-bar__status" :class="{ 'is-ready': barkReady }">
+                <div class="notify-bar__status" :class="{ 'is-ready': notifierReady }">
                   <span class="notify-bar__dot"></span>
-                  <span>{{ barkReady ? 'Bark 通道已就绪' : '尚未填写 Device Key' }}</span>
+                  <span>{{ channelSummary }}</span>
                   <span class="notify-bar__sep"></span>
                   <span>{{ enabledRuleCount }} / 5 项告警启用</span>
                 </div>
                 <div class="notify-bar__actions">
                   <span v-if="isAlertDirty" class="notify-unsaved">未保存</span>
                   <el-button v-if="isAlertDirty" text @click="revertAlertSettings">撤销</el-button>
-                  <el-button :loading="testSending" :disabled="!barkReady" @click="sendTestAlert">发送测试</el-button>
+                  <el-button :loading="testSending" :disabled="!notifierReady" @click="sendTestAlert">发送测试</el-button>
                   <el-button type="primary" :disabled="!isAlertDirty" :loading="alertSaving" @click="saveAlertSettings()">保存</el-button>
                 </div>
               </header>
@@ -372,7 +383,7 @@ onMounted(load)
                 <section class="notify-section">
                   <div class="notify-section__head">
                     <h3>Bark 推送</h3>
-                    <p>用于发送测试与告警通知。</p>
+                    <p>以简洁的 iOS 系统通知推送关键信息，按告警类型自动分组并播放对应铃声。</p>
                   </div>
                   <div class="notify-card">
                     <div class="notify-fields">
@@ -409,8 +420,39 @@ onMounted(load)
 
                 <section class="notify-section">
                   <div class="notify-section__head">
+                    <h3>Telegram 推送</h3>
+                    <p>通过 Telegram 机器人发送富文本告警，包含字段化详情、处理建议与可点击入口，可与 Bark 同时启用。</p>
+                  </div>
+                  <div class="notify-card">
+                    <div class="notify-fields">
+                      <label class="notify-field notify-field--full notify-field--switch">
+                        <span class="notify-field__label">启用 Telegram 通道</span>
+                        <el-switch v-model="alertSettings.telegram_enabled" active-text="已启用" inactive-text="已停用" />
+                        <span class="notify-field__hint">启用后，所有告警会以机器人消息同步到 Telegram；关闭后仅保留 Bark。</span>
+                      </label>
+                      <label class="notify-field">
+                        <span class="notify-field__label">Bot API 地址</span>
+                        <el-input v-model="alertSettings.telegram_server" placeholder="https://api.telegram.org" clearable />
+                        <span class="notify-field__hint">使用官方服务保持默认；自建 Bot API 或反向代理时填写完整地址。</span>
+                      </label>
+                      <label class="notify-field">
+                        <span class="notify-field__label">Chat ID <em>*</em></span>
+                        <el-input v-model="alertSettings.telegram_chat_id" placeholder="例如 123456789 或 -1001234567890" clearable />
+                        <span class="notify-field__hint">私聊为数字 ID，群组通常以 -100 开头；公开频道也可填 @频道名。</span>
+                      </label>
+                      <label class="notify-field notify-field--full">
+                        <span class="notify-field__label">Bot Token <em>*</em></span>
+                        <el-input v-model="alertSettings.telegram_bot_token" show-password placeholder="由 @BotFather 生成的 Bot Token" clearable />
+                        <span class="notify-field__hint">格式形如 123456789:AAExxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx。请先让目标会话与 Bot 建立对话。</span>
+                      </label>
+                    </div>
+                  </div>
+                </section>
+
+                <section class="notify-section">
+                  <div class="notify-section__head">
                     <h3>告警规则</h3>
-                    <p>达到条件时通过 Bark 推送。</p>
+                    <p>达到条件时通过已启用的推送通道发送。</p>
                   </div>
                   <div class="notify-card">
                     <div class="rule-list">
@@ -746,14 +788,9 @@ onMounted(load)
   min-height: 0;
   overflow-y: auto;
   padding: 22px 24px 32px;
-  scrollbar-width: thin;
-  scrollbar-color: color-mix(in oklab, var(--sb-muted) 35%, transparent) transparent;
+  scrollbar-width: none;
 }
-.notify-scroll::-webkit-scrollbar { width: 6px; }
-.notify-scroll::-webkit-scrollbar-thumb {
-  background: color-mix(in oklab, var(--sb-muted) 30%, transparent);
-  border-radius: 4px;
-}
+.notify-scroll::-webkit-scrollbar { display: none; }
 .notify-section + .notify-section { margin-top: 24px; }
 .notify-section__head { margin-bottom: 10px; }
 .notify-section__head h3 {
@@ -783,6 +820,8 @@ onMounted(load)
 }
 .notify-field { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
 .notify-field--full { grid-column: 1 / -1; }
+.notify-field--switch { flex-direction: row; flex-wrap: wrap; align-items: center; gap: 8px 14px; }
+.notify-field--switch .notify-field__hint { flex-basis: 100%; }
 .notify-field__label { color: var(--sb-text-2); font-size: 12px; font-weight: 600; }
 .notify-field__label em { color: var(--sb-danger); font-style: normal; }
 .notify-field__hint { color: var(--sb-muted); font-size: 11px; line-height: 1.55; }
@@ -844,10 +883,9 @@ onMounted(load)
   min-height: 0;
   overflow-y: auto;
   padding: 20px 24px 32px;
-  scrollbar-width: thin;
+  scrollbar-width: none;
 }
-.tools-scroll::-webkit-scrollbar { width: 6px; }
-.tools-scroll::-webkit-scrollbar-thumb { background: color-mix(in oklab, var(--sb-muted) 30%, transparent); border-radius: 4px; }
+.tools-scroll::-webkit-scrollbar { display: none; }
 
 .reality-form { padding: 18px 20px; }
 .reality-result-panel {

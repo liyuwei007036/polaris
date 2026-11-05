@@ -59,12 +59,11 @@ type LiveFirewall struct {
 	Tool            string             `json:"tool,omitempty"`
 	Manager         string             `json:"manager,omitempty"`
 	DefaultIncoming string             `json:"default_incoming,omitempty"`
-	PortRules         []PortRule         `json:"port_rules"`
-	Rules             []LiveFirewallRule `json:"-"`
-	Truncated         bool               `json:"truncated,omitempty"`
-	Error             string             `json:"error,omitempty"`
+	PortRules       []PortRule         `json:"port_rules"`
+	Rules           []LiveFirewallRule `json:"-"`
+	Truncated       bool               `json:"truncated,omitempty"`
+	Error           string             `json:"error,omitempty"`
 }
-
 
 // FirewallMutation is one change to the host's rules. An addition carries the
 // rule to write; a deletion carries the location of the rule to remove, which
@@ -80,6 +79,12 @@ type FirewallMutation struct {
 // rules reach it through chains and sets whose shape is theirs, and only they
 // know the zones and service names behind it.
 func CollectLiveFirewall(ctx context.Context) LiveFirewall {
+	// A running ufw or firewalld answers the whole question itself. Listing the
+	// kernel ruleset first was wasted work on those hosts, and with Fail2Ban
+	// that listing can be thousands of ban rules long.
+	if live, ok := collectManagedFirewall(ctx); ok {
+		return live
+	}
 	var live LiveFirewall
 	switch {
 	case commandExists("nft"):
@@ -89,7 +94,7 @@ func CollectLiveFirewall(ctx context.Context) LiveFirewall {
 	default:
 		live = LiveFirewall{Rules: []LiveFirewallRule{}, Error: "服务器上没有安装 nftables 或 iptables，无法读取防火墙规则"}
 	}
-	describeHostFirewall(ctx, &live)
+	describeRawFirewall(&live)
 	// Always a list, even when reading the host failed. An answer that omits it
 	// is an answer from an agent too old to know about port rules, and the
 	// master tells that apart from a host that genuinely has none.

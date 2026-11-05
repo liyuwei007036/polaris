@@ -36,6 +36,10 @@ const alertSettings = reactive({
   bark_sound: 'minuet.caf',
   bark_group: 'Polaris',
   bark_url: '',
+  telegram_enabled: false,
+  telegram_server: 'https://api.telegram.org',
+  telegram_bot_token: '',
+  telegram_chat_id: '',
   traffic_alert_enabled: true,
   traffic_threshold_mbps: 50,
   traffic_duration_sec: 10,
@@ -43,19 +47,18 @@ const alertSettings = reactive({
   conn_threshold_count: 200,
   single_ip_alert_enabled: true,
   single_ip_threshold_count: 60,
-  gfw_alert_enabled: true,
   offline_alert_enabled: true,
   cooldown_minutes: 15,
-  auto_probe_gfw_enabled: true,
-  probe_gfw_interval_minutes: 30,
-  auto_probe_speedtest_enabled: true,
-  probe_speedtest_interval_hours: 6,
-  probe_skip_when_busy: true,
-  probe_notify_always: true,
   scan_alert_enabled: false,
 })
 const alertSaving = ref(false)
 const testSending = ref(false)
+const telegramReady = computed(() => Boolean(
+  alertSettings.telegram_enabled
+  && alertSettings.telegram_bot_token.trim()
+  && alertSettings.telegram_chat_id.trim(),
+))
+const notifierReady = computed(() => Boolean(alertSettings.bark_device_key.trim()) || telegramReady.value)
 
 const soundOptions = [
   { value: 'minuet.caf', label: 'minuet (清脆小步舞曲 - 推荐)', desc: '轻快清爽，推荐日常使用' },
@@ -122,20 +125,23 @@ async function saveAlertSettings() {
 }
 
 async function sendTestAlert() {
-  if (!alertSettings.bark_device_key.trim()) {
-    return ElMessage.warning('请先填写 Bark Device Key')
+  if (!notifierReady.value) {
+    return ElMessage.warning('请先填写 Bark Device Key，或启用并配置 Telegram')
   }
   testSending.value = true
   try {
     await put('/alerts/settings', alertSettings).catch(() => {})
-    await post('/alerts/test', {
+    const res = await post('/alerts/test', {
       server: alertSettings.bark_server,
       device_key: alertSettings.bark_device_key,
       sound: alertSettings.bark_sound,
       group: alertSettings.bark_group,
       url: alertSettings.bark_url,
+      telegram_server: alertSettings.telegram_server,
+      telegram_bot_token: alertSettings.telegram_bot_token,
+      telegram_chat_id: alertSettings.telegram_chat_id,
     })
-    ElMessage.success('测试通知已发出')
+    ElMessage.success(res?.message || '测试通知已发出')
   } catch (error) {
     ElMessage.error(error instanceof Error ? error.message : '发送测试通知失败')
   } finally {
@@ -271,7 +277,7 @@ onBeforeUnmount(() => {
           <el-switch v-model="alertSettings.offline_alert_enabled" active-text="离线警报" />
         </div>
         <div class="m-card__note">
-          通过 iOS 原生 APNs 推送实时通知。严格遵循 iPhone 物理静音开关，仅在非静音模式出声。
+          以简洁的 iOS 系统通知推送关键信息，按告警类型自动分组，并严格遵循 iPhone 物理静音开关。
         </div>
 
         <div class="m-field" style="margin-top: 14px">
@@ -304,6 +310,34 @@ onBeforeUnmount(() => {
         <div class="m-card-actions">
           <el-button :loading="testSending" @click="sendTestAlert">测试推送</el-button>
           <el-button type="primary" :loading="alertSaving" @click="saveAlertSettings">保存配置</el-button>
+        </div>
+      </section>
+
+      <!-- Telegram 推送配置 -->
+      <section class="m-card">
+        <div class="m-card__top">
+          <span class="m-card__title">Telegram 消息推送</span>
+          <el-switch v-model="alertSettings.telegram_enabled" />
+        </div>
+        <div class="m-card__note">
+          通过 Telegram 机器人发送富文本告警，包含字段化详情与处理建议，可与 Bark 同时启用。
+        </div>
+
+        <div class="m-field" style="margin-top: 14px">
+          <label class="m-field__label">Bot API 地址</label>
+          <el-input v-model="alertSettings.telegram_server" placeholder="https://api.telegram.org" clearable />
+          <div class="m-field__hint">使用官方服务保持默认；自建 Bot API 或反向代理时填写完整地址。</div>
+        </div>
+
+        <div class="m-field">
+          <label class="m-field__label">Bot Token <em>*</em></label>
+          <el-input v-model="alertSettings.telegram_bot_token" show-password placeholder="由 @BotFather 生成的 Token" clearable />
+        </div>
+
+        <div class="m-field">
+          <label class="m-field__label">Chat ID <em>*</em></label>
+          <el-input v-model="alertSettings.telegram_chat_id" placeholder="例如 123456789 或 -1001234567890" clearable />
+          <div class="m-field__hint">私聊为数字 ID，群组通常以 -100 开头；公开频道也可填 @频道名。</div>
         </div>
       </section>
 

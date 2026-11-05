@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"strings"
@@ -12,6 +13,27 @@ import (
 )
 
 var cloudflareAPI = "https://api.cloudflare.com/client/v4"
+
+// errCloudflareRecordNotFound marks a lookup made against a zone that does not
+// own the record. A caller searching several zones keeps going on this error
+// and stops on anything else.
+var errCloudflareRecordNotFound = errors.New("cloudflare record not found")
+
+// cloudflareAPIError keeps the upstream status alongside the message so a
+// caller can tell "wrong zone" apart from "token rejected".
+type cloudflareAPIError struct {
+	statusCode int
+	message    string
+}
+
+func (e *cloudflareAPIError) Error() string { return e.message }
+
+func (e *cloudflareAPIError) Unwrap() error {
+	if e.statusCode == http.StatusNotFound {
+		return errCloudflareRecordNotFound
+	}
+	return nil
+}
 
 type CloudflareRecord struct {
 	ID      string `json:"id,omitempty"`
@@ -140,13 +162,17 @@ func (c *CloudflareClient) request(ctx context.Context, method, path string, inp
 		return err
 	}
 	if err := json.Unmarshal(content, &envelope); err != nil {
+		if response.StatusCode == http.StatusNotFound {
+			return &cloudflareAPIError{statusCode: response.StatusCode, message: fmt.Sprintf("Cloudflare 接口返回 HTTP %d", response.StatusCode)}
+		}
 		return userErrorf("Cloudflare 接口返回了无法解析的内容（HTTP %d）", response.StatusCode)
 	}
 	if response.StatusCode < 200 || response.StatusCode >= 300 || !envelope.Success {
+		message := fmt.Sprintf("Cloudflare 接口返回 HTTP %d", response.StatusCode)
 		if len(envelope.Errors) > 0 {
-			return userErrorf("Cloudflare 接口返回错误：%s", envelope.Errors[0].Message)
+			message = "Cloudflare 接口返回错误：" + envelope.Errors[0].Message
 		}
-		return userErrorf("Cloudflare 接口返回 HTTP %d", response.StatusCode)
+		return &cloudflareAPIError{statusCode: response.StatusCode, message: message}
 	}
 	if output != nil {
 		return json.Unmarshal(content, output)

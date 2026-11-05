@@ -104,11 +104,11 @@ onMounted(load)
       </section>
 
       <section v-else class="admin-card neu admin-form-card">
-        <div class="admin-card__head"><div><h3>{{ section === 'settings' ? '站点设置' : `${meta.title}设置` }}</h3><p class="subtle">表单布局与 ref 管理台保持分区卡片结构。</p></div><el-button v-if="canWrite" type="primary" :icon="Check" :loading="saving" @click="save">保存</el-button></div>
+        <div class="admin-card__head"><div><h3>{{ section === 'settings' ? '站点设置' : `${meta.title}设置` }}</h3><p class="subtle">表单布局与 ref 管理台保持分区卡片结构。</p></div><el-button v-if="canWrite && section !== 'notify'" type="primary" :icon="Check" :loading="saving" @click="save">保存</el-button></div>
         <el-form label-position="top" class="admin-form">
-          <el-form-item label="启用配置"><el-switch v-model="settings.enabled" :disabled="!canWrite" /></el-form-item>
-          <el-form-item label="说明"><el-input v-model="settings.description" :disabled="!canWrite" placeholder="请输入说明" /></el-form-item>
-          <el-form-item v-if="section === 'notify'" label="通知地址"><el-input v-model="settings.notify_webhook" :disabled="!canWrite" placeholder="Webhook URL" /></el-form-item>
+          <el-alert v-if="section === 'notify'" title="通知渠道和告警规则已统一到「系统设置 → 通知设置」页面配置。" type="info" show-icon :closable="false" />
+          <el-form-item v-if="section !== 'notify'" label="启用配置"><el-switch v-model="settings.enabled" :disabled="!canWrite" /></el-form-item>
+          <el-form-item v-if="section !== 'notify'" label="说明"><el-input v-model="settings.description" :disabled="!canWrite" placeholder="请输入说明" /></el-form-item>
           <el-form-item v-if="section === 'security'" label="登录保护"><el-switch v-model="settings.totp_required" :disabled="!canWrite" /></el-form-item>
           <el-form-item v-if="section === 'settings'" label="历史数据保留天数"><el-input-number v-model="settings.history_days" :min="1" :max="3650" :disabled="!canWrite" /></el-form-item>
         </el-form>

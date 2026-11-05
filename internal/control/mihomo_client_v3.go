@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"net/url"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -1179,6 +1180,77 @@ func (s *Store) mihomoClientConfigIDsReferencingEndpoint(ctx context.Context, en
 		}
 	}
 	return configIDs, rows.Err()
+}
+
+// MihomoClientConfigNamesUsingEndpoint returns the subscription names that
+// reference an endpoint, including references through nested proxy groups.
+func (s *Store) MihomoClientConfigNamesUsingEndpoint(ctx context.Context, endpointID string) ([]string, error) {
+	ids, err := s.mihomoClientConfigIDsReferencingEndpoint(ctx, endpointID)
+	if err != nil {
+		return nil, err
+	}
+	names := make([]string, 0, len(ids))
+	for id := range ids {
+		config, err := s.mihomoClientConfigByID(ctx, id)
+		if errors.Is(err, ErrNotFound) {
+			continue
+		}
+		if err != nil {
+			return nil, err
+		}
+		names = append(names, config.Name)
+	}
+	sort.Strings(names)
+	return names, nil
+}
+
+// MihomoClientConfigNamesUsingListener returns the subscription names that
+// reference any endpoint belonging to a listener.
+func (s *Store) MihomoClientConfigNamesUsingListener(ctx context.Context, listenerID string) ([]string, error) {
+	endpoints, err := s.ListEndpoints(ctx, listenerID)
+	if err != nil {
+		return nil, err
+	}
+	names := map[string]struct{}{}
+	for _, endpoint := range endpoints {
+		affected, err := s.MihomoClientConfigNamesUsingEndpoint(ctx, endpoint.ID)
+		if err != nil {
+			return nil, err
+		}
+		for _, name := range affected {
+			names[name] = struct{}{}
+		}
+	}
+	result := make([]string, 0, len(names))
+	for name := range names {
+		result = append(result, name)
+	}
+	sort.Strings(result)
+	return result, nil
+}
+
+// MihomoClientConfigNamesUsingProxyGroup returns the subscription names whose
+// resolved proxy-group tree contains the given group.
+func (s *Store) MihomoClientConfigNamesUsingProxyGroup(ctx context.Context, groupID string) ([]string, error) {
+	configs, err := s.ListMihomoClientConfigs(ctx)
+	if err != nil {
+		return nil, err
+	}
+	names := []string{}
+	for _, config := range configs {
+		groups, err := s.resolveMihomoProxyGroups(ctx, config.ProxyGroupIDs)
+		if err != nil {
+			continue
+		}
+		for _, group := range groups {
+			if group.ID == groupID {
+				names = append(names, config.Name)
+				break
+			}
+		}
+	}
+	sort.Strings(names)
+	return names, nil
 }
 
 // The subscription is a plain Mihomo YAML document, so it is built from

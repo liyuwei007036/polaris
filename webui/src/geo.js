@@ -15,6 +15,12 @@ export function placeOf(code) {
   return point ? project(point[0], point[1]) : null
 }
 
+// 国家中心点（纬度/经度），用于 IP 定位只到国家级别时的兜底打点。
+export function countryCoords(code) {
+  const point = COUNTRY_POINTS[(code || "").trim().toUpperCase()]
+  return point ? { lat: point[0], lon: point[1] } : null
+}
+
 export const LAND_POSITIONS = (() => {
   const rows = LAND.length
   const cols = LAND[0]?.length ?? 0

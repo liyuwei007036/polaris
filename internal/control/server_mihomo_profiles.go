@@ -46,6 +46,12 @@ func (s *Server) createMihomoProxyGroup(w http.ResponseWriter, r *http.Request) 
 	writeJSON(w, http.StatusCreated, created)
 }
 
+func (s *Server) notifySubscriptionConfigChanged(resource, action, name, detail string, affected []string) {
+	if s.alertEngine != nil {
+		s.alertEngine.NotifySubscriptionConfigChanged(resource, action, name, detail, affected)
+	}
+}
+
 func (s *Server) updateMihomoProxyGroup(w http.ResponseWriter, r *http.Request) {
 	operator, err := s.writer(r)
 	if err != nil {
@@ -66,6 +72,8 @@ func (s *Server) updateMihomoProxyGroup(w http.ResponseWriter, r *http.Request) 
 		writeError(w, err)
 		return
 	}
+	affected, _ := s.store.MihomoClientConfigNamesUsingProxyGroup(r.Context(), updated.ID)
+	s.notifySubscriptionConfigChanged("代理分组", "修改", updated.Name, "代理分组的名称、策略或成员发生变化", affected)
 	writeJSON(w, http.StatusOK, updated)
 }
 
@@ -280,6 +288,8 @@ func (s *Server) updateMihomoRuleProvider(w http.ResponseWriter, r *http.Request
 		writeError(w, err)
 		return
 	}
+	affected, _ := s.store.mihomoClientConfigNamesUsingRuleProvider(r.Context(), updated.ID)
+	s.notifySubscriptionConfigChanged("规则供应商", "修改", updated.Name, "规则供应商的名称、行为、格式、下载地址或更新间隔发生变化", affected)
 	writeJSON(w, http.StatusOK, updated)
 }
 
@@ -321,6 +331,7 @@ func (s *Server) updateMihomoClientConfig(w http.ResponseWriter, r *http.Request
 		writeError(w, err)
 		return
 	}
+	s.notifySubscriptionConfigChanged("客户端订阅", "修改", updated.Name, "订阅的名称、代理分组、规则、DNS 或访问限制发生变化", []string{updated.Name})
 	writeJSON(w, http.StatusOK, updated)
 }
 
@@ -331,6 +342,11 @@ func (s *Server) deleteMihomoClientConfig(w http.ResponseWriter, r *http.Request
 		return
 	}
 	id := r.PathValue("id")
+	config, err := s.store.mihomoClientConfigByID(r.Context(), id)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
 	if err := s.store.DeleteMihomoClientConfig(r.Context(), id); err != nil {
 		writeError(w, err)
 		return
@@ -339,6 +355,7 @@ func (s *Server) deleteMihomoClientConfig(w http.ResponseWriter, r *http.Request
 		writeError(w, err)
 		return
 	}
+	s.notifySubscriptionConfigChanged("客户端订阅", "删除", config.Name, "该客户端订阅已被删除，原订阅链接将失效", []string{config.Name})
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -355,15 +372,23 @@ func (s *Server) setMihomoClientConfigEnabled(w http.ResponseWriter, r *http.Req
 		return
 	}
 	id := r.PathValue("id")
+	config, err := s.store.mihomoClientConfigByID(r.Context(), id)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
 	if err := s.store.SetMihomoClientConfigEnabled(r.Context(), id, input.Enabled); err != nil {
 		writeError(w, err)
 		return
 	}
 	action := "disabled"
+	actionLabel := "停用"
 	if input.Enabled {
 		action = "enabled"
+		actionLabel = "启用"
 	}
 	_ = s.store.AppendAudit(r.Context(), operator.ID, "mihomo.client_config."+action, "mihomo_client_config", id, "Mihomo client config "+action)
+	s.notifySubscriptionConfigChanged("客户端订阅", actionLabel, config.Name, "客户端订阅的启用状态发生变化", []string{config.Name})
 	writeJSON(w, http.StatusOK, map[string]bool{"enabled": input.Enabled})
 }
 
@@ -373,12 +398,19 @@ func (s *Server) rotateMihomoClientSubscription(w http.ResponseWriter, r *http.R
 		writeError(w, err)
 		return
 	}
-	path, err := s.store.RotateMihomoClientSubscription(r.Context(), r.PathValue("id"))
+	id := r.PathValue("id")
+	config, err := s.store.mihomoClientConfigByID(r.Context(), id)
 	if err != nil {
 		writeError(w, err)
 		return
 	}
-	_ = s.store.AppendAudit(r.Context(), operator.ID, "mihomo.subscription_rotated", "mihomo_client_config", r.PathValue("id"), "Mihomo subscription link regenerated; token omitted")
+	path, err := s.store.RotateMihomoClientSubscription(r.Context(), id)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	_ = s.store.AppendAudit(r.Context(), operator.ID, "mihomo.subscription_rotated", "mihomo_client_config", id, "Mihomo subscription link regenerated; token omitted")
+	s.notifySubscriptionConfigChanged("客户端订阅", "更换订阅", config.Name, "订阅链接已重新生成，旧链接将失效", []string{config.Name})
 	writeJSON(w, http.StatusOK, map[string]string{"subscription_path": path})
 }
 

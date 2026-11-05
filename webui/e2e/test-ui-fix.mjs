@@ -67,18 +67,6 @@ async function main() {
       await page.waitForTimeout(500)
     }
 
-    const configBtn = page.getByRole('button', { name: '网络测速配置' })
-    if (await configBtn.count()) {
-      await configBtn.click()
-      await page.waitForTimeout(800)
-    }
-    await page.screenshot({ path: `${ARTIFACTS_DIR}/fixed-probe-manager-light.png` })
-    console.log('Saved fixed-probe-manager-light.png')
-
-    // Close config dialog
-    await page.keyboard.press('Escape')
-    await page.waitForTimeout(500)
-
     // Now test Dark Mode
     await page.evaluate(() => {
       document.documentElement.classList.remove('light')

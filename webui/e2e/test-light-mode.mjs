@@ -55,14 +55,6 @@ async function run() {
     await snap('light-node-detail-top', null, 500)
   }
 
-  // Speedtest dialog in light mode
-  await page.goto('http://127.0.0.1:19670/#/nodes', { waitUntil: 'domcontentloaded' })
-  await page.waitForTimeout(800)
-  await page.locator('button:has-text("测速配置")').first().click()
-  await page.waitForTimeout(600)
-  await snap('light-dialog-speedtest', null, 500)
-  await page.locator('.el-dialog__headerbtn, button:has-text("关闭")').first().click()
-
   // Add server dialog in light mode
   await page.locator('button:has-text("添加服务器")').first().click()
   await page.waitForTimeout(600)

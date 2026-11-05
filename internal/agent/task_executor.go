@@ -15,7 +15,11 @@ var taskIDPattern = regexp.MustCompile(`^[a-f0-9]{32}$`)
 
 type taskExecutor struct {
 	options TaskOptions
-	mu      sync.Mutex
+	// mu serializes tasks that change the host. Reading tasks take it shared,
+	// so the several questions one screen asks can be answered at the same
+	// time instead of queueing behind each other.
+	mu      sync.RWMutex
+	execute func(context.Context, Task, TaskOptions) TaskResult
 }
 
 type completedTask struct {
@@ -26,12 +30,66 @@ type completedTask struct {
 }
 
 func newTaskExecutor(options TaskOptions) *taskExecutor {
-	return &taskExecutor{options: options}
+	return &taskExecutor{options: options, execute: executeTask}
+}
+
+// readOnlyTask reports whether a task only reads host state or measures the
+// network. These tasks have no side effects, so several of them can run at
+// once; a mutation still waits for every running read to finish and then holds
+// the host alone. A long probe must not make the security screen queue behind
+// it for its whole timeout.
+func readOnlyTask(kind string) bool {
+	switch kind {
+	case "firewall.query", "fail2ban.query", "outbound.test",
+		"network.probe", "probe.network", "probe.tcp":
+		return true
+	default:
+		return false
+	}
+}
+
+// ephemeralTask reports whether a read's result is worth writing down. The
+// security screen's questions carry a fresh ID every time, so their record is
+// never read again; storing it only left one file per page view behind.
+func ephemeralTask(kind string) bool {
+	switch kind {
+	case "firewall.query", "fail2ban.query":
+		return true
+	default:
+		return false
+	}
 }
 
 func (e *taskExecutor) Handle(ctx context.Context, task Task) TaskResult {
 	if e.options.DataDir == "" || !taskIDPattern.MatchString(task.ID) {
 		return TaskResult{Status: "failed", Summary: "task ID is invalid"}
+	}
+	execute := e.execute
+	if execute == nil {
+		execute = executeTask
+	}
+	// A read is not recorded as a completed task when nothing will ever ask
+	// for that ID again. Its ID is new on every page load, so nothing is served
+	// from that record — it only left one file per query behind forever.
+	// Keeping those reads out of the record also lets them take the shared lock
+	// and run together.
+	if readOnlyTask(task.Kind) {
+		e.mu.RLock()
+		defer e.mu.RUnlock()
+		if ephemeralTask(task.Kind) {
+			return execute(ctx, task, e.options)
+		}
+		result, found, err := e.completed(task)
+		if err != nil {
+			return TaskResult{Status: "failed", Summary: "read completed task result: " + err.Error()}
+		}
+		if !found {
+			result = execute(ctx, task, e.options)
+			if err := e.saveCompleted(task, result); err != nil {
+				return TaskResult{Status: "failed", Summary: "persist task result: " + err.Error()}
+			}
+		}
+		return result
 	}
 	e.mu.Lock()
 	defer e.mu.Unlock()
@@ -40,7 +98,7 @@ func (e *taskExecutor) Handle(ctx context.Context, task Task) TaskResult {
 		return TaskResult{Status: "failed", Summary: "read completed task result: " + err.Error()}
 	}
 	if !found {
-		result = executeTask(ctx, task, e.options)
+		result = execute(ctx, task, e.options)
 	}
 	// The recorded desired-state hash must be refreshed even when the task
 	// itself was already applied earlier: it is what the master compares

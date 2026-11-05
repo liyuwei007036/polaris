@@ -2,6 +2,7 @@ package control_test
 
 import (
 	"crypto/sha256"
+	"database/sql"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
@@ -79,6 +80,40 @@ func TestNetworkProtectionReportsUnreachableServers(t *testing.T) {
 		if result.Nodes[0].Available || result.Nodes[0].Error == "" {
 			t.Fatalf("an offline server was reported as answering for %s: %#v", path, result.Nodes[0])
 		}
+	}
+
+	// The security screen reads all three lists in one request. It must answer
+	// even when every node is offline, naming the node and why it is blank.
+	overviewResponse := request(t, http.MethodGet, httpServer.URL+"/api/v1/security/overview", nil, session, csrfToken)
+	if overviewResponse.StatusCode != http.StatusOK {
+		t.Fatalf("read security overview: got %d", overviewResponse.StatusCode)
+	}
+	var overview struct {
+		Firewall struct {
+			Nodes []struct {
+				NodeID string `json:"node_id"`
+				Error  string `json:"error"`
+			} `json:"nodes"`
+		} `json:"firewall"`
+		Fail2Ban struct {
+			Nodes []struct {
+				NodeID string `json:"node_id"`
+				Error  string `json:"error"`
+			} `json:"nodes"`
+		} `json:"fail2ban"`
+		Banned []struct {
+			NodeID string `json:"node_id"`
+		} `json:"banned"`
+	}
+	decodeBody(t, overviewResponse, &overview)
+	if len(overview.Firewall.Nodes) != 1 || overview.Firewall.Nodes[0].Error == "" {
+		t.Fatalf("security overview lost the offline firewall answer: %#v", overview.Firewall.Nodes)
+	}
+	if len(overview.Fail2Ban.Nodes) != 1 || overview.Fail2Ban.Nodes[0].Error == "" {
+		t.Fatalf("security overview lost the offline Fail2Ban answer: %#v", overview.Fail2Ban.Nodes)
+	}
+	if len(overview.Banned) != 0 {
+		t.Fatalf("an offline server reported bans it cannot know about: %#v", overview.Banned)
 	}
 
 	// A change to an unreachable server changes nothing, so it must be refused
@@ -530,9 +565,9 @@ func TestRealityHTTPUpgradeGRPCAndHysteria2SharePublicPort443(t *testing.T) {
 		t.Fatal(err)
 	}
 	wantNames := map[string]string{
-		reality.ID:   "reality-target.example.com",
+		reality.ID:             "reality-target.example.com",
 		httpupgradeListener.ID: "httpupgrade.example.com",
-		grpc.ID:      "grpc.example.com",
+		grpc.ID:                "grpc.example.com",
 	}
 	for id, want := range wantNames {
 		if names["listener-"+id] != want {
@@ -666,18 +701,42 @@ type fakeCloudflare struct {
 	denied  bool
 	records map[string]control.CloudflareRecord
 	next    int
+	// zoneNames lets a test give each zone ID its own domain. Empty means the
+	// single-zone default of example.com.
+	zoneNames map[string]string
+	// recordZone maps a record back to the zone that owns it. When set, calls
+	// against another zone behave like Cloudflare's own 404.
+	recordZone map[string]string
+}
+
+func (f *fakeCloudflare) zoneName(zoneID string) string {
+	if f.zoneNames != nil && f.zoneNames[zoneID] != "" {
+		return f.zoneNames[zoneID]
+	}
+	return "example.com"
+}
+
+func (f *fakeCloudflare) ownsRecord(zoneID, recordID string) bool {
+	return f.recordZone == nil || f.recordZone[recordID] == zoneID
 }
 
 func (f *fakeCloudflare) handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /zones/{zone}", func(w http.ResponseWriter, r *http.Request) {
-		writeCF(w, control.CloudflareZoneInfo{ID: r.PathValue("zone"), Name: "example.com", Status: "active"})
+		zoneID := r.PathValue("zone")
+		f.mu.Lock()
+		name := f.zoneName(zoneID)
+		f.mu.Unlock()
+		writeCF(w, control.CloudflareZoneInfo{ID: zoneID, Name: name, Status: "active"})
 	})
 	mux.HandleFunc("GET /zones/{zone}/dns_records", func(w http.ResponseWriter, r *http.Request) {
 		f.mu.Lock()
 		defer f.mu.Unlock()
 		list := []control.CloudflareRecord{}
-		for _, record := range f.records {
+		for id, record := range f.records {
+			if !f.ownsRecord(r.PathValue("zone"), id) {
+				continue
+			}
 			list = append(list, record)
 		}
 		writeCF(w, list)
@@ -686,7 +745,7 @@ func (f *fakeCloudflare) handler() http.Handler {
 		f.mu.Lock()
 		defer f.mu.Unlock()
 		record, ok := f.records[r.PathValue("id")]
-		if !ok {
+		if !ok || !f.ownsRecord(r.PathValue("zone"), r.PathValue("id")) {
 			w.WriteHeader(http.StatusNotFound)
 			_, _ = w.Write([]byte(`{"success":false,"errors":[{"message":"record not found"}]}`))
 			return
@@ -701,6 +760,9 @@ func (f *fakeCloudflare) handler() http.Handler {
 		f.next++
 		record.ID = "remote-" + hex.EncodeToString([]byte{byte(f.next)})
 		f.records[record.ID] = record
+		if f.recordZone != nil {
+			f.recordZone[record.ID] = r.PathValue("zone")
+		}
 		writeCF(w, record)
 	})
 	// PATCH keeps whatever the console set and polaris does not manage, which is
@@ -711,7 +773,7 @@ func (f *fakeCloudflare) handler() http.Handler {
 		f.mu.Lock()
 		defer f.mu.Unlock()
 		record, ok := f.records[r.PathValue("id")]
-		if !ok {
+		if !ok || !f.ownsRecord(r.PathValue("zone"), r.PathValue("id")) {
 			w.WriteHeader(http.StatusNotFound)
 			_, _ = w.Write([]byte(`{"success":false,"errors":[{"message":"record not found"}]}`))
 			return
@@ -727,7 +789,15 @@ func (f *fakeCloudflare) handler() http.Handler {
 	mux.HandleFunc("DELETE /zones/{zone}/dns_records/{id}", func(w http.ResponseWriter, r *http.Request) {
 		f.mu.Lock()
 		defer f.mu.Unlock()
+		if !f.ownsRecord(r.PathValue("zone"), r.PathValue("id")) {
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = w.Write([]byte(`{"success":false,"errors":[{"message":"record not found"}]}`))
+			return
+		}
 		delete(f.records, r.PathValue("id"))
+		if f.recordZone != nil {
+			delete(f.recordZone, r.PathValue("id"))
+		}
 		writeCF(w, map[string]string{"id": r.PathValue("id")})
 	})
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -1092,5 +1162,188 @@ func TestCloudflareSettingsReportVerifiedConnectionOnly(t *testing.T) {
 	decodeBody(t, response, &settings)
 	if !settings.Configured || settings.Connected || !strings.Contains(settings.Error, "Invalid API Token") {
 		t.Fatalf("revoked token still reported as connected: %#v", settings)
+	}
+}
+
+// Several zones can be managed at once, each with its own token, and a record
+// always lands in the zone that owns its name. Removing one zone leaves the
+// others alone.
+func TestCloudflareManagesMultipleZones(t *testing.T) {
+	fake := &fakeCloudflare{
+		records:    map[string]control.CloudflareRecord{},
+		zoneNames:  map[string]string{"zone-example": "example.com", "zone-example-net": "example.net"},
+		recordZone: map[string]string{},
+	}
+	fakeServer := httptest.NewServer(fake.handler())
+	defer fakeServer.Close()
+	control.SetCloudflareAPIBaseForTest(fakeServer.URL)
+
+	store, err := control.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	secret, err := store.CreateInitialAdmin(t.Context(), "admin@example.com", "correct horse battery staple")
+	if err != nil {
+		t.Fatal(err)
+	}
+	server, err := control.NewServer(store, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	httpServer := httptest.NewServer(server.Handler())
+	defer httpServer.Close()
+	session, csrfToken := login(t, httpServer.URL, secret)
+	settingsURL := httpServer.URL + "/api/v1/cloudflare/settings"
+
+	for _, zone := range []struct {
+		id   string
+		name string
+	}{
+		{"zone-example", "example.com"},
+		{"zone-example-net", "example.net"},
+	} {
+		response := request(t, http.MethodPut, settingsURL, map[string]string{
+			"zone_id": zone.id, "zone_name": zone.name, "api_token": "test-token-1234567890",
+		}, session, csrfToken)
+		if response.StatusCode != http.StatusNoContent {
+			t.Fatalf("add zone %s: got %d", zone.name, response.StatusCode)
+		}
+	}
+
+	var settings control.CloudflareSettingsView
+	response := request(t, http.MethodGet, settingsURL, nil, session, csrfToken)
+	decodeBody(t, response, &settings)
+	if !settings.Configured || !settings.Connected || len(settings.Zones) != 2 {
+		t.Fatalf("both zones should be connected: %#v", settings)
+	}
+	if settings.Zones[0].ZoneName != "example.com" || settings.Zones[1].ZoneName != "example.net" {
+		t.Fatalf("zones not listed by name: %#v", settings.Zones)
+	}
+
+	comRecord, err := store.CreateCloudflareRecord(t.Context(), control.CloudflareRecord{
+		Name: "cdn.example.com", Type: "A", Content: "192.0.2.10", TTL: 300,
+	})
+	if err != nil {
+		t.Fatalf("create record in first zone: %v", err)
+	}
+	netRecord, err := store.CreateCloudflareRecord(t.Context(), control.CloudflareRecord{
+		Name: "cdn.example.net", Type: "A", Content: "192.0.2.11", TTL: 300,
+	})
+	if err != nil {
+		t.Fatalf("create record in second zone: %v", err)
+	}
+	if comRecord.ZoneName != "example.com" || netRecord.ZoneName != "example.net" {
+		t.Fatalf("records landed in the wrong zones: %#v %#v", comRecord, netRecord)
+	}
+	if _, err := store.CreateCloudflareRecord(t.Context(), control.CloudflareRecord{
+		Name: "cdn.other.org", Type: "A", Content: "192.0.2.12", TTL: 300,
+	}); err == nil {
+		t.Fatal("accepted a record outside every configured zone")
+	}
+
+	var listed struct {
+		Records    []control.CloudflareRecordView  `json:"records"`
+		ZoneErrors []control.CloudflareZoneFailure `json:"zone_errors"`
+	}
+	response = request(t, http.MethodGet, httpServer.URL+"/api/v1/cloudflare/records", nil, session, csrfToken)
+	decodeBody(t, response, &listed)
+	if len(listed.Records) != 2 || len(listed.ZoneErrors) != 0 {
+		t.Fatalf("expected records from both zones: %#v %#v", listed.Records, listed.ZoneErrors)
+	}
+	zonesByName := map[string]string{}
+	for _, record := range listed.Records {
+		zonesByName[record.Name] = record.ZoneName
+	}
+	if zonesByName["cdn.example.com"] != "example.com" || zonesByName["cdn.example.net"] != "example.net" {
+		t.Fatalf("records not annotated with their zone: %#v", zonesByName)
+	}
+
+	// Editing and deleting use the record's own zone, not the first one.
+	netRecord.Content = "198.51.100.9"
+	updated, err := store.UpdateCloudflareRecord(t.Context(), netRecord.CloudflareRecord)
+	if err != nil {
+		t.Fatalf("update record in second zone: %v", err)
+	}
+	if updated.ZoneName != "example.net" || updated.Content != "198.51.100.9" {
+		t.Fatalf("updated the wrong record: %#v", updated)
+	}
+	if _, err := store.DeleteCloudflareRecord(t.Context(), comRecord.ID); err != nil {
+		t.Fatalf("delete record in first zone: %v", err)
+	}
+	fake.mu.Lock()
+	_, comExists := fake.records[comRecord.ID]
+	netUpstream := fake.records[netRecord.ID]
+	fake.mu.Unlock()
+	if comExists || netUpstream.Content != "198.51.100.9" {
+		t.Fatalf("zone-scoped update/delete went astray: exists=%v net=%#v", comExists, netUpstream)
+	}
+
+	response = request(t, http.MethodDelete, settingsURL+"/zone-example-net", nil, session, csrfToken)
+	if response.StatusCode != http.StatusNoContent {
+		t.Fatalf("remove second zone: got %d", response.StatusCode)
+	}
+	response = request(t, http.MethodGet, settingsURL, nil, session, csrfToken)
+	decodeBody(t, response, &settings)
+	if len(settings.Zones) != 1 || settings.Zones[0].ZoneName != "example.com" {
+		t.Fatalf("removing one zone changed another: %#v", settings.Zones)
+	}
+}
+
+// An installation that predates multi-zone support keeps its single zone: the
+// old table is copied once and then removed so a deleted zone cannot return.
+func TestCloudflareLegacySettingsMigrateToZones(t *testing.T) {
+	dir := t.TempDir()
+	databasePath := filepath.Join(dir, "polaris.db")
+	legacy, err := sql.Open("sqlite", databasePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := legacy.Exec(`CREATE TABLE cloudflare_settings (
+		id INTEGER PRIMARY KEY CHECK (id = 1), zone_id TEXT NOT NULL, zone_name TEXT NOT NULL,
+		api_token BLOB NOT NULL, updated_at INTEGER NOT NULL);
+		INSERT INTO cloudflare_settings (id, zone_id, zone_name, api_token, updated_at)
+		VALUES (1, 'zone-legacy', 'example.com', X'00', 1700000000);`); err != nil {
+		legacy.Close()
+		t.Fatal(err)
+	}
+	if err := legacy.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	store, err := control.Open(dir)
+	if err != nil {
+		t.Fatalf("open legacy database: %v", err)
+	}
+	view, err := store.CloudflareSettings(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !view.Configured || len(view.Zones) != 1 || view.Zones[0].ZoneName != "example.com" {
+		t.Fatalf("legacy zone was not migrated: %#v", view)
+	}
+	// The placeholder token cannot be decrypted, which is reported per zone
+	// rather than making the whole settings read fail.
+	if view.Zones[0].Error == "" {
+		t.Fatalf("undecryptable legacy token should be reported: %#v", view.Zones[0])
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	check, err := sql.Open("sqlite", databasePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer check.Close()
+	var legacyTables, migratedZones int
+	if err := check.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'cloudflare_settings'`).Scan(&legacyTables); err != nil {
+		t.Fatal(err)
+	}
+	if err := check.QueryRow(`SELECT COUNT(*) FROM cloudflare_zones`).Scan(&migratedZones); err != nil {
+		t.Fatal(err)
+	}
+	if legacyTables != 0 || migratedZones != 1 {
+		t.Fatalf("legacy table not replaced cleanly: legacy=%d zones=%d", legacyTables, migratedZones)
 	}
 }

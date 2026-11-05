@@ -72,10 +72,10 @@ var demoNodes = []demoNodeDef{
 		CPUName:        "AMD EPYC 7763 64-Core Processor",
 		CPUCores:       4,
 		BaseCPU:        14.5,
-		MemTotal:       8589934592, // 8 GB
-		MemUsed:        2791728742, // ~32.5%
-		SwapTotal:      2147483648, // 2 GB
-		SwapUsed:       104857600,  // 100 MB
+		MemTotal:       8589934592,   // 8 GB
+		MemUsed:        2791728742,   // ~32.5%
+		SwapTotal:      2147483648,   // 2 GB
+		SwapUsed:       104857600,    // 100 MB
 		DiskTotal:      107374182400, // 100 GB
 		DiskUsed:       23622320128,  // 22 GB
 		BaseRxRate:     14500000,     // 14.5 MB/s
@@ -89,7 +89,7 @@ var demoNodes = []demoNodeDef{
 		TelecomSpeed:   850.5,
 		UnicomRoute:    "联通 4837 直连",
 		UnicomLatency:  42,
-		UnicomSpeed:   720.0,
+		UnicomSpeed:    720.0,
 		MobileRoute:    "移动 CMI 直连",
 		MobileLatency:  38,
 		MobileSpeed:    680.0,
@@ -129,7 +129,7 @@ var demoNodes = []demoNodeDef{
 		TelecomSpeed:   580.0,
 		UnicomRoute:    "联通 169 骨干网",
 		UnicomLatency:  48,
-		UnicomSpeed:   620.0,
+		UnicomSpeed:    620.0,
 		MobileRoute:    "移动 CMI",
 		MobileLatency:  42,
 		MobileSpeed:    540.0,
@@ -169,7 +169,7 @@ var demoNodes = []demoNodeDef{
 		TelecomSpeed:   920.0,
 		UnicomRoute:    "联通 9929 优质网",
 		UnicomLatency:  18,
-		UnicomSpeed:   880.0,
+		UnicomSpeed:    880.0,
 		MobileRoute:    "移动 CMI 直连",
 		MobileLatency:  16,
 		MobileSpeed:    860.0,
@@ -209,7 +209,7 @@ var demoNodes = []demoNodeDef{
 		TelecomSpeed:   760.0,
 		UnicomRoute:    "联通 AS9929 优质网",
 		UnicomLatency:  135,
-		UnicomSpeed:   710.0,
+		UnicomSpeed:    710.0,
 		MobileRoute:    "移动 CMI 转 NTT",
 		MobileLatency:  142,
 		MobileSpeed:    650.0,
@@ -249,7 +249,7 @@ var demoNodes = []demoNodeDef{
 		TelecomSpeed:   450.0,
 		UnicomRoute:    "联通 4837 骨干网",
 		UnicomLatency:  175,
-		UnicomSpeed:   510.0,
+		UnicomSpeed:    510.0,
 		MobileRoute:    "移动普通国际线路",
 		MobileLatency:  188,
 		MobileSpeed:    420.0,
@@ -272,9 +272,9 @@ var demoNodes = []demoNodeDef{
 		CPUName:        "AMD Ryzen 5 3600 6-Core",
 		CPUCores:       12,
 		BaseCPU:        28.4,
-		MemTotal:       68719476736,  // 64 GB
-		MemUsed:        22011703623,  // 32%
-		SwapTotal:      34359738368,  // 32 GB
+		MemTotal:       68719476736, // 64 GB
+		MemUsed:        22011703623, // 32%
+		SwapTotal:      34359738368, // 32 GB
 		SwapUsed:       0,
 		DiskTotal:      536870912000, // 500 GB
 		DiskUsed:       161061273600, // 150 GB
@@ -289,7 +289,7 @@ var demoNodes = []demoNodeDef{
 		TelecomSpeed:   790.0,
 		UnicomRoute:    "联通 9929 德法骨干",
 		UnicomLatency:  140,
-		UnicomSpeed:   820.0,
+		UnicomSpeed:    820.0,
 		MobileRoute:    "移动 CMI 欧洲节点",
 		MobileLatency:  148,
 		MobileSpeed:    710.0,
@@ -329,7 +329,7 @@ var demoNodes = []demoNodeDef{
 		TelecomSpeed:   810.0,
 		UnicomRoute:    "联通 9929 新加坡节点",
 		UnicomLatency:  56,
-		UnicomSpeed:   760.0,
+		UnicomSpeed:    760.0,
 		MobileRoute:    "移动 CMI 直连",
 		MobileLatency:  51,
 		MobileSpeed:    840.0,
@@ -352,9 +352,9 @@ var demoNodes = []demoNodeDef{
 		CPUName:        "Intel Xeon E5-2687W v3",
 		CPUCores:       2,
 		BaseCPU:        9.8,
-		MemTotal:       4294967296,  // 4 GB
-		MemUsed:        858993459,   // 20%
-		SwapTotal:      1073741824,  // 1 GB
+		MemTotal:       4294967296, // 4 GB
+		MemUsed:        858993459,  // 20%
+		SwapTotal:      1073741824, // 1 GB
 		SwapUsed:       0,
 		DiskTotal:      42949672960, // 40 GB
 		DiskUsed:       6442450944,  // 6 GB
@@ -369,7 +369,7 @@ var demoNodes = []demoNodeDef{
 		TelecomSpeed:   580.0,
 		UnicomRoute:    "联通 4837 直连",
 		UnicomLatency:  168,
-		UnicomSpeed:   540.0,
+		UnicomSpeed:    540.0,
 		MobileRoute:    "移动 CMI 伦敦机房",
 		MobileLatency:  172,
 		MobileSpeed:    490.0,
@@ -443,7 +443,7 @@ func (s *Server) EnsureDemoNodes(ctx context.Context) error {
 			id, name, public_key, client_address, agent_version, os, os_name, architecture, sing_box_version,
 			capabilities, last_seen_at, ddns_enabled, ddns_domain, ddns_domains, last_observed_ip, ip_addresses, ip_aliases,
 			expires_on, price, price_period, currency, provider, provider_url, traffic_plan, bandwidth, created_at
-		) VALUES (?, ?, ?, ?, '1.2.0', ?, ?, ?, '1.10.0', '基础代理,TCP/UDP探测,Speedtest', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		) VALUES (?, ?, ?, ?, '1.2.0', ?, ?, ?, '1.10.0', '基础代理,TCP/UDP探测', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			d.ID, d.Name, pubKey, clientAddr, d.OS, d.OS, d.Arch, now, ddnsEnabled, ddnsDomain, ddnsDomains, d.IP,
 			string(ipAddressesJSON), string(aliasesJSON), d.ExpiresOn, d.Price, d.PricePeriod,
 			d.Currency, d.Provider, d.ProviderURL, d.TrafficPlan, d.Bandwidth, now-86400*30,
@@ -548,10 +548,10 @@ func (s *Server) EnsureDemoNodes(ctx context.Context) error {
 			Latency:      &latencyReport,
 			CurrentMonth: time.Now().UTC().Format("2006-01"),
 			Proxy: map[string]uint64{
-				"received_bytes":         uint64(rand.Int63n(800000000000) + 200000000000), // 200GB - 1TB
+				"received_bytes":         uint64(rand.Int63n(800000000000) + 200000000000),  // 200GB - 1TB
 				"sent_bytes":             uint64(rand.Int63n(3000000000000) + 800000000000), // 800GB - 3.8TB
-				"monthly_received_bytes": uint64(rand.Int63n(30000000000) + 3000000000),   // 3GB - 33GB
-				"monthly_sent_bytes":     uint64(rand.Int63n(90000000000) + 10000000000),  // 10GB - 100GB
+				"monthly_received_bytes": uint64(rand.Int63n(30000000000) + 3000000000),     // 3GB - 33GB
+				"monthly_sent_bytes":     uint64(rand.Int63n(90000000000) + 10000000000),    // 10GB - 100GB
 			},
 			Health: &storedHealth{
 				Status:            "healthy",
@@ -569,23 +569,7 @@ func (s *Server) EnsureDemoNodes(ctx context.Context) error {
 			return fmt.Errorf("insert node_metrics for %s: %w", d.ID, err)
 		}
 
-		// 4. Insert Speedtest result
-		_, err = s.store.db.ExecContext(ctx, `INSERT OR REPLACE INTO node_speedtests (
-			id, node_id, telecom_latency_ms, telecom_speed_mbps, telecom_route,
-			unicom_latency_ms, unicom_speed_mbps, unicom_route,
-			mobile_latency_ms, mobile_speed_mbps, mobile_route,
-			gfw_blocked, gfw_status, domestic_latency_ms, domestic_source, tested_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 'normal', ?, '上海电信', ?)`,
-			"st-"+d.ID, d.ID, d.TelecomLatency, d.TelecomSpeed, d.TelecomRoute,
-			d.UnicomLatency, d.UnicomSpeed, d.UnicomRoute,
-			d.MobileLatency, d.MobileSpeed, d.MobileRoute,
-			d.TelecomLatency, now-3600*2,
-		)
-		if err != nil {
-			return fmt.Errorf("insert speedtest for %s: %w", d.ID, err)
-		}
-
-		// 5. Seed historical metric points for resource charts & ping history
+		// 4. Seed historical metric points for resource charts & ping history
 		for i := 0; i < 24; i++ {
 			pointTS := now - int64(23-i)*hourSec
 			cpuVal := d.BaseCPU + (rand.Float64()-0.5)*3.0
@@ -639,7 +623,7 @@ func (s *Server) EnsureDemoNodes(ctx context.Context) error {
 		}
 	}
 
-	log.Printf("[polaris] 8 个演示服务器及其 24 小时延迟热力图、网速、测速数据初始化完成！")
+	log.Printf("[polaris] 8 个演示服务器及其 24 小时延迟热力图与网速数据初始化完成！")
 	_ = s.EnsureDemoFleetData(ctx)
 	return nil
 }
@@ -1035,7 +1019,7 @@ func (s *Server) EnsureDemoFleetData(ctx context.Context) error {
 	if auditCount == 0 {
 		demoAudit := []struct {
 			action, targetType, targetID, summary string
-			offsetSec                            int64
+			offsetSec                             int64
 		}{
 			{"node.created", "node", "demo-node-tyo-01", "添加服务器 🇯🇵 东京 Softbank 01 并完成双向安全加密隧道握手", 180000},
 			{"node.created", "node", "demo-node-hk-01", "添加服务器 🇭🇰 香港 CN2+BGP 01 并完成双向安全加密隧道握手", 172000},
@@ -1045,7 +1029,6 @@ func (s *Server) EnsureDemoFleetData(ctx context.Context) error {
 			{"rule_provider.synced", "mihomo_rule_provider", "rp-cn-domain", "从官方上游同步规则供应商 [Geosite-CN] 成功 (共 4,820 条规则)", 64000},
 			{"proxy_group.created", "mihomo_proxy_group", "pg-select", "创建代理分组 [🚀 节点选择] (手动选择策略)", 48000},
 			{"client_config.published", "mihomo_client_config", "cfg-general", "编译并发布客户端订阅配置 [全平台通用标准配置]", 36000},
-			{"speedtest.completed", "node", "demo-node-tyo-01", "完成三网线路测速：电信 35ms / 联通 42ms / 移动 38ms", 18000},
 			{"outbound.created", "outbound", "ob-cf-warp-v4", "配置全局上网出口 [Cloudflare WARP (IPv4 官方出口)] 162.159.192.1:2408", 7200},
 			{"task.completed.succeeded", "task", "task-apply-01", "应用最新节点防火墙与端口转发配置成功", 3600},
 			{"alert.settings_updated", "alert_settings", "alerts", "更新 Telegram Bot & Webhook 告警推送策略与阈值", 1200},

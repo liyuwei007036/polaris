@@ -11,6 +11,159 @@ import (
 	"time"
 )
 
+func TestFormatAlertTimeIncludesZone(t *testing.T) {
+	got := FormatAlertTime(time.Date(2026, 11, 5, 12, 0, 0, 0, time.UTC))
+	if !strings.Contains(got, "2026-11-05") {
+		t.Errorf("expected formatted date, got %s", got)
+	}
+	if !strings.Contains(got, "UTC") {
+		t.Errorf("expected UTC offset in formatted time, got %s", got)
+	}
+}
+
+func TestFail2BanBlocksAreBatched(t *testing.T) {
+	ctx := context.Background()
+	var (
+		mu       sync.Mutex
+		received []BarkMessage
+	)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var msg BarkMessage
+		if err := json.NewDecoder(r.Body).Decode(&msg); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		mu.Lock()
+		received = append(received, msg)
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{"code": 200, "message": "success"})
+	}))
+	defer server.Close()
+
+	store, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+
+	_, err = store.UpdateAlertSettings(ctx, AlertSettings{
+		BarkServer:      server.URL,
+		BarkDeviceKey:   "test_device_key",
+		CooldownMinutes: 1,
+	})
+	if err != nil {
+		t.Fatalf("update alert settings: %v", err)
+	}
+
+	engine := NewAlertEngine(store, nil)
+	engine.fail2banWait = 50 * time.Millisecond
+	engine.NotifyFail2BanBlock("node-1", "Tokyo-01", "1.1.1.1", "sshd")
+	engine.NotifyFail2BanBlock("node-1", "Tokyo-01", "2.2.2.2", "sshd")
+	engine.NotifyFail2BanBlock("node-1", "Tokyo-01", "3.3.3.3", "sshd")
+
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		mu.Lock()
+		count := len(received)
+		mu.Unlock()
+		if count > 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("timed out waiting for batched fail2ban notification")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(received) != 1 {
+		t.Fatalf("expected one merged notification, got %d", len(received))
+	}
+	if !strings.Contains(received[0].Title, "已拦截 3 个") {
+		t.Errorf("expected merged title with count, got %s", received[0].Title)
+	}
+	for _, ip := range []string{"1.1.1.1", "2.2.2.2", "3.3.3.3"} {
+		if !strings.Contains(received[0].Body, ip) {
+			t.Errorf("expected merged body to contain %s, got %s", ip, received[0].Body)
+		}
+	}
+}
+
+func TestSubscriptionConfigChangeNotification(t *testing.T) {
+	ctx := context.Background()
+	var (
+		mu       sync.Mutex
+		received []BarkMessage
+	)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var msg BarkMessage
+		if err := json.NewDecoder(r.Body).Decode(&msg); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		mu.Lock()
+		received = append(received, msg)
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{"code": 200, "message": "success"})
+	}))
+	defer server.Close()
+
+	store, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+	if _, err := store.UpdateAlertSettings(ctx, AlertSettings{
+		BarkServer:      server.URL,
+		BarkDeviceKey:   "test_device_key",
+		CooldownMinutes: 1,
+	}); err != nil {
+		t.Fatalf("update alert settings: %v", err)
+	}
+
+	engine := NewAlertEngine(store, nil)
+	engine.NotifySubscriptionConfigChanged("代理分组", "修改", "Group-A", "成员发生变化", nil)
+	time.Sleep(100 * time.Millisecond)
+	mu.Lock()
+	if len(received) != 0 {
+		t.Errorf("expected no notification without affected clients, got %d", len(received))
+	}
+	mu.Unlock()
+
+	engine.NotifySubscriptionConfigChanged("代理分组", "修改", "Group-A", "成员发生变化", []string{"Client-B", "Client-A"})
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		mu.Lock()
+		count := len(received)
+		mu.Unlock()
+		if count > 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("timed out waiting for subscription change notification")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(received) != 1 {
+		t.Fatalf("expected one notification, got %d", len(received))
+	}
+	if !strings.Contains(received[0].Title, "订阅配置已更新") {
+		t.Errorf("unexpected title: %s", received[0].Title)
+	}
+	if !strings.Contains(received[0].Body, "Client-A") || !strings.Contains(received[0].Body, "Client-B") {
+		t.Errorf("expected affected clients in body, got: %s", received[0].Body)
+	}
+	if !strings.Contains(received[0].Body, "2 个") {
+		t.Errorf("expected affected client count in body, got: %s", received[0].Body)
+	}
+}
+
 func TestBarkClientAndAlertEngine(t *testing.T) {
 	ctx := context.Background()
 
@@ -39,22 +192,20 @@ func TestBarkClientAndAlertEngine(t *testing.T) {
 	defer store.Close()
 
 	_, err = store.UpdateAlertSettings(ctx, AlertSettings{
-		BarkServer:                server.URL,
-		BarkDeviceKey:             "test_device_key",
-		BarkSound:                 "minuet",
-		BarkGroup:                 "Polaris",
-		TrafficAlertEnabled:       true,
-		TrafficThresholdMbps:      10.0, // 10 Mbps
-		TrafficDurationSec:        0,    // immediate for testing
-		ConnAlertEnabled:          true,
-		ConnThresholdCount:        5,    // 5 connections
-		SingleIPAlertEnabled:      true,
-		SingleIPThresholdCount:    3,    // 3 from single IP
-		GFWAlertEnabled:           true,
-		OfflineAlertEnabled:       true,
-		CooldownMinutes:           1,
-		ProbeNotifyAlways:         true,
-		ScanAlertEnabled:          true,
+		BarkServer:             server.URL,
+		BarkDeviceKey:          "test_device_key",
+		BarkSound:              "minuet",
+		BarkGroup:              "Polaris",
+		TrafficAlertEnabled:    true,
+		TrafficThresholdMbps:   10.0, // 10 Mbps
+		TrafficDurationSec:     0,    // immediate for testing
+		ConnAlertEnabled:       true,
+		ConnThresholdCount:     5, // 5 connections
+		SingleIPAlertEnabled:   true,
+		SingleIPThresholdCount: 3, // 3 from single IP
+		OfflineAlertEnabled:    true,
+		CooldownMinutes:        1,
+		ScanAlertEnabled:       true,
 	})
 	if err != nil {
 		t.Fatalf("update alert settings: %v", err)
@@ -85,13 +236,7 @@ func TestBarkClientAndAlertEngine(t *testing.T) {
 		t.Fatalf("expected at least 3 alerts (traffic, conn count, single IP), got %d", count)
 	}
 
-	// 4. Test Probe Summary (GFW check result)
-	engine.NotifyProbeSummary([]ProbeResultItem{
-		{NodeID: "node-1", NodeName: "Tokyo-01", OverseasOK: true, DomesticOK: false}, // Blocked!
-		{NodeID: "node-2", NodeName: "HK-01", OverseasOK: true, DomesticOK: true, LatencyMs: 35},
-	})
-
-	// 5. Test Subscription Pull Success & Failure
+	// 4. Test Subscription Pull Success & Failure
 	engine.NotifySubscriptionPullSuccess("常用主力节点", "120.24.56.78", "Clash-Verge/v1.7.7")
 	engine.NotifySubscriptionPullFailed("abcdef123456", "凭据无效", "222.186.42.11", "curl/7.88.1")
 
@@ -125,36 +270,30 @@ func TestBarkClientAndAlertEngine(t *testing.T) {
 	time.Sleep(200 * time.Millisecond)
 
 	mu.Lock()
-	var gfwAlertFound, subOkFound, subFailFound, loginFailFound, scanFound bool
+	var subOkFound, subFailFound, loginFailFound, scanFound bool
 	for _, m := range receivedMessages {
 		if m.Level != "active" {
 			t.Errorf("expected alert level to be 'active' (strictly obeys iOS silent switch), got '%s' for: %s", m.Level, m.Title)
 		}
-		if m.Title == "🚨 [Polaris] 发现节点被阻断" {
-			gfwAlertFound = true
-			if m.Sound != "alarm.caf" {
-				t.Errorf("expected GFW alert sound to be 'alarm.caf', got '%s'", m.Sound)
-			}
-		}
-		if m.Title == "📥 [Polaris] 订阅下载成功" {
+		if strings.Contains(m.Title, "订阅下载成功") {
 			subOkFound = true
 			if m.Sound != "glass.caf" {
 				t.Errorf("expected sub success sound to be 'glass.caf', got '%s'", m.Sound)
 			}
 		}
-		if m.Title == "❌ [Polaris] 订阅下载失败" {
+		if strings.Contains(m.Title, "订阅下载失败") {
 			subFailFound = true
 			if m.Sound != "horn.caf" {
 				t.Errorf("expected sub fail sound to be 'horn.caf', got '%s'", m.Sound)
 			}
 		}
-		if m.Title == "⚠️ [Polaris] 控制台登录失败" {
+		if strings.Contains(m.Title, "登录失败") {
 			loginFailFound = true
 			if m.Sound != "horn.caf" {
 				t.Errorf("expected login fail sound to be 'horn.caf', got '%s'", m.Sound)
 			}
 		}
-		if m.Title == "🚨 [Polaris] 检测到异常网络扫描" {
+		if strings.Contains(m.Title, "异常扫描") {
 			if strings.Contains(m.Body, "203.0.113.50") {
 				t.Errorf("false positive: normal web browsing IP 203.0.113.50 was flagged as scan!")
 			}
@@ -168,9 +307,6 @@ func TestBarkClientAndAlertEngine(t *testing.T) {
 	}
 	mu.Unlock()
 
-	if !gfwAlertFound {
-		t.Errorf("expected critical GFW blocked alert to be sent")
-	}
 	if !subOkFound {
 		t.Errorf("expected subscription pull success alert")
 	}

@@ -21,7 +21,7 @@ const settingsOpen = ref(false)
 const recordOpen = ref(false)
 const certificateOpen = ref(false)
 const config = reactive({ zone_id: '', zone_name: '', api_token: '' })
-const record = reactive({ id: '', type: 'A', name: '', content: '', ttl: 1, proxied: false })
+const record = reactive({ id: '', type: 'A', name: '', content: '', ttl: 1, proxied: false, zone_name: '' })
 const saving = ref(false)
 const remoteError = ref('')
 // An origin certificate is matched to an access service by its connection
@@ -33,10 +33,23 @@ const selectedType = ref('')
 const selectedNode = ref('')
 
 const nodeAddresses = computed(() => appState.nodes.filter((node) => node.client_address))
+// One console can manage several Cloudflare zones. Each has its own token, so
+// each reports its own connection state.
+const zones = computed(() => settings.value.zones || [])
+const connectedLabel = computed(() => {
+  if (!settings.value.connected) return settings.value.configured ? '连接异常' : '未连接 Cloudflare'
+  const names = zones.value.length
+    ? zones.value.filter((zone) => zone.connected).map((zone) => zone.zone_name)
+    : [settings.value.zone_name || settings.value.zone_id]
+  return `已连接 ${names.filter(Boolean).join('、')}`
+})
+const recordsAvailable = computed(() => zones.value.length
+  ? zones.value.some((zone) => zone.connected)
+  : Boolean(settings.value.connected))
 const filteredRecords = computed(() => records.value.filter((row) => {
   if (selectedType.value && row.type !== selectedType.value) return false
   if (selectedNode.value && !(row.bindings || []).some((binding) => binding.node_name === selectedNode.value)) return false
-  return includesText([row.name, row.content, row.type, boundTo(row)], keyword.value)
+  return includesText([row.name, row.content, row.type, row.zone_name, boundTo(row)], keyword.value)
 }))
 const filteredCertificates = computed(() => certificates.value.filter((row) =>
   includesText([row.domain, row.subject, row.issuer, (row.dns_names || []).join(' ')], keyword.value)))
@@ -71,14 +84,17 @@ async function load() {
       api('/listeners'),
     ])
     remoteError.value = settingsResult.error || ''
-    let recordResult = { records: [] }
-    if (settingsResult.connected) {
-      // A failure here means the zone could not be read at all; hiding it
+    let recordResult = { records: [], zone_errors: [] }
+    if (settingsResult.configured) {
+      // A failure here means some zone could not be read at all; hiding it
       // behind an empty table is what made this page look broken.
       recordResult = await api('/cloudflare/records').catch((error) => {
         remoteError.value = error instanceof Error ? error.message : '读取 Cloudflare 域名记录失败'
-        return { records: [] }
+        return { records: [], zone_errors: [] }
       })
+      if (!remoteError.value && (recordResult.zone_errors || []).length) {
+        remoteError.value = recordResult.zone_errors.map((zone) => `${zone.zone_name}：${zone.error}`).join('；')
+      }
     }
     settings.value = settingsResult
     records.value = recordResult.records || []
@@ -87,17 +103,41 @@ async function load() {
   } finally { loading.value = false }
 }
 
-function openSettings() { Object.assign(config, { zone_id: settings.value.zone_id || '', zone_name: settings.value.zone_name || '', api_token: '' }); settingsOpen.value = true }
+function openSettings() {
+  const first = zones.value[0]
+  Object.assign(config, {
+    zone_id: first?.zone_id || settings.value.zone_id || '',
+    zone_name: first?.zone_name || settings.value.zone_name || '',
+    api_token: '',
+  })
+  settingsOpen.value = true
+}
+function newZone() {
+  Object.assign(config, { zone_id: '', zone_name: '', api_token: '' })
+}
+function editZone(zone) {
+  Object.assign(config, { zone_id: zone.zone_id, zone_name: zone.zone_name, api_token: '' })
+}
+async function removeZone(zone) {
+  await ElMessageBox.confirm(`停止管理区域 ${zone.zone_name}？该区域下的 DNS 记录不会被删除。`, '删除区域', { type: 'warning' })
+  try {
+    await del(`/cloudflare/settings/${encodeURIComponent(zone.zone_id)}`)
+    ElMessage.success('区域已移除')
+    await load()
+  } catch (error) {
+    ElMessage.error(error instanceof Error ? error.message : '移除区域失败')
+  }
+}
 // Saving verifies the zone and token upstream, so a rejection has to reach the
 // operator with its reason instead of closing the dialog as if it worked.
 async function saveSettings() {
-  if (!config.zone_id || !config.api_token) {
-    ElMessage.warning('请填写区域编号（Zone ID）与访问令牌（API Token）')
+  if (!config.zone_id || !config.zone_name || !config.api_token) {
+    ElMessage.warning('请填写区域编号（Zone ID）、域名与访问令牌（API Token）')
     return
   }
   try {
     await put('/cloudflare/settings', config)
-    settingsOpen.value = false
+    config.api_token = ''
     ElMessage.success('域名服务连接设置已保存')
     await load()
   } catch (error) {
@@ -105,12 +145,12 @@ async function saveSettings() {
   }
 }
 function addRecord() {
-  if (!settings.value.connected && !settings.value.zone_id) {
+  if (!zones.value.length && !settings.value.zone_id) {
     ElMessage.warning('请先点击右上角「设置」配置 Cloudflare 区域与访问令牌')
     openSettings()
     return
   }
-  Object.assign(record, { id: '', type: 'A', name: '', content: '', ttl: 1, proxied: false })
+  Object.assign(record, { id: '', type: 'A', name: '', content: '', ttl: 1, proxied: false, zone_name: zones.value[0]?.zone_name || '' })
   recordOpen.value = true
 }
 
@@ -122,11 +162,20 @@ function editRecord(row) {
     content: row.content,
     ttl: row.ttl || 1,
     proxied: Boolean(row.proxied),
+    zone_name: row.zone_name || '',
   })
   recordOpen.value = true
 }
 
+// A bare label such as "proxy" becomes the full name under the chosen zone, so
+// nobody has to remember which suffix a record belongs to.
+function qualifyRecordName() {
+  const name = String(record.name || '').trim().replace(/\.$/, '').toLowerCase()
+  if (name && !name.includes('.') && record.zone_name) record.name = `${name}.${record.zone_name}`
+}
+
 async function saveRecord() {
+  qualifyRecordName()
   const body = { type: record.type, name: record.name, content: record.content, ttl: record.ttl, proxied: record.proxied }
   saving.value = true
   try {
@@ -200,11 +249,11 @@ onMounted(load)
     <PageHeader title="域名解析">
       <!-- 连接状态放在页头，不占用列表上方的位置。 -->
       <el-tag :type="settings.connected ? 'success' : settings.configured ? 'danger' : 'warning'" effect="plain">
-        {{ settings.connected ? `已连接 ${settings.zone_name || settings.zone_id}` : settings.configured ? '连接异常' : '未连接 Cloudflare' }}
+        {{ connectedLabel }}
       </el-tag>
       <el-button :icon="Refresh" @click="load">刷新</el-button>
       <el-button v-if="isAdmin && tab === 'records'" :icon="Setting" @click="openSettings">设置</el-button>
-      <el-button v-if="isAdmin && tab === 'records'" type="primary" :icon="Plus" @click="addRecord">新建</el-button>
+      <el-button v-if="isAdmin && tab === 'records'" type="primary" :icon="Plus" :disabled="!recordsAvailable" @click="addRecord">新建</el-button>
       <el-button v-if="isAdmin && tab === 'certificates'" type="primary" :icon="Plus" @click="addCertificate">新建</el-button>
     </PageHeader>
     <main class="page-content page-content--tight">
@@ -229,6 +278,7 @@ onMounted(load)
               <el-table-column label="类型" prop="type" width="88" />
               <el-table-column label="域名" prop="name" min-width="180" show-overflow-tooltip />
               <el-table-column label="指向地址或内容" prop="content" min-width="170" show-overflow-tooltip />
+              <el-table-column label="区域" prop="zone_name" min-width="150" show-overflow-tooltip />
               <el-table-column label="关联服务器 / 接入服务" min-width="200" show-overflow-tooltip>
                 <template #default="{ row }">
                   <span :class="{ subtle: !(row.bindings || []).length }">{{ boundTo(row) }}</span>
@@ -280,7 +330,23 @@ onMounted(load)
       </div>
     </main>
 
-    <el-dialog v-model="settingsOpen" title="连接 Cloudflare" width="560px">
+    <el-dialog v-model="settingsOpen" title="连接 Cloudflare" width="620px">
+      <div class="zone-list">
+        <div v-for="zone in zones" :key="zone.zone_id" class="zone-row">
+          <div class="zone-main">
+            <div class="zone-name">{{ zone.zone_name }}</div>
+            <div class="zone-meta">{{ zone.zone_id }} · {{ zone.token_masked || '—' }}</div>
+            <div v-if="zone.error" class="zone-error">{{ zone.error }}</div>
+          </div>
+          <el-tag :type="zone.connected ? 'success' : 'danger'" effect="plain">{{ zone.connected ? '已连接' : '连接异常' }}</el-tag>
+          <el-button v-if="isAdmin" link type="primary" @click="editZone(zone)">更新令牌</el-button>
+          <el-button v-if="isAdmin" link type="danger" @click="removeZone(zone)">删除</el-button>
+        </div>
+        <div v-if="!zones.length" class="form-hint">还没有绑定区域。填写区域编号、域名和访问令牌后点击「保存」。</div>
+        <div v-else class="zone-add"><el-button v-if="isAdmin" link type="primary" :icon="Plus" @click="newZone">添加新区域</el-button></div>
+      </div>
+      <el-divider />
+      <div class="form-hint" style="margin-bottom: 8px">同一个访问令牌可以授权多个区域；每个区域单独添加一次即可。</div>
       <el-form label-position="top">
         <el-form-item label="区域编号（Zone ID）"><el-input v-model="config.zone_id" /></el-form-item>
         <el-form-item label="域名"><el-input v-model="config.zone_name" placeholder="example.com" /></el-form-item>
@@ -296,8 +362,9 @@ onMounted(load)
       <el-form label-position="top">
         <el-row :gutter="16">
           <el-col :span="8"><el-form-item label="记录类型"><el-select v-model="record.type"><el-option v-for="type in ['A','AAAA','CNAME','TXT']" :key="type" :label="type" :value="type" /></el-select></el-form-item></el-col>
-          <el-col :span="16"><el-form-item label="域名"><el-input v-model="record.name" :placeholder="`proxy.${settings.zone_name || 'example.com'}`" /></el-form-item></el-col>
+          <el-col :span="16"><el-form-item label="所属区域"><el-select v-model="record.zone_name" placeholder="选择区域" style="width: 100%"><el-option v-for="zone in zones" :key="zone.zone_id" :label="zone.zone_name" :value="zone.zone_name" /></el-select></el-form-item></el-col>
         </el-row>
+        <el-form-item label="域名"><el-input v-model="record.name" :placeholder="`proxy.${record.zone_name || settings.zone_name || 'example.com'}`" /></el-form-item>
         <el-form-item label="指向地址或内容" required>
           <el-input v-model="record.content" />
           <!-- 关联关系由平台自动识别，这里只是省去手抄服务器地址。 -->
@@ -349,4 +416,11 @@ onMounted(load)
 .form-hint { margin-top: 6px; color: var(--sb-muted); font-size: 12px; line-height: 1.5; }
 .address-picks { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
 .address-pick { cursor: pointer; }
+.zone-list { display: flex; flex-direction: column; gap: 8px; }
+.zone-row { display: flex; align-items: center; gap: 8px; padding: 8px 10px; border: 1px solid var(--el-border-color-lighter); border-radius: 8px; }
+.zone-main { flex: 1; min-width: 0; }
+.zone-name { font-weight: 600; }
+.zone-meta { font-size: 12px; color: var(--sb-muted); word-break: break-all; }
+.zone-error { margin-top: 4px; font-size: 12px; color: var(--el-color-danger); }
+.zone-add { margin-top: 4px; }
 </style>

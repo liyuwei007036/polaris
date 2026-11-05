@@ -9,7 +9,6 @@ import {
   Edit,
   Grid,
   InfoFilled,
-  Loading,
   MoreFilled,
   Plus,
   Refresh,
@@ -439,12 +438,6 @@ function getDiskTooltip(node) {
   return `硬盘: ${formatBytes(host.disk_used)} / ${formatBytes(host.disk_total)} (${pct}%)`
 }
 
-function getGFWDetailTooltip(st) {
-  if (!st) return ''
-  const probe = st.domestic_source || '分布式多线探针'
-  return `探针来源: ${probe}\n诊断结果: 探针发起的 TCP SYN 握手均超时或被丢弃\n状态: 端口无响应或阻断，无法建立连接`
-}
-
 function getUsageStatusColor(percent) {
   if (percent >= 85) return 'var(--sb-danger)' // 红色警告
   if (percent >= 65) return 'var(--sb-warning)' // 琥珀黄中载
@@ -688,46 +681,10 @@ async function saveEdit() {
 // ── 线路与丢包排查状态 ────────────────────────────────────
 const probeDialog = ref(false)
 const probeNode = ref(null)
-const probeActiveTab = ref('client')
-const clientInfo = ref({ ip: '', is_ipv6: false, location: '', isp: '', asn: '' })
-const loadingClientInfo = ref(false)
-const clientTargetIP = ref('')
-const clientProbing = ref(false)
-const clientProbeResult = ref(null)
 
 const peerProbing = ref(false)
 const peerProbeResults = ref([])
 const peerProbingSingle = reactive({})
-
-const clientProbeStats = computed(() => {
-  const r = clientProbeResult.value
-  if (!r) return null
-  const isV6 = Boolean(r.ipv6_target)
-  const target = isV6 ? r.ipv6_target : r.ipv4_target
-  const latency = isV6 ? r.ipv6_latency_ms : r.ipv4_latency_ms
-  const minLatency = isV6 ? r.ipv6_min_latency_ms : r.ipv4_min_latency_ms
-  const maxLatency = isV6 ? r.ipv6_max_latency_ms : r.ipv4_max_latency_ms
-  const sent = isV6 ? r.ipv6_sent : r.ipv4_sent
-  const received = isV6 ? r.ipv6_received : r.ipv4_received
-  const lossPercent = isV6 ? r.ipv6_loss_percent : r.ipv4_loss_percent
-  const status = isV6 ? r.ipv6_status : r.ipv4_status
-  const method = (isV6 ? r.ipv6_method : r.ipv4_method) || 'ICMP'
-  const latencies = (isV6 ? r.ipv6_latencies : r.ipv4_latencies) || []
-  return {
-    isV6,
-    target,
-    latency,
-    minLatency,
-    maxLatency,
-    sent: sent || 4,
-    received: received || 0,
-    lossPercent: typeof lossPercent === 'number' ? lossPercent : (received > 0 ? 0 : 100),
-    status,
-    method: method.toUpperCase(),
-    latencies,
-    hasResponse: (received || 0) > 0,
-  }
-})
 
 const getNodePublicIPv4 = (node) => {
   if (!node) return ''
@@ -777,43 +734,10 @@ const getNodePublicIPv6 = (node) => {
   return ''
 }
 
-const openNetworkProbe = async (node) => {
+const openNetworkProbe = (node) => {
   probeNode.value = node
   probeDialog.value = true
-  probeActiveTab.value = 'client'
-  clientProbeResult.value = null
   peerProbeResults.value = []
-
-  loadingClientInfo.value = true
-  try {
-    const info = await api('/client-info')
-    clientInfo.value = info || {}
-    clientTargetIP.value = info?.ip || ''
-  } catch (err) {
-    clientInfo.value = { ip: '', location: '本地客户端' }
-    clientTargetIP.value = ''
-  } finally {
-    loadingClientInfo.value = false
-  }
-
-  runClientProbe()
-}
-
-const runClientProbe = async () => {
-  if (!probeNode.value) return
-  clientProbing.value = true
-  clientProbeResult.value = null
-  const target = (clientTargetIP.value || clientInfo.value.ip || '').trim()
-  try {
-    const res = await post(`/nodes/${probeNode.value.id}/probe-client`, {
-      client_ip: target
-    })
-    clientProbeResult.value = res
-  } catch (err) {
-    ElMessage.error(err.message || '链路探测失败')
-  } finally {
-    clientProbing.value = false
-  }
 }
 
 const runPeerProbes = async (targetNodeId = '') => {
@@ -1295,244 +1219,86 @@ onBeforeUnmount(() => {
         </div>
       </template>
 
-      <el-tabs v-model="probeActiveTab" class="probe-tabs">
-        <!-- 标签页 1: 客户端至该节点 -->
-        <el-tab-pane label="客户端至该节点" name="client">
-          <div class="probe-client-panel">
-            <!-- 链路概览条 -->
-            <div class="probe-route-card">
-              <div class="probe-route-endpoint is-source">
-                <span class="ep-badge">本地端</span>
-                <div class="ep-info">
-                  <div class="ep-title">{{ clientInfo.location || '本地客户端网络' }}</div>
-                  <div class="ep-ip font-mono">{{ clientTargetIP || clientInfo.ip || '获取中...' }} <span v-if="clientInfo.isp">({{ clientInfo.isp }})</span></div>
-                </div>
-              </div>
-              <div class="probe-route-connector">
-                <span class="connector-line"></span>
-                <span class="connector-label">端到端双向互联</span>
-                <span class="connector-line"></span>
-              </div>
-              <div class="probe-route-endpoint is-target">
-                <span class="ep-badge">服务器端</span>
-                <div class="ep-info">
-                  <div class="ep-title">{{ probeNode?.name }}</div>
-                  <div class="ep-ip font-mono">{{ getNodePublicIPv4(probeNode) || getNodePublicIPv6(probeNode) || probeNode?.city || '远程服务器' }}</div>
-                </div>
-              </div>
-            </div>
+      <div class="probe-mesh-panel">
+        <div class="mesh-topbar">
+          <span class="mesh-hint">从当前节点服务器探测至集群内其他各 VPS 节点的网络互联、丢包与延迟</span>
+          <el-button type="primary" size="small" :icon="Refresh" :loading="peerProbing" @click="runPeerProbes('')">
+            一键检测所有互联节点
+          </el-button>
+        </div>
 
-            <!-- 控制区 / 探测配置 -->
-            <div class="probe-control-bar">
-              <div class="probe-target-ip-wrap">
-                <span class="ctrl-label">目标客户端 IP:</span>
-                <el-input
-                  v-model="clientTargetIP"
-                  size="small"
-                  placeholder="请输入探测的目标客户端 IP"
-                  style="width: 220px"
-                  :disabled="clientProbing"
-                  @keyup.enter="runClientProbe"
-                />
-              </div>
+        <div v-if="peerProbeResults.length === 0 && !peerProbing" class="mesh-empty">
+          <span>暂无互联探测数据，点击上方按钮开始探测</span>
+        </div>
 
-              <div class="probe-proto-indicator">
-                <span class="ctrl-label">网络栈:</span>
-                <el-tag size="small" :type="clientTargetIP?.includes(':') ? 'warning' : 'success'">
-                  {{ clientTargetIP?.includes(':') ? 'IPv6 链路' : 'IPv4 链路' }}
-                </el-tag>
-              </div>
-
-              <el-button
-                type="primary"
-                size="small"
-                :icon="Refresh"
-                :loading="clientProbing"
-                @click="runClientProbe"
-              >
-                {{ clientProbing ? '正在高精度采样中...' : '重新检测链路' }}
-              </el-button>
-            </div>
-
-            <!-- 采样中动画骨架 -->
-            <div v-if="clientProbing" class="probe-loading-state">
-              <el-icon class="is-loading probe-spin-icon"><Loading /></el-icon>
-              <div class="loading-text">
-                正在由远程服务器对公网 IP「{{ clientTargetIP || clientInfo.ip }}」发送 4 轮高精度 ICMP / TCP 探测...
-              </div>
-            </div>
-
-            <!-- 探测结果卡片区 -->
-            <template v-else-if="clientProbeStats">
-              <!-- 场景一：正常收到回包 -->
-              <template v-if="clientProbeStats.hasResponse">
-                <div class="probe-stats-grid">
-                  <div class="probe-stat-box" :class="{ 'is-loss': clientProbeStats.lossPercent > 0 }">
-                    <div class="stat-num font-mono">{{ clientProbeStats.lossPercent }}%</div>
-                    <div class="stat-name">丢包率</div>
-                  </div>
-                  <div class="probe-stat-box">
-                    <div class="stat-num font-mono">
-                      {{ clientProbeStats.latency?.toFixed(1) }}<span class="unit">ms</span>
-                    </div>
-                    <div class="stat-name">往返延迟 (RTT)</div>
-                  </div>
-                  <div class="probe-stat-box">
-                    <div class="stat-num font-mono">
-                      {{ clientProbeStats.minLatency?.toFixed(0) }} ~ {{ clientProbeStats.maxLatency?.toFixed(0) }}<span class="unit">ms</span>
-                    </div>
-                    <div class="stat-name">极值波动 (Min ~ Max)</div>
-                  </div>
-                  <div class="probe-stat-box">
-                    <div class="stat-num font-mono" style="font-size: 15px; line-height: 28px;">
-                      {{ clientProbeStats.method }} · {{ clientProbeStats.received }}/{{ clientProbeStats.sent }} 包
-                    </div>
-                    <div class="stat-name">发包统计与协议</div>
-                  </div>
-                </div>
-
-                <!-- 采样脉冲明细 -->
-                <div class="probe-pulses-row" v-if="clientProbeStats.latencies?.length > 0">
-                  <span class="pulses-title">高频往返脉冲记录 ({{ clientProbeStats.latencies.length }}次采样):</span>
-                  <div class="pulses-list">
-                    <span
-                      v-for="(lat, idx) in clientProbeStats.latencies"
-                      :key="idx"
-                      class="pulse-pill is-ok"
-                    >
-                      <i class="pulse-dot" />
-                      #{{ idx + 1 }}: {{ lat.toFixed(1) }}ms
+        <div v-else class="mesh-table-wrap">
+          <table class="mesh-table">
+            <thead>
+              <tr>
+                <th>目标服务器</th>
+                <th>所在区域/线路</th>
+                <th>IPv4 互联丢包与延迟</th>
+                <th>IPv6 互联丢包与延迟</th>
+                <th style="text-align: right">操作</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-for="peer in peerProbeResults" :key="peer.target_node_id">
+                <td>
+                  <div class="peer-name font-mono">{{ peer.target_node_name }}</div>
+                </td>
+                <td>
+                  <div class="peer-loc">{{ peer.target_location }}</div>
+                </td>
+                <td>
+                  <div v-if="peer.ipv4_target" class="peer-probe-cell">
+                    <span class="cell-tag v4">IPv4</span>
+                    <span v-if="peer.ipv4_status === 'ok'" class="cell-val is-ok">
+                      <span class="cell-method">{{ peer.ipv4_method ? peer.ipv4_method.toUpperCase() : 'ICMP' }}</span>
+                      <b>{{ peer.ipv4_latency_ms.toFixed(1) }}ms</b> · 0% 丢包
+                      <small class="cell-details" v-if="peer.ipv4_sent">({{ peer.ipv4_received }}/{{ peer.ipv4_sent }}包<template v-if="peer.ipv4_min_latency">, {{ peer.ipv4_min_latency.toFixed(0) }}~{{ peer.ipv4_max_latency.toFixed(0) }}ms</template>)</small>
                     </span>
-                    <span
-                      v-for="lostIdx in (clientProbeStats.sent - clientProbeStats.received)"
-                      :key="'lost-' + lostIdx"
-                      class="pulse-pill is-fail"
-                    >
-                      <i class="pulse-dot" />
-                      #{{ clientProbeStats.received + lostIdx }}: 丢包超时
+                    <span v-else-if="peer.ipv4_status === 'loss'" class="cell-val is-loss">
+                      <span class="cell-method">{{ peer.ipv4_method ? peer.ipv4_method.toUpperCase() : 'ICMP' }}</span>
+                      <b>{{ peer.ipv4_latency_ms.toFixed(1) }}ms</b> · {{ peer.ipv4_loss }}% 丢包
+                      <small class="cell-details" v-if="peer.ipv4_sent">({{ peer.ipv4_received }}/{{ peer.ipv4_sent }}包)</small>
                     </span>
+                    <span v-else class="cell-val is-fail">不可达 / 超时 (4/4 丢包)</span>
                   </div>
-                </div>
-              </template>
-
-              <!-- 场景二：未收到回包（家庭宽带光猫/本地防火墙拦截） -->
-              <template v-else>
-                <div class="probe-stats-grid">
-                  <div class="probe-stat-box is-warning">
-                    <div class="stat-num font-mono" style="font-size: 16px; color: var(--sb-warning);">本地路由拦截</div>
-                    <div class="stat-name">链路状态</div>
+                  <div v-else class="cell-val is-dim">无 IPv4</div>
+                </td>
+                <td>
+                  <div v-if="peer.ipv6_target" class="peer-probe-cell">
+                    <span class="cell-tag v6">IPv6</span>
+                    <span v-if="peer.ipv6_status === 'ok'" class="cell-val is-ok">
+                      <span class="cell-method">{{ peer.ipv6_method ? peer.ipv6_method.toUpperCase() : 'ICMP' }}</span>
+                      <b>{{ peer.ipv6_latency_ms.toFixed(1) }}ms</b> · 0% 丢包
+                      <small class="cell-details" v-if="peer.ipv6_sent">({{ peer.ipv6_received }}/{{ peer.ipv6_sent }}包<template v-if="peer.ipv6_min_latency">, {{ peer.ipv6_min_latency.toFixed(0) }}~{{ peer.ipv6_max_latency.toFixed(0) }}ms</template>)</small>
+                    </span>
+                    <span v-else-if="peer.ipv6_status === 'loss'" class="cell-val is-loss">
+                      <span class="cell-method">{{ peer.ipv6_method ? peer.ipv6_method.toUpperCase() : 'ICMP' }}</span>
+                      <b>{{ peer.ipv6_latency_ms.toFixed(1) }}ms</b> · {{ peer.ipv6_loss }}% 丢包
+                      <small class="cell-details" v-if="peer.ipv6_sent">({{ peer.ipv6_received }}/{{ peer.ipv6_sent }}包)</small>
+                    </span>
+                    <span v-else class="cell-val is-fail">不可达 / 超时 (4/4 丢包)</span>
                   </div>
-                  <div class="probe-stat-box">
-                    <div class="stat-num font-mono">{{ clientProbeStats.sent }} 次已发出</div>
-                    <div class="stat-name">发包记录</div>
-                  </div>
-                  <div class="probe-stat-box">
-                    <div class="stat-num font-mono">0 次响应</div>
-                    <div class="stat-name">回包数量</div>
-                  </div>
-                  <div class="probe-stat-box">
-                    <div class="stat-num font-mono" style="font-size: 15px; line-height: 28px;">
-                      {{ clientProbeStats.method }} 探测
-                    </div>
-                    <div class="stat-name">探测协议</div>
-                  </div>
-                </div>
-
-                <div class="probe-firewall-notice">
-                  <div class="notice-title">说明：服务器未收到来自客户端公网 IP 的回包</div>
-                  <div class="notice-desc">
-                    服务器已向目标 IP「{{ clientTargetIP || clientInfo.ip }}」发送 4 轮探测，但未收到回应。多数家庭宽带光猫或本地路由器默认启用了外网防探测防火墙（禁止 WAN 口 ICMP Ping 及主动入站连接），导致探测包被本地网络设备丢弃。这是家用网络的正常安全保护机制。若需测试链路，可在上方输入已开放 Ping 响应的公网 IP。
-                  </div>
-                </div>
-              </template>
-            </template>
-          </div>
-        </el-tab-pane>
-
-        <!-- 标签页 2: 各节点间互联线路与丢包 -->
-        <el-tab-pane label="各节点间互联线路与丢包" name="mesh">
-          <div class="probe-mesh-panel">
-            <div class="mesh-topbar">
-              <span class="mesh-hint">从当前节点服务器探测至集群内其他各 VPS 节点的网络互联、丢包与延迟</span>
-              <el-button type="primary" size="small" :icon="Refresh" :loading="peerProbing" @click="runPeerProbes('')">
-                一键检测所有互联节点
-              </el-button>
-            </div>
-
-            <div v-if="peerProbeResults.length === 0 && !peerProbing" class="mesh-empty">
-              <span>暂无互联探测数据，点击上方按钮开始探测</span>
-            </div>
-
-            <div v-else class="mesh-table-wrap">
-              <table class="mesh-table">
-                <thead>
-                  <tr>
-                    <th>目标服务器</th>
-                    <th>所在区域/线路</th>
-                    <th>IPv4 互联丢包与延迟</th>
-                    <th>IPv6 互联丢包与延迟</th>
-                    <th style="text-align: right">操作</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  <tr v-for="peer in peerProbeResults" :key="peer.target_node_id">
-                    <td>
-                      <div class="peer-name font-mono">{{ peer.target_node_name }}</div>
-                    </td>
-                    <td>
-                      <div class="peer-loc">{{ peer.target_location }}</div>
-                    </td>
-                    <td>
-                      <div v-if="peer.ipv4_target" class="peer-probe-cell">
-                        <span class="cell-tag v4">IPv4</span>
-                        <span v-if="peer.ipv4_status === 'ok'" class="cell-val is-ok">
-                          <span class="cell-method">{{ peer.ipv4_method ? peer.ipv4_method.toUpperCase() : 'ICMP' }}</span>
-                          <b>{{ peer.ipv4_latency_ms.toFixed(1) }}ms</b> · 0% 丢包
-                          <small class="cell-details" v-if="peer.ipv4_sent">({{ peer.ipv4_received }}/{{ peer.ipv4_sent }}包<template v-if="peer.ipv4_min_latency">, {{ peer.ipv4_min_latency.toFixed(0) }}~{{ peer.ipv4_max_latency.toFixed(0) }}ms</template>)</small>
-                        </span>
-                        <span v-else-if="peer.ipv4_status === 'loss'" class="cell-val is-loss">
-                          <span class="cell-method">{{ peer.ipv4_method ? peer.ipv4_method.toUpperCase() : 'ICMP' }}</span>
-                          <b>{{ peer.ipv4_latency_ms.toFixed(1) }}ms</b> · {{ peer.ipv4_loss }}% 丢包
-                          <small class="cell-details" v-if="peer.ipv4_sent">({{ peer.ipv4_received }}/{{ peer.ipv4_sent }}包)</small>
-                        </span>
-                        <span v-else class="cell-val is-fail">不可达 / 超时 (4/4 丢包)</span>
-                      </div>
-                      <div v-else class="cell-val is-dim">无 IPv4</div>
-                    </td>
-                    <td>
-                      <div v-if="peer.ipv6_target" class="peer-probe-cell">
-                        <span class="cell-tag v6">IPv6</span>
-                        <span v-if="peer.ipv6_status === 'ok'" class="cell-val is-ok">
-                          <span class="cell-method">{{ peer.ipv6_method ? peer.ipv6_method.toUpperCase() : 'ICMP' }}</span>
-                          <b>{{ peer.ipv6_latency_ms.toFixed(1) }}ms</b> · 0% 丢包
-                          <small class="cell-details" v-if="peer.ipv6_sent">({{ peer.ipv6_received }}/{{ peer.ipv6_sent }}包<template v-if="peer.ipv6_min_latency">, {{ peer.ipv6_min_latency.toFixed(0) }}~{{ peer.ipv6_max_latency.toFixed(0) }}ms</template>)</small>
-                        </span>
-                        <span v-else-if="peer.ipv6_status === 'loss'" class="cell-val is-loss">
-                          <span class="cell-method">{{ peer.ipv6_method ? peer.ipv6_method.toUpperCase() : 'ICMP' }}</span>
-                          <b>{{ peer.ipv6_latency_ms.toFixed(1) }}ms</b> · {{ peer.ipv6_loss }}% 丢包
-                          <small class="cell-details" v-if="peer.ipv6_sent">({{ peer.ipv6_received }}/{{ peer.ipv6_sent }}包)</small>
-                        </span>
-                        <span v-else class="cell-val is-fail">不可达 / 超时 (4/4 丢包)</span>
-                      </div>
-                      <div v-else class="cell-val is-dim">未配置 IPv6</div>
-                    </td>
-                    <td style="text-align: right">
-                      <el-button
-                        size="small"
-                        link
-                        :loading="Boolean(peerProbingSingle[peer.target_node_id])"
-                        @click="runPeerProbes(peer.target_node_id)"
-                      >
-                        重测
-                      </el-button>
-                    </td>
-                  </tr>
-                </tbody>
-              </table>
-            </div>
-          </div>
-        </el-tab-pane>
-      </el-tabs>
+                  <div v-else class="cell-val is-dim">未配置 IPv6</div>
+                </td>
+                <td style="text-align: right">
+                  <el-button
+                    size="small"
+                    link
+                    :loading="Boolean(peerProbingSingle[peer.target_node_id])"
+                    @click="runPeerProbes(peer.target_node_id)"
+                  >
+                    重测
+                  </el-button>
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
     </el-dialog>
   </div>
 </template>
@@ -2760,195 +2526,12 @@ onBeforeUnmount(() => {
   font-size: 12px;
   color: var(--sb-muted);
 }
-.probe-client-panel, .probe-mesh-panel {
+.probe-mesh-panel {
   display: flex;
   flex-direction: column;
   gap: 16px;
   margin-top: 6px;
 }
-.probe-route-card {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 14px 18px;
-  border-radius: 12px;
-  background: rgba(15, 23, 42, 0.4);
-  border: 1px solid var(--sb-line);
-  gap: 12px;
-}
-.probe-route-endpoint {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  flex: 1;
-}
-.probe-route-endpoint.is-target {
-  justify-content: flex-end;
-  text-align: right;
-}
-.ep-badge {
-  font-size: 11px;
-  font-weight: 700;
-  padding: 3px 8px;
-  border-radius: 6px;
-  background: var(--sb-surface-3);
-  color: var(--sb-text-2);
-  flex-shrink: 0;
-}
-.is-source .ep-badge { background: rgba(56, 189, 248, .15); color: #38bdf8; }
-.is-target .ep-badge { background: rgba(168, 85, 247, .15); color: #c084fc; }
-.ep-title {
-  font-size: 13px;
-  font-weight: 600;
-  color: var(--sb-text);
-}
-.ep-ip {
-  font-size: 12px;
-  color: var(--sb-muted);
-}
-.probe-route-connector {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  flex-shrink: 0;
-}
-.connector-line {
-  width: 24px;
-  height: 1px;
-  background: var(--sb-line-strong);
-}
-.connector-label {
-  font-size: 11px;
-  color: var(--sb-muted);
-  padding: 2px 8px;
-  border-radius: 999px;
-  background: var(--sb-surface-3);
-}
-.probe-control-bar {
-  display: flex;
-  align-items: center;
-  gap: 16px;
-  flex-wrap: wrap;
-  padding: 12px 16px;
-  border-radius: 10px;
-  background: var(--sb-surface-2);
-}
-.ctrl-label {
-  font-size: 12px;
-  color: var(--sb-muted);
-  margin-right: 6px;
-}
-.probe-target-ip-wrap, .probe-proto-indicator {
-  display: flex;
-  align-items: center;
-}
-.probe-loading-state {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  padding: 36px 16px;
-  background: var(--sb-surface-2);
-  border: 1px dashed var(--sb-line-strong);
-  border-radius: 12px;
-  gap: 12px;
-}
-.probe-spin-icon {
-  font-size: 28px;
-  color: var(--sb-accent);
-}
-.loading-text {
-  font-size: 13px;
-  color: var(--sb-text-2);
-}
-.probe-firewall-notice {
-  font-size: 12px;
-  line-height: 1.6;
-  padding: 14px 16px;
-  border-radius: 10px;
-  background: rgba(245, 158, 11, 0.08);
-  border: 1px solid rgba(245, 158, 11, 0.25);
-}
-.notice-title {
-  font-weight: 600;
-  color: var(--sb-warning);
-  margin-bottom: 4px;
-}
-.notice-desc {
-  color: var(--sb-text-2);
-  font-size: 12px;
-}
-.probe-stats-grid {
-  display: grid;
-  grid-template-columns: repeat(4, 1fr);
-  gap: 12px;
-}
-.probe-stat-box {
-  padding: 14px 12px;
-  border-radius: 10px;
-  background: var(--sb-surface-2);
-  border: 1px solid var(--sb-line);
-  text-align: center;
-}
-.probe-stat-box.is-loss .stat-num {
-  color: var(--sb-danger);
-}
-.probe-stat-box .stat-num {
-  font-size: 20px;
-  font-weight: 700;
-  color: var(--sb-success);
-}
-.probe-stat-box .unit {
-  font-size: 12px;
-  font-weight: normal;
-  margin-left: 2px;
-  color: var(--sb-muted);
-}
-.probe-stat-box .stat-name {
-  margin-top: 4px;
-  font-size: 11.5px;
-  color: var(--sb-muted);
-}
-.probe-pulses-row {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  flex-wrap: wrap;
-  font-size: 12px;
-}
-.pulses-title {
-  color: var(--sb-muted);
-  font-size: 12px;
-}
-.pulses-list {
-  display: flex;
-  gap: 6px;
-  flex-wrap: wrap;
-}
-.pulse-pill {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  padding: 3px 8px;
-  border-radius: 6px;
-  font-family: monospace;
-  font-size: 11px;
-}
-.pulse-pill.is-ok {
-  background: rgba(52, 211, 153, 0.12);
-  color: #34d399;
-}
-.pulse-pill.is-fail {
-  background: rgba(244, 63, 94, 0.12);
-  color: #f43f5e;
-}
-.pulse-dot {
-  width: 5px;
-  height: 5px;
-  border-radius: 50%;
-  background: currentColor;
-}
-
 .mesh-topbar {
   display: flex;
   align-items: center;

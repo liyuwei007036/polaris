@@ -53,9 +53,7 @@ func (s *Server) AskNode(ctx context.Context, nodeID, kind, payload string) (str
 	}()
 
 	timeout := liveTaskTimeout
-	if kind == "speedtest.run" || kind == "tcpquality.run" {
-		timeout = 10 * time.Minute
-	} else if kind == "network.probe" || kind == "probe.network" || kind == "probe.tcp" {
+	if kind == "network.probe" || kind == "probe.network" || kind == "probe.tcp" {
 		timeout = 45 * time.Second
 	}
 	waitCtx, cancel := context.WithTimeout(ctx, timeout)
@@ -81,8 +79,14 @@ func (s *Server) AskNode(ctx context.Context, nodeID, kind, payload string) (str
 	case <-session.done:
 		return "", ErrNodeOffline
 	case <-waitCtx.Done():
-		if errors.Is(ctx.Err(), context.Canceled) {
-			return "", ctx.Err()
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			if errors.Is(ctxErr, context.Canceled) {
+				return "", ctxErr
+			}
+			// A screen may give the whole read a shorter deadline than one
+			// node's live-task budget. Report the deadline the caller set, not
+			// the longer per-node timeout.
+			return "", userErrorf("服务器未在限定时间内响应")
 		}
 		return "", userErrorf("服务器在 %d 秒内没有响应", int(timeout/time.Second))
 	}
@@ -105,6 +109,57 @@ func (s *Server) deliverTaskAnswer(result wire.TaskResult) bool {
 	return true
 }
 
+// liveAskCall is one live question in flight. Screens that ask the same node
+// the same question at the same moment wait on this call instead of sending a
+// second one: the security page reads the jail list and the banned list in two
+// requests, and both of them need the answer to one fail2ban.query.
+type liveAskCall struct {
+	done chan struct{}
+	data string
+	err  error
+}
+
+// shareableLiveTask reports whether two identical questions sent at the same
+// moment may be answered by one round trip. Only reads qualify; a mutation
+// must reach the host once per request.
+func shareableLiveTask(kind string) bool {
+	switch kind {
+	case "firewall.query", "fail2ban.query":
+		return true
+	default:
+		return false
+	}
+}
+
+// sharedLiveAsk joins an in-flight read or starts it. The call is detached
+// from the first request's cancellation: a browser that closes one of the two
+// requests must not take the answer away from the other one still waiting.
+func (s *Server) sharedLiveAsk(ctx context.Context, nodeID, kind, payload string) *liveAskCall {
+	key := nodeID + "\x00" + kind + "\x00" + payload
+	s.liveAskMu.Lock()
+	if s.liveAsks == nil {
+		s.liveAsks = make(map[string]*liveAskCall)
+	}
+	if call := s.liveAsks[key]; call != nil {
+		s.liveAskMu.Unlock()
+		return call
+	}
+	call := &liveAskCall{done: make(chan struct{})}
+	s.liveAsks[key] = call
+	s.liveAskMu.Unlock()
+
+	go func() {
+		call.data, call.err = s.AskNode(context.WithoutCancel(ctx), nodeID, kind, payload)
+		close(call.done)
+		s.liveAskMu.Lock()
+		if s.liveAsks[key] == call {
+			delete(s.liveAsks, key)
+		}
+		s.liveAskMu.Unlock()
+	}()
+	return call
+}
+
 // askNodes puts the same question to several nodes at once. A screen covering
 // every server would otherwise wait for them one after another, and one slow
 // server would hold up all the rest.
@@ -116,7 +171,19 @@ func (s *Server) askNodes(ctx context.Context, nodeIDs []string, kind, payload s
 		group.Add(1)
 		go func(nodeID string) {
 			defer group.Done()
-			data, err := s.AskNode(ctx, nodeID, kind, payload)
+			var data string
+			var err error
+			if shareableLiveTask(kind) {
+				call := s.sharedLiveAsk(ctx, nodeID, kind, payload)
+				select {
+				case <-call.done:
+					data, err = call.data, call.err
+				case <-ctx.Done():
+					err = ctx.Err()
+				}
+			} else {
+				data, err = s.AskNode(ctx, nodeID, kind, payload)
+			}
 			mutex.Lock()
 			answers[nodeID] = liveAnswer{data: data, err: err}
 			mutex.Unlock()

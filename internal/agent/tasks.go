@@ -127,8 +127,6 @@ func executeTask(ctx context.Context, task Task, options TaskOptions) TaskResult
 		return upgradeAgent(ctx, task, options.DataDir)
 	case "outbound.test":
 		return testOutbound(ctx, task)
-	case "speedtest.run", "tcpquality.run":
-		return runSpeedtest(ctx, task)
 	case "probe.tcp", "probe.network", "network.probe":
 		return runNetworkProbe(ctx, task)
 	case "probe.configure":
@@ -460,7 +458,12 @@ func queryFirewall(ctx context.Context) TaskResult {
 	if err != nil {
 		return TaskResult{Status: "failed", Summary: "编码防火墙规则失败：" + err.Error()}
 	}
-	return TaskResult{Status: "succeeded", Summary: fmt.Sprintf("已读取服务器防火墙规则（%d 条）", len(live.Rules)), Data: string(encoded)}
+	reported := len(live.Rules)
+	if live.Manager != "" && live.Manager != managerIptables {
+		// A manager answers with port verdicts, not with the kernel's raw rules.
+		reported = len(live.PortRules)
+	}
+	return TaskResult{Status: "succeeded", Summary: fmt.Sprintf("已读取服务器防火墙规则（%d 条）", reported), Data: string(encoded)}
 }
 
 // queryFail2Ban answers with the jails the host actually runs.

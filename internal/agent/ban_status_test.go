@@ -34,6 +34,17 @@ func TestBansWithoutTimesKeepsTheAddresses(t *testing.T) {
 	}
 }
 
+func TestParseJailBansSkipsTheEmptyJailSentence(t *testing.T) {
+	bans := parseJailBans("No IP address currently banned\n")
+	if len(bans) != 0 {
+		t.Fatalf("an empty jail produced bans: %#v", bans)
+	}
+	bans = parseJailBans("203.0.113.7\t2026-08-06 10:00:00 + 3600 = 2026-08-06 11:00:00\n198.51.100.9\n")
+	if len(bans) != 2 || bans[0].IP != "203.0.113.7" || bans[0].BannedAt == "" || bans[1].IP != "198.51.100.9" {
+		t.Fatalf("unexpected parsed bans: %#v", bans)
+	}
+}
+
 func TestUnbanRejectsUnsafeInput(t *testing.T) {
 	hashed := func(payload map[string]string) Task {
 		encoded, err := json.Marshal(payload)

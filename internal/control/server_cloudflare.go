@@ -40,7 +40,27 @@ func (s *Server) setCloudflareSettings(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
-	if err := s.store.AppendAudit(r.Context(), operator.ID, "cloudflare.settings_updated", "cloudflare", "settings", "Cloudflare zone and token updated"); err != nil {
+	if err := s.store.AppendAudit(r.Context(), operator.ID, "cloudflare.settings_updated", "cloudflare", "settings", "Cloudflare zone and token saved: "+input.ZoneName); err != nil {
+		writeError(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// deleteCloudflareSettings stops managing one zone. DNS records are left
+// untouched at Cloudflare; the operator only removes this console's access.
+func (s *Server) deleteCloudflareSettings(w http.ResponseWriter, r *http.Request) {
+	operator, err := s.admin(r)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	zoneID := r.PathValue("zone_id")
+	if err := s.store.DeleteCloudflareSettings(r.Context(), zoneID); err != nil {
+		writeError(w, err)
+		return
+	}
+	if err := s.store.AppendAudit(r.Context(), operator.ID, "cloudflare.settings_deleted", "cloudflare", zoneID, "Cloudflare zone removed: "+zoneID); err != nil {
 		writeError(w, err)
 		return
 	}
@@ -48,18 +68,18 @@ func (s *Server) setCloudflareSettings(w http.ResponseWriter, r *http.Request) {
 }
 
 // The DNS pages read and write Cloudflare directly: what the list shows is what
-// the zone holds, and a save or a delete lands upstream in the same request.
+// the zones hold, and a save or a delete lands upstream in the same request.
 func (s *Server) listCloudflareRecords(w http.ResponseWriter, r *http.Request) {
 	if _, err := s.operator(r, false); err != nil {
 		writeError(w, err)
 		return
 	}
-	records, err := s.store.ListCloudflareRecords(r.Context())
+	records, failures, err := s.store.ListCloudflareRecords(r.Context())
 	if err != nil {
 		writeError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"records": records})
+	writeJSON(w, http.StatusOK, map[string]any{"records": records, "zone_errors": failures})
 }
 
 func (s *Server) createCloudflareRecord(w http.ResponseWriter, r *http.Request) {

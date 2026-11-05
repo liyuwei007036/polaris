@@ -5,102 +5,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log"
 	"net"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/liyuwei007036/polaris/internal/wire"
 )
-
-// Prober represents the background coordinator for speedtests and probes.
-// Following distributed architecture, Master does NOT perform any network probing directly
-// and does NOT run periodic background inspection tickers. All probing is autonomously
-// executed by distributed Agents.
-type Prober struct {
-	server *Server
-	mu     sync.Mutex
-	stopCh chan struct{}
-}
-
-func newProber(s *Server) *Prober {
-	return &Prober{
-		server: s,
-		stopCh: make(chan struct{}),
-	}
-}
-
-// Start is a no-op: Master 不参与任何探测行为，也不需要定时巡检任务
-func (p *Prober) Start(ctx context.Context) {}
-
-// Stop terminates the prober lifecycle.
-func (p *Prober) Stop() {
-	select {
-	case <-p.stopCh:
-	default:
-		close(p.stopCh)
-	}
-}
-
-// runGFWCheckAll triggers distributed agent checks for all active nodes.
-// Master does NOT perform any probing itself.
-func (s *Server) runGFWCheckAll(ctx context.Context) ([]ProbeResultItem, error) {
-	nodes, err := s.store.ListNodes(ctx)
-	if err != nil {
-		return nil, err
-	}
-
-	var items []ProbeResultItem
-	for _, node := range nodes {
-		targetHost := getNodePublicIPv4(node)
-		if targetHost == "" {
-			targetHost = strings.TrimSpace(node.LastObservedIP)
-		}
-		if targetHost == "" {
-			targetHost = strings.TrimSpace(node.ClientAddress)
-			if h, _, err := net.SplitHostPort(targetHost); err == nil {
-				targetHost = h
-			}
-		}
-		item := s.probeSingleNode(ctx, node, targetHost, 443)
-		items = append(items, item)
-	}
-
-	if s.alertEngine != nil && len(items) > 0 {
-		s.alertEngine.NotifyProbeSummary(items)
-	}
-
-	return items, nil
-}
-
-func (s *Server) probeSingleNode(ctx context.Context, node Node, host string, port uint16) ProbeResultItem {
-	item := ProbeResultItem{
-		NodeID:     node.ID,
-		NodeName:   node.Name,
-		TargetHost: host,
-		TargetPort: port,
-	}
-
-	// 0. 节点离线时直接返回离线状态，不归为 GFW 阻断
-	if !node.Online {
-		item.OverseasOK = false
-		item.DomesticOK = false
-		item.GFWBlocked = false
-		item.ProbeExecuted = false
-		item.StatusDesc = "服务器当前处于离线状态"
-		item.Error = "节点已离线"
-		return item
-	}
-
-	latest, _ := s.store.GetLatestNodeSpeedtest(ctx, node.ID)
-	item.OverseasOK = true
-	item.DomesticOK = true
-	item.GFWBlocked = false
-	item.ProbeExecuted = latest != nil
-	item.StatusDesc = "正常通行"
-	return item
-}
 
 // getNodeLocationLabel resolves a human-readable location label for a node based on its observed IP and ASN.
 func (s *Server) getNodeLocationLabel(node Node) string {
@@ -187,16 +97,16 @@ func getNodePublicIPv6(node Node) string {
 }
 
 type NodePeerProbeItem struct {
-	TargetNodeID   string  `json:"target_node_id"`
-	TargetNodeName string  `json:"target_node_name"`
-	TargetLocation string  `json:"target_location"`
-	TargetOnline   bool    `json:"target_online"`
-	IPv4Target     string  `json:"ipv4_target,omitempty"`
-	IPv4LatencyMs  float64 `json:"ipv4_latency_ms"`
-	IPv4MinLatency float64 `json:"ipv4_min_latency_ms"`
-	IPv4MaxLatency float64 `json:"ipv4_max_latency_ms"`
-	IPv4Sent       int     `json:"ipv4_sent"`
-	IPv4Received   int     `json:"ipv4_received"`
+	TargetNodeID   string    `json:"target_node_id"`
+	TargetNodeName string    `json:"target_node_name"`
+	TargetLocation string    `json:"target_location"`
+	TargetOnline   bool      `json:"target_online"`
+	IPv4Target     string    `json:"ipv4_target,omitempty"`
+	IPv4LatencyMs  float64   `json:"ipv4_latency_ms"`
+	IPv4MinLatency float64   `json:"ipv4_min_latency_ms"`
+	IPv4MaxLatency float64   `json:"ipv4_max_latency_ms"`
+	IPv4Sent       int       `json:"ipv4_sent"`
+	IPv4Received   int       `json:"ipv4_received"`
 	IPv4Loss       float64   `json:"ipv4_loss_percent"`
 	IPv4Status     string    `json:"ipv4_status"` // "ok", "loss", "unreachable", "none"
 	IPv4Method     string    `json:"ipv4_method,omitempty"`
@@ -350,121 +260,4 @@ func (s *Server) ProbeNodePeers(ctx context.Context, sourceNodeID string, target
 	}
 
 	return result, nil
-}
-
-// ProbeNodeClient commands sourceNodeID to probe the client's public IP address.
-func (s *Server) ProbeNodeClient(ctx context.Context, sourceNodeID, clientIP string) (*NodePeerProbeItem, error) {
-	sourceNode, err := s.store.GetNode(ctx, sourceNodeID)
-	if err != nil {
-		return nil, err
-	}
-	if !sourceNode.Online {
-		return nil, errors.New("服务器当前处于离线状态，无法执行探测")
-	}
-
-	item := &NodePeerProbeItem{
-		TargetNodeID:   "client",
-		TargetNodeName: "本地客户端",
-		TargetOnline:   true,
-		IPv4Status:     "none",
-		IPv6Status:     "none",
-	}
-
-	parsed := net.ParseIP(clientIP)
-	if parsed == nil {
-		return nil, errors.New("无效的客户端 IP 地址")
-	}
-
-	if s.ipLocator != nil {
-		loc := s.ipLocator.Lookup(clientIP)
-		item.TargetLocation = loc.Location
-		if loc.ISP != "" {
-			item.TargetLocation += " · " + loc.ISP
-		}
-	}
-
-	if parsed.To4() != nil {
-		item.IPv4Target = clientIP
-		if pRes, err := s.askNodeNetworkProbe(ctx, sourceNodeID, clientIP, 0, 4); err == nil {
-			item.IPv4LatencyMs = pRes.AvgLatencyMs
-			item.IPv4MinLatency = pRes.MinLatencyMs
-			item.IPv4MaxLatency = pRes.MaxLatencyMs
-			item.IPv4Sent = pRes.Sent
-			item.IPv4Received = pRes.Received
-			item.IPv4Loss = pRes.LossPercent
-			item.IPv4Status = pRes.Status
-			item.IPv4Method = pRes.Method
-			item.IPv4Latencies = pRes.Latencies
-		} else {
-			item.IPv4Status = "unreachable"
-			item.IPv4Loss = 100.0
-			item.IPv4Sent = 4
-		}
-	} else {
-		item.IPv6Target = clientIP
-		if pRes, err := s.askNodeNetworkProbe(ctx, sourceNodeID, clientIP, 0, 4); err == nil {
-			item.IPv6LatencyMs = pRes.AvgLatencyMs
-			item.IPv6MinLatency = pRes.MinLatencyMs
-			item.IPv6MaxLatency = pRes.MaxLatencyMs
-			item.IPv6Sent = pRes.Sent
-			item.IPv6Received = pRes.Received
-			item.IPv6Loss = pRes.LossPercent
-			item.IPv6Status = pRes.Status
-			item.IPv6Method = pRes.Method
-			item.IPv6Latencies = pRes.Latencies
-		} else {
-			item.IPv6Status = "unreachable"
-			item.IPv6Loss = 100.0
-			item.IPv6Sent = 4
-		}
-	}
-
-	return item, nil
-}
-
-// ExecuteNodeSpeedtest asks an agent to run an autonomous TcpQuality test and returns the report URL.
-// Master does NOT perform any network probing directly.
-func (s *Server) ExecuteNodeSpeedtest(ctx context.Context, nodeID string) (*NodeSpeedtest, error) {
-	node, err := s.store.GetNode(ctx, nodeID)
-	if err != nil {
-		return nil, err
-	}
-	if !node.Online {
-		return nil, errors.New("服务器当前处于离线状态，无法进行检测")
-	}
-
-	data, err := s.AskNode(ctx, nodeID, "speedtest.run", "{}")
-	if err != nil {
-		return nil, fmt.Errorf("执行 TcpQuality 检测失败: %w", err)
-	}
-
-	var res struct {
-		ReportURL string `json:"report_url"`
-	}
-	if err := json.Unmarshal([]byte(data), &res); err != nil {
-		return nil, fmt.Errorf("解析检测数据失败: %w", err)
-	}
-	if res.ReportURL == "" {
-		return nil, errors.New("未能获取到测试报告 URL")
-	}
-
-	st := NodeSpeedtest{
-		NodeID:    nodeID,
-		ReportURL: res.ReportURL,
-		TestedAt:  time.Now().UTC().Format(time.RFC3339),
-	}
-
-	if err := s.store.SaveNodeSpeedtest(ctx, st); err != nil {
-		log.Printf("save node speedtest error: %v", err)
-	}
-
-	if s.alertEngine != nil {
-		s.alertEngine.NotifySpeedtestReport(node.Name, st)
-	}
-
-	latest, _ := s.store.GetLatestNodeSpeedtest(ctx, nodeID)
-	if latest != nil {
-		return latest, nil
-	}
-	return &st, nil
 }

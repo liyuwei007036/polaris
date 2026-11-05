@@ -186,7 +186,6 @@ func serveMaster(ctx context.Context, configuration masterConfig) error {
 	server.EnableConnectionRecording(ctx)
 	server.StartMaintenance(ctx)
 	server.StartTrafficAggregation(ctx)
-	server.StartProber(ctx)
 	if err := server.EnsureDemoNodes(ctx); err != nil {
 		log.Printf("[polaris] seeding demo nodes error: %v", err)
 	}

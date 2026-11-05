@@ -7,6 +7,8 @@ import (
 	"net/http"
 	"sort"
 	"strings"
+	"sync"
+	"time"
 )
 
 // Network protection holds nothing in this database. Every screen here asks the
@@ -46,14 +48,14 @@ type PortRule struct {
 // port list cannot be read: under an accepting default every port is open,
 // listed or not.
 type nodeFirewall struct {
-	NodeID            string     `json:"node_id"`
-	Available         bool       `json:"available"`
-	Tool              string     `json:"tool,omitempty"`
-	Manager           string     `json:"manager,omitempty"`
-	DefaultIncoming   string     `json:"default_incoming,omitempty"`
-	PortRules         []PortRule `json:"port_rules"`
-	Truncated         bool       `json:"truncated,omitempty"`
-	Error             string     `json:"error,omitempty"`
+	NodeID          string     `json:"node_id"`
+	Available       bool       `json:"available"`
+	Tool            string     `json:"tool,omitempty"`
+	Manager         string     `json:"manager,omitempty"`
+	DefaultIncoming string     `json:"default_incoming,omitempty"`
+	PortRules       []PortRule `json:"port_rules"`
+	Truncated       bool       `json:"truncated,omitempty"`
+	Error           string     `json:"error,omitempty"`
 }
 
 // LiveFail2BanJail is one automatic-banning rule a node reports as configured,
@@ -89,13 +91,13 @@ type nodeFail2Ban struct {
 // port rules omits it, and an empty list from one of those would read as a
 // server with nothing restricted — the one thing this page must never say.
 type agentFirewall struct {
-	Available         bool        `json:"available"`
-	Tool              string      `json:"tool"`
-	Manager           string      `json:"manager"`
-	DefaultIncoming   string      `json:"default_incoming"`
-	PortRules         *[]PortRule `json:"port_rules"`
-	Truncated         bool        `json:"truncated"`
-	Error             string      `json:"error"`
+	Available       bool        `json:"available"`
+	Tool            string      `json:"tool"`
+	Manager         string      `json:"manager"`
+	DefaultIncoming string      `json:"default_incoming"`
+	PortRules       *[]PortRule `json:"port_rules"`
+	Truncated       bool        `json:"truncated"`
+	Error           string      `json:"error"`
 }
 
 type agentFail2Ban struct {
@@ -130,17 +132,30 @@ func (s *Server) listFirewall(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
-	nodeIDs, err := s.securityNodeIDs(r)
+	nodeIDs, err := s.securityNodeIDs(r.Context(), r)
 	if err != nil {
 		writeError(w, err)
 		return
 	}
 	answers := s.askNodes(r.Context(), nodeIDs, "firewall.query", "{}")
-	nodes := make([]nodeFirewall, 0, len(nodeIDs))
-	for _, nodeID := range nodeIDs {
-		nodes = append(nodes, s.decodeNodeFirewall(nodeID, answers[nodeID]))
+	writeJSON(w, http.StatusOK, map[string]any{"nodes": s.firewallSnapshot(nodeIDs, answers)})
+}
+
+func (s *Server) firewallSnapshot(nodeIDs []string, answers map[string]liveAnswer) []nodeFirewall {
+	nodes := make([]nodeFirewall, len(nodeIDs))
+	// Each node's rules are decoded independently. On a large fleet this is
+	// the CPU side of the wait, and it used to run one node after another even
+	// though every answer had already arrived.
+	var group sync.WaitGroup
+	for index, nodeID := range nodeIDs {
+		group.Add(1)
+		go func(index int, nodeID string) {
+			defer group.Done()
+			nodes[index] = s.decodeNodeFirewall(nodeID, answers[nodeID])
+		}(index, nodeID)
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"nodes": nodes})
+	group.Wait()
+	return nodes
 }
 
 // changeFirewallRule adds or removes one rule on one server's firewall and
@@ -213,24 +228,51 @@ func (s *Server) changeFirewallRule(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, s.decodeNodeFirewall(nodeID, liveAnswer{data: data}))
 }
 
-
 func (s *Server) listFail2Ban(w http.ResponseWriter, r *http.Request) {
 	if _, err := s.operator(r, false); err != nil {
 		writeError(w, err)
 		return
 	}
-	nodeIDs, err := s.securityNodeIDs(r)
+	liveNodes, err := s.securityNodes(r.Context(), r)
 	if err != nil {
 		writeError(w, err)
 		return
 	}
+	nodeIDs, names := securityNodeIDsAndNames(liveNodes)
 	answers := s.askNodes(r.Context(), nodeIDs, "fail2ban.query", "{}")
-	nodes := make([]nodeFail2Ban, 0, len(nodeIDs))
-	for _, nodeID := range nodeIDs {
-		node, _ := s.decodeNodeFail2Ban(nodeID, answers[nodeID])
-		nodes = append(nodes, node)
-	}
+	nodes, _ := s.fail2banSnapshot(nodeIDs, names, answers)
 	writeJSON(w, http.StatusOK, map[string]any{"nodes": nodes})
+}
+
+func securityNodeIDsAndNames(nodes []Node) ([]string, map[string]string) {
+	nodeIDs := make([]string, 0, len(nodes))
+	names := make(map[string]string, len(nodes))
+	for _, node := range nodes {
+		nodeIDs = append(nodeIDs, node.ID)
+		names[node.ID] = node.Name
+	}
+	return nodeIDs, names
+}
+
+func (s *Server) fail2banSnapshot(nodeIDs []string, names map[string]string, answers map[string]liveAnswer) ([]nodeFail2Ban, []BannedAddress) {
+	nodes := make([]nodeFail2Ban, len(nodeIDs))
+	bannedByNode := make([][]BannedAddress, len(nodeIDs))
+	var group sync.WaitGroup
+	for index, nodeID := range nodeIDs {
+		group.Add(1)
+		go func(index int, nodeID string) {
+			defer group.Done()
+			nodes[index], bannedByNode[index] = s.decodeNodeFail2BanFor(nodeID, names[nodeID], answers[nodeID])
+		}(index, nodeID)
+	}
+	group.Wait()
+	// Keep the nodes' own order: the console lists servers in the same order as
+	// the rest of the console, and banned addresses are appended per node.
+	banned := []BannedAddress{}
+	for _, addresses := range bannedByNode {
+		banned = append(banned, addresses...)
+	}
+	return nodes, banned
 }
 
 // changeFail2BanJail saves or removes one automatic-banning rule on one server.
@@ -304,17 +346,14 @@ func (s *Server) listBannedAddresses(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
-	nodeIDs, err := s.securityNodeIDs(r)
+	liveNodes, err := s.securityNodes(r.Context(), r)
 	if err != nil {
 		writeError(w, err)
 		return
 	}
+	nodeIDs, names := securityNodeIDsAndNames(liveNodes)
 	answers := s.askNodes(r.Context(), nodeIDs, "fail2ban.query", "{}")
-	banned := []BannedAddress{}
-	for _, nodeID := range nodeIDs {
-		_, addresses := s.decodeNodeFail2Ban(nodeID, answers[nodeID])
-		banned = append(banned, addresses...)
-	}
+	_, banned := s.fail2banSnapshot(nodeIDs, names, answers)
 	sort.Slice(banned, func(left, right int) bool {
 		if banned[left].BannedAt != banned[right].BannedAt {
 			return banned[left].BannedAt > banned[right].BannedAt
@@ -322,6 +361,62 @@ func (s *Server) listBannedAddresses(w http.ResponseWriter, r *http.Request) {
 		return banned[left].IP < banned[right].IP
 	})
 	writeJSON(w, http.StatusOK, map[string]any{"banned": banned})
+}
+
+// securityReadTimeout bounds one reading of the security screen. A node whose
+// agent is alive but no longer answering used to hold the page for the full
+// live-task timeout; the screen reports that node as unreadable instead, while
+// the answer continues to be gathered for any request that follows.
+const securityReadTimeout = 8 * time.Second
+
+// securityOverview answers the whole security screen in one reading. The page
+// needs three lists; done as three requests, the same Fail2Ban state was read
+// from every node twice, once for the jail list and once for the banned list.
+// Asking both questions here at once means one round trip per node for each
+// kind, and the answer is decoded exactly once.
+func (s *Server) securityOverview(w http.ResponseWriter, r *http.Request) {
+	if _, err := s.operator(r, false); err != nil {
+		writeError(w, err)
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), securityReadTimeout)
+	defer cancel()
+	liveNodes, err := s.securityNodes(ctx, r)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	nodeIDs, names := securityNodeIDsAndNames(liveNodes)
+
+	var firewallNodes []nodeFirewall
+	var fail2banNodes []nodeFail2Ban
+	var banned []BannedAddress
+	var group sync.WaitGroup
+	group.Add(2)
+	// Decode each half as soon as its own answer arrives. A large firewall
+	// listing can then be turned into rows while the node is still answering
+	// the Fail2Ban question.
+	go func() {
+		defer group.Done()
+		firewallNodes = s.firewallSnapshot(nodeIDs, s.askNodes(ctx, nodeIDs, "firewall.query", "{}"))
+	}()
+	go func() {
+		defer group.Done()
+		fail2banNodes, banned = s.fail2banSnapshot(nodeIDs, names, s.askNodes(ctx, nodeIDs, "fail2ban.query", "{}"))
+	}()
+	group.Wait()
+
+	sort.Slice(banned, func(left, right int) bool {
+		if banned[left].BannedAt != banned[right].BannedAt {
+			return banned[left].BannedAt > banned[right].BannedAt
+		}
+		return banned[left].IP < banned[right].IP
+	})
+	writeJSON(w, http.StatusOK, map[string]any{
+		"firewall": map[string]any{"nodes": firewallNodes},
+		"fail2ban": map[string]any{"nodes": fail2banNodes},
+		"banned":   banned,
+	})
 }
 
 // unbanAddress asks one node to release one address. It applies to the
@@ -367,13 +462,25 @@ type liveAnswer struct {
 	data string
 	err  error
 }
-// securityNodeIDs is the node the path names, or every node that has not been
-// revoked.
-func (s *Server) securityNodeIDs(r *http.Request) ([]string, error) {
+
+// securityNodes is the node the path names, or every node that has not been
+// revoked. The names travel with the IDs so the decode below does not have to
+// look up the same node once per banned address.
+func (s *Server) securityNodes(ctx context.Context, r *http.Request) ([]Node, error) {
 	if nodeID := r.PathValue("id"); nodeID != "" {
-		return []string{nodeID}, nil
+		node, err := s.store.NodeByID(ctx, nodeID)
+		if err != nil {
+			// A node named by the path may be gone; asking it is still the
+			// right thing to do, and the answer will say it is offline.
+			return []Node{{ID: nodeID}}, nil
+		}
+		return []Node{node}, nil
 	}
-	nodes, err := s.store.ListNodes(r.Context())
+	return s.store.ListNodes(ctx)
+}
+
+func (s *Server) securityNodeIDs(ctx context.Context, r *http.Request) ([]string, error) {
+	nodes, err := s.securityNodes(ctx, r)
 	if err != nil {
 		return nil, err
 	}
@@ -414,6 +521,15 @@ func (s *Server) decodeNodeFirewall(nodeID string, answer liveAnswer) nodeFirewa
 }
 
 func (s *Server) decodeNodeFail2Ban(nodeID string, answer liveAnswer) (nodeFail2Ban, []BannedAddress) {
+	return s.decodeNodeFail2BanFor(nodeID, "", answer)
+}
+
+// decodeNodeFail2BanFor turns one node's answer into what the console shows.
+// nodeName may be empty, in which case it is looked up once for the whole
+// answer rather than once per banned address: a host can hold thousands of
+// bans, and each lookup used the one database connection every other request
+// was waiting on.
+func (s *Server) decodeNodeFail2BanFor(nodeID, nodeName string, answer liveAnswer) (nodeFail2Ban, []BannedAddress) {
 	node := nodeFail2Ban{NodeID: nodeID, Jails: []LiveFail2BanJail{}}
 	if answer.err != nil {
 		node.Error = answer.err.Error()
@@ -425,6 +541,11 @@ func (s *Server) decodeNodeFail2Ban(nodeID string, answer liveAnswer) (nodeFail2
 		return node, nil
 	}
 	node.Available, node.Error = reported.Available, reported.Error
+	// Ask once whether anyone is listening, not once per banned address. With
+	// notifications off this used to lock the alert engine and start a
+	// goroutine for every address a host was holding.
+	notify := s.alertEngine != nil && s.alertEngine.notificationsEnabled()
+	nameResolved := nodeName != ""
 	var banned []BannedAddress
 	for _, jail := range reported.Jails {
 		node.Jails = append(node.Jails, LiveFail2BanJail{
@@ -445,10 +566,13 @@ func (s *Server) decodeNodeFail2Ban(nodeID string, answer liveAnswer) (nodeFail2
 				NodeID: nodeID, Jail: fail2banName, RuleName: jail.Name, Managed: jail.Managed,
 				IP: ban.IP, Location: s.ipLocator.Locate(ban.IP), BannedAt: ban.BannedAt, UnbanAt: ban.UnbanAt,
 			})
-			if s.alertEngine != nil {
-				nodeName := nodeID
-				if node, err := s.store.NodeByID(context.Background(), nodeID); err == nil && node.Name != "" {
-					nodeName = node.Name
+			if notify {
+				if !nameResolved {
+					nodeName = nodeID
+					if node, err := s.store.NodeByID(context.Background(), nodeID); err == nil && node.Name != "" {
+						nodeName = node.Name
+					}
+					nameResolved = true
 				}
 				s.alertEngine.NotifyFail2BanBlock(nodeID, nodeName, ban.IP, jail.Name)
 			}

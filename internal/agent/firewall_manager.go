@@ -78,12 +78,39 @@ func detectFirewallManager(ctx context.Context) string {
 	return managerIptables
 }
 
-// describeHostFirewall fills in what the host's own firewall tool reports: the
-// manager in charge, its default policy for incoming traffic, and the verdict
-// it holds on each port. Hosts with no manager get their port rules worked out
-// from the raw rules already collected.
+// collectManagedFirewall asks ufw or firewalld, whichever is actually running,
+// for its own view of the ports. It is checked before the raw kernel listing on
+// purpose: those managers keep their own rule store, and a host protected by
+// Fail2Ban can have thousands of ban rules in the kernel listing that this page
+// never shows. Reading the whole kernel ruleset only to throw it away was most
+// of the cost of opening the security screen on such a host.
+func collectManagedFirewall(ctx context.Context) (LiveFirewall, bool) {
+	manager := detectFirewallManager(ctx)
+	if manager != managerUFW && manager != managerFirewalld {
+		return LiveFirewall{}, false
+	}
+	live := LiveFirewall{Available: true, Tool: firewallTool(), Manager: manager, Rules: []LiveFirewallRule{}}
+	describeHostFirewall(ctx, &live)
+	if live.PortRules == nil {
+		live.PortRules = []PortRule{}
+	}
+	return live, true
+}
+
+func firewallTool() string {
+	if commandExists("nft") {
+		return "nftables"
+	}
+	if commandExists("iptables") {
+		return "iptables"
+	}
+	return ""
+}
+
+// describeHostFirewall fills in what the host's own firewall tool reports: its
+// default policy for incoming traffic and the verdict it holds on each port.
+// The caller has already decided which manager is running.
 func describeHostFirewall(ctx context.Context, live *LiveFirewall) {
-	live.Manager = detectFirewallManager(ctx)
 	switch live.Manager {
 	case managerUFW:
 		output, err := exec.CommandContext(ctx, "ufw", "status", "verbose").CombinedOutput()
@@ -102,9 +129,14 @@ func describeHostFirewall(ctx context.Context, live *LiveFirewall) {
 		live.PortRules = parseFirewalldZone(string(output), func(service string) []PortRule {
 			return firewalldServicePorts(ctx, service)
 		})
-	default:
-		live.DefaultIncoming, live.PortRules = portRulesFromRules(live.Rules, live.DefaultIncoming)
 	}
+}
+
+// describeRawFirewall reads port verdicts out of the kernel rules already
+// collected. It is the path for a host whose only firewall is iptables.
+func describeRawFirewall(live *LiveFirewall) {
+	live.Manager = managerIptables
+	live.DefaultIncoming, live.PortRules = portRulesFromRules(live.Rules, live.DefaultIncoming)
 }
 
 // parseUFWStatus reads `ufw status verbose`: its default incoming policy and

@@ -10,7 +10,7 @@ import (
 	"testing"
 )
 
-func TestAlertsAndSpeedtestAPIs(t *testing.T) {
+func TestAlertsAndUtilityAPIs(t *testing.T) {
 	ctx := context.Background()
 	store, err := Open(t.TempDir())
 	if err != nil {
@@ -22,7 +22,6 @@ func TestAlertsAndSpeedtestAPIs(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new server: %v", err)
 	}
-	defer server.prober.Stop()
 
 	// Create admin operator and session
 	admin, _, err := store.createOperator(ctx, "admin_user", "AdminPass123456!", "admin", false, false, false)
@@ -69,7 +68,6 @@ func TestAlertsAndSpeedtestAPIs(t *testing.T) {
 	// 2. PUT /api/v1/alerts/settings
 	settings.BarkDeviceKey = "mock_device_key"
 	settings.TrafficThresholdMbps = 75.0
-	settings.ProbeNotifyAlways = true
 	rec = doRequest("PUT", "/api/v1/alerts/settings", settings)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("update alert settings failed with status %d: %s", rec.Code, rec.Body.String())
@@ -100,40 +98,12 @@ func TestAlertsAndSpeedtestAPIs(t *testing.T) {
 		t.Fatalf("test alert failed with status %d: %s", rec.Code, rec.Body.String())
 	}
 
-	// 4. Node Speedtests APIs: Create a mock node in DB
-	nodeID := "node-speedtest-api"
+	// 4. Create a mock node for the node list API.
+	nodeID := "node-api-test"
 	_, err = store.db.ExecContext(ctx, `INSERT INTO nodes (id, name, public_key, created_at) VALUES (?, ?, ?, ?)`,
-		nodeID, "Speedtest Node", []byte("12345678901234567890123456789012"), nowUnix())
+		nodeID, "Test Node", []byte("12345678901234567890123456789012"), nowUnix())
 	if err != nil {
 		t.Fatalf("insert node: %v", err)
-	}
-
-	// Save test speedtest record directly
-	_ = store.SaveNodeSpeedtest(ctx, NodeSpeedtest{
-		NodeID:    nodeID,
-		ReportURL: "https://tcpquality.ibsgss.uk/r/test-speedtest-1",
-	})
-
-	// GET /api/v1/nodes/{id}/speedtest/latest
-	rec = doRequest("GET", "/api/v1/nodes/"+nodeID+"/speedtest/latest", nil)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("get latest speedtest failed: %d %s", rec.Code, rec.Body.String())
-	}
-	var nodeLatest map[string]any
-	_ = json.NewDecoder(rec.Body).Decode(&nodeLatest)
-	if nodeLatest["has_test"] != true {
-		t.Errorf("expected has_test true, got %+v", nodeLatest)
-	}
-
-	// GET /api/v1/nodes/speedtests/latest
-	rec = doRequest("GET", "/api/v1/nodes/speedtests/latest", nil)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("list latest speedtests failed: %d %s", rec.Code, rec.Body.String())
-	}
-	var allLatest map[string]any
-	_ = json.NewDecoder(rec.Body).Decode(&allLatest)
-	if _, ok := allLatest["speedtests"]; !ok {
-		t.Errorf("expected speedtests map, got %+v", allLatest)
 	}
 
 	// 5. POST /api/v1/tools/reality-check with invalid or unreachable domain should return error/report gracefully

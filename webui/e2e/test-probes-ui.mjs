@@ -24,30 +24,13 @@ async function main() {
       await page.waitForTimeout(1500)
     }
 
-    // 1. Go to Nodes page and open "网络测速配置"
-    await page.goto('http://127.0.0.1:19670/#/nodes', { waitUntil: 'domcontentloaded' })
-    await page.waitForTimeout(1500)
-
-    const configBtn = page.getByRole('button', { name: '网络测速配置' })
-    await configBtn.click()
-    await page.waitForTimeout(1000)
-    await page.screenshot({ path: `${ARTIFACTS_DIR}/probe-config-dialog.png` })
-    console.log('Saved probe-config-dialog.png')
-
-    // Click "添加探针" to see the preset chips
-    const addBtn = page.getByRole('button', { name: '添加探针' })
-    await addBtn.click()
-    await page.waitForTimeout(800)
-    await page.screenshot({ path: `${ARTIFACTS_DIR}/probe-add-dialog.png` })
-    console.log('Saved probe-add-dialog.png')
-
-    // 2. Go to System Settings -> 网络测速探针 Tab
+    // 1. Go to System Settings -> 网络测速探针 Tab
     await page.goto('http://127.0.0.1:19670/#/settings', { waitUntil: 'domcontentloaded' })
     await page.waitForTimeout(1500)
     await page.screenshot({ path: `${ARTIFACTS_DIR}/settings-probes-tab.png` })
     console.log('Saved settings-probes-tab.png')
 
-    // 3. Open Node Detail in Nodes view
+    // 2. Open Node Detail in Nodes view
     await page.goto('http://127.0.0.1:19670/#/nodes', { waitUntil: 'domcontentloaded' })
     await page.waitForTimeout(1500)
     await page.locator('.node-card').first().click()

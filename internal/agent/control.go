@@ -399,7 +399,7 @@ func RunSession(ctx context.Context, conn *wire.Conn, handler TaskHandler, heart
 			if err := wire.Decode(msg.body, &task); err != nil {
 				continue
 			}
-			// Execute task asynchronously so long-running operations (such as speedtests or network probes)
+			// Execute task asynchronously so long-running operations (such as network probes)
 			// never stall the control loop, heartbeat ticker, or keepalive reader.
 			go func(t wire.Task) {
 				res := TaskResult{Status: "failed", Summary: "agent has no handler for this task"}

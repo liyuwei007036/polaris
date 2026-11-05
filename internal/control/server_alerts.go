@@ -3,11 +3,8 @@ package control
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
-	"log"
-	"net"
 	"net/http"
 	"strings"
 	"time"
@@ -69,19 +66,6 @@ func (s *Server) updateAlertSettings(w http.ResponseWriter, r *http.Request) {
 			in.ConnAlertEnabled = v
 			in.SingleIPAlertEnabled = v
 		}
-		if v, ok := raw["probing_enabled"].(bool); ok {
-			in.AutoProbeGFWEnabled = v
-			in.AutoProbeSpeedtestEnabled = v
-		}
-		if v, ok := raw["gfw_probe_interval_minutes"].(float64); ok && in.ProbeGFWIntervalMinutes == 0 {
-			in.ProbeGFWIntervalMinutes = int(v)
-		}
-		if v, ok := raw["speedtest_interval_hours"].(float64); ok && in.ProbeSpeedtestIntervalHours == 0 {
-			in.ProbeSpeedtestIntervalHours = int(v)
-		}
-		if v, ok := raw["speedtest_skip_if_busy"].(bool); ok {
-			in.ProbeSkipWhenBusy = v
-		}
 	}
 
 	updated, err := s.store.UpdateAlertSettings(r.Context(), in)
@@ -102,44 +86,38 @@ func (s *Server) testAlert(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var in struct {
-		Server    string `json:"server"`
-		DeviceKey string `json:"device_key"`
-		Sound     string `json:"sound"`
-		Group     string `json:"group"`
-		URL       string `json:"url"`
+		Server           string `json:"server"`
+		DeviceKey        string `json:"device_key"`
+		Sound            string `json:"sound"`
+		Group            string `json:"group"`
+		URL              string `json:"url"`
+		TelegramServer   string `json:"telegram_server"`
+		TelegramBotToken string `json:"telegram_bot_token"`
+		TelegramChatID   string `json:"telegram_chat_id"`
 	}
 	_ = json.NewDecoder(r.Body).Decode(&in)
 
-	server := strings.TrimSpace(in.Server)
-	deviceKey := strings.TrimSpace(in.DeviceKey)
-	sound := strings.TrimSpace(in.Sound)
-	group := strings.TrimSpace(in.Group)
-	url := strings.TrimSpace(in.URL)
-
-	if deviceKey == "" {
-		settings, err := s.store.GetAlertSettings(r.Context())
-		if err != nil {
-			writeError(w, err)
-			return
-		}
-		if server == "" {
-			server = settings.BarkServer
-		}
-		deviceKey = settings.BarkDeviceKey
-		if sound == "" {
-			sound = settings.BarkSound
-		}
-		if group == "" {
-			group = settings.BarkGroup
-		}
-	}
-	if deviceKey == "" {
-		writeError(w, userErrorf("请先填写 Bark Device Key"))
+	settings, err := s.store.GetAlertSettings(r.Context())
+	if err != nil {
+		writeError(w, err)
 		return
 	}
+
+	pick := func(value, fallback string) string {
+		if strings.TrimSpace(value) != "" {
+			return strings.TrimSpace(value)
+		}
+		return strings.TrimSpace(fallback)
+	}
+
+	server := strings.TrimRight(pick(in.Server, settings.BarkServer), "/")
 	if server == "" {
 		server = "https://api.day.app"
 	}
+	deviceKey := pick(in.DeviceKey, settings.BarkDeviceKey)
+	sound := pick(in.Sound, settings.BarkSound)
+	group := pick(in.Group, settings.BarkGroup)
+	url := pick(in.URL, settings.BarkURL)
 	if sound == "" {
 		sound = "minuet.caf"
 	}
@@ -147,170 +125,70 @@ func (s *Server) testAlert(w http.ResponseWriter, r *http.Request) {
 		group = "Polaris"
 	}
 
-	testCtx, cancel := context.WithTimeout(r.Context(), 8*time.Second)
+	// Explicit credentials in the request bypass the saved "enabled" switch so
+	// operators can validate a token before turning the channel on.
+	telegramExplicit := strings.TrimSpace(in.TelegramBotToken) != "" || strings.TrimSpace(in.TelegramChatID) != ""
+	telegramServer := strings.TrimRight(pick(in.TelegramServer, settings.TelegramServer), "/")
+	if telegramServer == "" {
+		telegramServer = telegramDefaultAPIBase
+	}
+	telegramToken := pick(in.TelegramBotToken, settings.TelegramBotToken)
+	telegramChatID := pick(in.TelegramChatID, settings.TelegramChatID)
+	telegramReady := telegramToken != "" && telegramChatID != "" && (telegramExplicit || settings.TelegramEnabled)
+
+	if deviceKey == "" && !telegramReady {
+		writeError(w, userErrorf("请先填写 Bark Device Key，或启用并配置 Telegram Bot Token 与 Chat ID"))
+		return
+	}
+
+	testCtx, cancel := context.WithTimeout(r.Context(), 12*time.Second)
 	defer cancel()
 
-	client := NewBarkClient()
-	testBody := fmt.Sprintf("• 系统状态: 正常在线\n• 推送通道: Apple APNs (Bark)\n• 提示铃声: %s\n• 分组标识: %s\n🕒 发送时间: %s",
-		sound, group, NowAlertTime())
-	msg := BarkMessage{
-		Title: "🔔 [Polaris] 测试推送成功",
-		Body:  testBody,
-		Group: group,
-		Sound: sound,
-		Level: "active",
-		URL:   url,
-	}
+	var sent, failures []string
 
-	if err := client.Send(testCtx, server, deviceKey, msg); err != nil {
-		writeError(w, userErrorf("Bark 推送失败: %v", err))
-		return
-	}
-
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "message": "测试通知已成功推送到你的 Bark 设备！"})
-}
-
-func (s *Server) handleRunGFWCheck(w http.ResponseWriter, r *http.Request) {
-	if _, err := s.operator(r, false); err != nil {
-		writeError(w, err)
-		return
-	}
-
-	results, err := s.runGFWCheckAll(r.Context())
-	if err != nil {
-		writeError(w, err)
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]any{"results": results, "nodes": results})
-}
-
-func (s *Server) handleRunNodeSpeedtest(w http.ResponseWriter, r *http.Request) {
-	op, err := s.operator(r, false)
-	if err != nil {
-		writeError(w, err)
-		return
-	}
-	if op.Role != "admin" && op.Role != "operator" {
-		writeError(w, ErrForbidden)
-		return
-	}
-
-	nodeID := r.PathValue("id")
-	if nodeID == "" {
-		writeError(w, errors.New("缺少节点 ID"))
-		return
-	}
-
-	node, err := s.store.GetNode(r.Context(), nodeID)
-	if err != nil {
-		writeError(w, err)
-		return
-	}
-	if !node.Online {
-		writeError(w, errors.New("服务器当前处于离线状态，无法进行检测"))
-		return
-	}
-
-	s.speedtestMu.Lock()
-	if s.speedtestingNodes[nodeID] {
-		s.speedtestMu.Unlock()
-		writeJSON(w, http.StatusOK, map[string]any{
-			"status":  "running",
-			"running": true,
-			"message": "该节点已在进行 TcpQuality 检测中，请稍候...",
-		})
-		return
-	}
-	s.speedtestingNodes[nodeID] = true
-	delete(s.speedtestErrors, nodeID)
-	s.speedtestMu.Unlock()
-
-	// Launch autonomous speedtest asynchronously in background:
-	// Decoupled from HTTP request context so reverse proxies (Nginx 60s/Cloudflare 100s) never abort it.
-	go func(targetNodeID string) {
-		defer func() {
-			s.speedtestMu.Lock()
-			delete(s.speedtestingNodes, targetNodeID)
-			s.speedtestMu.Unlock()
-		}()
-		testCtx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
-		defer cancel()
-
-		st, err := s.ExecuteNodeSpeedtest(testCtx, targetNodeID)
-		if err != nil {
-			log.Printf("node %s speedtest failed: %v", targetNodeID, err)
-			s.speedtestMu.Lock()
-			s.speedtestErrors[targetNodeID] = err.Error()
-			s.speedtestMu.Unlock()
+	if deviceKey != "" {
+		testBody := fmt.Sprintf("通道已连通，告警将按事件类型自动分组。\n铃声：%s\n分组：%s\n时间：%s", sound, group, NowAlertTime())
+		msg := BarkMessage{
+			Title: "Bark 测试推送",
+			Body:  testBody,
+			Group: group,
+			Sound: sound,
+			Level: "active",
+			URL:   url,
 		}
-		s.liveHub.publish(liveEvent{Kind: "speedtest", NodeID: targetNodeID})
-		s.liveHub.publish(liveEvent{Kind: "node", NodeID: targetNodeID})
-		_ = st
-	}(nodeID)
+		if err := NewBarkClient().Send(testCtx, server, deviceKey, msg); err != nil {
+			failures = append(failures, "Bark: "+err.Error())
+		} else {
+			sent = append(sent, "Bark")
+		}
+	}
+
+	if telegramReady {
+		text := buildTelegramAlert("通道测试", "Telegram Bot 已连通", "", []string{
+			tgLine("通道", "Telegram Bot API"),
+			tgCodeLine("目标会话", telegramChatID),
+			tgLine("消息格式", "HTML 富文本"),
+		}, "机器人已准备好接收 Polaris 告警。")
+		if err := NewTelegramClient().SendHTML(testCtx, telegramServer, telegramToken, telegramChatID, text); err != nil {
+			failures = append(failures, "Telegram: "+err.Error())
+		} else {
+			sent = append(sent, "Telegram")
+		}
+	}
+
+	if len(failures) > 0 {
+		prefix := ""
+		if len(sent) > 0 {
+			prefix = "已发送 " + strings.Join(sent, "、") + "；"
+		}
+		writeError(w, userErrorf("%s发送失败: %s", prefix, strings.Join(failures, "; ")))
+		return
+	}
 
 	writeJSON(w, http.StatusOK, map[string]any{
-		"status":  "started",
-		"running": true,
-		"message": "TcpQuality 综合质量检测已在后台启动（预计耗时 1~3 分钟）",
-	})
-}
-
-func (s *Server) handleGetNodeSpeedtestLatest(w http.ResponseWriter, r *http.Request) {
-	if _, err := s.operator(r, false); err != nil {
-		writeError(w, err)
-		return
-	}
-
-	nodeID := r.PathValue("id")
-	s.speedtestMu.Lock()
-	running := s.speedtestingNodes[nodeID]
-	lastErr := s.speedtestErrors[nodeID]
-	s.speedtestMu.Unlock()
-
-	st, err := s.store.GetLatestNodeSpeedtest(r.Context(), nodeID)
-	if err != nil {
-		writeError(w, err)
-		return
-	}
-	resp := map[string]any{
-		"has_test": st != nil,
-		"running":  running,
-		"error":    lastErr,
-	}
-	if st != nil {
-		resp["speedtest"] = st
-		resp["result"] = st
-	}
-	writeJSON(w, http.StatusOK, resp)
-}
-
-func (s *Server) handleListNodeSpeedtestsLatest(w http.ResponseWriter, r *http.Request) {
-	if _, err := s.operator(r, false); err != nil {
-		writeError(w, err)
-		return
-	}
-
-	list, err := s.store.ListLatestNodeSpeedtests(r.Context())
-	if err != nil {
-		writeError(w, err)
-		return
-	}
-	items := make([]NodeSpeedtest, 0, len(list))
-	for _, st := range list {
-		items = append(items, st)
-	}
-
-	s.speedtestMu.Lock()
-	runningMap := make(map[string]bool, len(s.speedtestingNodes))
-	for k, v := range s.speedtestingNodes {
-		runningMap[k] = v
-	}
-	s.speedtestMu.Unlock()
-
-	writeJSON(w, http.StatusOK, map[string]any{
-		"speedtests":     items,
-		"speedtests_map": list,
-		"running":        runningMap,
+		"ok":       true,
+		"channels": sent,
+		"message":  "测试通知已成功推送到 " + strings.Join(sent, "、") + "！",
 	})
 }
 
@@ -352,46 +230,6 @@ func (s *Server) handlePing(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write([]byte(`{"status":"pong"}`))
 }
 
-func (s *Server) handleClientInfo(w http.ResponseWriter, r *http.Request) {
-	clientIP := ""
-	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
-		parts := strings.Split(xff, ",")
-		clientIP = strings.TrimSpace(parts[0])
-	}
-	if clientIP == "" {
-		clientIP = strings.TrimSpace(r.Header.Get("X-Real-IP"))
-	}
-	if clientIP == "" {
-		if host, _, err := net.SplitHostPort(r.RemoteAddr); err == nil {
-			clientIP = host
-		} else {
-			clientIP = r.RemoteAddr
-		}
-	}
-
-	info := LocationInfo{IP: clientIP}
-	if s.ipLocator != nil && clientIP != "" {
-		info = s.ipLocator.Lookup(clientIP)
-	}
-
-	isIPv6 := false
-	if parsed := net.ParseIP(clientIP); parsed != nil && parsed.To4() == nil {
-		isIPv6 = true
-	}
-
-	writeJSON(w, http.StatusOK, map[string]any{
-		"ip":          clientIP,
-		"is_ipv6":     isIPv6,
-		"location":    info.Location,
-		"city":        info.City,
-		"country":     info.Country,
-		"province":    info.Province,
-		"isp":         info.ISP,
-		"asn":         info.ASN,
-		"is_domestic": info.IsDomestic,
-	})
-}
-
 func (s *Server) handleProbeNodePeers(w http.ResponseWriter, r *http.Request) {
 	if _, err := s.operator(r, false); err != nil {
 		writeError(w, err)
@@ -401,43 +239,6 @@ func (s *Server) handleProbeNodePeers(w http.ResponseWriter, r *http.Request) {
 	targetNodeID := r.URL.Query().Get("target_node_id")
 
 	res, err := s.ProbeNodePeers(r.Context(), nodeID, targetNodeID)
-	if err != nil {
-		writeError(w, err)
-		return
-	}
-	writeJSON(w, http.StatusOK, res)
-}
-
-func (s *Server) handleProbeNodeClient(w http.ResponseWriter, r *http.Request) {
-	if _, err := s.operator(r, false); err != nil {
-		writeError(w, err)
-		return
-	}
-	nodeID := r.PathValue("id")
-
-	var req struct {
-		ClientIP string `json:"client_ip"`
-	}
-	_ = json.NewDecoder(r.Body).Decode(&req)
-	clientIP := strings.TrimSpace(req.ClientIP)
-	if clientIP == "" {
-		if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
-			parts := strings.Split(xff, ",")
-			clientIP = strings.TrimSpace(parts[0])
-		}
-		if clientIP == "" {
-			clientIP = strings.TrimSpace(r.Header.Get("X-Real-IP"))
-		}
-		if clientIP == "" {
-			if host, _, err := net.SplitHostPort(r.RemoteAddr); err == nil {
-				clientIP = host
-			} else {
-				clientIP = r.RemoteAddr
-			}
-		}
-	}
-
-	res, err := s.ProbeNodeClient(r.Context(), nodeID, clientIP)
 	if err != nil {
 		writeError(w, err)
 		return

@@ -2153,6 +2153,18 @@ func (s *Store) DeleteEndpoint(ctx context.Context, endpointID string) error {
 	return tx.Commit()
 }
 
+func (s *Store) EndpointName(ctx context.Context, endpointID string) (string, error) {
+	var name string
+	err := s.db.QueryRowContext(ctx, `SELECT name FROM endpoints WHERE id = ?`, endpointID).Scan(&name)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", ErrNotFound
+	}
+	if err != nil {
+		return "", fmt.Errorf("load endpoint name: %w", err)
+	}
+	return name, nil
+}
+
 // ListEndpoints returns one listener's users, or every listener's when
 // listenerID is empty. Credentials are never included either way.
 func (s *Store) ListEndpoints(ctx context.Context, listenerID string) ([]Endpoint, error) {
@@ -2699,9 +2711,9 @@ CREATE INDEX IF NOT EXISTS idx_node_latency_points_node_ts ON node_latency_point
 -- from them again.
 DROP TABLE IF EXISTS firewall_rules;
 DROP TABLE IF EXISTS fail2ban_jails;
-CREATE TABLE IF NOT EXISTS cloudflare_settings (
-  id INTEGER PRIMARY KEY CHECK (id = 1), zone_id TEXT NOT NULL, zone_name TEXT NOT NULL,
-  api_token BLOB NOT NULL, updated_at INTEGER NOT NULL
+CREATE TABLE IF NOT EXISTS cloudflare_zones (
+  zone_id TEXT PRIMARY KEY, zone_name TEXT NOT NULL UNIQUE,
+  api_token BLOB NOT NULL, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL
 );
 CREATE TABLE IF NOT EXISTS connection_records (
   id TEXT PRIMARY KEY, node_id TEXT NOT NULL, node_name TEXT NOT NULL DEFAULT '',
@@ -2751,6 +2763,10 @@ CREATE TABLE IF NOT EXISTS alert_settings (
   bark_sound TEXT NOT NULL DEFAULT 'minuet',
   bark_group TEXT NOT NULL DEFAULT 'Polaris',
   bark_url TEXT NOT NULL DEFAULT '',
+  telegram_enabled INTEGER NOT NULL DEFAULT 0,
+  telegram_server TEXT NOT NULL DEFAULT 'https://api.telegram.org',
+  telegram_bot_token TEXT NOT NULL DEFAULT '',
+  telegram_chat_id TEXT NOT NULL DEFAULT '',
   traffic_alert_enabled INTEGER NOT NULL DEFAULT 1,
   traffic_threshold_mbps REAL NOT NULL DEFAULT 50.0,
   traffic_duration_sec INTEGER NOT NULL DEFAULT 10,
@@ -2758,96 +2774,26 @@ CREATE TABLE IF NOT EXISTS alert_settings (
   conn_threshold_count INTEGER NOT NULL DEFAULT 200,
   single_ip_alert_enabled INTEGER NOT NULL DEFAULT 1,
   single_ip_threshold_count INTEGER NOT NULL DEFAULT 60,
-  gfw_alert_enabled INTEGER NOT NULL DEFAULT 1,
   offline_alert_enabled INTEGER NOT NULL DEFAULT 1,
   cooldown_minutes INTEGER NOT NULL DEFAULT 15,
-  auto_probe_gfw_enabled INTEGER NOT NULL DEFAULT 1,
-  probe_gfw_interval_minutes INTEGER NOT NULL DEFAULT 30,
-  auto_probe_speedtest_enabled INTEGER NOT NULL DEFAULT 1,
-  probe_speedtest_interval_hours INTEGER NOT NULL DEFAULT 6,
-  probe_skip_when_busy INTEGER NOT NULL DEFAULT 1,
-  probe_notify_always INTEGER NOT NULL DEFAULT 1,
   scan_alert_enabled INTEGER NOT NULL DEFAULT 0,
   updated_at INTEGER NOT NULL
 );
-CREATE TABLE IF NOT EXISTS node_speedtests (
-  id TEXT PRIMARY KEY,
-  node_id TEXT NOT NULL REFERENCES nodes(id) ON DELETE CASCADE,
-  report_url TEXT NOT NULL DEFAULT '',
-  telecom_latency_ms INTEGER NOT NULL DEFAULT 0,
-  telecom_speed_mbps REAL NOT NULL DEFAULT 0,
-  telecom_route TEXT NOT NULL DEFAULT '',
-  unicom_latency_ms INTEGER NOT NULL DEFAULT 0,
-  unicom_speed_mbps REAL NOT NULL DEFAULT 0,
-  unicom_route TEXT NOT NULL DEFAULT '',
-  mobile_latency_ms INTEGER NOT NULL DEFAULT 0,
-  mobile_speed_mbps REAL NOT NULL DEFAULT 0,
-  mobile_route TEXT NOT NULL DEFAULT '',
-  gfw_blocked INTEGER NOT NULL DEFAULT 0,
-  gfw_status TEXT NOT NULL DEFAULT '',
-  domestic_latency_ms INTEGER NOT NULL DEFAULT 0,
-  domestic_source TEXT NOT NULL DEFAULT '',
-  inbound_telecom_route TEXT NOT NULL DEFAULT '',
-  inbound_telecom_latency_ms INTEGER NOT NULL DEFAULT 0,
-  inbound_unicom_route TEXT NOT NULL DEFAULT '',
-  inbound_unicom_latency_ms INTEGER NOT NULL DEFAULT 0,
-  inbound_mobile_route TEXT NOT NULL DEFAULT '',
-  inbound_mobile_latency_ms INTEGER NOT NULL DEFAULT 0,
-  telecom_node_latencies TEXT NOT NULL DEFAULT '',
-  telecom_trace_path TEXT NOT NULL DEFAULT '',
-  unicom_node_latencies TEXT NOT NULL DEFAULT '',
-  unicom_trace_path TEXT NOT NULL DEFAULT '',
-  mobile_node_latencies TEXT NOT NULL DEFAULT '',
-  mobile_trace_path TEXT NOT NULL DEFAULT '',
-  inbound_telecom_node_latencies TEXT NOT NULL DEFAULT '',
-  inbound_telecom_trace_path TEXT NOT NULL DEFAULT '',
-  inbound_unicom_node_latencies TEXT NOT NULL DEFAULT '',
-  inbound_unicom_trace_path TEXT NOT NULL DEFAULT '',
-  inbound_mobile_node_latencies TEXT NOT NULL DEFAULT '',
-  inbound_mobile_trace_path TEXT NOT NULL DEFAULT '',
-  tested_at INTEGER NOT NULL
-);
-CREATE INDEX IF NOT EXISTS idx_node_speedtests_node_tested ON node_speedtests(node_id, tested_at DESC);
 INSERT OR IGNORE INTO alert_settings (id, updated_at) VALUES (1, unixepoch());
 `)
 	if err != nil {
 		return fmt.Errorf("migrate database: %w", err)
 	}
-	for _, column := range []string{
-		"report_url TEXT NOT NULL DEFAULT ''",
-		"telecom_route TEXT NOT NULL DEFAULT ''",
-		"unicom_route TEXT NOT NULL DEFAULT ''",
-		"mobile_route TEXT NOT NULL DEFAULT ''",
-		"gfw_blocked INTEGER NOT NULL DEFAULT 0",
-		"gfw_status TEXT NOT NULL DEFAULT ''",
-		"domestic_latency_ms INTEGER NOT NULL DEFAULT 0",
-		"domestic_source TEXT NOT NULL DEFAULT ''",
-		"inbound_telecom_route TEXT NOT NULL DEFAULT ''",
-		"inbound_telecom_latency_ms INTEGER NOT NULL DEFAULT 0",
-		"inbound_unicom_route TEXT NOT NULL DEFAULT ''",
-		"inbound_unicom_latency_ms INTEGER NOT NULL DEFAULT 0",
-		"inbound_mobile_route TEXT NOT NULL DEFAULT ''",
-		"inbound_mobile_latency_ms INTEGER NOT NULL DEFAULT 0",
-		"telecom_node_latencies TEXT NOT NULL DEFAULT ''",
-		"telecom_trace_path TEXT NOT NULL DEFAULT ''",
-		"unicom_node_latencies TEXT NOT NULL DEFAULT ''",
-		"unicom_trace_path TEXT NOT NULL DEFAULT ''",
-		"mobile_node_latencies TEXT NOT NULL DEFAULT ''",
-		"mobile_trace_path TEXT NOT NULL DEFAULT ''",
-		"inbound_telecom_node_latencies TEXT NOT NULL DEFAULT ''",
-		"inbound_telecom_trace_path TEXT NOT NULL DEFAULT ''",
-		"inbound_unicom_node_latencies TEXT NOT NULL DEFAULT ''",
-		"inbound_unicom_trace_path TEXT NOT NULL DEFAULT ''",
-		"inbound_mobile_node_latencies TEXT NOT NULL DEFAULT ''",
-		"inbound_mobile_trace_path TEXT NOT NULL DEFAULT ''",
-	} {
-		if err := s.addSpeedtestColumn(ctx, column); err != nil {
-			return err
-		}
+	if err := s.migrateLegacyCloudflareSettings(ctx); err != nil {
+		return err
 	}
 	for _, column := range []string{
 		"bark_url TEXT NOT NULL DEFAULT ''",
 		"scan_alert_enabled INTEGER NOT NULL DEFAULT 0",
+		"telegram_enabled INTEGER NOT NULL DEFAULT 0",
+		"telegram_server TEXT NOT NULL DEFAULT 'https://api.telegram.org'",
+		"telegram_bot_token TEXT NOT NULL DEFAULT ''",
+		"telegram_chat_id TEXT NOT NULL DEFAULT ''",
 	} {
 		if err := s.addAlertSettingsColumn(ctx, column); err != nil {
 			return err
@@ -2997,20 +2943,27 @@ INSERT OR IGNORE INTO alert_settings (id, updated_at) VALUES (1, unixepoch());
 	if err := s.migrateEmbeddedMihomoRuleProviders(ctx); err != nil {
 		return err
 	}
-	if _, err := s.db.ExecContext(ctx, `UPDATE node_speedtests SET mobile_route = 'CN2 GIA' WHERE mobile_route LIKE '%移动优化%' OR mobile_route = 'CN2 GIA (移动优化)'; UPDATE node_speedtests SET unicom_route = 'CN2 GIA' WHERE unicom_route LIKE '%联通优化%' OR unicom_route = 'CN2 GIA (联通优化)'`); err != nil {
-		return fmt.Errorf("cleanup legacy forced routes: %w", err)
+	return nil
+}
+
+// migrateLegacyCloudflareSettings moves the single-zone configuration into the
+// multi-zone table once, then removes the old table. Leaving it behind would
+// make a zone deleted from the console reappear on the next start.
+func (s *Store) migrateLegacyCloudflareSettings(ctx context.Context) error {
+	var legacy int
+	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'cloudflare_settings'`).Scan(&legacy); err != nil {
+		return fmt.Errorf("check legacy Cloudflare settings: %w", err)
 	}
-	if _, err := s.db.ExecContext(ctx, `UPDATE node_speedtests SET gfw_blocked = 0, gfw_status = 'normal', inbound_telecom_route = '', inbound_unicom_route = '', inbound_mobile_route = '' WHERE gfw_blocked = 1 AND domestic_latency_ms = 0 AND (domestic_source LIKE '%400%' OR domestic_source LIKE '%国内探针全超时%' OR domestic_source = '' OR domestic_source IS NULL)`); err != nil {
-		return fmt.Errorf("cleanup legacy false-positive gfw blocked states: %w", err)
+	if legacy == 0 {
+		return nil
 	}
-	_, _ = s.db.ExecContext(ctx, `UPDATE node_speedtests SET 
-		inbound_telecom_trace_path = REPLACE(inbound_telecom_trace_path, 'AS174 (Cogent·美西洛杉矶) ➔ ', ''),
-		inbound_unicom_trace_path = REPLACE(inbound_unicom_trace_path, 'AS174 (Cogent·美西洛杉矶) ➔ ', ''),
-		inbound_mobile_trace_path = REPLACE(inbound_mobile_trace_path, 'AS174 (Cogent·美西洛杉矶) ➔ ', ''),
-		telecom_trace_path = REPLACE(telecom_trace_path, 'AS174 (Cogent·美西洛杉矶) ➔ ', ''),
-		unicom_trace_path = REPLACE(unicom_trace_path, 'AS174 (Cogent·美西洛杉矶) ➔ ', ''),
-		mobile_trace_path = REPLACE(mobile_trace_path, 'AS174 (Cogent·美西洛杉矶) ➔ ', '')
-		WHERE inbound_telecom_trace_path LIKE '%AS174%' OR telecom_trace_path LIKE '%AS174%'`)
+	if _, err := s.db.ExecContext(ctx, `INSERT OR IGNORE INTO cloudflare_zones (zone_id, zone_name, api_token, created_at, updated_at)
+		SELECT zone_id, zone_name, api_token, updated_at, updated_at FROM cloudflare_settings`); err != nil {
+		return fmt.Errorf("migrate legacy Cloudflare settings: %w", err)
+	}
+	if _, err := s.db.ExecContext(ctx, `DROP TABLE cloudflare_settings`); err != nil {
+		return fmt.Errorf("remove legacy Cloudflare settings: %w", err)
+	}
 	return nil
 }
 
@@ -3074,14 +3027,6 @@ func (s *Store) addLoginChallengeColumn(ctx context.Context, definition string) 
 		return nil
 	}
 	return fmt.Errorf("migrate login challenges table: %w", err)
-}
-
-func (s *Store) addSpeedtestColumn(ctx context.Context, definition string) error {
-	_, err := s.db.ExecContext(ctx, "ALTER TABLE node_speedtests ADD COLUMN "+definition)
-	if err == nil || strings.Contains(err.Error(), "duplicate column name") {
-		return nil
-	}
-	return fmt.Errorf("migrate node_speedtests table: %w", err)
 }
 
 func (s *Store) addAlertSettingsColumn(ctx context.Context, definition string) error {

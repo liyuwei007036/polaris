@@ -196,7 +196,6 @@ func serveCombined(ctx context.Context, masterConfiguration masterConfig, agentC
 	server.EnableConnectionRecording(combinedContext)
 	server.StartMaintenance(combinedContext)
 	server.StartTrafficAggregation(combinedContext)
-	server.StartProber(combinedContext)
 	warnIfNotRoot()
 	errorsChannel := make(chan error, 3)
 	var wg sync.WaitGroup

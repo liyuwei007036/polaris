@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -132,38 +133,65 @@ func writeFileAtomic(path string, content []byte, mode os.FileMode) error {
 
 // CollectFail2BanStatus reports managed jail status from fail2ban-client. A
 // host without fail2ban simply reports nothing; no values are inferred.
+//
+// Every jail is an independent question to Fail2Ban, and a host that protects
+// several services can hold a dozen of them. Asking them one after another made
+// the security screen wait for the sum of every round trip, so they are asked
+// a few at a time instead. The order is preserved: the console lists jails in
+// the order Fail2Ban named them.
 func CollectFail2BanStatus(ctx context.Context) *Fail2BanReport {
 	output, err := exec.CommandContext(ctx, "fail2ban-client", "status").CombinedOutput()
 	if err != nil {
 		return nil
 	}
-	report := &Fail2BanReport{Available: true, Jails: []Fail2BanJailStatus{}}
+	var names []string
 	for _, line := range strings.Split(string(output), "\n") {
 		if !strings.Contains(line, "Jail list:") {
 			continue
 		}
-		names := strings.Split(strings.TrimSpace(strings.SplitN(line, "Jail list:", 2)[1]), ",")
-		for _, name := range names {
+		for _, name := range strings.Split(strings.TrimSpace(strings.SplitN(line, "Jail list:", 2)[1]), ",") {
 			name = strings.TrimSpace(name)
-			if name == "" {
-				continue
+			if name != "" {
+				names = append(names, name)
 			}
+		}
+	}
+	report := &Fail2BanReport{Available: true, Jails: make([]Fail2BanJailStatus, len(names))}
+	// Four at a time keeps a host with many jails quick without turning one
+	// screen refresh into a fork storm.
+	sem := make(chan struct{}, 4)
+	var group sync.WaitGroup
+	for index, name := range names {
+		group.Add(1)
+		go func(index int, name string) {
+			defer group.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+			status := collectJailStatus(ctx, name)
 			// Jails the operator set up outside polaris are reported too,
 			// marked as unmanaged, so the console can show what a host is
 			// already protected by instead of pretending nothing is there.
-			status := collectJailStatus(ctx, name)
 			status.Managed = strings.HasPrefix(name, fail2banManagedPrefix)
-			report.Jails = append(report.Jails, status)
-		}
+			report.Jails[index] = status
+		}(index, name)
 	}
+	group.Wait()
 	return report
 }
 
 func collectJailStatus(ctx context.Context, jail string) Fail2BanJailStatus {
 	status := Fail2BanJailStatus{Name: jail}
+	// The ban times come from a second IPC round trip that does not depend on
+	// the first, so it runs alongside it. It is drained on every path below;
+	// the channel is buffered so the goroutine can finish even when the status
+	// call fails first.
+	bans := make(chan []Fail2BanBan, 1)
+	go func() { bans <- queryJailBans(ctx, jail) }()
+
 	output, err := exec.CommandContext(ctx, "fail2ban-client", "status", jail).CombinedOutput()
 	if err != nil {
 		status.Error = commandSummary("fail2ban-client status "+jail, output, err)
+		<-bans
 		return status
 	}
 	for _, line := range strings.Split(string(output), "\n") {
@@ -179,7 +207,10 @@ func collectJailStatus(ctx context.Context, jail string) Fail2BanJailStatus {
 			}
 		}
 	}
-	status.Banned = collectJailBans(ctx, jail, status.BannedIPs)
+	status.Banned = <-bans
+	if len(status.Banned) == 0 {
+		status.Banned = bansWithoutTimes(status.BannedIPs)
+	}
 	return status
 }
 
@@ -188,24 +219,32 @@ func collectJailStatus(ctx context.Context, jail string) Fail2BanJailStatus {
 // passed along as text.
 const banTimeLayout = "2006-01-02 15:04:05"
 
-// collectJailBans asks Fail2Ban for the ban times of the addresses a jail
-// currently holds. Older Fail2Ban releases do not support the flag; the
-// addresses from the plain status output are then reported without times
-// rather than not at all.
-func collectJailBans(ctx context.Context, jail string, bannedIPs []string) []Fail2BanBan {
+// queryJailBans asks Fail2Ban for the ban times of the addresses a jail
+// currently holds. Older Fail2Ban releases do not support the flag; the caller
+// then falls back to the addresses from the plain status output rather than
+// reporting no bans at all.
+func queryJailBans(ctx context.Context, jail string) []Fail2BanBan {
 	output, err := exec.CommandContext(ctx, "fail2ban-client", "get", jail, "banip", "--with-time").CombinedOutput()
 	if err != nil {
-		return bansWithoutTimes(bannedIPs)
+		return nil
 	}
-	bans := make([]Fail2BanBan, 0, len(bannedIPs))
-	for _, line := range strings.Split(string(output), "\n") {
+	return parseJailBans(string(output))
+}
+
+// parseJailBans reads the daemon's one-line-per-address ban listing. Anything
+// that is not an address is skipped: an empty jail prints a sentence rather
+// than a list, and turning that sentence into a ban would put a fake entry in
+// front of the operator.
+func parseJailBans(output string) []Fail2BanBan {
+	bans := make([]Fail2BanBan, 0)
+	for _, line := range strings.Split(output, "\n") {
 		line = strings.TrimSpace(line)
 		if line == "" {
 			continue
 		}
 		// `IP<tab>2024-01-01 10:00:00 + 3600 = 2024-01-01 11:00:00`
 		fields := strings.Fields(line)
-		if len(fields) == 0 {
+		if len(fields) == 0 || net.ParseIP(fields[0]) == nil {
 			continue
 		}
 		ban := Fail2BanBan{IP: fields[0]}
@@ -216,9 +255,6 @@ func collectJailBans(ctx context.Context, jail string, bannedIPs []string) []Fai
 			ban.UnbanAt = parseBanTime(fields[6] + " " + fields[7])
 		}
 		bans = append(bans, ban)
-	}
-	if len(bans) == 0 {
-		return bansWithoutTimes(bannedIPs)
 	}
 	return bans
 }

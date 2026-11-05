@@ -67,6 +67,15 @@ const filteredBanned = computed(() => banned.value.filter((row) => {
   return includesText([nodeName(row.node_id), row.ip, row.location, row.rule_name, row.jail], keyword.value)
 }))
 
+// 读取失败的服务器不等于没有规则，空表不能让人误以为防火墙是敞开的。
+const unreadableNodes = computed(() => {
+  const failures = new Map()
+  for (const node of [...firewallNodes.value, ...fail2banNodes.value]) {
+    if (node.error) failures.set(node.node_id, node.error)
+  }
+  return Array.from(failures, ([id, error]) => ({ id, name: nodeName(id), error }))
+})
+
 const firewallOpen = ref(false)
 const jailOpen = ref(false)
 const firewall = reactive({ node_id: '', action: 'accept', protocol: 'tcp', cidr: '0.0.0.0/0', port: 443 })
@@ -136,17 +145,14 @@ function applyTemplate(key) {
 }
 
 // load 是挨个问服务器现在在执行什么。比读一张表慢，这正是重点：答案是当下的。
+// 一次请求同时取回两类状态，节点只被读取一次，而不是重复读取同一份 Fail2Ban 状态。
 async function load() {
   loading.value = true
   try {
-    const [firewallResult, jailResult, bannedResult] = await Promise.all([
-      api('/firewall/rules').catch(() => ({ nodes: [] })),
-      api('/fail2ban/jails').catch(() => ({ nodes: [] })),
-      api('/fail2ban/banned').catch(() => ({ banned: [] })),
-    ])
-    firewallNodes.value = firewallResult.nodes || []
-    fail2banNodes.value = jailResult.nodes || []
-    banned.value = bannedResult.banned || []
+    const result = await api('/security/overview').catch(() => ({}))
+    firewallNodes.value = result.firewall?.nodes || []
+    fail2banNodes.value = result.fail2ban?.nodes || []
+    banned.value = result.banned || []
   } finally { loading.value = false }
 }
 
@@ -328,6 +334,16 @@ onMounted(load)
 <template>
   <MPage :loading="loading">
     <MSegmented v-model="tab" :options="tabs" />
+
+    <el-alert
+      v-if="unreadableNodes.length"
+      type="warning"
+      show-icon
+      :closable="false"
+      :title="`有 ${unreadableNodes.length} 台服务器未能读取，下面的列表不代表它们没有规则`"
+    >
+      <div v-for="node in unreadableNodes" :key="node.id">{{ node.name }}：{{ node.error }}</div>
+    </el-alert>
 
     <el-input v-model="keyword" clearable :prefix-icon="Search" placeholder="搜索服务器、地址或规则" />
     <div class="m-filters">

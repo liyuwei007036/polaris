@@ -30,6 +30,10 @@
         :viewBox="`0 0 ${MAP_W} ${MAP_H}`"
         preserveAspectRatio="xMidYMid meet"
         class="map-svg"
+        :class="{ 'is-pin-hover': hoveredKey }"
+        @mousemove="onMapMove"
+        @mouseleave="onMapLeave"
+        @click="onMapClick"
       >
         <!-- Static Land Dot Matrix -->
         <g class="land-dots">
@@ -47,15 +51,23 @@
           v-for="p in places"
           :key="p.key"
           class="place-pin-group"
-          :class="[p.toneClass, { 'is-active': selectedKey === p.key }]"
+          :class="[p.toneClass, { 'is-active': selectedKey === p.key, 'is-hover': hoveredKey === p.key }]"
           role="button"
           tabindex="0"
           :aria-label="`${p.label}，${p.online}/${p.nodes.length} 台在线`"
-          @click.stop="toggleSelect(p.key)"
           @keydown.enter.prevent="toggleSelect(p.key)"
           @keydown.space.prevent="toggleSelect(p.key)"
         >
           <title>{{ pinTitle(p) }}</title>
+          <!-- 防重叠展开后的引线：从真实坐标指向显示位置 -->
+          <line
+            v-if="p.spread"
+            :x1="p.trueX"
+            :y1="p.trueY"
+            :x2="p.x"
+            :y2="p.y"
+            class="pin-leader"
+          />
           <!-- Pulse halo -->
           <circle
             :cx="p.x"
@@ -64,27 +76,28 @@
             class="pin-halo"
             :class="p.toneClass"
           />
-          <!-- 透明命中区：把 2px 的小圆点扩大成易点中的热区，避免鼠标抖动 -->
+          <!-- 位置近似标记：只有国家级定位，没有精确经纬度 -->
           <circle
+            v-if="p.approximate"
             :cx="p.x"
             :cy="p.y"
-            r="7"
-            class="pin-hit"
+            :r="pinRadius(p) + 1.6"
+            class="pin-approx-ring"
           />
           <!-- 选中环 -->
           <circle
             v-if="selectedKey === p.key"
             :cx="p.x"
             :cy="p.y"
-            r="4.8"
+            :r="pinRadius(p) + 2.4"
             class="pin-select-ring"
             :class="p.toneClass"
           />
-          <!-- Center dot -->
+          <!-- Center dot：同一地点 VPS 越多，圆点略大，便于识别聚合规模 -->
           <circle
             :cx="p.x"
             :cy="p.y"
-            r="2.2"
+            :r="pinRadius(p)"
             class="pin-core"
             :class="p.toneClass"
           />
@@ -128,7 +141,7 @@
             <button class="popup-close" title="关闭" @click="selectedKey = null">&times;</button>
           </div>
           <div class="popup-sub tnum">
-            {{ activePlace.nodes.length }} 台 VPS · {{ formatCoords(activePlace.lat, activePlace.lon) }}
+            {{ activePlace.nodes.length }} 台 VPS · {{ activePlace.approximate ? '位置近似（按国家中心显示）' : formatCoords(activePlace.lat, activePlace.lon) }}
           </div>
           <div class="popup-nodes-list">
             <button
@@ -140,7 +153,10 @@
               @click="handleNodeClick(node.id)"
             >
               <span class="popup-node-status" :class="node.online ? 'is-online' : 'is-offline'" />
-              <span class="popup-node-name truncate">{{ node.name }}</span>
+              <span class="popup-node-main">
+                <span class="popup-node-name truncate">{{ node.name }}</span>
+                <span class="popup-node-meta truncate">{{ nodeMeta(node) }}</span>
+              </span>
               <span class="popup-node-tag" :class="node.online ? 'is-online' : 'is-offline'">
                 {{ node.online ? '在线' : '离线' }}
               </span>
@@ -155,7 +171,7 @@
 
 <script setup>
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
-import { LAND_POSITIONS, MAP_H, MAP_W, project } from '../geo'
+import { countryCoords, LAND_POSITIONS, MAP_H, MAP_W, project } from '../geo'
 import { connectionSnapshots, subscribeConnections } from '../connections'
 
 const props = defineProps({
@@ -180,6 +196,7 @@ const wrapRef = ref(null)
 const svgRef = ref(null)
 const canvasRef = ref(null)
 const selectedKey = ref(null)
+const hoveredKey = ref(null)
 const isFullscreen = ref(false)
 
 let unsubConnections = null
@@ -211,55 +228,210 @@ function countryCodeToFlag(code) {
   return String.fromCodePoint(...[...code.toUpperCase()].map((c) => c.charCodeAt(0) + offset))
 }
 
-// 纯数据驱动：根据真实下发的物理经纬度进行城市/机房级别的打点，零硬编码！
+// 把同一座城市/地区的 VPS 聚合到一起。
+// 之前按经纬度保留 3 位小数做键，同一城市的服务器只要定位结果有几米差异，
+// 就会变成多个互相重叠的小点，点开只看到其中 1 台。
+function localityLabel(node) {
+  const city = String(node.city || '').trim()
+  if (city && city !== '未知' && city !== '本机' && city !== '内网') return city
+
+  const location = String(node.location || '').trim()
+  if (location && location !== '未知') {
+    const parts = location.split(/\s+/).filter(Boolean)
+    if (parts.length) return parts[parts.length - 1]
+  }
+  return ''
+}
+
+function regionLabel(node) {
+  const code = String(node.country_code || '').trim().toUpperCase()
+  if (/^[A-Z]{2}$/.test(code)) {
+    try {
+      const dn = new Intl.DisplayNames(['zh-CN'], { type: 'region' })
+      const name = dn.of(code)
+      if (name) return name
+    } catch {
+      // 浏览器不支持 Intl.DisplayNames 时退回国家代码
+    }
+  }
+  return String(node.country || code || '未知区域').trim()
+}
+
+function toneOf(place) {
+  if (place.online === 0) return 'tone-none'
+  if (place.online < place.nodes.length) return 'tone-some'
+  return 'tone-all'
+}
+
+// 视图坐标系中的合并距离：地图总宽只有 360 单位，小于 2 单位的两座城市
+// 在屏幕上几乎重合，合并成一个点并列出全部 VPS，避免“藏在下面点不到”。
+const PLACE_MERGE_DISTANCE = 2
+// 两个标记在视图坐标系里的最小显示间距，避免洛杉矶/圣何塞这种相邻城市叠成一个点。
+const PLACE_MIN_DISTANCE = 9
+
+// 纯数据驱动：同一城市/地区的 VPS 聚合为一个标记，节点全部保留在弹窗里。
 const places = computed(() => {
   const map = new Map()
+  const unlocated = []
 
   for (const node of props.nodes) {
     const lat = Number(node.latitude)
     const lon = Number(node.longitude)
     const hasValidCoords = Boolean(node.has_coords || (!isNaN(lat) && !isNaN(lon) && (lat !== 0 || lon !== 0)))
-    if (!hasValidCoords) continue
+    if (!hasValidCoords) {
+      unlocated.push(node)
+      continue
+    }
 
-    const [x, y] = project(lat, lon)
-    // 以保留 3 位小数的坐标指纹作为聚合键（约 100 米范围，同机房聚合，不同城市自然独立）
-    const key = `${lat.toFixed(3)},${lon.toFixed(3)}`
+    const locality = localityLabel(node)
+    const country = String(node.country_code || node.country || '').trim().toUpperCase()
+    const key = locality ? `${country}|${locality.toLowerCase()}` : `${lat.toFixed(3)},${lon.toFixed(3)}`
 
     let place = map.get(key)
     if (!place) {
-      let regionName = node.city || node.location
-      if (!regionName) {
-        try {
-          const dn = new Intl.DisplayNames(['zh-CN'], { type: 'region' })
-          regionName = dn.of(node.country_code) || node.country_code || '未知区域'
-        } catch {
-          regionName = node.country_code || '未知区域'
-        }
-      }
       place = {
         key,
         code: key,
-        label: regionName,
+        label: locality || regionLabel(node),
         flag: countryCodeToFlag(node.country_code),
-        x,
-        y,
-        lat,
-        lon,
+        latSum: 0,
+        lonSum: 0,
+        coordCount: 0,
         nodes: [],
         online: 0,
       }
       map.set(key, place)
     }
     place.nodes.push(node)
+    place.latSum += lat
+    place.lonSum += lon
+    place.coordCount++
     if (node.online) place.online++
   }
 
-  return [...map.values()].map((p) => {
-    let toneClass = 'tone-all'
-    if (p.online === 0) toneClass = 'tone-none'
-    else if (p.online < p.nodes.length) toneClass = 'tone-some'
-    return { ...p, toneClass }
+  const normalized = [...map.values()].map((place) => {
+    const lat = place.latSum / place.coordCount
+    const lon = place.lonSum / place.coordCount
+    const [x, y] = project(lat, lon)
+    return {
+      ...place,
+      lat,
+      lon,
+      x,
+      y,
+      toneClass: toneOf(place),
+    }
   })
+
+  // 没有经纬度的节点：先尝试并入同城市的精确标记；城市也不确定时退到国家中心点，
+  // 保证 VPS 不会从地图上凭空消失，同时用“位置近似”明确标注。
+  const approximate = new Map()
+  for (const node of unlocated) {
+    const locality = localityLabel(node)
+    const country = String(node.country_code || node.country || '').trim().toUpperCase()
+    const cityKey = locality ? `${country}|${locality.toLowerCase()}` : ''
+    const host = cityKey ? normalized.find((place) => place.key === cityKey) : null
+    if (host) {
+      host.nodes.push(node)
+      if (node.online) host.online++
+      host.toneClass = toneOf(host)
+      continue
+    }
+
+    const coords = countryCoords(node.country_code)
+    if (!coords) continue
+
+    const key = `~${country || 'unknown'}`
+    let place = approximate.get(key)
+    if (!place) {
+      const [x, y] = project(coords.lat, coords.lon)
+      place = {
+        key,
+        code: key,
+        label: `${regionLabel(node)}（位置近似）`,
+        flag: countryCodeToFlag(node.country_code),
+        lat: coords.lat,
+        lon: coords.lon,
+        x,
+        y,
+        nodes: [],
+        online: 0,
+        approximate: true,
+      }
+      approximate.set(key, place)
+    }
+    place.nodes.push(node)
+    if (node.online) place.online++
+  }
+  for (const place of approximate.values()) {
+    place.toneClass = toneOf(place)
+  }
+
+  // 不同城市如果定位坐标几乎重合，也合并成一个标记，保证点开后能看到全部节点。
+  const merged = []
+  for (const place of [...normalized, ...approximate.values()]) {
+    const host = merged.find((item) => Math.hypot(item.x - place.x, item.y - place.y) < PLACE_MERGE_DISTANCE)
+    if (!host) {
+      merged.push({ ...place })
+      continue
+    }
+    const hostCount = host.nodes.length
+    const total = hostCount + place.nodes.length
+    host.lat = (host.lat * hostCount + place.lat * place.nodes.length) / total
+    host.lon = (host.lon * hostCount + place.lon * place.nodes.length) / total
+    ;[host.x, host.y] = project(host.lat, host.lon)
+    host.nodes.push(...place.nodes)
+    host.online += place.online
+    const labels = host.label.split(' / ')
+    if (!labels.includes(place.label)) labels.push(place.label)
+    host.label = labels.join(' / ')
+    if (host.flag !== place.flag) host.flag = '🌐'
+    host.toneClass = toneOf(host)
+  }
+
+  // 同一区域的两个城市（例如洛杉矶和圣何塞）即使各自只剩一个标记，
+  // 在总览地图上也可能只差几个像素。这里做一次轻量的“防重叠展开”：
+  // 显示位置至少间隔 9 个视图单位，并保留真实坐标用于画回引线和弹窗展示。
+  const laidOut = merged
+    .slice()
+    .sort((a, b) => a.key.localeCompare(b.key))
+    .map((place) => ({ ...place, trueX: place.x, trueY: place.y }))
+
+  for (let iteration = 0; iteration < 24; iteration++) {
+    let moved = false
+    for (let i = 0; i < laidOut.length; i++) {
+      for (let j = i + 1; j < laidOut.length; j++) {
+        const a = laidOut[i]
+        const b = laidOut[j]
+        let dx = b.x - a.x
+        let dy = b.y - a.y
+        let distance = Math.hypot(dx, dy)
+        if (distance >= PLACE_MIN_DISTANCE) continue
+        if (distance < 0.001) {
+          dx = 1
+          dy = 0
+          distance = 1
+        }
+        const ux = dx / distance
+        const uy = dy / distance
+        const push = (PLACE_MIN_DISTANCE - distance) / 2 + 0.01
+        a.x -= ux * push
+        a.y -= uy * push
+        b.x += ux * push
+        b.y += uy * push
+        moved = true
+      }
+    }
+    if (!moved) break
+  }
+
+  for (const place of laidOut) {
+    place.x = Math.max(5, Math.min(MAP_W - 5, place.x))
+    place.y = Math.max(4, Math.min(MAP_H - 4, place.y))
+    place.spread = Math.hypot(place.x - place.trueX, place.y - place.trueY) > 0.2
+  }
+
+  return laidOut
 })
 
 const activePlace = computed(() => {
@@ -281,6 +453,12 @@ function pinTitle(place) {
   return `${place.label} · ${shown}${rest}（${place.online}/${place.nodes.length} 在线）`
 }
 
+function nodeMeta(node) {
+  const location = String(node.city || node.location || '').trim()
+  const address = String(node.last_observed_ip || node.client_address || '').trim()
+  return [location, address].filter(Boolean).join(' · ') || '位置未知'
+}
+
 function formatCoords(lat, lon) {
   const la = Number(lat)
   const lo = Number(lon)
@@ -290,8 +468,66 @@ function formatCoords(lat, lon) {
   return `${Math.abs(la).toFixed(2)}°${ns}, ${Math.abs(lo).toFixed(2)}°${ew}`
 }
 
+function pinRadius(place) {
+  return 2.2 + Math.min(1.2, Math.max(0, place.nodes.length - 1) * 0.35)
+}
+
 function toggleSelect(key) {
   selectedKey.value = selectedKey.value === key ? null : key
+}
+
+// 地图上两个城市可能只差几个像素（例如洛杉矶和圣何塞）。
+// 不用固定半径的透明热区互相遮挡，而是按鼠标到各标记中心的实际距离取最近的一个，
+// 这样挨得很近的 VPS 也都能各自选中。
+function mapPointFromEvent(event) {
+  const svg = svgRef.value
+  if (!svg || typeof event.clientX !== 'number') return null
+  const ctm = svg.getScreenCTM()
+  if (!ctm) return null
+  const point = svg.createSVGPoint()
+  point.x = event.clientX
+  point.y = event.clientY
+  const local = point.matrixTransform(ctm.inverse())
+  return [local.x, local.y]
+}
+
+function nearestPlaceAt(event, maxScreenPx) {
+  const point = mapPointFromEvent(event)
+  const svg = svgRef.value
+  if (!point || !svg) return null
+
+  const rect = svg.getBoundingClientRect()
+  const scale = Math.min(rect.width / MAP_W, rect.height / MAP_H) || 1
+  const maxDistance = maxScreenPx / scale
+
+  let nearest = null
+  let nearestDistance = Infinity
+  for (const place of places.value) {
+    const distance = Math.hypot(place.x - point[0], place.y - point[1])
+    if (distance < nearestDistance) {
+      nearestDistance = distance
+      nearest = place
+    }
+  }
+  return nearest && nearestDistance <= maxDistance ? nearest : null
+}
+
+function onMapMove(event) {
+  const place = nearestPlaceAt(event, 16)
+  const key = place ? place.key : null
+  if (hoveredKey.value !== key) hoveredKey.value = key
+}
+
+function onMapLeave() {
+  hoveredKey.value = null
+}
+
+function onMapClick(event) {
+  const place = nearestPlaceAt(event, 20)
+  if (!place) return
+  // 阻止全局 click 把刚刚选中的弹窗立刻关掉
+  event.stopPropagation()
+  toggleSelect(place.key)
 }
 
 function handleNodeClick(nodeId) {
@@ -364,6 +600,12 @@ function collectNewConnections(now) {
   if (!rawSnapshots || rawSnapshots.size === 0) return { fresh: [], connectionCount: 0 }
 
   const nodeMap = new Map((props.nodes || []).map((n) => [n.id, n]))
+  // 标记的实际显示坐标（含防止相邻城市重叠的轻微展开），
+  // 让流星终点落在用户看到的圆点上，而不是原始经纬度对应的位置。
+  const displayByNode = new Map()
+  for (const place of places.value) {
+    for (const n of place.nodes) displayByNode.set(n.id, [place.x, place.y])
+  }
   // 集群节点 IP 映射表（用于解析节点之间的中继或互联流量来源）
   const fleetByIP = new Map()
   for (const n of props.nodes || []) {
@@ -386,7 +628,7 @@ function collectNewConnections(now) {
     const nLat = Number(node.latitude)
     const nLon = Number(node.longitude)
     const hasTarget = !(isNaN(nLat) || isNaN(nLon) || (nLat === 0 && nLon === 0))
-    const targetXY = hasTarget ? project(nLat, nLon) : null
+    const targetXY = hasTarget ? (displayByNode.get(node.id) || project(nLat, nLon)) : null
 
     for (const c of snapshot.connections || []) {
       if (c.is_chain_relay) continue
@@ -408,18 +650,23 @@ function collectNewConnections(now) {
       let sLat = Number(c.source_lat)
       let sLon = Number(c.source_lon)
       let hasSrc = Boolean(c.has_source_coords || (!isNaN(sLat) && !isNaN(sLon) && (sLat !== 0 || sLon !== 0)))
+      let sourceXY = null
 
       if (!hasSrc && c.source_ip) {
         const fromNode = fleetByIP.get(c.source_ip)
-        if (fromNode && fromNode.has_coords) {
-          sLat = Number(fromNode.latitude)
-          sLon = Number(fromNode.longitude)
-          hasSrc = !isNaN(sLat) && !isNaN(sLon) && (sLat !== 0 || sLon !== 0)
+        if (fromNode) {
+          sourceXY = displayByNode.get(fromNode.id) || null
+          if (!sourceXY && fromNode.has_coords) {
+            sLat = Number(fromNode.latitude)
+            sLon = Number(fromNode.longitude)
+            hasSrc = !isNaN(sLat) && !isNaN(sLon) && (sLat !== 0 || sLon !== 0)
+          }
         }
       }
-      if (!hasSrc) continue
-
-      const sourceXY = project(sLat, sLon)
+      if (!sourceXY) {
+        if (!hasSrc) continue
+        sourceXY = project(sLat, sLon)
+      }
       // 过滤完全重合的同物理点
       if (Math.hypot(targetXY[0] - sourceXY[0], targetXY[1] - sourceXY[1]) < 2) continue
 
@@ -768,6 +1015,17 @@ onUnmounted(() => {
   outline: none;
 }
 
+.map-svg.is-pin-hover {
+  cursor: pointer;
+}
+
+.pin-leader {
+  stroke: var(--sb-muted, #8b93a7);
+  stroke-width: 0.45;
+  opacity: 0.45;
+  pointer-events: none;
+}
+
 .pin-halo {
   animation: pulse-ring 2.4s ease-out infinite;
 }
@@ -776,29 +1034,35 @@ onUnmounted(() => {
 .pin-halo.tone-some { fill: var(--sb-warning, #f59e0b); }
 .pin-halo.tone-none { fill: var(--sb-danger, #ef4444); }
 
-/* 透明命中区：小圆点本身只有 2px，直接 hover 极易抖动脱靶 */
-.pin-hit {
-  fill: transparent;
-  pointer-events: all;
-}
-
 .pin-core {
   transform-box: fill-box;
   transform-origin: center;
   transition: transform 0.15s ease;
+  /* 用页面底色描边，两个靠得很近的城市不会糊成一团 */
+  stroke: var(--sb-bg, #0e1015);
+  stroke-width: 0.7;
   pointer-events: none;
 }
 
 /*
- * 关键修复：SVG 元素默认以 viewBox 原点/中心作为 transform-origin，
+ * 关键修复：SVG 元素默认以 viewBox 原点作为 transform-origin，
  * 直接 scale 会让圆点瞬移到别处，鼠标随之脱离 -> 再缩回，形成“跳来跳去”。
  * 这里用 fill-box + center 保证只以圆点自身中心放大。
- * 热区固定不缩放，悬停状态由整组承担，因此不会在放大/缩回之间反复抖。
+ * 悬停/选中状态由固定的地图坐标判定，不依赖缩放后的元素边界。
  */
-.place-pin-group:hover .pin-core,
+.place-pin-group.is-hover .pin-core,
 .place-pin-group:focus-visible .pin-core,
 .place-pin-group.is-active .pin-core {
   transform: scale(1.5);
+}
+
+.pin-approx-ring {
+  fill: none;
+  stroke: var(--sb-muted, #8b93a7);
+  stroke-width: 0.6;
+  stroke-dasharray: 1.2 1;
+  opacity: 0.8;
+  pointer-events: none;
 }
 
 .pin-core.tone-all { fill: var(--sb-success, #10b981); }
@@ -816,8 +1080,8 @@ onUnmounted(() => {
 .pin-select-ring.tone-none { stroke: var(--sb-danger, #ef4444); }
 
 @keyframes pulse-ring {
-  0% { r: 2.5; opacity: 0.7; }
-  100% { r: 5.5; opacity: 0; }
+  0% { r: 2.5; opacity: 0.55; }
+  100% { r: 4.6; opacity: 0; }
 }
 
 .place-popup {
@@ -901,13 +1165,26 @@ onUnmounted(() => {
 .popup-node-status.is-online { background: var(--sb-success, #10b981); }
 .popup-node-status.is-offline { background: var(--sb-danger, #ef4444); }
 
+.popup-node-main {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+
 .popup-node-name {
   min-width: 0;
 }
 
+.popup-node-meta {
+  min-width: 0;
+  font-size: 9px;
+  color: var(--sb-muted);
+}
+
 .popup-node-tag {
   flex-shrink: 0;
-  margin-left: auto;
   padding: 1px 5px;
   border-radius: 999px;
   font-size: 9px;

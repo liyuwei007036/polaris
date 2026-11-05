@@ -795,3 +795,83 @@ func TestNodeDDNSMultiDomainAndMasterDetection(t *testing.T) {
 		t.Fatalf("expected LastObservedIP 203.0.113.88, got %s", updatedNode.LastObservedIP)
 	}
 }
+
+// A node may bind records from different Cloudflare zones. Every record must be
+// found in its own zone and updated there.
+func TestExecuteNodeDDNSAcrossZones(t *testing.T) {
+	var mu sync.Mutex
+	contents := map[string]string{"rec-a": "192.0.2.1", "rec-b": "192.0.2.2"}
+	patched := map[string]string{}
+
+	mockCF := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		defer mu.Unlock()
+		zoneID := strings.Split(strings.TrimPrefix(r.URL.Path, "/zones/"), "/")[0]
+		var recordID string
+		switch r.URL.Path {
+		case "/zones/zone-a/dns_records/rec-a":
+			recordID = "rec-a"
+		case "/zones/zone-b/dns_records/rec-b":
+			recordID = "rec-b"
+		}
+		if recordID == "" {
+			http.NotFound(w, r)
+			return
+		}
+		if r.Method == http.MethodPatch {
+			var body map[string]any
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			if content, ok := body["content"].(string); ok {
+				contents[recordID] = content
+				patched[recordID] = content
+			}
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"success": true,
+			"result": map[string]any{
+				"id": recordID, "type": "A", "name": recordID + "." + zoneID + ".com",
+				"content": contents[recordID], "ttl": 60, "proxied": false,
+			},
+		})
+	}))
+	defer mockCF.Close()
+
+	oldAPI := cloudflareAPI
+	cloudflareAPI = mockCF.URL
+	defer func() { cloudflareAPI = oldAPI }()
+
+	store, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+
+	if err := store.SetCloudflareSettings(t.Context(), "zone-a", "example.com", "token-a"); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetCloudflareSettings(t.Context(), "zone-b", "example.net", "token-b"); err != nil {
+		t.Fatal(err)
+	}
+
+	nodeID := newTestNode(t, store, "cross-zone-node", "c")
+	enabled := true
+	recordIDs := []string{"rec-a", "rec-b"}
+	domains := []string{"a.example.com", "b.example.net"}
+	if err := store.UpdateNodeWithDDNS(t.Context(), nodeID, "Cross Zone", domains[0], &enabled, nil, nil, recordIDs, domains); err != nil {
+		t.Fatal(err)
+	}
+
+	server, err := NewServer(store, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := server.executeNodeDDNS(t.Context(), nodeID, "203.0.113.77"); err != nil {
+		t.Fatalf("executeNodeDDNS failed: %v", err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if patched["rec-a"] != "203.0.113.77" || patched["rec-b"] != "203.0.113.77" {
+		t.Fatalf("expected both zones patched, got %#v", patched)
+	}
+}

@@ -81,17 +81,17 @@ type Server struct {
 	// fleetStreaming is whether nodes should currently be pushing their
 	// real-time connection lists. Guarded by controlMu alongside the sessions
 	// it is announced to.
-	fleetStreaming      bool
-	reconcileMu         sync.Mutex
-	reconcileState      map[string]reconcileAttempt
-	taskWaitMu          sync.Mutex
-	taskWaiters         map[string]chan wire.TaskResult
-	speedtestMu         sync.Mutex
-	speedtestingNodes   map[string]bool
-	speedtestErrors     map[string]string
+	fleetStreaming bool
+	reconcileMu    sync.Mutex
+	reconcileState map[string]reconcileAttempt
+	taskWaitMu     sync.Mutex
+	taskWaiters    map[string]chan wire.TaskResult
+	// liveAskMu guards liveAsks, the identical read requests currently waiting
+	// on a node. Two screens asking the same question share one round trip.
+	liveAskMu           sync.Mutex
+	liveAsks            map[string]*liveAskCall
 	subscriptionLimiter *rateLimiter
 	alertEngine         *AlertEngine
-	prober              *Prober
 	// now is the clock the subscription access window and expiry are read
 	// against; tests replace it to reach a specific moment.
 	now func() time.Time
@@ -138,8 +138,7 @@ func NewServer(store *Store, secureCookies bool) (*Server, error) {
 		controls: make(map[string]*controlSession), autoInstallChecked: make(map[string]bool),
 		ddnsReconcileState:     make(map[string]*ddnsReconcileAttempt),
 		taskWaiters:            make(map[string]chan wire.TaskResult),
-		speedtestingNodes:      make(map[string]bool),
-		speedtestErrors:        make(map[string]string),
+		liveAsks:               make(map[string]*liveAskCall),
 		latestSingBoxReleaseFn: LatestOfficialSingBoxRelease,
 		connHub:                newConnectionsHub(), connRates: newConnectionRates(), connActivity: newNodeActivity(),
 		connRecorder: newConnectionRecorder(store, ipLocator),
@@ -150,7 +149,6 @@ func NewServer(store *Store, secureCookies bool) (*Server, error) {
 		now:                 time.Now,
 	}
 	server.connHub.onWatchers = server.setFleetStreaming
-	server.prober = newProber(server)
 	go server.runExpiryReminders()
 	return server, nil
 }
@@ -164,6 +162,7 @@ func (s *Server) runExpiryReminders() {
 			return
 		}
 		today := time.Now().In(NotificationLocation)
+		todayDate := time.Date(today.Year(), today.Month(), today.Day(), 0, 0, 0, 0, time.UTC)
 		for _, node := range nodes {
 			if node.ExpiresOn == "" {
 				continue
@@ -172,7 +171,10 @@ func (s *Server) runExpiryReminders() {
 			if err != nil {
 				continue
 			}
-			days := int(expires.Sub(time.Date(today.Year(), today.Month(), today.Day(), 0, 0, 0, 0, NotificationLocation)).Hours() / 24)
+			// Compare calendar dates in UTC so a DST transition in a custom TZ
+			// cannot turn a whole day into 23 hours and shift the reminder.
+			expiryDate := time.Date(expires.Year(), expires.Month(), expires.Day(), 0, 0, 0, 0, time.UTC)
+			days := int(expiryDate.Sub(todayDate).Hours() / 24)
 			if days < 1 || days > 3 {
 				continue
 			}
@@ -302,13 +304,6 @@ func (s *Server) StartTrafficAggregation(ctx context.Context) {
 	}()
 }
 
-// StartProber runs the periodic GFW and speedtest probes until ctx is canceled.
-func (s *Server) StartProber(ctx context.Context) {
-	if s.prober != nil {
-		s.prober.Start(ctx)
-	}
-}
-
 // untilNextRound waits for the next instant on the reporting grid plus a short
 // grace period, so the pushes every node sent on that instant have arrived
 // before they are added together. The grace scales with the cadence, because a
@@ -406,6 +401,10 @@ func (s *Server) registerBrowserRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/v1/nodes/{id}/fail2ban/jails", s.changeFail2BanJail)
 	mux.HandleFunc("GET /api/v1/fail2ban/banned", s.listBannedAddresses)
 	mux.HandleFunc("POST /api/v1/nodes/{id}/fail2ban/unban", s.unbanAddress)
+	// One request for the whole security screen, so its three lists come from
+	// one reading of each node instead of two independent readings of the same
+	// Fail2Ban state.
+	mux.HandleFunc("GET /api/v1/security/overview", s.securityOverview)
 	mux.HandleFunc("GET /api/v1/nodes/{id}/connections", s.nodeConnections)
 	mux.HandleFunc("GET /api/v1/events/connections", s.browserConnectionsStream)
 	mux.HandleFunc("GET /api/v1/events/live", s.browserLiveStream)
@@ -414,6 +413,7 @@ func (s *Server) registerBrowserRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/v1/devices/popular", s.popularDevices)
 	mux.HandleFunc("GET /api/v1/cloudflare/settings", s.cloudflareSettings)
 	mux.HandleFunc("PUT /api/v1/cloudflare/settings", s.setCloudflareSettings)
+	mux.HandleFunc("DELETE /api/v1/cloudflare/settings/{zone_id}", s.deleteCloudflareSettings)
 	mux.HandleFunc("GET /api/v1/cloudflare/records", s.listCloudflareRecords)
 	mux.HandleFunc("POST /api/v1/cloudflare/records", s.createCloudflareRecord)
 	mux.HandleFunc("PUT /api/v1/cloudflare/records/{id}", s.updateCloudflareRecord)
@@ -467,24 +467,18 @@ func (s *Server) registerBrowserRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/v1/alerts/settings", s.getAlertSettings)
 	mux.HandleFunc("PUT /api/v1/alerts/settings", s.updateAlertSettings)
 	mux.HandleFunc("POST /api/v1/alerts/test", s.testAlert)
-	mux.HandleFunc("POST /api/v1/probes/run-gfw-check", s.handleRunGFWCheck)
-	mux.HandleFunc("POST /api/v1/nodes/{id}/speedtest", s.handleRunNodeSpeedtest)
 	mux.HandleFunc("GET /api/v1/ping-tasks", s.listPingTasks)
 	mux.HandleFunc("POST /api/v1/ping-tasks", s.savePingTask)
 	mux.HandleFunc("PUT /api/v1/ping-tasks/{id}", s.updatePingTask)
 	mux.HandleFunc("DELETE /api/v1/ping-tasks/{id}", s.deletePingTask)
 	mux.HandleFunc("PUT /api/v1/ping-tasks/order", s.reorderPingTasks)
 	mux.HandleFunc("GET /api/v1/ping", s.handlePing)
-	mux.HandleFunc("GET /api/v1/client-info", s.handleClientInfo)
 	mux.HandleFunc("POST /api/v1/nodes/{id}/probe-peers", s.handleProbeNodePeers)
-	mux.HandleFunc("POST /api/v1/nodes/{id}/probe-client", s.handleProbeNodeClient)
 	mux.HandleFunc("GET /api/v1/ip/lookup", s.handleIPLookup)
 	mux.HandleFunc("GET /api/v1/ip/database", s.handleGetIPDatabaseStatus)
 	mux.HandleFunc("POST /api/v1/ip/database/reload", s.handleReloadIPDatabase)
 	mux.HandleFunc("POST /api/v1/ip/database/upload", s.handleUploadIPDatabase)
 	mux.HandleFunc("POST /api/v1/ip/database/download", s.handleDownloadIPDatabase)
-	mux.HandleFunc("GET /api/v1/nodes/{id}/speedtest/latest", s.handleGetNodeSpeedtestLatest)
-	mux.HandleFunc("GET /api/v1/nodes/speedtests/latest", s.handleListNodeSpeedtestsLatest)
 	mux.HandleFunc("POST /api/v1/tools/reality-check", s.handleCheckRealityCandidate)
 	mux.HandleFunc("POST /api/v1/listeners/quick", s.createListenerWithDefaultAccount)
 	mux.HandleFunc("PUT /api/v1/listeners/{id}", s.updateListener)
@@ -2433,6 +2427,8 @@ func (s *Server) updateListener(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
+	affected, _ := s.store.MihomoClientConfigNamesUsingListener(r.Context(), updated.ID)
+	s.notifySubscriptionConfigChanged("接入服务", "修改", updated.Name, "接入服务的端口、协议、TLS 或路由配置发生变化", affected)
 	chainNodeIDs, _ := s.store.ListenerChainedNodeIDs(r.Context(), updated.ID)
 	tasks, err := s.dispatchNodeConfigurations(r.Context(), deduplicateStrings(append([]string{updated.NodeID}, chainNodeIDs...)), operator.ID)
 	if err != nil {
@@ -2520,6 +2516,9 @@ func (s *Server) setListenerEnabled(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
+	var listenerName string
+	_ = s.store.db.QueryRowContext(r.Context(), `SELECT name FROM listeners WHERE id = ?`, r.PathValue("id")).Scan(&listenerName)
+	affected, _ := s.store.MihomoClientConfigNamesUsingListener(r.Context(), r.PathValue("id"))
 	if err := s.store.SetListenerEnabled(r.Context(), r.PathValue("id"), input.Enabled); err != nil {
 		writeError(w, err)
 		return
@@ -2539,6 +2538,11 @@ func (s *Server) setListenerEnabled(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
+	actionLabel := "停用"
+	if input.Enabled {
+		actionLabel = "启用"
+	}
+	s.notifySubscriptionConfigChanged("接入服务", actionLabel, listenerName, "接入服务的启用状态发生变化", affected)
 	task, err := s.dispatchNodeConfiguration(r.Context(), nodeID, operator.ID)
 	if err != nil {
 		writeError(w, err)
@@ -2573,6 +2577,9 @@ func (s *Server) deleteListener(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	chainNodeIDs, _ := s.store.ListenerChainedNodeIDs(r.Context(), r.PathValue("id"))
+	var listenerName string
+	_ = s.store.db.QueryRowContext(r.Context(), `SELECT name FROM listeners WHERE id = ?`, r.PathValue("id")).Scan(&listenerName)
+	affected, _ := s.store.MihomoClientConfigNamesUsingListener(r.Context(), r.PathValue("id"))
 	if err := s.store.DeleteListener(r.Context(), r.PathValue("id")); err != nil {
 		writeError(w, err)
 		return
@@ -2581,6 +2588,7 @@ func (s *Server) deleteListener(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
+	s.notifySubscriptionConfigChanged("接入服务", "删除", listenerName, "该接入服务及其用户已被删除，引用它们的客户端订阅将不再包含相关节点", affected)
 	tasks, err := s.dispatchNodeConfigurations(r.Context(), deduplicateStrings(append([]string{nodeID}, chainNodeIDs...)), operator.ID)
 	if err != nil {
 		writeError(w, err)
@@ -2880,6 +2888,8 @@ func (s *Server) updateEndpoint(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
+	affected, _ := s.store.MihomoClientConfigNamesUsingEndpoint(r.Context(), updated.ID)
+	s.notifySubscriptionConfigChanged("接入用户", "修改", updated.Name, "接入用户的名称、别名、凭据或出口发生变化", affected)
 	nodeID, err := s.listenerNodeID(r.Context(), updated.ListenerID)
 	if err != nil {
 		writeError(w, err)
@@ -2913,6 +2923,8 @@ func (s *Server) setEndpointEnabled(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	chainNodeIDs, _ := s.store.ChainedEndpointNodeIDs(r.Context(), r.PathValue("id"))
+	endpointName, _ := s.store.EndpointName(r.Context(), r.PathValue("id"))
+	affected, _ := s.store.MihomoClientConfigNamesUsingEndpoint(r.Context(), r.PathValue("id"))
 	if err := s.store.SetEndpointEnabled(r.Context(), r.PathValue("id"), input.Enabled); err != nil {
 		writeError(w, err)
 		return
@@ -2921,6 +2933,11 @@ func (s *Server) setEndpointEnabled(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
+	actionLabel := "停用"
+	if input.Enabled {
+		actionLabel = "启用"
+	}
+	s.notifySubscriptionConfigChanged("接入用户", actionLabel, endpointName, "接入用户的启用状态发生变化", affected)
 	tasks, err := s.dispatchNodeConfigurations(r.Context(), deduplicateStrings(append([]string{nodeID}, chainNodeIDs...)), operator.ID)
 	if err != nil {
 		writeError(w, err)
@@ -2942,6 +2959,8 @@ func (s *Server) deleteEndpoint(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	chainNodeIDs, _ := s.store.ChainedEndpointNodeIDs(r.Context(), r.PathValue("id"))
+	endpointName, _ := s.store.EndpointName(r.Context(), r.PathValue("id"))
+	affected, _ := s.store.MihomoClientConfigNamesUsingEndpoint(r.Context(), r.PathValue("id"))
 	if err := s.store.DeleteEndpoint(r.Context(), r.PathValue("id")); err != nil {
 		writeError(w, err)
 		return
@@ -2950,6 +2969,7 @@ func (s *Server) deleteEndpoint(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
+	s.notifySubscriptionConfigChanged("接入用户", "删除", endpointName, "该接入用户已被删除，引用它的客户端订阅将不再包含该节点", affected)
 	tasks, err := s.dispatchNodeConfigurations(r.Context(), deduplicateStrings(append([]string{nodeID}, chainNodeIDs...)), operator.ID)
 	if err != nil {
 		writeError(w, err)

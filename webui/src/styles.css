@@ -948,5 +948,18 @@ html.dark .el-pagination.is-background .el-pager li.is-active {
   .pulse-ok::after, .rise { animation: none; }
 }
 
+/* ── 全站隐藏滚动条 ─────────────────────────────────────────
+   内容仍可正常滚动（滚轮 / 触控板 / 键盘），只是不再显示占位的
+   滚动条，避免页面边缘出现突兀的滑轨。 */
+* {
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+*::-webkit-scrollbar {
+  display: none;
+  width: 0;
+  height: 0;
+}
+
 
 

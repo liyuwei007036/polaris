@@ -627,8 +627,6 @@ func (s *Server) shareFallback(w http.ResponseWriter, r *http.Request) {
 		writeShareJSON(w, http.StatusOK, map[string]any{"registrations": []any{}})
 	case "cloudflare/records":
 		writeShareJSON(w, http.StatusOK, map[string]any{"records": []any{}})
-	case "nodes/speedtests/latest":
-		writeShareJSON(w, http.StatusOK, map[string]any{"nodes": []any{}})
 	default:
 		writeShareJSON(w, http.StatusOK, map[string]any{})
 	}
