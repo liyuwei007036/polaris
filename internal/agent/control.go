@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"runtime"
+	"strconv"
 	"strings"
 	"time"
 
@@ -221,7 +222,24 @@ func Connect(ctx context.Context, masterAddr string, local wire.Keypair, masterP
 // can pass an empty token — the master recognizes it by its already-pinned
 // public key regardless.
 func Register(conn *wire.Conn, token, nodeName string, capabilities map[string]string) (wire.RegisterAck, error) {
-	body, err := wire.Encode(wire.RegisterRequest{Token: token, NodeName: nodeName, Capabilities: capabilities})
+	caps := make(map[string]string, len(capabilities)+1)
+	for k, v := range capabilities {
+		caps[k] = v
+	}
+	var detectedMTU int
+	if raddr := conn.RemoteAddr(); raddr != nil {
+		if udpMTU, err := wire.DetectUDPMTU(raddr); err == nil && udpMTU > 0 {
+			detectedMTU = udpMTU
+			caps["pmtu"] = strconv.Itoa(udpMTU)
+			conn.SetMtu(udpMTU)
+		}
+	}
+	body, err := wire.Encode(wire.RegisterRequest{
+		Token:        token,
+		NodeName:     nodeName,
+		Capabilities: caps,
+		DetectedMTU:  detectedMTU,
+	})
 	if err != nil {
 		return wire.RegisterAck{}, err
 	}
@@ -241,6 +259,9 @@ func Register(conn *wire.Conn, token, nodeName string, capabilities map[string]s
 	var ack wire.RegisterAck
 	if err := wire.Decode(respBody, &ack); err != nil {
 		return wire.RegisterAck{}, err
+	}
+	if ack.EffectiveMTU > 0 {
+		conn.SetMtu(ack.EffectiveMTU)
 	}
 	return ack, nil
 }

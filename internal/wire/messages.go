@@ -35,6 +35,7 @@ type RegisterRequest struct {
 	Token        string
 	NodeName     string
 	Capabilities map[string]string
+	DetectedMTU  int // Discovered Path UDP MTU from agent to master
 }
 
 // RegisterAck answers a RegisterRequest, or is sent unconditionally as the
@@ -55,6 +56,8 @@ type RegisterAck struct {
 	// configured value, so no node has to be edited or restarted by hand.
 	// Zero means the master has no opinion and the agent keeps its own.
 	ConnectionsIntervalSeconds uint32
+	// EffectiveMTU is the negotiated Path UDP MTU for bidirectional transport.
+	EffectiveMTU int
 }
 
 // ConnectionInfo mirrors one entry from the local sing-box Clash API.

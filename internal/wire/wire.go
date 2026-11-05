@@ -233,6 +233,23 @@ func (c *Conn) SetReadDeadline(t time.Time) error  { return c.raw.SetReadDeadlin
 func (c *Conn) SetWriteDeadline(t time.Time) error { return c.raw.SetWriteDeadline(t) }
 func (c *Conn) RemoteAddr() net.Addr               { return c.raw.RemoteAddr() }
 
+type mtuSettable interface {
+	SetMtu(mtu int) bool
+}
+
+// SetMtu tunes the MTU on the underlying transport if supported (e.g. KCP/UDP).
+func (c *Conn) SetMtu(mtu int) bool {
+	if s, ok := c.raw.(mtuSettable); ok && mtu > 0 {
+		return s.SetMtu(mtu)
+	}
+	return false
+}
+
+// Raw returns the underlying network connection.
+func (c *Conn) Raw() net.Conn {
+	return c.raw
+}
+
 // writeRaw/readRaw frame the (already Noise-encrypted) chunks on the wire
 // with a plain 4-byte big-endian length prefix — this length is ciphertext
 // size, not sensitive, exactly like a TLS record length.

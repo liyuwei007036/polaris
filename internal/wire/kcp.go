@@ -13,8 +13,14 @@ const (
 	KCPParityShards = 3
 )
 
-// ConfigureKCP applies low-latency and FEC-optimal settings to a KCP session.
+// ConfigureKCP applies low-latency and FEC-optimal settings to a KCP session,
+// automatically tuning MTU based on dynamic Path MTU discovery.
 func ConfigureKCP(sess *kcp.UDPSession) {
+	if raddr := sess.RemoteAddr(); raddr != nil {
+		if udpMTU, err := DetectUDPMTU(raddr); err == nil && udpMTU > 0 {
+			sess.SetMtu(udpMTU)
+		}
+	}
 	sess.SetStreamMode(true)
 	sess.SetWriteDelay(false)
 	sess.SetACKNoDelay(true)
@@ -40,7 +46,7 @@ func (l *KCPListener) Accept() (net.Conn, error) {
 	return conn, nil
 }
 
-// DialKCP dials a KCP connection to raddr with Reed-Solomon FEC.
+// DialKCP dials a KCP connection to raddr with Reed-Solomon FEC and dynamic MTU tuning.
 func DialKCP(raddr string) (*kcp.UDPSession, error) {
 	sess, err := kcp.DialWithOptions(raddr, nil, KCPDataShards, KCPParityShards)
 	if err != nil {

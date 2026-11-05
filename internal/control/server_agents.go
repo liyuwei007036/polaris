@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"net"
+	"strconv"
 	"strings"
 	"time"
 
@@ -56,6 +57,27 @@ func (s *Server) handleAgentConn(ctx context.Context, raw net.Conn) {
 		return
 	}
 
+	// Dynamic Path MTU Negotiation: reconcile agent's detected MTU with master's local detection.
+	agentMTU := req.DetectedMTU
+	if agentMTU <= 0 {
+		if pmtuStr, ok := req.Capabilities["pmtu"]; ok {
+			agentMTU, _ = strconv.Atoi(pmtuStr)
+		}
+	}
+	var effectiveMTU int
+	if masterUDP, err := wire.DetectUDPMTU(raw.RemoteAddr()); err == nil && masterUDP > 0 {
+		if agentMTU > 0 {
+			effectiveMTU = min(masterUDP, agentMTU)
+		} else {
+			effectiveMTU = masterUDP
+		}
+	} else if agentMTU > 0 {
+		effectiveMTU = agentMTU
+	}
+	if effectiveMTU > 0 {
+		conn.SetMtu(effectiveMTU)
+	}
+
 	node, err := s.store.NodeForPublicKey(ctx, peerPub[:])
 	if err != nil {
 		log.Printf("[AGENT_HANDSHAKE] Unrecognized node key from %s, handling registration attempt", raw.RemoteAddr())
@@ -70,6 +92,7 @@ func (s *Server) handleAgentConn(ctx context.Context, raw net.Conn) {
 	ackBody, err := wire.Encode(wire.RegisterAck{
 		NodeID: node.ID, Status: "approved", ReleaseSigningPublicKeyPEM: releaseKeyPEM,
 		ConnectionsIntervalSeconds: uint32(s.connectionsInterval / time.Second),
+		EffectiveMTU:               effectiveMTU,
 	})
 	if err != nil {
 		return
