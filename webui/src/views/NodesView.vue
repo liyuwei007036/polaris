@@ -156,7 +156,7 @@ const filteredNodes = computed(() => {
     if (statusFilter.value === 'online' && !node.online) return false
     if (statusFilter.value === 'offline' && node.online) return false
     return includesText(
-      [node.name, node.client_address, node.os, node.architecture, node.agent_version, node.sing_box_version],
+      [node.name, node.client_address, node.os_name, node.os, node.architecture, node.agent_version, node.sing_box_version],
       keyword.value,
     )
   })
@@ -244,7 +244,7 @@ function buildDialogHeader(node, name) {
     avatar: avatar.text,
     isFlag: avatar.isFlag,
     name: avatar.rest || name || node.name,
-    sub: [[node.os || 'linux', node.architecture].filter(Boolean).join(' · '), node.city || node.location, node.client_address]
+    sub: [[node.os_name || node.os || 'linux', node.architecture].filter(Boolean).join(' · '), node.city || node.location, node.client_address]
       .filter(Boolean)
       .join(' · '),
   }
@@ -286,7 +286,7 @@ const cards = computed(() => filteredNodes.value.map((node) => {
     avatar: avatar.text,
     isFlag: avatar.isFlag,
     displayName: avatar.rest || node.name,
-    platform: [node.os || 'linux', host?.virt && host?.virt !== 'none' ? host?.virt : '', node.architecture].filter(Boolean).join(' · '),
+    platform: [node.os_name || node.os || 'linux', host?.virt && host?.virt !== 'none' ? host?.virt : '', node.architecture].filter(Boolean).join(' · '),
     region: node.city || node.location || '',
     latency,
     host,
@@ -1147,7 +1147,7 @@ onBeforeUnmount(() => {
             </div>
           </el-form-item>
           <div class="dlg-facts">
-            <div><span>系统</span><b class="font-mono">{{ editNode?.os || '—' }} / {{ editNode?.architecture || '—' }}</b></div>
+            <div><span>系统</span><b class="font-mono">{{ editNode?.os_name || editNode?.os || '—' }} / {{ editNode?.architecture || '—' }}</b></div>
             <div><span>Agent</span><b class="font-mono">v{{ editNode?.agent_version || '—' }}</b></div>
             <div><span>sing-box</span><b class="font-mono">{{ editNode?.sing_box_version || '—' }}</b></div>
             <div><span>最后活跃</span><b class="font-mono">{{ formatFriendlyTime(editNode?.last_seen_at) }}</b></div>

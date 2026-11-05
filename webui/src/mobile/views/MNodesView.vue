@@ -104,7 +104,7 @@ let stopConnections
 const filteredNodes = computed(() => appState.nodes.filter((node) => {
   if (statusFilter.value === 'online' && !node.online) return false
   if (statusFilter.value === 'offline' && node.online) return false
-  return includesText([node.name, node.client_address, node.os, node.architecture, node.agent_version, node.sing_box_version], keyword.value)
+  return includesText([node.name, node.client_address, node.os_name, node.os, node.architecture, node.agent_version, node.sing_box_version], keyword.value)
 }))
 const shownNodes = computed(() => filteredNodes.value.slice(0, visible.value))
 const filteredPending = computed(() => pending.value.filter((row) => includesText([row.node_name, row.capabilities], keyword.value)))
@@ -235,7 +235,7 @@ const details = computed(() => {
   const items = [
     { label: '运行状态', value: node.online ? '在线' : '离线' },
     { label: '连接地址', value: addrVal, mono: Boolean(node.client_address) },
-    { label: '系统', value: [node.os, node.architecture].filter(Boolean).join(' · ') || '—' },
+    { label: '系统', value: [node.os_name || host?.os_name || node.os, node.architecture].filter(Boolean).join(' · ') || '—' },
     { label: '版本', value: 'agent ' + (node.agent_version || '—') + ' · sing-box ' + (node.sing_box_version || '—') },
     ...(node.ip_addresses && node.ip_addresses.length ? [{ label: '出口 IP', value: node.ip_addresses.map((ip) => (node.ip_aliases?.[ip] ? `${node.ip_aliases[ip]} (${ip})` : ip)).join('、') }] : []),
   ]
@@ -426,7 +426,7 @@ onBeforeUnmount(() => {
       <button type="button" class="m-item__hit" @click="openActions(node)">
         <div class="m-item__head">
           <StatusDot :online="node.online" />
-          <OsIcon :os="node.os" style="width: 15px; height: 15px; flex-shrink: 0;" />
+          <OsIcon :os="node.os_name || node.os" style="width: 15px; height: 15px; flex-shrink: 0;" />
           <span class="m-item__title">
             {{ node.name }}
           </span>

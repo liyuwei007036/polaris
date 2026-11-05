@@ -28,7 +28,7 @@
       <div class="os-line">
         <span v-if="locationName" class="location-tag shrink-0" :title="node.location || locationName">{{ locationName }}</span>
         <span v-if="locationName" class="meta-dot">·</span>
-        <OsIcon :os="node.os_name || node.os" class="os-icon-sm" />
+        <OsIcon :os="osLabel" class="os-icon-sm" />
         <span class="system-text truncate">{{ systemInfoText }}</span>
         <template v-if="node.provider">
           <span class="meta-dot">·</span>
@@ -239,11 +239,14 @@ const locationName = computed(() => {
   return ''
 })
 
+const osLabel = computed(() => props.node.os_name || hostMetrics.value?.os_name || props.node.os || '')
+
 const systemInfoText = computed(() => {
   const parts = []
-  if (props.node.os_name || props.node.os) parts.push(props.node.os_name || props.node.os)
-  if (props.node.virt && props.node.virt !== 'none') parts.push(props.node.virt)
-  if (props.node.arch) parts.push(props.node.arch)
+  if (osLabel.value) parts.push(osLabel.value)
+  const virt = props.node.virt || hostMetrics.value?.virt
+  if (virt && virt !== 'none') parts.push(virt)
+  if (props.node.arch || props.node.architecture) parts.push(props.node.arch || props.node.architecture)
   return parts.length ? parts.join(' · ') : 'Linux'
 })
 

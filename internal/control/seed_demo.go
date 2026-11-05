@@ -449,11 +449,11 @@ func (s *Server) EnsureDemoNodes(ctx context.Context) error {
 
 		// Insert into nodes
 		_, err := s.store.db.ExecContext(ctx, `INSERT OR REPLACE INTO nodes (
-			id, name, public_key, client_address, agent_version, os, architecture, sing_box_version,
+			id, name, public_key, client_address, agent_version, os, os_name, architecture, sing_box_version,
 			capabilities, last_seen_at, ddns_enabled, ddns_domain, ddns_domains, last_observed_ip, ip_addresses, ip_aliases,
 			expires_on, price, price_period, currency, provider, provider_url, traffic_plan, bandwidth, created_at
-		) VALUES (?, ?, ?, ?, '1.2.0', ?, ?, '1.10.0', '基础代理,TCP/UDP探测,Speedtest', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-			d.ID, d.Name, pubKey, clientAddr, d.OS, d.Arch, now, ddnsEnabled, ddnsDomain, ddnsDomains, d.IP,
+		) VALUES (?, ?, ?, ?, '1.2.0', ?, ?, ?, '1.10.0', '基础代理,TCP/UDP探测,Speedtest', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			d.ID, d.Name, pubKey, clientAddr, d.OS, d.OS, d.Arch, now, ddnsEnabled, ddnsDomain, ddnsDomains, d.IP,
 			string(ipAddressesJSON), string(aliasesJSON), d.ExpiresOn, d.Price, d.PricePeriod,
 			d.Currency, d.Provider, d.ProviderURL, d.TrafficPlan, d.Bandwidth, now-86400*30,
 		)

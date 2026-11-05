@@ -31,7 +31,7 @@ func TestUpgradeSingBoxDispatchesSignedUpgradeTask(t *testing.T) {
 	defer httpServer.Close()
 	session, csrfToken := login(t, httpServer.URL, secret)
 	nodeID := approveTestNode(t, server, httpServer.URL, session, csrfToken, "sing-box-upgrade-node")
-	if err := store.UpdateNodeIdentity(t.Context(), nodeID, "0.42.0", "linux", "amd64", "1.13.0", ""); err != nil {
+	if err := store.UpdateNodeIdentity(t.Context(), nodeID, "0.42.0", "linux", "Debian 12", "amd64", "1.13.0", ""); err != nil {
 		t.Fatal(err)
 	}
 	upgradeHash := strings.Repeat("b", 64)
@@ -87,7 +87,7 @@ func TestNodeIdentityIPAddresses(t *testing.T) {
 	testMappings := map[string]string{
 		"198.51.100.2": "10.0.0.121",
 	}
-	if err := store.UpdateNodeIdentityWithIPs(ctx, nodeID, "0.43.0", "linux", "amd64", "1.14.0", "{}", testIPs, testMappings); err != nil {
+	if err := store.UpdateNodeIdentityWithIPs(ctx, nodeID, "0.43.0", "linux", "Debian 12", "amd64", "1.14.0", "{}", testIPs, testMappings); err != nil {
 		t.Fatalf("UpdateNodeIdentityWithIPs: %v", err)
 	}
 

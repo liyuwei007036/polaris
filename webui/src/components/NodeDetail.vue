@@ -638,7 +638,7 @@ const factGroups = computed(() => {
     label: '硬件配置',
     icon: 'cpu',
     facts: [
-      { label: '系统', value: [node.os_name || node.os, m.kernel].filter(Boolean).join(' · ') },
+      { label: '系统', value: [node.os_name || m.os_name || node.os, m.kernel].filter(Boolean).join(' · ') },
       { label: 'CPU', value: m.cpu_name ? `${m.cpu_name} × ${m.cpu_cores || 0}` : m.cpu_cores ? `${m.cpu_cores} 核` : '' },
       { label: '内存 / 硬盘', value: m.memory_total || m.disk_total ? `${formatBytes(m.memory_total)} / ${formatBytes(m.disk_total)}` : '' },
       { label: '交换分区', value: m.swap_total > 0 ? `${formatBytes(m.swap_used)} / ${formatBytes(m.swap_total)}` : '无' },

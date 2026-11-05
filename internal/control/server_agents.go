@@ -365,7 +365,7 @@ func (s *Server) handleAgentMessage(ctx context.Context, node *Node, msgType byt
 		if err != nil {
 			return false
 		}
-		if err := s.store.UpdateNodeIdentityWithIPs(ctx, node.ID, st.AgentVersion, st.OS, st.Architecture, st.SingBoxVersion, string(capsJSON), st.IPAddresses, st.IPMappings); err != nil {
+		if err := s.store.UpdateNodeIdentityWithIPs(ctx, node.ID, st.AgentVersion, st.OS, st.OSName, st.Architecture, st.SingBoxVersion, string(capsJSON), st.IPAddresses, st.IPMappings); err != nil {
 			log.Printf("UpdateNodeIdentityWithIPs error for node %s (%s): %v", node.ID, node.Name, err)
 		}
 		// The agent reports its new build right after an upgrade restart. Push

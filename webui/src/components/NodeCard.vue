@@ -58,7 +58,7 @@
       <span class="country-flag shrink-0">{{ countryFlag }}</span>
       <span class="country-name shrink-0" :title="fullLocationTip">{{ locationName }}</span>
       <span class="meta-divider shrink-0">&middot;</span>
-      <OsIcon :os="node.os_name || node.os" class="meta-os-icon shrink-0" />
+      <OsIcon :os="osLabel" class="meta-os-icon shrink-0" />
       <span class="node-system-text truncate min-w-0 flex-1">{{ systemInfoText }}</span>
       <span
         v-if="agentUpdateAvailable || singBoxUpdateAvailable"
@@ -363,14 +363,16 @@ const fullLocationTip = computed(() => {
   return props.node.location || props.node.city || locationName.value
 })
 
+const osLabel = computed(() => props.node.os_name || hostMetrics.value?.os_name || props.node.os || '')
+
 const systemInfoText = computed(() => {
   const parts = []
-  if (props.node.os_name || props.node.os) {
-    let os = props.node.os_name || props.node.os
-    os = os.replace(/\s*\([^)]*\)/g, '').replace(/\s+LTS/i, '').trim()
+  if (osLabel.value) {
+    let os = osLabel.value.replace(/\s*\([^)]*\)/g, '').replace(/\s+LTS/i, '').trim()
     parts.push(os)
   }
-  if (props.node.virt && props.node.virt !== 'none') parts.push(props.node.virt)
+  const virt = props.node.virt || hostMetrics.value?.virt
+  if (virt && virt !== 'none') parts.push(virt)
   if (props.node.arch || props.node.architecture) parts.push(props.node.arch || props.node.architecture)
   return parts.length ? parts.join(' · ') : 'Linux'
 })

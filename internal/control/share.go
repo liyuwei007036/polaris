@@ -41,6 +41,7 @@ type shareNode struct {
 	Name            string            `json:"name"`
 	Online          bool              `json:"online"`
 	OS              string            `json:"os,omitempty"`
+	OSName          string            `json:"os_name,omitempty"`
 	Architecture    string            `json:"architecture,omitempty"`
 	AgentVersion    string            `json:"agent_version,omitempty"`
 	SingBoxVersion  string            `json:"sing_box_version,omitempty"`
@@ -240,6 +241,7 @@ func (s *Server) buildSharePayload(ctx context.Context, page string) (sharePaylo
 			Name:           node.Name,
 			Online:         node.Online,
 			OS:             node.OS,
+			OSName:         node.OSName,
 			Architecture:   node.Architecture,
 			AgentVersion:   node.AgentVersion,
 			SingBoxVersion: node.SingBox,

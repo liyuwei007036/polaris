@@ -322,7 +322,7 @@ func TestDirectIPOutboundCompilation(t *testing.T) {
 	}
 
 	// Test NAT environment: public IP maps to private local IP
-	if err := store.UpdateNodeIdentityWithIPs(ctx, nodeID, "0.43.0", "linux", "amd64", "1.14.0", "{}",
+	if err := store.UpdateNodeIdentityWithIPs(ctx, nodeID, "0.43.0", "linux", "Debian 12", "amd64", "1.14.0", "{}",
 		[]string{"198.51.100.55", "2001:db8::88"}, map[string]string{"198.51.100.55": "10.0.0.121"}); err != nil {
 		t.Fatalf("update identity with mapping: %v", err)
 	}
