@@ -43,16 +43,20 @@ type HostResources struct {
 	DiskTotal     uint64     `json:"disk_total"`
 	DiskUsed      uint64     `json:"disk_used"`
 	UptimeSeconds uint64     `json:"uptime_seconds,omitempty"`
-	TCP           uint32     `json:"tcp"`
-	UDP           uint32     `json:"udp"`
-	Procs         uint32     `json:"procs"`
-	NetRxRate     uint64     `json:"net_rx_rate"`
-	NetTxRate     uint64     `json:"net_tx_rate"`
-	OSName        string     `json:"os_name,omitempty"`
-	Kernel        string     `json:"kernel,omitempty"`
-	Virt          string     `json:"virt,omitempty"`
-	CPUName       string     `json:"cpu_name,omitempty"`
-	CPUCores      uint32     `json:"cpu_cores,omitempty"`
+	// AgentUptimeSeconds is how long this agent process has been running. It
+	// differs from UptimeSeconds after a service restart or upgrade and is what
+	// the console shows as the node's "online" duration.
+	AgentUptimeSeconds uint64 `json:"agent_uptime_seconds,omitempty"`
+	TCP                uint32 `json:"tcp"`
+	UDP                uint32 `json:"udp"`
+	Procs              uint32 `json:"procs"`
+	NetRxRate          uint64 `json:"net_rx_rate"`
+	NetTxRate          uint64 `json:"net_tx_rate"`
+	OSName             string `json:"os_name,omitempty"`
+	Kernel             string `json:"kernel,omitempty"`
+	Virt               string `json:"virt,omitempty"`
+	CPUName            string `json:"cpu_name,omitempty"`
+	CPUCores           uint32 `json:"cpu_cores,omitempty"`
 }
 
 type MetricReport struct {
@@ -544,6 +548,7 @@ func toWireStatus(local Status) wire.Status {
 		st.DiskTotal = local.Metrics.Host.DiskTotal
 		st.DiskUsed = local.Metrics.Host.DiskUsed
 		st.UptimeSeconds = local.Metrics.Host.UptimeSeconds
+		st.AgentUptimeSeconds = local.Metrics.Host.AgentUptimeSeconds
 		st.TCP = local.Metrics.Host.TCP
 		st.UDP = local.Metrics.Host.UDP
 		st.Procs = local.Metrics.Host.Procs

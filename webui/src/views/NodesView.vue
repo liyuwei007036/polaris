@@ -20,7 +20,7 @@ import {
   Top,
 } from '@element-plus/icons-vue'
 import { api, post, put } from '../api'
-import { formatBytes, formatDateTime, includesText } from '../format'
+import { formatBytes, formatDateTime, formatUptime, includesText } from '../format'
 import { subscribeLive } from '../live'
 import { connectionSnapshots, subscribeConnections } from '../connections'
 import PageHeader from '../components/PageHeader.vue'
@@ -420,9 +420,7 @@ function getCPUTooltip(node) {
   if (!host) return node.online ? '等待 CPU 指标上报' : '节点离线'
   let tip = `CPU 使用率: ${host.cpu_percent.toFixed(1)}%`
   if (host.uptime_seconds) {
-    const d = Math.floor(host.uptime_seconds / 86400)
-    const h = Math.floor((host.uptime_seconds % 86400) / 3600)
-    tip += ` · 已连续运行 ${d > 0 ? `${d}天${h}小时` : `${h}小时`}`
+    tip += ` · 已连续运行 ${formatUptime(host.uptime_seconds)}`
   }
   return tip
 }

@@ -16,13 +16,13 @@
       <span class="status-pill" :class="node.online ? 'is-online' : 'is-offline'">
         <span class="status-dot-pulse" />
         <span>{{ node.online ? '在线' : '离线' }}</span>
-        <span v-if="node.online && uptimeText" class="status-uptime">{{ uptimeText }}</span>
+        <span v-if="node.online && agentUptimeText" class="status-uptime">{{ agentUptimeText }}</span>
       </span>
       <span v-if="node.bandwidth" class="bw-badge font-mono">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="size-3.5">
           <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2" />
         </svg>
-        <span>带宽 {{ node.bandwidth }}</span>
+        <span>带宽 {{ formatBandwidth(node.bandwidth) }}</span>
       </span>
       <span v-if="node.agent_version" class="agent-badge font-mono" :class="{ 'has-upgrade': agentUpdateAvailable }">
         agent {{ node.agent_version }}
@@ -288,6 +288,9 @@
                 <span class="egress-ip font-mono">{{ fact.ip }}</span>
                 <span v-if="fact.alias" class="egress-alias">{{ fact.alias }}</span>
               </div>
+              <div v-else-if="fact.domains" class="domain-list">
+                <span v-for="domain in fact.domains" :key="domain" class="domain-chip font-mono">{{ domain }}</span>
+              </div>
               <a
                 v-else-if="fact.url"
                 :href="fact.url"
@@ -322,7 +325,7 @@ import { ElMessage } from 'element-plus'
 import LatencyPanel from './LatencyPanel.vue'
 import TrendChart from './TrendChart.vue'
 import { api, post } from '../api'
-import { formatBytes, formatDuration } from '../format'
+import { formatBandwidth, formatBytes, formatUptime } from '../format'
 import { summarizePing } from '../latency'
 import { isShareMode } from '../share'
 import { isNewerVersion } from '../version'
@@ -490,7 +493,12 @@ const locationName = computed(() => {
 const fullLocationTip = computed(() => {
   return props.node.location || props.node.city || locationName.value
 })
-const uptimeText = computed(() => (host.value.uptime_seconds ? formatDuration(host.value.uptime_seconds) : ''))
+// The header's "在线" duration is how long this agent process has been running.
+// The host's boot uptime is a different number (a VPS can be up for months
+// while its agent was restarted by an upgrade) and belongs on the facts card.
+const agentUptimeText = computed(() =>
+  host.value.agent_uptime_seconds ? formatUptime(host.value.agent_uptime_seconds) : '',
+)
 const loadText = computed(() => {
   const load = host.value.load_avg
   return Array.isArray(load) ? load.map((v) => Number(v).toFixed(2)).join(' ') : '—'
@@ -653,7 +661,7 @@ const factGroups = computed(() => {
     facts: [
       { label: '负载 (1/5/15 分)', value: Array.isArray(m.load_avg) ? m.load_avg.map((v) => Number(v).toFixed(2)).join('  ') : '' },
       { label: '系统套接字 / 进程', value: m.procs != null ? `TCP ${m.tcp} · UDP ${m.udp} · ${m.procs} 进程` : '' },
-      { label: '在线时长', value: m.uptime_seconds ? formatDuration(m.uptime_seconds) : '' },
+      { label: '开机时长', value: m.uptime_seconds ? formatUptime(m.uptime_seconds) : '' },
       {
         label: 'Agent',
         value: node.agent_version
@@ -676,10 +684,9 @@ const factGroups = computed(() => {
   const netFacts = [
     { label: '本月流量', value: `↓ ${formatBytes(monthlyRx)} · ↑ ${formatBytes(monthlyTx)}` },
     { label: '累计流量', value: `↓ ${formatBytes(totals.received_bytes || 0)} · ↑ ${formatBytes(totals.sent_bytes || 0)}` },
-    { label: '机器带宽', value: isShareMode ? '已隐藏' : (node.bandwidth || '1 Gbps') },
+    { label: '机器带宽', value: isShareMode ? '已隐藏' : formatBandwidth(node.bandwidth || '1 Gbps') },
     { label: '主机地址', value: node.client_address },
     { label: '地理位置', value: node.location || node.city },
-    { label: '出口 IP', value: (node.ip_addresses || []).join(' · ') || node.last_observed_ip, cls: 'font-mono' },
   ]
   groups.push({
     label: '网络与流量',
@@ -710,7 +717,7 @@ const factGroups = computed(() => {
     billingFacts.push({ label: '流量配额', value: `${node.traffic_plan} / 月` })
   }
   if (node.bandwidth) {
-    billingFacts.push({ label: '带宽规格', value: node.bandwidth })
+    billingFacts.push({ label: '带宽规格', value: formatBandwidth(node.bandwidth) })
   }
   if (billingFacts.length) {
     groups.push({
@@ -729,11 +736,11 @@ const factGroups = computed(() => {
       badge: true,
       badgeClass: node.ddns_enabled ? 'is-ok' : 'is-muted',
     },
-    {
-      label: '绑定域名',
-      value: domains.length ? domains.join('、') : (node.ddns_enabled ? '等待绑定记录' : '未配置'),
-      cls: 'font-mono',
-    },
+    // Domains are rendered as separate chips so several records stay readable
+    // instead of running together into one long line.
+    domains.length
+      ? { label: '绑定域名', domains }
+      : { label: '绑定域名', value: node.ddns_enabled ? '等待绑定记录' : '未配置', cls: 'font-mono' },
     {
       label: '当前解析 IP',
       value: node.last_observed_ip || '等待首次检测同步',
@@ -745,12 +752,16 @@ const factGroups = computed(() => {
     icon: 'dns',
     actionText: syncingDDNS.value ? '同步中…' : '立即同步',
     actionLoading: syncingDDNS.value,
-    action: triggerSyncDDNS,
+    // Nothing to sync when DDNS is off, so the refresh control stays hidden.
+    action: node.ddns_enabled ? triggerSyncDDNS : null,
     facts: ddnsFacts,
   })
 
   // 6. 出口 IP 与别名 (如果有别名或多 IP)
-  const allIPs = Array.from(new Set([...(node.ip_addresses || []), ...Object.keys(node.ip_aliases || {})]))
+  // 出口 IP 只在这张卡片里出现一次；若节点还没有网卡上报列表，用最近观测到
+  // 的公网 IP 兜底，避免「网络与流量」里删掉重复行后完全看不到出口地址。
+  const observedFallback = (node.ip_addresses || []).length ? [] : [node.last_observed_ip].filter(Boolean)
+  const allIPs = Array.from(new Set([...(node.ip_addresses || []), ...Object.keys(node.ip_aliases || {}), ...observedFallback]))
   if (allIPs.length > 0) {
     const aliasFacts = allIPs.map((ip) => {
       const alias = node.ip_aliases?.[ip]
@@ -937,6 +948,23 @@ onMounted(loadHistory)
   border: 1px solid var(--sb-line);
   color: var(--sb-text-2);
   font-weight: 500;
+}
+/* One domain per chip; with several records they stack and wrap instead of
+   forming an unreadable comma-joined string. */
+.domain-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+.domain-chip {
+  padding: 1px 7px;
+  border-radius: 6px;
+  background: var(--sb-surface-2);
+  border: 1px solid var(--sb-line);
+  color: var(--sb-text);
+  font-size: 11.5px;
+  font-weight: 500;
+  word-break: break-all;
 }
 .fact-action-btn {
   width: 26px;

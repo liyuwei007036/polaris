@@ -4,7 +4,7 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import { Check, Delete, Plus, Search } from '@element-plus/icons-vue'
 import { api, post, put } from '../../api'
 import { writeClipboard } from '../../clipboard'
-import { formatBytes, formatDateTime, includesText } from '../../format'
+import { formatBandwidth, formatBytes, formatDateTime, includesText } from '../../format'
 import { subscribeLive } from '../../live'
 import { connectionSnapshots, subscribeConnections } from '../../connections'
 import MPage from '../components/MPage.vue'
@@ -442,7 +442,7 @@ onBeforeUnmount(() => {
         <LatencyPanel v-if="metrics[node.id]?.latency" :latency="metrics[node.id]?.latency" :compact="true" style="margin-top: 6px;" />
         <div v-if="node.expires_on || node.provider || node.price_period || node.traffic_plan || node.bandwidth" class="m-item__meta">
           <span v-if="node.provider" :role="node.provider_url ? 'link' : undefined" :tabindex="node.provider_url ? 0 : undefined" @click.stop="openProvider(node)" @keydown.enter.stop="openProvider(node)">{{ node.provider }}</span>
-          {{ [node.expires_on ? `到期 ${node.expires_on}` : '', node.price_period === 'free' ? '免费' : (node.price_period ? `${node.currency || 'USD'} ${node.price}/${({day:'天',month:'月',quarter:'季',year:'年'})[node.price_period] || node.price_period}` : ''), node.traffic_plan ? `流量 ${node.traffic_plan}` : '', node.bandwidth ? `带宽 ${node.bandwidth}` : ''].filter(Boolean).join(' · ') }}
+          {{ [node.expires_on ? `到期 ${node.expires_on}` : '', node.price_period === 'free' ? '免费' : (node.price_period ? `${node.currency || 'USD'} ${node.price}/${({day:'天',month:'月',quarter:'季',year:'年'})[node.price_period] || node.price_period}` : ''), node.traffic_plan ? `流量 ${node.traffic_plan}` : '', node.bandwidth ? `带宽 ${formatBandwidth(node.bandwidth)}` : ''].filter(Boolean).join(' · ') }}
         </div>
         <!-- 离线这件事状态点已经说了，但「最后一次在线是什么时候」只有写出来才知道。 -->
         <div v-if="!node.online" class="m-item__meta">离线 · 最后在线 {{ formatDateTime(node.last_seen_at, '从未在线') }}</div>

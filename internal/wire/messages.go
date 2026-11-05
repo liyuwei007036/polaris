@@ -119,16 +119,19 @@ type Status struct {
 	DiskTotal     uint64
 	DiskUsed      uint64
 	UptimeSeconds uint64
-	TCP           uint32
-	UDP           uint32
-	Procs         uint32
-	NetRxRate     uint64
-	NetTxRate     uint64
-	OSName        string
-	Kernel        string
-	Virt          string
-	CPUName       string
-	CPUCores      uint32
+	// AgentUptimeSeconds is the agent process's own run time, distinct from the
+	// host boot uptime above.
+	AgentUptimeSeconds uint64
+	TCP                uint32
+	UDP                uint32
+	Procs              uint32
+	NetRxRate          uint64
+	NetTxRate          uint64
+	OSName             string
+	Kernel             string
+	Virt               string
+	CPUName            string
+	CPUCores           uint32
 
 	// Continuous ping probe results
 	PingResults []PingResult

@@ -16,6 +16,11 @@ import (
 	"time"
 )
 
+// agentStartedAt is captured when the agent process starts. Reporting this
+// alongside the host boot uptime lets the console distinguish "the server has
+// been up for months" from "the agent was restarted during an upgrade".
+var agentStartedAt = time.Now()
+
 // clashAPIBase is the loopback-only sing-box Clash API published by compiled
 // configurations. It is never reachable from outside the node. The E2E suite
 // redirects only its spawned agent to a deterministic local test endpoint.

@@ -406,25 +406,26 @@ func (s *Server) handleAgentMessage(ctx context.Context, node *Node, msgType byt
 			}
 			if st.HasHostTotals {
 				m.Host = &HostResources{
-					CPUPercent:    st.CPUPercent,
-					LoadAvg:       st.LoadAvg,
-					MemoryTotal:   st.MemoryTotal,
-					MemoryUsed:    st.MemoryUsed,
-					SwapTotal:     st.SwapTotal,
-					SwapUsed:      st.SwapUsed,
-					DiskTotal:     st.DiskTotal,
-					DiskUsed:      st.DiskUsed,
-					UptimeSeconds: st.UptimeSeconds,
-					TCP:           st.TCP,
-					UDP:           st.UDP,
-					Procs:         st.Procs,
-					NetRxRate:     st.NetRxRate,
-					NetTxRate:     st.NetTxRate,
-					OSName:        st.OSName,
-					Kernel:        st.Kernel,
-					Virt:          st.Virt,
-					CPUName:       st.CPUName,
-					CPUCores:      st.CPUCores,
+					CPUPercent:         st.CPUPercent,
+					LoadAvg:            st.LoadAvg,
+					MemoryTotal:        st.MemoryTotal,
+					MemoryUsed:         st.MemoryUsed,
+					SwapTotal:          st.SwapTotal,
+					SwapUsed:           st.SwapUsed,
+					DiskTotal:          st.DiskTotal,
+					DiskUsed:           st.DiskUsed,
+					UptimeSeconds:      st.UptimeSeconds,
+					AgentUptimeSeconds: st.AgentUptimeSeconds,
+					TCP:                st.TCP,
+					UDP:                st.UDP,
+					Procs:              st.Procs,
+					NetRxRate:          st.NetRxRate,
+					NetTxRate:          st.NetTxRate,
+					OSName:             st.OSName,
+					Kernel:             st.Kernel,
+					Virt:               st.Virt,
+					CPUName:            st.CPUName,
+					CPUCores:           st.CPUCores,
 				}
 			}
 			m.Latency = s.recordNodePingResults(node.ID, st.PingResults, m.Latency)
@@ -439,25 +440,26 @@ func (s *Server) handleAgentMessage(ctx context.Context, node *Node, msgType byt
 		var hostRes *HostResources
 		if st.HasHostTotals {
 			hostRes = &HostResources{
-				CPUPercent:    st.CPUPercent,
-				LoadAvg:       st.LoadAvg,
-				MemoryTotal:   st.MemoryTotal,
-				MemoryUsed:    st.MemoryUsed,
-				SwapTotal:     st.SwapTotal,
-				SwapUsed:      st.SwapUsed,
-				DiskTotal:     st.DiskTotal,
-				DiskUsed:      st.DiskUsed,
-				UptimeSeconds: st.UptimeSeconds,
-				TCP:           st.TCP,
-				UDP:           st.UDP,
-				Procs:         st.Procs,
-				NetRxRate:     st.NetRxRate,
-				NetTxRate:     st.NetTxRate,
-				OSName:        st.OSName,
-				Kernel:        st.Kernel,
-				Virt:          st.Virt,
-				CPUName:       st.CPUName,
-				CPUCores:      st.CPUCores,
+				CPUPercent:         st.CPUPercent,
+				LoadAvg:            st.LoadAvg,
+				MemoryTotal:        st.MemoryTotal,
+				MemoryUsed:         st.MemoryUsed,
+				SwapTotal:          st.SwapTotal,
+				SwapUsed:           st.SwapUsed,
+				DiskTotal:          st.DiskTotal,
+				DiskUsed:           st.DiskUsed,
+				UptimeSeconds:      st.UptimeSeconds,
+				AgentUptimeSeconds: st.AgentUptimeSeconds,
+				TCP:                st.TCP,
+				UDP:                st.UDP,
+				Procs:              st.Procs,
+				NetRxRate:          st.NetRxRate,
+				NetTxRate:          st.NetTxRate,
+				OSName:             st.OSName,
+				Kernel:             st.Kernel,
+				Virt:               st.Virt,
+				CPUName:            st.CPUName,
+				CPUCores:           st.CPUCores,
 			}
 			s.recordNodeMetricPoint(node.ID, hostRes)
 		}
@@ -684,16 +686,19 @@ type HostResources struct {
 	DiskTotal     uint64     `json:"disk_total"`
 	DiskUsed      uint64     `json:"disk_used"`
 	UptimeSeconds uint64     `json:"uptime_seconds,omitempty"`
-	TCP           uint32     `json:"tcp"`
-	UDP           uint32     `json:"udp"`
-	Procs         uint32     `json:"procs"`
-	NetRxRate     uint64     `json:"net_rx_rate"`
-	NetTxRate     uint64     `json:"net_tx_rate"`
-	OSName        string     `json:"os_name,omitempty"`
-	Kernel        string     `json:"kernel,omitempty"`
-	Virt          string     `json:"virt,omitempty"`
-	CPUName       string     `json:"cpu_name,omitempty"`
-	CPUCores      uint32     `json:"cpu_cores,omitempty"`
+	// AgentUptimeSeconds is the agent process's run time, used for the node's
+	// "online" badge; UptimeSeconds stays the host boot uptime.
+	AgentUptimeSeconds uint64 `json:"agent_uptime_seconds,omitempty"`
+	TCP                uint32 `json:"tcp"`
+	UDP                uint32 `json:"udp"`
+	Procs              uint32 `json:"procs"`
+	NetRxRate          uint64 `json:"net_rx_rate"`
+	NetTxRate          uint64 `json:"net_tx_rate"`
+	OSName             string `json:"os_name,omitempty"`
+	Kernel             string `json:"kernel,omitempty"`
+	Virt               string `json:"virt,omitempty"`
+	CPUName            string `json:"cpu_name,omitempty"`
+	CPUCores           uint32 `json:"cpu_cores,omitempty"`
 }
 
 type storedMetrics struct {
@@ -784,12 +789,12 @@ type storedConnection struct {
 	DestinationLocation string   `json:"destination_location,omitempty"`
 	Host                string   `json:"host,omitempty"`
 	Upload              int64    `json:"upload"`
-	Download       int64    `json:"download"`
-	StartedAt      string   `json:"started_at,omitempty"`
-	Outbound       string   `json:"outbound,omitempty"`
-	Rule           string   `json:"rule,omitempty"`
-	RulePayload    string   `json:"rule_payload,omitempty"`
-	Chains         []string `json:"chains,omitempty"`
+	Download            int64    `json:"download"`
+	StartedAt           string   `json:"started_at,omitempty"`
+	Outbound            string   `json:"outbound,omitempty"`
+	Rule                string   `json:"rule,omitempty"`
+	RulePayload         string   `json:"rule_payload,omitempty"`
+	Chains              []string `json:"chains,omitempty"`
 	// ListenerName is the human-readable inbound the connection arrived on,
 	// resolved from the agent's sing-box inbound tag.
 	ListenerName string `json:"listener_name,omitempty"`

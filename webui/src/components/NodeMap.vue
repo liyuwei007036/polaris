@@ -12,8 +12,13 @@
         <span class="head-title">节点分布</span>
       </div>
       <div class="head-right">
-        <span class="tnum head-stat" title="事件驱动：只有新建立的连接才会发射一颗流星，已存在的长连接不会重复飞线">
-          {{ mappedCount }} 个节点 · {{ places.length }} 个地区 · {{ liveConnectionCount }} 条实时连接
+        <span
+          class="tnum head-stat"
+          :title="unmappedCount > 0
+            ? `已定位 ${mappedCount} / ${nodes.length} 个节点，另有 ${unmappedCount} 个节点缺少经纬度，暂未显示在地图上。事件驱动：只有新建立的连接才会发射一颗流星。`
+            : '事件驱动：只有新建立的连接才会发射一颗流星，已存在的长连接不会重复飞线'"
+        >
+          {{ nodes.length }} 个节点 · {{ places.length }} 个地区 · {{ liveConnectionCount }} 条实时连接<template v-if="unmappedCount > 0">（{{ unmappedCount }} 个未定位）</template>
         </span>
       </div>
     </div>
@@ -38,7 +43,19 @@
         </g>
 
         <!-- Place Pins / Highlights (精准独立经纬度打点) -->
-        <g v-for="p in places" :key="p.key" class="place-pin-group">
+        <g
+          v-for="p in places"
+          :key="p.key"
+          class="place-pin-group"
+          :class="[p.toneClass, { 'is-active': selectedKey === p.key }]"
+          role="button"
+          tabindex="0"
+          :aria-label="`${p.label}，${p.online}/${p.nodes.length} 台在线`"
+          @click.stop="toggleSelect(p.key)"
+          @keydown.enter.prevent="toggleSelect(p.key)"
+          @keydown.space.prevent="toggleSelect(p.key)"
+        >
+          <title>{{ pinTitle(p) }}</title>
           <!-- Pulse halo -->
           <circle
             :cx="p.x"
@@ -47,17 +64,30 @@
             class="pin-halo"
             :class="p.toneClass"
           />
+          <!-- 透明命中区：把 2px 的小圆点扩大成易点中的热区，避免鼠标抖动 -->
+          <circle
+            :cx="p.x"
+            :cy="p.y"
+            r="7"
+            class="pin-hit"
+          />
+          <!-- 选中环 -->
+          <circle
+            v-if="selectedKey === p.key"
+            :cx="p.x"
+            :cy="p.y"
+            r="4.8"
+            class="pin-select-ring"
+            :class="p.toneClass"
+          />
           <!-- Center dot -->
           <circle
             :cx="p.x"
             :cy="p.y"
             r="2.2"
-            class="pin-core cursor-pointer"
+            class="pin-core"
             :class="p.toneClass"
-            @click.stop="toggleSelect(p.key)"
-          >
-            <title>{{ p.label }}: {{ p.online }}/{{ p.nodes.length }} 在线</title>
-          </circle>
+          />
         </g>
       </svg>
 
@@ -93,21 +123,29 @@
         <div v-if="activePlace" class="place-popup neu" @click.stop>
           <div class="popup-head">
             <span class="popup-flag">{{ activePlace.flag }}</span>
-            <span class="popup-title">{{ activePlace.label }}</span>
+            <span class="popup-title truncate">{{ activePlace.label }}</span>
             <span class="popup-stat">{{ activePlace.online }}/{{ activePlace.nodes.length }} 在线</span>
-            <button class="popup-close" @click="selectedKey = null">&times;</button>
+            <button class="popup-close" title="关闭" @click="selectedKey = null">&times;</button>
+          </div>
+          <div class="popup-sub tnum">
+            {{ activePlace.nodes.length }} 台 VPS · {{ formatCoords(activePlace.lat, activePlace.lon) }}
           </div>
           <div class="popup-nodes-list">
-            <div
+            <button
               v-for="node in activePlace.nodes"
               :key="node.id"
+              type="button"
               class="popup-node-item"
+              :title="node.name"
               @click="handleNodeClick(node.id)"
             >
               <span class="popup-node-status" :class="node.online ? 'is-online' : 'is-offline'" />
               <span class="popup-node-name truncate">{{ node.name }}</span>
+              <span class="popup-node-tag" :class="node.online ? 'is-online' : 'is-offline'">
+                {{ node.online ? '在线' : '离线' }}
+              </span>
               <span class="popup-node-arrow">&rsaquo;</span>
-            </div>
+            </button>
           </div>
         </div>
       </transition>
@@ -233,6 +271,25 @@ const mappedCount = computed(() => {
   return places.value.reduce((sum, p) => sum + p.nodes.length, 0)
 })
 
+// 缺少经纬度、无法落到地图上的节点，避免统计口径让人误以为地图漏画了 VPS
+const unmappedCount = computed(() => Math.max(0, props.nodes.length - mappedCount.value))
+
+function pinTitle(place) {
+  const names = place.nodes.map((n) => n.name).filter(Boolean)
+  const shown = names.length ? names.slice(0, 3).join('、') : '未命名节点'
+  const rest = names.length > 3 ? ` 等 ${names.length} 台` : ''
+  return `${place.label} · ${shown}${rest}（${place.online}/${place.nodes.length} 在线）`
+}
+
+function formatCoords(lat, lon) {
+  const la = Number(lat)
+  const lo = Number(lon)
+  if (!Number.isFinite(la) || !Number.isFinite(lo)) return ''
+  const ns = la >= 0 ? 'N' : 'S'
+  const ew = lo >= 0 ? 'E' : 'W'
+  return `${Math.abs(la).toFixed(2)}°${ns}, ${Math.abs(lo).toFixed(2)}°${ew}`
+}
+
 function toggleSelect(key) {
   selectedKey.value = selectedKey.value === key ? null : key
 }
@@ -243,7 +300,9 @@ function handleNodeClick(nodeId) {
 }
 
 function onGlobalClick(e) {
-  if (!e.target.closest('.place-pin-group') && !e.target.closest('.place-popup')) {
+  const target = e.target
+  if (!(target instanceof Element)) return
+  if (!target.closest('.place-pin-group') && !target.closest('.place-popup')) {
     selectedKey.value = null
   }
 }
@@ -704,6 +763,11 @@ onUnmounted(() => {
   opacity: 0.3;
 }
 
+.place-pin-group {
+  cursor: pointer;
+  outline: none;
+}
+
 .pin-halo {
   animation: pulse-ring 2.4s ease-out infinite;
 }
@@ -712,17 +776,44 @@ onUnmounted(() => {
 .pin-halo.tone-some { fill: var(--sb-warning, #f59e0b); }
 .pin-halo.tone-none { fill: var(--sb-danger, #ef4444); }
 
-.pin-core {
-  transition: transform 0.15s ease;
+/* 透明命中区：小圆点本身只有 2px，直接 hover 极易抖动脱靶 */
+.pin-hit {
+  fill: transparent;
+  pointer-events: all;
 }
 
-.pin-core:hover {
-  transform: scale(1.3);
+.pin-core {
+  transform-box: fill-box;
+  transform-origin: center;
+  transition: transform 0.15s ease;
+  pointer-events: none;
+}
+
+/*
+ * 关键修复：SVG 元素默认以 viewBox 原点/中心作为 transform-origin，
+ * 直接 scale 会让圆点瞬移到别处，鼠标随之脱离 -> 再缩回，形成“跳来跳去”。
+ * 这里用 fill-box + center 保证只以圆点自身中心放大。
+ * 热区固定不缩放，悬停状态由整组承担，因此不会在放大/缩回之间反复抖。
+ */
+.place-pin-group:hover .pin-core,
+.place-pin-group:focus-visible .pin-core,
+.place-pin-group.is-active .pin-core {
+  transform: scale(1.5);
 }
 
 .pin-core.tone-all { fill: var(--sb-success, #10b981); }
 .pin-core.tone-some { fill: var(--sb-warning, #f59e0b); }
 .pin-core.tone-none { fill: var(--sb-danger, #ef4444); }
+
+.pin-select-ring {
+  fill: none;
+  stroke-width: 1.2;
+  pointer-events: none;
+}
+
+.pin-select-ring.tone-all { stroke: var(--sb-success, #10b981); }
+.pin-select-ring.tone-some { stroke: var(--sb-warning, #f59e0b); }
+.pin-select-ring.tone-none { stroke: var(--sb-danger, #ef4444); }
 
 @keyframes pulse-ring {
   0% { r: 2.5; opacity: 0.7; }
@@ -734,7 +825,7 @@ onUnmounted(() => {
   top: 12px;
   right: 12px;
   z-index: 10;
-  width: 220px;
+  width: 248px;
   border-radius: 12px;
   padding: 10px 12px;
   box-shadow: var(--sh-neu);
@@ -750,19 +841,29 @@ onUnmounted(() => {
   padding-bottom: 6px;
 }
 
-.popup-flag { font-size: 14px; }
-.popup-stat { font-size: 10px; color: var(--sb-muted); margin-left: auto; }
+.popup-flag { font-size: 14px; flex-shrink: 0; }
+.popup-title { min-width: 0; }
+.popup-stat { font-size: 10px; color: var(--sb-muted); margin-left: auto; white-space: nowrap; }
 .popup-close {
+  flex-shrink: 0;
+  padding: 0 2px;
   background: none;
   border: none;
   color: var(--sb-muted);
   font-size: 16px;
+  line-height: 1;
   cursor: pointer;
+}
+
+.popup-sub {
+  margin-top: 6px;
+  font-size: 10px;
+  color: var(--sb-muted);
 }
 
 .popup-nodes-list {
   margin-top: 6px;
-  max-height: 140px;
+  max-height: 150px;
   overflow-y: auto;
   display: flex;
   flex-direction: column;
@@ -773,9 +874,15 @@ onUnmounted(() => {
   display: flex;
   align-items: center;
   gap: 6px;
-  padding: 4px 6px;
+  width: 100%;
+  padding: 5px 6px;
+  border: none;
   border-radius: 6px;
+  background: transparent;
+  color: var(--sb-text);
+  font: inherit;
   font-size: 11px;
+  text-align: left;
   cursor: pointer;
   transition: background-color 0.15s ease;
 }
@@ -785,6 +892,7 @@ onUnmounted(() => {
 }
 
 .popup-node-status {
+  flex-shrink: 0;
   width: 6px;
   height: 6px;
   border-radius: 50%;
@@ -793,8 +901,31 @@ onUnmounted(() => {
 .popup-node-status.is-online { background: var(--sb-success, #10b981); }
 .popup-node-status.is-offline { background: var(--sb-danger, #ef4444); }
 
-.popup-node-arrow {
+.popup-node-name {
+  min-width: 0;
+}
+
+.popup-node-tag {
+  flex-shrink: 0;
   margin-left: auto;
+  padding: 1px 5px;
+  border-radius: 999px;
+  font-size: 9px;
+  line-height: 1.4;
+}
+
+.popup-node-tag.is-online {
+  color: var(--sb-success, #10b981);
+  background: color-mix(in oklab, var(--sb-success, #10b981) 14%, transparent);
+}
+
+.popup-node-tag.is-offline {
+  color: var(--sb-danger, #ef4444);
+  background: color-mix(in oklab, var(--sb-danger, #ef4444) 14%, transparent);
+}
+
+.popup-node-arrow {
+  flex-shrink: 0;
   color: var(--sb-muted);
   font-size: 14px;
 }

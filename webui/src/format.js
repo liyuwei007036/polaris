@@ -75,3 +75,30 @@ export function formatDuration(seconds) {
   return remMin ? `${h} 小时 ${remMin} 分` : `${h} 小时`
 }
 
+// formatUptime is for long-running durations (a host's boot time or the
+// agent's own run time). Unlike formatDuration above it rolls hours up into
+// days, so a machine that has been up for months reads "128 天 5 小时"
+// instead of "3077 小时".
+export function formatUptime(seconds) {
+  const s = Math.round(Number(seconds || 0))
+  if (s <= 0) return '< 1 秒'
+  const days = Math.floor(s / 86400)
+  const hours = Math.floor((s % 86400) / 3600)
+  const minutes = Math.floor((s % 3600) / 60)
+  if (days > 0) return hours ? `${days} 天 ${hours} 小时` : `${days} 天`
+  if (hours > 0) return minutes ? `${hours} 小时 ${minutes} 分` : `${hours} 小时`
+  if (minutes > 0) return `${minutes} 分`
+  return `${s} 秒`
+}
+
+// formatBandwidth normalises an operator-entered spec such as "59Mbps" or
+// "1 Gbps" to the same "<number> <unit>" shape, so badges line up instead of
+// one reading "59Mbps" next to another reading "1 Gbps".
+export function formatBandwidth(value) {
+  const text = String(value ?? '').trim()
+  if (!text) return ''
+  const match = text.match(/^([\d.]+)\s*(.+)$/)
+  if (!match) return text
+  return `${match[1]} ${match[2]}`
+}
+

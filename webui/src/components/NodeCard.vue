@@ -80,7 +80,7 @@
         <svg class="size-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
           <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2" />
         </svg>
-        <span>{{ node.bandwidth }}</span>
+        <span>{{ formatBandwidth(node.bandwidth) }}</span>
       </span>
     </div>
 
@@ -234,6 +234,7 @@ import {
 import OsIcon from './OsIcon.vue'
 import Meter from './Meter.vue'
 import LatencyPanel from './LatencyPanel.vue'
+import { formatBandwidth } from '../format'
 import { isShareMode } from '../share'
 import { isNewerVersion } from '../version'
 

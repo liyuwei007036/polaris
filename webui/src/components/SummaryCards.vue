@@ -87,11 +87,8 @@
             ±{{ Math.round(avgFleetJitter) }}ms
           </span>
         </div>
-        <div class="tile-sub font-mono">
-          <span v-if="activeProbingNodeCount > 0">
-            来自 {{ activeProbingNodeCount }} 个探测节点
-          </span>
-          <span v-else>等待探测数据</span>
+        <div v-if="activeProbingNodeCount === 0" class="tile-sub font-mono">
+          等待探测数据
         </div>
       </div>
     </div>
@@ -328,11 +325,10 @@ const monthlySpendText = computed(() => {
   const USD_TO_CNY = 7.23
   if (usd > 0 && cny > 0) {
     const totalCny = cny + usd * USD_TO_CNY
-    return `折合 ¥${totalCny.toFixed(1)}/月 ($${usd.toFixed(1)} + ¥${cny.toFixed(1)})`
+    return `折合 ¥${totalCny.toFixed(1)}/月`
   }
   if (usd > 0) {
-    const inCny = usd * USD_TO_CNY
-    return `$${usd.toFixed(1)}/月 (折合 ¥${inCny.toFixed(1)})`
+    return `折合 ¥${(usd * USD_TO_CNY).toFixed(1)}/月`
   }
   return `¥${cny.toFixed(1)}/月`
 })

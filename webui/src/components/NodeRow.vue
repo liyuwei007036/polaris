@@ -44,7 +44,7 @@
         </template>
         <template v-if="node.bandwidth">
           <span class="meta-dot">·</span>
-          <span class="row-bw-text">{{ node.bandwidth }}</span>
+          <span class="row-bw-text">{{ formatBandwidth(node.bandwidth) }}</span>
         </template>
       </div>
     </div>
@@ -133,6 +133,7 @@
 import { computed, inject } from 'vue'
 import OsIcon from './OsIcon.vue'
 import LatencyPanel from './LatencyPanel.vue'
+import { formatBandwidth } from '../format'
 import { isNewerVersion } from '../version'
 
 const props = defineProps({
