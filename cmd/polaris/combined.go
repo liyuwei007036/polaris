@@ -6,7 +6,6 @@ import (
 	"flag"
 	"fmt"
 	"log"
-	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -14,6 +13,7 @@ import (
 	"time"
 
 	"github.com/liyuwei007036/polaris/internal/control"
+	"github.com/liyuwei007036/polaris/internal/wire"
 )
 
 type combinedFlagValues struct {
@@ -59,7 +59,7 @@ func addCombinedFlags(flags *flag.FlagSet) combinedFlagValues {
 		masterDataDir:      flags.String("master-data-dir", masterDefaults.DataDir, "master data directory"),
 		databasePath:       flags.String("database-path", "", "SQLite database file"),
 		mmdbPath:           flags.String("mmdb-path", "", "path to MaxMind GeoIP2 / GeoLite2 / IPinfo .mmdb database"),
-		agentPort:          flags.Int("agent-port", masterDefaults.AgentPort, "Noise TCP port for agents"),
+		agentPort:          flags.Int("agent-port", masterDefaults.AgentPort, "Noise KCP/UDP port for agents"),
 		webPort:            flags.Int("web-port", masterDefaults.WebPort, "HTTP port for the web console"),
 		allowInsecureHTTP:  flags.Bool("allow-insecure-http", false, "allow login cookies over plain HTTP"),
 		agentDataDir:       flags.String("agent-data-dir", agentDefaults.DataDir, "agent data directory"),
@@ -170,11 +170,12 @@ func serveCombined(ctx context.Context, masterConfiguration masterConfig, agentC
 	server.SetAgentPort(masterConfiguration.AgentPort)
 	applyConnectionsInterval(server, masterConfiguration.ConnectionsInterval)
 	agentAddress := portAddress(masterConfiguration.AgentPort)
-	agentListener, err := net.Listen("tcp", agentAddress)
+	agentListener, err := wire.ListenKCP(agentAddress)
 	if err != nil {
-		return fmt.Errorf("listen for agents: %w", err)
+		return fmt.Errorf("listen for agents (KCP/UDP): %w", err)
 	}
 	defer agentListener.Close()
+
 	browserAddress := portAddress(masterConfiguration.WebPort)
 	browserServer := &http.Server{
 		Addr:              browserAddress,
@@ -187,6 +188,11 @@ func serveCombined(ctx context.Context, masterConfiguration masterConfig, agentC
 	defer browserServer.Close()
 	combinedContext, cancel := context.WithCancel(ctx)
 	defer cancel()
+	go func() {
+		<-combinedContext.Done()
+		_ = agentListener.Close()
+		_ = browserServer.Close()
+	}()
 	server.EnableConnectionRecording(combinedContext)
 	server.StartMaintenance(combinedContext)
 	server.StartTrafficAggregation(combinedContext)
@@ -197,7 +203,7 @@ func serveCombined(ctx context.Context, masterConfiguration masterConfig, agentC
 	wg.Add(3)
 	go func() {
 		defer wg.Done()
-		fmt.Fprintln(os.Stdout, "polaris combined (master agent port) listening on", agentAddress)
+		fmt.Fprintln(os.Stdout, "polaris combined (master agent port, KCP/UDP) listening on", agentAddress)
 		errorsChannel <- server.ServeAgents(combinedContext, agentListener)
 	}()
 	go func() {

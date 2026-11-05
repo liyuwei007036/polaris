@@ -235,6 +235,7 @@ import OsIcon from './OsIcon.vue'
 import Meter from './Meter.vue'
 import LatencyPanel from './LatencyPanel.vue'
 import { isShareMode } from '../share'
+import { isNewerVersion } from '../version'
 
 const props = defineProps({
   node: {
@@ -264,10 +265,9 @@ defineEmits(['open', 'action'])
 const appState = inject('appState', null)
 const isAdmin = inject('isAdmin', { value: false })
 
-const agentUpdateAvailable = computed(() => {
-  const latest = appState?.systemUpdate?.latest_version
-  return Boolean(latest && props.node.agent_version && props.node.agent_version !== latest)
-})
+const agentUpdateAvailable = computed(() =>
+  isNewerVersion(appState?.systemUpdate?.latest_version, props.node.agent_version),
+)
 
 const singBoxUpdateAvailable = computed(() => {
   const latest = props.singBoxLatest?.[props.node.architecture]

@@ -18,15 +18,6 @@
       </div>
     </div>
 
-    <div class="map-sub">
-      <div class="legend-wrap">
-        <span v-for="item in LEGEND" :key="item.tone" class="legend-item" :class="`is-${item.tone}`">
-          <span class="legend-dot" :class="item.dotClass" />
-          <span :class="item.tone === 'all' ? 'text-ok font-medium' : ''">{{ item.label }}</span>
-        </span>
-      </div>
-    </div>
-
     <div ref="wrapRef" class="map-canvas-wrap">
       <!-- 下层：矢量静态底图与精准节点打点 (保持无损矢量与交互) -->
       <svg
@@ -145,12 +136,6 @@ const props = defineProps({
 })
 
 const emit = defineEmits(['open'])
-
-const LEGEND = [
-  { tone: 'all', label: '全部在线', dotClass: 'tone-all' },
-  { tone: 'some', label: '部分离线', dotClass: 'tone-some' },
-  { tone: 'none', label: '全部离线', dotClass: 'tone-none' },
-]
 
 const cardRef = ref(null)
 const wrapRef = ref(null)
@@ -636,46 +621,6 @@ onUnmounted(() => {
   font-size: 11px;
   color: var(--sb-muted);
 }
-
-
-.map-sub {
-  margin-top: 6px;
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  justify-content: flex-end;
-  gap: 8px;
-  font-size: 11px;
-}
-
-.text-ok { color: var(--sb-success, #10b981); }
-
-.legend-wrap {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-}
-
-.legend-item {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  color: var(--sb-muted);
-  font-size: 11px;
-}
-
-.legend-dot {
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-}
-
-.legend-dot.tone-all {
-  background: var(--sb-success, #10b981);
-  box-shadow: 0 0 6px color-mix(in oklab, var(--sb-success, #10b981) 40%, transparent);
-}
-.legend-dot.tone-some { background: var(--sb-warning, #f59e0b); }
-.legend-dot.tone-none { background: var(--sb-danger, #ef4444); }
 
 .map-canvas-wrap {
   position: relative;

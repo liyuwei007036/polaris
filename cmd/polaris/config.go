@@ -76,7 +76,7 @@ func addMasterFlags(flags *flag.FlagSet) masterFlagValues {
 		configPath:        flags.String("config", "", "master YAML configuration file"),
 		dataDir:           flags.String("data-dir", defaults.DataDir, "master data directory"),
 		databasePath:      flags.String("database-path", "", "SQLite database file"),
-		agentPort:         flags.Int("agent-port", defaults.AgentPort, "Noise TCP port for agents"),
+		agentPort:         flags.Int("agent-port", defaults.AgentPort, "Noise KCP/UDP port for agents"),
 		webPort:           flags.Int("web-port", defaults.WebPort, "HTTP port for the web console"),
 		allowInsecureHTTP: flags.Bool("allow-insecure-http", false, "allow login cookies over plain HTTP"),
 		mmdbPath:          flags.String("mmdb-path", "", "path to MaxMind GeoIP2 / GeoLite2 / IPinfo .mmdb database"),

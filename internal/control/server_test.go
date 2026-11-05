@@ -10,7 +10,6 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
-	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -288,21 +287,21 @@ func TestRegistrationTokenCanOnlyBeUsedOnce(t *testing.T) {
 	}
 }
 
-// startAgentListener runs the given server's agent-facing Noise/TCP accept
+// startAgentListener runs the given server's agent-facing Noise/KCP (UDP) accept
 // loop on an ephemeral local port for the duration of the test.
 func startAgentListener(t *testing.T, server *control.Server) string {
 	t.Helper()
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	kcpListener, err := wire.ListenKCP("127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	go func() { _ = server.ServeAgents(ctx, listener) }()
+	go func() { _ = server.ServeAgents(ctx, kcpListener) }()
 	t.Cleanup(func() {
 		cancel()
-		listener.Close()
+		kcpListener.Close()
 	})
-	return listener.Addr().String()
+	return kcpListener.Addr().String()
 }
 
 func TestOperatorManagementPreservesAnEnabledAdministrator(t *testing.T) {

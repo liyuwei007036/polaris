@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"net"
 	"os"
 	"os/exec"
 	"runtime"
@@ -174,7 +173,7 @@ func DefaultStatus(singBoxVersion, dataDir string) Status {
 		SingBoxConfigHash: singBoxConfigHash,
 		NginxConfigHash:   reportedNginxConfigurationHash(dataDir),
 		Capabilities: map[string]any{
-			"systemd": runtime.GOOS == "linux", "control_channel": "noise-tcp", "configuration_hashes": true,
+			"systemd": runtime.GOOS == "linux", "control_channel": "noise-kcp", "configuration_hashes": true,
 		},
 		Metrics:     CollectMetrics(),
 		IPAddresses: publicIPs,
@@ -183,21 +182,36 @@ func DefaultStatus(singBoxVersion, dataDir string) Status {
 	}
 }
 
-// Connect dials the master's agent port and completes the Noise_XK
-// handshake. The agent is the initiator and must already know the master's
-// static public key (configured out of band by the operator) — the
-// WireGuard-style replacement for pinning a CA certificate.
+// Connect dials the master's agent port via KCP (UDP with Reed-Solomon FEC)
+// and completes the Noise_XK handshake.
 func Connect(ctx context.Context, masterAddr string, local wire.Keypair, masterPub [wire.KeySize]byte) (*wire.Conn, error) {
-	dialer := net.Dialer{Timeout: 10 * time.Second}
-	raw, err := dialer.DialContext(ctx, "tcp", masterAddr)
-	if err != nil {
-		return nil, fmt.Errorf("dial master: %w", err)
+	if err := ctx.Err(); err != nil {
+		return nil, err
 	}
-	conn, err := wire.DialXK(raw, local, masterPub)
+	kcpConn, err := wire.DialKCP(masterAddr)
 	if err != nil {
-		raw.Close()
-		return nil, fmt.Errorf("handshake with master: %w", err)
+		return nil, fmt.Errorf("dial master KCP/UDP: %w", err)
 	}
+	done := make(chan struct{})
+	go func() {
+		select {
+		case <-ctx.Done():
+			_ = kcpConn.Close()
+		case <-done:
+		}
+	}()
+	_ = kcpConn.SetDeadline(time.Now().Add(10 * time.Second))
+	conn, err := wire.DialXK(kcpConn, local, masterPub)
+	close(done)
+	if err != nil {
+		_ = kcpConn.Close()
+		return nil, fmt.Errorf("handshake with master KCP/UDP: %w", err)
+	}
+	if ctx.Err() != nil {
+		_ = kcpConn.Close()
+		return nil, ctx.Err()
+	}
+	_ = kcpConn.SetDeadline(time.Time{})
 	return conn, nil
 }
 
@@ -211,13 +225,16 @@ func Register(conn *wire.Conn, token, nodeName string, capabilities map[string]s
 	if err != nil {
 		return wire.RegisterAck{}, err
 	}
+	_ = conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
 	if err := conn.WriteMessage(wire.MsgRegister, body); err != nil {
 		return wire.RegisterAck{}, fmt.Errorf("send registration: %w", err)
 	}
+	_ = conn.SetReadDeadline(time.Now().Add(5 * time.Second))
 	msgType, respBody, err := conn.ReadMessage()
 	if err != nil {
 		return wire.RegisterAck{}, fmt.Errorf("read registration ack: %w", err)
 	}
+	_ = conn.SetDeadline(time.Time{})
 	if msgType != wire.MsgRegisterAck {
 		return wire.RegisterAck{}, errors.New("unexpected response to registration")
 	}
@@ -240,7 +257,7 @@ func RunSession(ctx context.Context, conn *wire.Conn, handler TaskHandler, heart
 	// Master sends wire.MsgKeepalive every 20s. If we receive nothing from the master
 	// for masterSilenceTimeout, consider the connection dead (e.g. master changed IP or
 	// network dropped) so the agent exits this session and reconnects via fresh DNS resolution.
-	masterSilenceTimeout := 60 * time.Second
+	masterSilenceTimeout := 90 * time.Second
 	if heartbeatInterval > 0 && heartbeatInterval < 20*time.Second {
 		if 3*heartbeatInterval < masterSilenceTimeout {
 			masterSilenceTimeout = 3 * heartbeatInterval
@@ -248,7 +265,7 @@ func RunSession(ctx context.Context, conn *wire.Conn, handler TaskHandler, heart
 	} else if 2*heartbeatInterval > masterSilenceTimeout {
 		masterSilenceTimeout = 2 * heartbeatInterval
 	}
-	const writeTimeout = 15 * time.Second
+	const writeTimeout = 60 * time.Second
 
 	incoming := make(chan wireInboundMessage, 8)
 	readErr := make(chan error, 1)
@@ -306,6 +323,8 @@ func RunSession(ctx context.Context, conn *wire.Conn, handler TaskHandler, heart
 
 	heartbeatTicker := time.NewTicker(heartbeatInterval)
 	defer heartbeatTicker.Stop()
+	keepaliveTicker := time.NewTicker(15 * time.Second)
+	defer keepaliveTicker.Stop()
 	// Connection pushes ride a wall-clock grid rather than a ticker started
 	// whenever this session happened to connect. Every node in the fleet
 	// therefore reports at the same instants, and the master can add their
@@ -397,6 +416,11 @@ func RunSession(ctx context.Context, conn *wire.Conn, handler TaskHandler, heart
 			}
 		case <-heartbeatTicker.C:
 			if err := sendStatus(); err != nil {
+				return err
+			}
+		case <-keepaliveTicker.C:
+			_ = conn.SetWriteDeadline(time.Now().Add(writeTimeout))
+			if err := conn.WriteMessage(wire.MsgKeepalive, nil); err != nil {
 				return err
 			}
 		case <-connectionsTimer.C:

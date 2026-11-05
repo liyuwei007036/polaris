@@ -12,10 +12,9 @@ import (
 	"github.com/liyuwei007036/polaris/internal/wire"
 )
 
-// ServeAgents accepts raw TCP connections from agents and runs the Noise_XK
+// ServeAgents accepts KCP/UDP connections from agents and runs the Noise_XK
 // handshake + binary session protocol on each — there is no HTTP anywhere in
-// this path. It returns when ln.Accept fails permanently (including on
-// context cancellation via the listener being closed by the caller).
+// this path.
 func (s *Server) ServeAgents(ctx context.Context, ln net.Listener) error {
 	for {
 		raw, err := ln.Accept()
@@ -29,7 +28,7 @@ func (s *Server) ServeAgents(ctx context.Context, ln net.Listener) error {
 	}
 }
 
-// handleAgentConn processes one raw TCP connection end to end. The protocol
+// handleAgentConn processes one raw KCP/UDP connection end to end. The protocol
 // after the handshake is always the same from the agent's point of view: it
 // sends exactly one Register message (Token is blank once already approved —
 // see the agent side), and gets back exactly one RegisterAck. If that ack
@@ -40,7 +39,7 @@ func (s *Server) handleAgentConn(ctx context.Context, raw net.Conn) {
 	defer raw.Close()
 	// Bound the handshake+register step so a slow or malicious peer can't
 	// hold a goroutine open indefinitely; cleared once the session starts.
-	_ = raw.SetDeadline(time.Now().Add(15 * time.Second))
+	_ = raw.SetDeadline(time.Now().Add(60 * time.Second))
 	conn, peerPub, err := wire.AcceptXK(raw, s.noiseKeypair)
 	if err != nil {
 		log.Printf("[AGENT_HANDSHAKE] Handshake failed from %s: %v", raw.RemoteAddr(), err)
@@ -89,7 +88,7 @@ func (s *Server) handleAgentConn(ctx context.Context, raw net.Conn) {
 		}
 	}
 	_ = raw.SetDeadline(time.Time{})
-	log.Printf("[AGENT_HANDSHAKE] SUCCESS: node %s (%s) connected from %s (observed address=%s)", node.ID, node.Name, raw.RemoteAddr(), address)
+	log.Printf("[AGENT_HANDSHAKE] SUCCESS: node %s (%s) connected via %s from %s (observed address=%s)", node.ID, node.Name, raw.RemoteAddr().Network(), raw.RemoteAddr(), address)
 	s.runAgentSession(ctx, conn, node, address)
 }
 
@@ -114,6 +113,7 @@ func connectingAddress(raw net.Conn) string {
 // Either way the connection ends here — the agent's retry loop reconnects
 // later, and once approved that reconnect is recognized directly above.
 func (s *Server) handleRegistrationAttempt(ctx context.Context, conn *wire.Conn, peerPub [wire.KeySize]byte, req wire.RegisterRequest) {
+	defer time.Sleep(100 * time.Millisecond)
 	capsJSON, err := json.Marshal(req.Capabilities)
 	if err != nil {
 		return
@@ -253,7 +253,7 @@ func (s *Server) runAgentSession(ctx context.Context, conn *wire.Conn, node Node
 			log.Printf("[AGENT_EXIT] Node %s (%s) readErr from %s: %v", node.ID, node.Name, remoteAddr, err)
 			return
 		case msg := <-incoming:
-			if !s.handleAgentMessage(ctx, node, msg.msgType, msg.body) {
+			if !s.handleAgentMessage(ctx, &node, msg.msgType, msg.body) {
 				log.Printf("[AGENT_EXIT] Node %s (%s) handleAgentMessage returned false, closing session", node.ID, node.Name)
 				return
 			}
@@ -331,7 +331,7 @@ func (s *Server) sendTask(conn *wire.Conn, nodeID string, task Task) bool {
 	return true
 }
 
-func (s *Server) handleAgentMessage(ctx context.Context, node Node, msgType byte, body []byte) bool {
+func (s *Server) handleAgentMessage(ctx context.Context, node *Node, msgType byte, body []byte) bool {
 	switch msgType {
 	case wire.MsgStatus:
 		var st wire.Status
@@ -344,6 +344,12 @@ func (s *Server) handleAgentMessage(ctx context.Context, node Node, msgType byte
 		}
 		if err := s.store.UpdateNodeIdentityWithIPs(ctx, node.ID, st.AgentVersion, st.OS, st.Architecture, st.SingBoxVersion, string(capsJSON), st.IPAddresses, st.IPMappings); err != nil {
 			log.Printf("UpdateNodeIdentityWithIPs error for node %s (%s): %v", node.ID, node.Name, err)
+		}
+		// The agent reports its new build right after an upgrade restart. Push
+		// the change so an open console stops offering the upgrade it just ran.
+		if st.AgentVersion != "" && st.AgentVersion != node.AgentVersion {
+			node.AgentVersion = st.AgentVersion
+			s.liveHub.publish(liveEvent{Kind: "node", NodeID: node.ID, AgentVersion: st.AgentVersion})
 		}
 		s.maybeInstallSingBox(ctx, node.ID, st.OS, st.Architecture, st.SingBoxVersion)
 		if st.Capabilities["configuration_hashes"] == "true" {

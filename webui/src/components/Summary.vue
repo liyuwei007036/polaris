@@ -48,16 +48,8 @@
           </div>
           <div class="spark-wrap">
             <svg viewBox="0 0 100 24" preserveAspectRatio="none" class="spark-svg">
-              <polyline
-                v-if="rxSparkPoints"
-                :points="rxSparkPoints"
-                class="spark-line-rx"
-              />
-              <polyline
-                v-if="txSparkPoints"
-                :points="txSparkPoints"
-                class="spark-line-tx"
-              />
+              <path v-if="rxSpark" :d="rxSpark" class="spark-line is-rx" />
+              <path v-if="txSpark" :d="txSpark" class="spark-line is-tx" />
             </svg>
           </div>
         </div>
@@ -115,6 +107,7 @@
 <script setup>
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import NodeMap from './NodeMap.vue'
+import { sparklinePath } from '../sparkline'
 
 const props = defineProps({
   nodes: {
@@ -170,22 +163,18 @@ const liveTx = computed(() => {
   return last ? last.tx : 0
 })
 
-const rxSparkPoints = computed(() => {
-  if (speedHistory.value.length < 2) return ''
-  const max = Math.max(...speedHistory.value.map((s) => s.rx), 1)
-  const len = speedHistory.value.length - 1
-  return speedHistory.value
-    .map((s, i) => `${(i / len) * 100},${22 - (s.rx / max) * 20}`)
-    .join(' ')
+// Both series share one scale so the two lines stay comparable, and the curve
+// is fitted rather than polyline-joined so a noisy sample does not draw a kink.
+const rxSpark = computed(() => {
+  const data = speedHistory.value
+  const max = Math.max(...data.map((s) => s.rx), ...data.map((s) => s.tx), 1024)
+  return sparklinePath(data.map((s) => s.rx), { max })
 })
 
-const txSparkPoints = computed(() => {
-  if (speedHistory.value.length < 2) return ''
-  const max = Math.max(...speedHistory.value.map((s) => s.tx), 1)
-  const len = speedHistory.value.length - 1
-  return speedHistory.value
-    .map((s, i) => `${(i / len) * 100},${22 - (s.tx / max) * 20}`)
-    .join(' ')
+const txSpark = computed(() => {
+  const data = speedHistory.value
+  const max = Math.max(...data.map((s) => s.rx), ...data.map((s) => s.tx), 1024)
+  return sparklinePath(data.map((s) => s.tx), { max })
 })
 
 const totalRx = computed(() => {
@@ -443,19 +432,24 @@ function formatRate(bps) {
 .spark-svg {
   width: 100%;
   height: 100%;
+  display: block;
+  overflow: visible;
 }
 
-.spark-line-rx {
+.spark-line {
   fill: none;
-  stroke: var(--sb-accent);
-  stroke-width: 1.5;
+  stroke: currentColor;
+  stroke-width: 1.6;
+  stroke-linecap: round;
   stroke-linejoin: round;
+  vector-effect: non-scaling-stroke;
 }
 
-.spark-line-tx {
-  fill: none;
-  stroke: var(--sb-warning);
-  stroke-width: 1.5;
-  stroke-linejoin: round;
+.spark-line.is-rx {
+  color: var(--sb-accent);
+}
+
+.spark-line.is-tx {
+  color: var(--sb-warning);
 }
 </style>

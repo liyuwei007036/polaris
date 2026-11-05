@@ -10,6 +10,7 @@ type liveEvent struct {
 	Online         *bool  `json:"online,omitempty"`
 	ClientAddress  string `json:"client_address,omitempty"`
 	LastObservedIP string `json:"last_observed_ip,omitempty"`
+	AgentVersion   string `json:"agent_version,omitempty"`
 }
 
 type liveHub struct {

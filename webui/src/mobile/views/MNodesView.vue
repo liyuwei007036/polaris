@@ -14,6 +14,7 @@ import MActionSheet from '../components/MActionSheet.vue'
 import StatusDot from '../../components/StatusDot.vue'
 import OsIcon from '../../components/OsIcon.vue'
 import LatencyPanel from '../../components/LatencyPanel.vue'
+import { isNewerVersion } from '../../version'
 
 const MASTER_HOST_KEY = 'polaris_master_host'
 const appState = inject('appState')
@@ -176,8 +177,7 @@ async function approve(registration) {
 }
 
 function agentUpdateAvailable(node) {
-  const latest = appState.systemUpdate?.latest_version
-  return Boolean(latest && node.agent_version && node.agent_version !== latest)
+  return isNewerVersion(appState.systemUpdate?.latest_version, node.agent_version)
 }
 
 // 同一架构的服务器共用一个官方版本号，按架构查一次即可；已经拿到的不再重复请求。

@@ -325,6 +325,7 @@ import { api, post } from '../api'
 import { formatBytes, formatDuration } from '../format'
 import { summarizePing } from '../latency'
 import { isShareMode } from '../share'
+import { isNewerVersion } from '../version'
 
 const props = defineProps({
   node: { type: Object, required: true },
@@ -338,10 +339,9 @@ const appState = inject('appState', null)
 const isAdmin = inject('isAdmin', { value: false })
 const canWrite = inject('canWrite', ref(false))
 
-const agentUpdateAvailable = computed(() => {
-  const latest = appState?.systemUpdate?.latest_version
-  return Boolean(latest && props.node.agent_version && props.node.agent_version !== latest)
-})
+const agentUpdateAvailable = computed(() =>
+  isNewerVersion(appState?.systemUpdate?.latest_version, props.node.agent_version),
+)
 
 const singBoxUpdateAvailable = computed(() => {
   const latest = props.singBoxLatest?.[props.node.architecture]

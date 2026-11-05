@@ -1,12 +1,12 @@
 module github.com/liyuwei007036/polaris
 
-go 1.24.0
+go 1.26.0
 
 require (
 	github.com/flynn/noise v1.1.0
 	github.com/lionsoul2014/ip2region/binding/golang v0.0.0-20260801005304-2955431edb26
-	golang.org/x/crypto v0.46.0
-	golang.org/x/net v0.48.0
+	golang.org/x/crypto v0.58.0
+	golang.org/x/net v0.61.0
 	gopkg.in/yaml.v3 v3.0.1
 	modernc.org/sqlite v1.39.1
 )
@@ -14,13 +14,19 @@ require (
 require (
 	github.com/dustin/go-humanize v1.0.1 // indirect
 	github.com/google/uuid v1.6.0 // indirect
+	github.com/klauspost/cpuid/v2 v2.4.1 // indirect
+	github.com/klauspost/reedsolomon v1.14.2 // indirect
 	github.com/mattn/go-isatty v0.0.20 // indirect
 	github.com/ncruces/go-strftime v0.1.9 // indirect
 	github.com/oschwald/geoip2-golang v1.13.0 // indirect
 	github.com/oschwald/maxminddb-golang v1.13.0 // indirect
+	github.com/pkg/errors v0.9.1 // indirect
 	github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec // indirect
+	github.com/tjfoc/gmsm v1.4.1 // indirect
+	github.com/xtaci/kcp-go/v5 v5.7.3 // indirect
 	golang.org/x/exp v0.0.0-20250620022241-b7579e27df2b // indirect
-	golang.org/x/sys v0.39.0 // indirect
+	golang.org/x/sys v0.49.0 // indirect
+	golang.org/x/time v0.16.0 // indirect
 	modernc.org/libc v1.66.10 // indirect
 	modernc.org/mathutil v1.7.1 // indirect
 	modernc.org/memory v1.11.0 // indirect

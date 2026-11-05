@@ -62,24 +62,8 @@
         </div>
         <div class="sparkline-wrap">
           <svg viewBox="0 0 100 24" preserveAspectRatio="none" class="sparkline-svg">
-            <polyline
-              v-if="rxPoints"
-              :points="rxPoints"
-              class="spark-line is-rx"
-              fill="none"
-              stroke="currentColor"
-              stroke-width="1.8"
-              vector-effect="non-scaling-stroke"
-            />
-            <polyline
-              v-if="txPoints"
-              :points="txPoints"
-              class="spark-line is-tx"
-              fill="none"
-              stroke="currentColor"
-              stroke-width="1.8"
-              vector-effect="non-scaling-stroke"
-            />
+            <path v-if="rxSpark" :d="rxSpark" class="spark-line is-rx" />
+            <path v-if="txSpark" :d="txSpark" class="spark-line is-tx" />
           </svg>
         </div>
       </div>
@@ -150,6 +134,7 @@
 import { computed, ref, onMounted, onBeforeUnmount } from 'vue'
 import NodeMap from './NodeMap.vue'
 import { formatBytes } from '../format'
+import { sparklinePath } from '../sparkline'
 
 const props = defineProps({
   nodes: {
@@ -278,20 +263,18 @@ const currentTxRate = computed(() => {
   return sum
 })
 
-const rxPoints = computed(() => {
+// Both series share one scale so the two lines stay comparable, and the curve
+// is fitted rather than polyline-joined so a noisy sample does not draw a kink.
+const rxSpark = computed(() => {
   const data = speedHistory.value
-  if (data.length < 2) return ''
   const max = Math.max(...data.map((d) => d.rx), ...data.map((d) => d.tx), 1024)
-  const len = data.length - 1
-  return data.map((d, i) => `${(i / len) * 100},${22 - (d.rx / max) * 20}`).join(' ')
+  return sparklinePath(data.map((d) => d.rx), { max })
 })
 
-const txPoints = computed(() => {
+const txSpark = computed(() => {
   const data = speedHistory.value
-  if (data.length < 2) return ''
   const max = Math.max(...data.map((d) => d.rx), ...data.map((d) => d.tx), 1024)
-  const len = data.length - 1
-  return data.map((d, i) => `${(i / len) * 100},${22 - (d.tx / max) * 20}`).join(' ')
+  return sparklinePath(data.map((d) => d.tx), { max })
 })
 
 // Fleet latency stats
@@ -537,15 +520,24 @@ const monthlySpendText = computed(() => {
 .sparkline-svg {
   width: 100%;
   height: 100%;
+  display: block;
+  overflow: visible;
+}
+
+.spark-line {
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.6;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  vector-effect: non-scaling-stroke;
 }
 
 .spark-line.is-rx {
   color: var(--sb-info);
-  opacity: 0.85;
 }
 
 .spark-line.is-tx {
   color: var(--sb-warning);
-  opacity: 0.85;
 }
 </style>

@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"io"
 	"log"
-	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -193,11 +192,12 @@ func serveMaster(ctx context.Context, configuration masterConfig) error {
 	}
 	server.StartDemoSimulator(ctx)
 	agentAddress := portAddress(configuration.AgentPort)
-	agentListener, err := net.Listen("tcp", agentAddress)
+	agentListener, err := wire.ListenKCP(agentAddress)
 	if err != nil {
-		return fmt.Errorf("listen for agents: %w", err)
+		return fmt.Errorf("listen for agents (KCP/UDP): %w", err)
 	}
 	defer agentListener.Close()
+
 	browserAddress := portAddress(configuration.WebPort)
 	browserServer := &http.Server{
 		Addr:              browserAddress,
@@ -215,7 +215,7 @@ func serveMaster(ctx context.Context, configuration masterConfig) error {
 	}()
 	errorsChannel := make(chan error, 2)
 	go func() {
-		fmt.Fprintln(os.Stdout, "polaris master (agent, Noise-encrypted TCP) listening on", agentAddress)
+		fmt.Fprintln(os.Stdout, "polaris master (agent, Noise-encrypted KCP/UDP) listening on", agentAddress)
 		errorsChannel <- server.ServeAgents(ctx, agentListener)
 	}()
 	go func() {
@@ -354,8 +354,10 @@ func runAgentLoop(ctx context.Context, dataDir, masterAddr string, masterPub [wi
 			}
 			continue
 		}
+		stopConn := context.AfterFunc(ctx, func() { conn.Close() })
 		ack, err := agent.Register(conn, "", "", nil)
 		if err != nil {
+			stopConn()
 			conn.Close()
 			fmt.Fprintln(os.Stderr, "registration check failed:", err)
 			if !sleepContext(ctx, backoff) {
@@ -364,6 +366,7 @@ func runAgentLoop(ctx context.Context, dataDir, masterAddr string, masterPub [wi
 			continue
 		}
 		if ack.Status != "approved" {
+			stopConn()
 			conn.Close()
 			fmt.Fprintf(os.Stderr, "node not approved yet (status=%s); run \"agent register\" if you haven't, then keep this running — it retries automatically\n", ack.Status)
 			if !sleepContext(ctx, backoff) {
@@ -372,12 +375,14 @@ func runAgentLoop(ctx context.Context, dataDir, masterAddr string, masterPub [wi
 			continue
 		}
 		if err := agent.SaveReleaseSigningPublicKey(dataDir, ack.ReleaseSigningPublicKeyPEM); err != nil {
+			stopConn()
 			conn.Close()
 			return err
 		}
 		backoff = 5 * time.Second
 		sessionErr := agent.RunSession(ctx, conn, handler, interval,
 			sessionConnectionsInterval(connInterval, ack.ConnectionsIntervalSeconds), singBoxVersion, dataDir)
+		stopConn()
 		conn.Close()
 		if ctx.Err() != nil {
 			return nil

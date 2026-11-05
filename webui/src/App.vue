@@ -221,6 +221,7 @@ function startLiveSubscription() {
         if (event.online !== undefined) node.online = event.online
         if (event.client_address !== undefined) node.client_address = event.client_address
         if (event.last_observed_ip !== undefined) node.last_observed_ip = event.last_observed_ip
+        if (event.agent_version !== undefined) node.agent_version = event.agent_version
       }
     }
   })

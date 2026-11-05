@@ -133,6 +133,7 @@
 import { computed, inject } from 'vue'
 import OsIcon from './OsIcon.vue'
 import LatencyPanel from './LatencyPanel.vue'
+import { isNewerVersion } from '../version'
 
 const props = defineProps({
   node: {
@@ -157,10 +158,9 @@ defineEmits(['open'])
 
 const appState = inject('appState', null)
 
-const agentUpdateAvailable = computed(() => {
-  const latest = appState?.systemUpdate?.latest_version
-  return Boolean(latest && props.node.agent_version && props.node.agent_version !== latest)
-})
+const agentUpdateAvailable = computed(() =>
+  isNewerVersion(appState?.systemUpdate?.latest_version, props.node.agent_version),
+)
 
 const singBoxUpdateAvailable = computed(() => {
   const latest = props.singBoxLatest?.[props.node.architecture]

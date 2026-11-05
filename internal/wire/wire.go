@@ -1,4 +1,4 @@
-// Package wire implements the agent<->master transport: a persistent TCP
+// Package wire implements the agent<->master transport: a persistent KCP (UDP)
 // connection authenticated and encrypted with the Noise Protocol Framework
 // (Noise_XK, raw Curve25519 keys — no X.509 certificates, no HTTP). Messages
 // are binary: a small fixed header plus a gob-encoded body, chunked to fit

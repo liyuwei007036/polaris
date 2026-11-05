@@ -328,7 +328,7 @@ func (s *Server) NoisePublicKey() [wire.KeySize]byte {
 	return s.noiseKeypair.Public
 }
 
-// SetAgentPort records the Noise TCP port agents must dial, so the console can
+// SetAgentPort records the Noise KCP/UDP port agents must dial, so the console can
 // render a complete agent install command. It is the process entry point that
 // knows the configured port, not the Server itself.
 func (s *Server) SetAgentPort(port int) {
