@@ -393,6 +393,15 @@ onBeforeUnmount(() => {
           <el-button type="primary" :loading="alertSaving" @click="saveAlertSettings">保存配置</el-button>
         </div>
       </section>
+
+      <section class="m-card">
+        <div class="m-card__top">
+          <span class="m-card__title">每日简报</span>
+        </div>
+        <div class="m-card__note">
+          每天 09:00 自动发送昨日简报，包含各节点网络质量、活跃设备排行、热门访问目标、节点使用排行与流量汇总。
+        </div>
+      </section>
     </template>
 
     <MActionSheet v-model="actionsOpen" :title="actionTarget?.username" :details="details" :actions="actions" @select="runAction" />

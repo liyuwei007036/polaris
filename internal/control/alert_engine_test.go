@@ -11,6 +11,81 @@ import (
 	"time"
 )
 
+func TestNodeRecoveryRequiresPriorOffline(t *testing.T) {
+	ctx := context.Background()
+	var (
+		mu       sync.Mutex
+		received []BarkMessage
+	)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var msg BarkMessage
+		if err := json.NewDecoder(r.Body).Decode(&msg); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		mu.Lock()
+		received = append(received, msg)
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{"code": 200, "message": "success"})
+	}))
+	defer server.Close()
+
+	store, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+	if _, err := store.UpdateAlertSettings(ctx, AlertSettings{
+		BarkServer:          server.URL,
+		BarkDeviceKey:       "test_device_key",
+		OfflineAlertEnabled: true,
+		CooldownMinutes:     1,
+	}); err != nil {
+		t.Fatalf("update alert settings: %v", err)
+	}
+
+	engine := NewAlertEngine(store, nil)
+	engine.NotifyNodeOnline("node-1", "Tokyo-01")
+	time.Sleep(100 * time.Millisecond)
+	mu.Lock()
+	if len(received) != 0 {
+		t.Errorf("expected no recovery without a prior offline alert, got %d", len(received))
+	}
+	mu.Unlock()
+
+	engine.NotifyNodeOffline("node-1", "Tokyo-01")
+	waitForMessages(t, &mu, &received, 1)
+	engine.NotifyNodeOnline("node-1", "Tokyo-01")
+	waitForMessages(t, &mu, &received, 2)
+
+	mu.Lock()
+	defer mu.Unlock()
+	if !strings.Contains(received[0].Title, "节点离线") {
+		t.Errorf("expected offline notification first, got %s", received[0].Title)
+	}
+	if !strings.Contains(received[1].Title, "节点恢复") {
+		t.Errorf("expected recovery notification second, got %s", received[1].Title)
+	}
+}
+
+func waitForMessages(t *testing.T, mu *sync.Mutex, messages *[]BarkMessage, want int) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		mu.Lock()
+		count := len(*messages)
+		mu.Unlock()
+		if count >= want {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out waiting for %d messages, got %d", want, count)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
 func TestFormatAlertTimeIncludesZone(t *testing.T) {
 	got := FormatAlertTime(time.Date(2026, 11, 5, 12, 0, 0, 0, time.UTC))
 	if !strings.Contains(got, "2026-11-05") {

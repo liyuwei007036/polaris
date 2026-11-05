@@ -526,6 +526,13 @@ onMounted(load)
                     </div>
                   </div>
                 </section>
+
+                <section class="notify-section">
+                  <div class="notify-section__head">
+                    <h3>每日简报</h3>
+                    <p>每天 09:00 自动发送昨日简报，包含各节点网络质量、活跃设备排行、热门访问目标、节点使用排行与流量汇总。</p>
+                  </div>
+                </section>
               </div>
             </div>
           </el-tab-pane>

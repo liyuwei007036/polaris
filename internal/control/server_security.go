@@ -8,7 +8,6 @@ import (
 	"sort"
 	"strings"
 	"sync"
-	"time"
 )
 
 // Network protection holds nothing in this database. Every screen here asks the
@@ -363,12 +362,6 @@ func (s *Server) listBannedAddresses(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"banned": banned})
 }
 
-// securityReadTimeout bounds one reading of the security screen. A node whose
-// agent is alive but no longer answering used to hold the page for the full
-// live-task timeout; the screen reports that node as unreadable instead, while
-// the answer continues to be gathered for any request that follows.
-const securityReadTimeout = 8 * time.Second
-
 // securityOverview answers the whole security screen in one reading. The page
 // needs three lists; done as three requests, the same Fail2Ban state was read
 // from every node twice, once for the jail list and once for the banned list.
@@ -379,9 +372,7 @@ func (s *Server) securityOverview(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
-	ctx, cancel := context.WithTimeout(r.Context(), securityReadTimeout)
-	defer cancel()
-	liveNodes, err := s.securityNodes(ctx, r)
+	liveNodes, err := s.securityNodes(r.Context(), r)
 	if err != nil {
 		writeError(w, err)
 		return
@@ -398,11 +389,11 @@ func (s *Server) securityOverview(w http.ResponseWriter, r *http.Request) {
 	// the Fail2Ban question.
 	go func() {
 		defer group.Done()
-		firewallNodes = s.firewallSnapshot(nodeIDs, s.askNodes(ctx, nodeIDs, "firewall.query", "{}"))
+		firewallNodes = s.firewallSnapshot(nodeIDs, s.askNodes(r.Context(), nodeIDs, "firewall.query", "{}"))
 	}()
 	go func() {
 		defer group.Done()
-		fail2banNodes, banned = s.fail2banSnapshot(nodeIDs, names, s.askNodes(ctx, nodeIDs, "fail2ban.query", "{}"))
+		fail2banNodes, banned = s.fail2banSnapshot(nodeIDs, names, s.askNodes(r.Context(), nodeIDs, "fail2ban.query", "{}"))
 	}()
 	group.Wait()
 

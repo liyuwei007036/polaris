@@ -66,7 +66,7 @@ func TestTelegramClientSendHTML(t *testing.T) {
 	}))
 	defer server.Close()
 
-	text := "<b>Polaris Bot</b>\n<code>Tokyo-01</code>"
+	text := "<b>Polaris 管理通知</b>\n<code>Tokyo-01</code>"
 	if err := NewTelegramClient().SendHTML(context.Background(), server.URL, "123456:ABC-DEF", "1", text); err != nil {
 		t.Fatalf("send html telegram: %v", err)
 	}
@@ -79,7 +79,7 @@ func TestTelegramClientSendHTML(t *testing.T) {
 }
 
 func TestBuildTelegramAlertEscapesDynamicValues(t *testing.T) {
-	text := buildTelegramAlert("测试", "节点告警", "node<&>", []string{
+	text := buildTelegramAlert(severityInfo, "测试", "节点告警", "node<&>", []string{
 		tgLine("字段", "<script>alert(1)</script>"),
 	}, "点击 <a> 或联系管理员")
 
@@ -172,10 +172,10 @@ func TestAlertEngineTelegramOnlyChannel(t *testing.T) {
 	if !strings.Contains(gotText[0], "节点已离线") {
 		t.Errorf("expected alert title in telegram text, got: %s", gotText[0])
 	}
-	if !strings.Contains(gotText[0], "Polaris Bot") || !strings.Contains(gotText[0], "<b>") {
+	if !strings.Contains(gotText[0], "Polaris") || !strings.Contains(gotText[0], "<b>") {
 		t.Errorf("expected bot-style HTML message, got: %s", gotText[0])
 	}
-	if !strings.Contains(gotText[0], "详细信息") || !strings.Contains(gotText[0], "处理建议") {
+	if !strings.Contains(gotText[0], "详细信息") || !strings.Contains(gotText[0], "建议操作") {
 		t.Errorf("expected detailed bot message, got: %s", gotText[0])
 	}
 	if strings.Contains(gotText[0], "🤖") {

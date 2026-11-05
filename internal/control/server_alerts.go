@@ -149,7 +149,7 @@ func (s *Server) testAlert(w http.ResponseWriter, r *http.Request) {
 	if deviceKey != "" {
 		testBody := fmt.Sprintf("通道已连通，告警将按事件类型自动分组。\n铃声：%s\n分组：%s\n时间：%s", sound, group, NowAlertTime())
 		msg := BarkMessage{
-			Title: "Bark 测试推送",
+			Title: "[信息] Bark 测试推送",
 			Body:  testBody,
 			Group: group,
 			Sound: sound,
@@ -164,11 +164,11 @@ func (s *Server) testAlert(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if telegramReady {
-		text := buildTelegramAlert("通道测试", "Telegram Bot 已连通", "", []string{
+		text := buildTelegramAlertFor("通道测试", severityInfo, "通道测试", "Telegram Bot 已连通", "", []string{
 			tgLine("通道", "Telegram Bot API"),
 			tgCodeLine("目标会话", telegramChatID),
 			tgLine("消息格式", "HTML 富文本"),
-		}, "机器人已准备好接收 Polaris 告警。")
+		}, "")
 		if err := NewTelegramClient().SendHTML(testCtx, telegramServer, telegramToken, telegramChatID, text); err != nil {
 			failures = append(failures, "Telegram: "+err.Error())
 		} else {

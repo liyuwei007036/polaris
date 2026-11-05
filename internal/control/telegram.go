@@ -121,11 +121,39 @@ func (c *TelegramClient) send(ctx context.Context, server, botToken, chatID, tex
 		if detail == "" {
 			detail = strings.TrimSpace(string(body))
 		}
+		if hint := telegramErrorHint(detail); hint != "" {
+			return errors.New(hint)
+		}
 		return fmt.Errorf("telegram push failed with HTTP %d: %s", resp.StatusCode, detail)
 	}
 	if !result.OK {
+		if hint := telegramErrorHint(result.Description); hint != "" {
+			return errors.New(hint)
+		}
 		return fmt.Errorf("telegram server rejected message: %s", result.Description)
 	}
 
 	return nil
+}
+
+// telegramErrorHint turns the most common Bot API failures into actionable
+// messages instead of returning only Telegram's English description.
+func telegramErrorHint(description string) string {
+	detail := strings.ToLower(strings.TrimSpace(description))
+	switch {
+	case strings.Contains(detail, "chat not found"):
+		return "Telegram 找不到该 Chat ID：请确认机器人已加入目标群组或频道；超级群请使用 -100 开头的 ID；私聊请先向机器人发送 /start"
+	case strings.Contains(detail, "group chat was upgraded to a supergroup chat"):
+		return "Telegram 群组已升级为超级群：请改用新的 -100 开头 Chat ID"
+	case strings.Contains(detail, "bot was blocked by the user"):
+		return "Telegram 用户已屏蔽该机器人：请先取消屏蔽，再发送 /start"
+	case strings.Contains(detail, "not enough rights"):
+		return "Telegram 机器人权限不足：请在群组或频道中授予机器人发言或管理员权限"
+	case strings.Contains(detail, "user not found"):
+		return "Telegram Chat ID 无效：请确认填写的是数字 ID，而不是用户名"
+	case strings.Contains(detail, "chat_id is empty"):
+		return "Telegram Chat ID 为空：请填写目标私聊、群组或频道的 Chat ID"
+	default:
+		return ""
+	}
 }

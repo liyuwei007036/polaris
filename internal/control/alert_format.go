@@ -10,12 +10,33 @@ import (
 // lock-screen notification, while Telegram is rendered as a detailed bot
 // message with structured fields and an optional suggested action.
 type alertPayload struct {
+	Severity  string
 	BarkTitle string
 	BarkBody  string
 	BarkGroup string
 	BarkSound string
 	BarkURL   string
 	Telegram  string
+}
+
+const (
+	severityCritical = "紧急"
+	severityWarning  = "警告"
+	severityInfo     = "信息"
+	severityRecovery = "恢复"
+)
+
+func severityLabel(severity string) string {
+	switch severity {
+	case severityCritical:
+		return "紧急告警"
+	case severityWarning:
+		return "警告"
+	case severityRecovery:
+		return "恢复"
+	default:
+		return "信息"
+	}
 }
 
 func tgEscape(value string) string {
@@ -49,17 +70,26 @@ func tgLinkLine(label, href, text string) string {
 
 // buildTelegramAlert renders a detailed bot-style HTML message. Every dynamic
 // value passed through tgLine/tgCodeLine/tgLinkLine is escaped for Telegram HTML.
-func buildTelegramAlert(category, headline, subject string, lines []string, action string) string {
+func buildTelegramAlert(severity, category, headline, subject string, lines []string, action string) string {
+	return buildTelegramAlertFor("管理通知", severity, category, headline, subject, lines, action)
+}
+
+func buildTelegramAlertFor(audience, severity, category, headline, subject string, lines []string, action string) string {
 	var b strings.Builder
-	b.WriteString("<b>Polaris Bot 告警</b>\n")
+	b.WriteString("<b>Polaris ")
+	b.WriteString(tgEscape(audience))
+	b.WriteString(" · ")
+	b.WriteString(tgEscape(severityLabel(severity)))
+	b.WriteString("</b>\n")
 	b.WriteString("<b>")
 	b.WriteString(tgEscape(category))
-	b.WriteString(" / ")
-	b.WriteString(tgEscape(headline))
+	if strings.TrimSpace(headline) != "" {
+		b.WriteString(" / ")
+		b.WriteString(tgEscape(headline))
+	}
 	b.WriteString("</b>\n")
 
 	if strings.TrimSpace(subject) != "" {
-		b.WriteString("对象：")
 		b.WriteString(tgEscape(subject))
 		b.WriteString("\n")
 	}
@@ -80,7 +110,7 @@ func buildTelegramAlert(category, headline, subject string, lines []string, acti
 	}
 
 	if action != "" {
-		b.WriteString("\n<b>处理建议</b>\n")
+		b.WriteString("\n<b>建议操作</b>\n")
 		b.WriteString(tgEscape(action))
 		b.WriteString("\n")
 	}

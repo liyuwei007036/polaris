@@ -2472,7 +2472,9 @@ onBeforeUnmount(() => {
   .dlg-foot-hint { display: none; }
 }
 
-:global(.el-popper) {
+/* 只作用于悬浮提示：下拉、弹窗等 popper 共用同一个类名，全局限制宽度会让
+   选项下拉被挤成窄条，长文本溢出到弹窗外面。 */
+:global(.el-popper.is-dark) {
   max-width: min(420px, 90vw) !important;
   white-space: pre-line !important;
 }

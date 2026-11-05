@@ -2744,6 +2744,7 @@ CREATE INDEX IF NOT EXISTS idx_subscription_access_time ON subscription_access_l
 CREATE INDEX IF NOT EXISTS idx_subscription_access_config ON subscription_access_logs(config_id, accessed_at DESC);
 CREATE INDEX IF NOT EXISTS idx_node_metrics_updated ON node_metrics(updated_at);
 CREATE INDEX IF NOT EXISTS idx_node_latency_points_node_ts ON node_latency_points(node_id, ts DESC);
+CREATE INDEX IF NOT EXISTS idx_node_latency_points_ts ON node_latency_points(ts);
 CREATE TABLE IF NOT EXISTS node_metric_points (
   node_id TEXT NOT NULL REFERENCES nodes(id), ts INTEGER NOT NULL,
   cpu REAL NOT NULL DEFAULT 0, mem_used INTEGER NOT NULL DEFAULT 0, mem_total INTEGER NOT NULL DEFAULT 0,
@@ -2752,10 +2753,16 @@ CREATE TABLE IF NOT EXISTS node_metric_points (
   PRIMARY KEY (node_id, ts)
 );
 CREATE INDEX IF NOT EXISTS idx_node_metric_points_node_ts ON node_metric_points(node_id, ts DESC);
+CREATE INDEX IF NOT EXISTS idx_node_metric_points_ts ON node_metric_points(ts);
 CREATE INDEX IF NOT EXISTS idx_conn_records_started_at ON connection_records(started_at DESC);
 CREATE INDEX IF NOT EXISTS idx_conn_records_source_ip ON connection_records(source_ip, started_at DESC);
 CREATE INDEX IF NOT EXISTS idx_conn_records_user ON connection_records(user, started_at DESC);
 CREATE INDEX IF NOT EXISTS idx_conn_records_node_id ON connection_records(node_id, started_at DESC);
+CREATE TABLE IF NOT EXISTS daily_report_state (
+  id INTEGER PRIMARY KEY CHECK (id = 1),
+  last_sent_date TEXT NOT NULL DEFAULT ''
+);
+INSERT OR IGNORE INTO daily_report_state (id, last_sent_date) VALUES (1, '');
 CREATE TABLE IF NOT EXISTS alert_settings (
   id INTEGER PRIMARY KEY CHECK (id = 1),
   bark_server TEXT NOT NULL DEFAULT 'https://api.day.app',

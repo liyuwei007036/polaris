@@ -67,15 +67,6 @@ const filteredBanned = computed(() => banned.value.filter((row) => {
   return includesText([nodeName(row.node_id), row.ip, row.location, row.rule_name, row.jail], keyword.value)
 }))
 
-// 读取失败的服务器不等于没有规则，空表不能让人误以为防火墙是敞开的。
-const unreadableNodes = computed(() => {
-  const failures = new Map()
-  for (const node of [...firewallNodes.value, ...fail2banNodes.value]) {
-    if (node.error) failures.set(node.node_id, node.error)
-  }
-  return Array.from(failures, ([id, error]) => ({ id, name: nodeName(id), error }))
-})
-
 const firewallOpen = ref(false)
 const jailOpen = ref(false)
 const firewall = reactive({ node_id: '', action: 'accept', protocol: 'tcp', cidr: '0.0.0.0/0', port: 443 })
@@ -334,16 +325,6 @@ onMounted(load)
 <template>
   <MPage :loading="loading">
     <MSegmented v-model="tab" :options="tabs" />
-
-    <el-alert
-      v-if="unreadableNodes.length"
-      type="warning"
-      show-icon
-      :closable="false"
-      :title="`有 ${unreadableNodes.length} 台服务器未能读取，下面的列表不代表它们没有规则`"
-    >
-      <div v-for="node in unreadableNodes" :key="node.id">{{ node.name }}：{{ node.error }}</div>
-    </el-alert>
 
     <el-input v-model="keyword" clearable :prefix-icon="Search" placeholder="搜索服务器、地址或规则" />
     <div class="m-filters">

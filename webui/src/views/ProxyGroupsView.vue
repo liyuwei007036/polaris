@@ -239,7 +239,7 @@ onMounted(load)
       <el-form label-position="top">
         <el-form-item label="分组名称" required><el-input v-model="form.name" maxlength="128" /></el-form-item>
         <el-form-item label="策略" required>
-          <el-select v-model="form.strategy" style="width: 100%">
+          <el-select v-model="form.strategy" fit-input-width style="width: 100%">
             <el-option v-for="(label, value) in strategyNames" :key="value" :label="label" :value="value" />
           </el-select>
         </el-form-item>
@@ -249,6 +249,7 @@ onMounted(load)
             v-model="memberKeys"
             multiple
             filterable
+            fit-input-width
             collapse-tags
             collapse-tags-tooltip
             :max-collapse-tags="6"
@@ -258,8 +259,10 @@ onMounted(load)
           >
             <el-option-group label="接入节点">
               <el-option v-for="node in clientNodes" :key="`endpoint:${node.id}`" :value="`endpoint:${node.id}`" :label="node.label" :disabled="node.disabled">
-                <span class="option-name">{{ node.label }}</span>
-                <span class="option-meta">{{ node.detail }} · {{ node.protocol }} · {{ node.address }}{{ node.enabled ? '' : ' · 已停用' }}</span>
+                <span class="member-option">
+                  <span class="member-option__name">{{ node.label }}</span>
+                  <span class="member-option__meta">{{ node.detail }} · {{ node.protocol }} · {{ node.address }}{{ node.enabled ? '' : ' · 已停用' }}</span>
+                </span>
               </el-option>
             </el-option-group>
             <el-option-group label="代理分组">
@@ -326,7 +329,8 @@ onMounted(load)
 }
 .member-chip--rest { flex: none; color: var(--sb-muted); border-style: dashed; background: transparent; cursor: default; }
 .member-empty { color: var(--sb-muted); font-size: 12px; }
-.option-name { display: inline-flex; align-items: center; }
-.option-meta { float: right; margin-left: 18px; color: var(--sb-muted); font-size: 12px; }
-@media (max-width: 640px) { .option-meta { display: none; } }
+.member-option { display: flex; align-items: center; gap: 14px; width: 100%; height: 100%; min-width: 0; }
+.member-option__name { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.member-option__meta { flex: 1 1 auto; min-width: 0; overflow: hidden; text-align: right; text-overflow: ellipsis; white-space: nowrap; color: var(--sb-muted); font-size: 12px; }
+@media (max-width: 640px) { .member-option__meta { display: none; } }
 </style>

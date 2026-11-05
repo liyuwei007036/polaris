@@ -68,17 +68,6 @@ const filteredBanned = computed(() => banned.value.filter((row) => {
   return includesText([nodeName(row.node_id), row.ip, row.location, row.rule_name, row.jail], keyword.value)
 }))
 
-// A server that could not answer is not a server with no rules. The tables
-// below only show what was read, so say which servers are missing instead of
-// letting an empty table look like an open firewall.
-const unreadableNodes = computed(() => {
-  const failures = new Map()
-  for (const node of [...firewallNodes.value, ...fail2banNodes.value]) {
-    if (node.error) failures.set(node.node_id, node.error)
-  }
-  return Array.from(failures, ([id, error]) => ({ id, name: nodeName(id), error }))
-})
-
 const firewallOpen = ref(false)
 const jailOpen = ref(false)
 const firewall = reactive({ node_id: '', action: 'accept', protocol: 'tcp', cidr: '0.0.0.0/0', port: 443 })
@@ -310,16 +299,6 @@ onMounted(load)
           <el-option v-for="node in appState.nodes" :key="node.id" :label="node.name" :value="node.id" />
         </el-select>
       </div>
-      <el-alert
-        v-if="unreadableNodes.length"
-        type="warning"
-        show-icon
-        :closable="false"
-        style="margin-bottom: 12px"
-        :title="`有 ${unreadableNodes.length} 台服务器未能读取，下面的列表不代表它们没有规则`"
-      >
-        <div v-for="node in unreadableNodes" :key="node.id">{{ node.name }}：{{ node.error }}</div>
-      </el-alert>
       <div class="table-panel">
         <el-tabs v-model="tab" class="panel-tabs">
           <el-tab-pane :label="`访问限制（${portRules.length}）`" name="ports">
