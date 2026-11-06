@@ -237,27 +237,31 @@ func (s *Store) ListEffectiveRouteRules(ctx context.Context, nodeID string) ([]R
 }
 
 func (s *Store) GenerateClientSubscription(ctx context.Context, token string) (string, error) {
+	_, content, err := s.GenerateClientSubscriptionWithMeta(ctx, token)
+	return content, err
+}
+
+func (s *Store) GenerateClientSubscriptionWithMeta(ctx context.Context, token string) (Subscription, string, error) {
+	var sub Subscription
 	var endpointJSON string
-	var enabled bool
-	err := s.db.QueryRowContext(ctx, `SELECT endpoint_ids, enabled FROM subscriptions WHERE kind = 'client' AND token_hash = ?`, security.TokenHash(token)).Scan(&endpointJSON, &enabled)
-	if errors.Is(err, sql.ErrNoRows) || !enabled {
-		return "", ErrNotFound
+	err := s.db.QueryRowContext(ctx, `SELECT id, name, endpoint_ids, enabled FROM subscriptions WHERE kind = 'client' AND token_hash = ?`, security.TokenHash(token)).Scan(&sub.ID, &sub.Name, &endpointJSON, &sub.Enabled)
+	if errors.Is(err, sql.ErrNoRows) || !sub.Enabled {
+		return Subscription{}, "", ErrNotFound
 	}
 	if err != nil {
-		return "", fmt.Errorf("load client subscription: %w", err)
+		return Subscription{}, "", fmt.Errorf("load client subscription: %w", err)
 	}
-	var endpointIDs []string
-	if err := json.Unmarshal([]byte(endpointJSON), &endpointIDs); err != nil {
-		return "", err
+	if err := json.Unmarshal([]byte(endpointJSON), &sub.EndpointIDs); err != nil {
+		return Subscription{}, "", err
 	}
-	lines := make([]string, 0, len(endpointIDs))
-	for _, endpointID := range endpointIDs {
+	lines := make([]string, 0, len(sub.EndpointIDs))
+	for _, endpointID := range sub.EndpointIDs {
 		line, err := s.clientSubscriptionLine(ctx, endpointID)
 		if errors.Is(err, ErrNotFound) {
 			continue
 		}
 		if err != nil {
-			return "", err
+			return Subscription{}, "", err
 		}
 		if line != "" {
 			lines = append(lines, line)
@@ -266,7 +270,7 @@ func (s *Store) GenerateClientSubscription(ctx context.Context, token string) (s
 	// Whole-body base64 is the de facto V2Ray/Xray subscription convention
 	// (v2rayN/v2rayNG/Shadowrocket/NekoBox/sing-box clients all expect it);
 	// plain-text lines are not universally recognized as a subscription.
-	return base64.StdEncoding.EncodeToString([]byte(strings.Join(lines, "\n") + "\n")), nil
+	return sub, base64.StdEncoding.EncodeToString([]byte(strings.Join(lines, "\n") + "\n")), nil
 }
 
 // EndpointShareLink is the same node link a client subscription carries, given
@@ -409,8 +413,13 @@ func (s *Store) clientSubscriptionLine(ctx context.Context, endpointID string) (
 
 func (s *Store) realityPublicKey(ctx context.Context, keyID string) (string, error) {
 	var public string
-	err := s.db.QueryRowContext(ctx, `SELECT public_key FROM managed_reality_keys WHERE id = ? AND enabled = 1`, keyID).Scan(&public)
-	if errors.Is(err, sql.ErrNoRows) {
+	var err error
+	if keyID != "" {
+		err = s.db.QueryRowContext(ctx, `SELECT public_key FROM managed_reality_keys WHERE id = ? AND enabled = 1`, keyID).Scan(&public)
+	} else {
+		err = s.db.QueryRowContext(ctx, `SELECT public_key FROM managed_reality_keys WHERE enabled = 1 ORDER BY created_at DESC LIMIT 1`).Scan(&public)
+	}
+	if errors.Is(err, sql.ErrNoRows) || (err == nil && public == "") {
 		return "", ErrNotFound
 	}
 	return public, err

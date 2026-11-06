@@ -62,7 +62,12 @@ onMounted(() => {
 <template>
   <div class="page-shell">
     <PageHeader title="热门设备">
-      <span class="subtle" style="margin-right: 12px">数据保留最近 30 天 · {{ timeZoneLabel }}</span>
+      <el-radio-group v-model="popularRange" size="small" @change="loadPopular">
+        <el-radio-button label="24h">最近 24 小时</el-radio-button>
+        <el-radio-button label="7d">最近 7 天</el-radio-button>
+        <el-radio-button label="30d">最近 30 天</el-radio-button>
+      </el-radio-group>
+      <span class="subtle" style="margin: 0 12px">数据保留最近 30 天 · {{ timeZoneLabel }}</span>
       <el-button :icon="Refresh" :loading="popularLoading" @click="refreshAll">刷新</el-button>
     </PageHeader>
 
@@ -89,20 +94,6 @@ onMounted(() => {
 
       <!-- 热门设备排行（按来源 IP） -->
       <div class="table-panel">
-        <div class="panel-header">
-          <div class="panel-title">
-            <strong>热门设备排行（来源 IP）</strong>
-            <span class="subtle" style="margin-left: 8px">按客户端来源 IP 聚合连接频次与流量</span>
-          </div>
-          <div class="panel-actions">
-            <el-radio-group v-model="popularRange" size="small" @change="loadPopular">
-              <el-radio-button label="24h">最近 24 小时</el-radio-button>
-              <el-radio-button label="7d">最近 7 天</el-radio-button>
-              <el-radio-button label="30d">最近 30 天</el-radio-button>
-            </el-radio-group>
-          </div>
-        </div>
-
         <el-table v-loading="popularLoading" :data="popularDevices" :empty-text="popularLoading ? '' : '当前周期内暂无热门设备记录'">
           <el-table-column label="排名" width="70" align="center">
             <template #default="{ $index }">

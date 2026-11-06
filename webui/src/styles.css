@@ -720,7 +720,7 @@ html.dark .el-pagination.is-background .el-pager li.is-active {
     radial-gradient(620px 420px at 88% 96%, color-mix(in oklab, var(--sb-accent-2) 24%, transparent), transparent 62%),
     var(--sb-sidebar);
 }
-/* 背景网格与光环，纯装饰，不接收指针事件。 */
+/* 背景网格，纯装饰，不接收指针事件。 */
 .login-brand::before {
   content: "";
   position: absolute;
@@ -730,18 +730,6 @@ html.dark .el-pagination.is-background .el-pager li.is-active {
     linear-gradient(90deg, rgba(148, 163, 184, .07) 1px, transparent 1px);
   background-size: 52px 52px;
   mask-image: radial-gradient(70% 70% at 30% 30%, #000 30%, transparent 100%);
-  pointer-events: none;
-}
-.login-brand::after {
-  content: "";
-  position: absolute;
-  width: 540px;
-  height: 540px;
-  right: -180px;
-  bottom: -240px;
-  border: 1px solid color-mix(in oklab, var(--sb-accent) 25%, transparent);
-  border-radius: 50%;
-  box-shadow: 0 0 0 80px color-mix(in oklab, var(--sb-accent) 5%, transparent), 0 0 0 160px color-mix(in oklab, var(--sb-accent-2) 4%, transparent);
   pointer-events: none;
 }
 .login-brand__logo { position: relative; display: flex; align-items: center; gap: 12px; font-size: 19px; font-weight: 700; letter-spacing: .6px; }

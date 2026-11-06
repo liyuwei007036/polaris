@@ -665,6 +665,12 @@ func (s *Server) EnsureDemoFleetData(ctx context.Context) error {
 	}
 
 	// 3. Listeners & Endpoints (接入服务)
+	var rkCount int
+	_ = s.store.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM managed_reality_keys`).Scan(&rkCount)
+	if rkCount == 0 {
+		_, _, _ = s.store.CreateRealityKey(ctx, "默认 Reality 密钥")
+	}
+
 	var listenerCount int
 	_ = s.store.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM listeners`).Scan(&listenerCount)
 	if listenerCount == 0 {
@@ -881,7 +887,7 @@ func (s *Server) EnsureDemoFleetData(ctx context.Context) error {
 				Rules:           cfg.rules,
 			}
 			rulesJSON, _ := json.Marshal(rulesStruct)
-			dnsStruct := mihomoClientDNSV3{Mode: "structured"}
+			dnsStruct := mihomoClientDNSV3{Mode: "form", DNS: defaultMihomoClientDNS()}
 			dnsJSON, _ := json.Marshal(dnsStruct)
 
 			token, _ := security.RandomToken(32)
@@ -890,7 +896,7 @@ func (s *Server) EnsureDemoFleetData(ctx context.Context) error {
 
 			_, _ = s.store.db.ExecContext(ctx, `INSERT INTO mihomo_client_configs_v3
 				(id, name, groups_json, rule_mode, rules_json, dns_json, subscription_token_hash, subscription_token_encrypted, enabled, created_at, updated_at)
-				VALUES (?, ?, ?, 'preset', ?, ?, ?, ?, 1, ?, ?)`,
+				VALUES (?, ?, ?, 'table', ?, ?, ?, ?, 1, ?, ?)`,
 				cfg.id, cfg.name, string(groupsJSON), string(rulesJSON), string(dnsJSON), tokenHash, encToken, now, now)
 		}
 	}
@@ -1018,26 +1024,28 @@ func (s *Server) EnsureDemoFleetData(ctx context.Context) error {
 	_ = s.store.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM audit_events`).Scan(&auditCount)
 	if auditCount == 0 {
 		demoAudit := []struct {
-			action, targetType, targetID, summary string
-			offsetSec                             int64
+			action, targetType, targetID, targetName, summary, detail, ip, status string
+			offsetSec                                                            int64
 		}{
-			{"node.created", "node", "demo-node-tyo-01", "添加服务器 🇯🇵 东京 Softbank 01 并完成双向安全加密隧道握手", 180000},
-			{"node.created", "node", "demo-node-hk-01", "添加服务器 🇭🇰 香港 CN2+BGP 01 并完成双向安全加密隧道握手", 172000},
-			{"ddns.synced", "node", "demo-node-lon-01", "更新 🇬🇧 伦敦 OVH VPS 动态域名解析 lon.polaris-node.net 并绑定出口别名", 120000},
-			{"listener.created", "listener", "lis-tyo-vless", "创建接入服务 [东京 VLESS Reality 高速节点] 443/tcp", 86000},
-			{"endpoint.created", "endpoint", "ep-tyo-mac", "为用户 [MacBook Pro M3 Max] 签发接入凭据与 UUID", 82000},
-			{"rule_provider.synced", "mihomo_rule_provider", "rp-cn-domain", "从官方上游同步规则供应商 [Geosite-CN] 成功 (共 4,820 条规则)", 64000},
-			{"proxy_group.created", "mihomo_proxy_group", "pg-select", "创建代理分组 [🚀 节点选择] (手动选择策略)", 48000},
-			{"client_config.published", "mihomo_client_config", "cfg-general", "编译并发布客户端订阅配置 [全平台通用标准配置]", 36000},
-			{"outbound.created", "outbound", "ob-cf-warp-v4", "配置全局上网出口 [Cloudflare WARP (IPv4 官方出口)] 162.159.192.1:2408", 7200},
-			{"task.completed.succeeded", "task", "task-apply-01", "应用最新节点防火墙与端口转发配置成功", 3600},
-			{"alert.settings_updated", "alert_settings", "alerts", "更新 Telegram Bot & Webhook 告警推送策略与阈值", 1200},
+			{"node.created", "node", "demo-node-tyo-01", "东京 Softbank 01", "添加服务器「东京 Softbank 01」并建立安全隧道", `{"os": "Ubuntu 24.04", "arch": "amd64", "ip": "103.152.220.10"}`, "114.88.23.15", "succeeded", 180000},
+			{"node.created", "node", "demo-node-hk-01", "香港 CN2+BGP 01", "添加服务器「香港 CN2+BGP 01」并建立安全隧道", `{"os": "Debian 12", "arch": "amd64", "ip": "45.195.12.8"}`, "114.88.23.15", "succeeded", 172000},
+			{"ddns.synced", "node", "demo-node-lon-01", "伦敦 OVH VPS", "更新服务器「伦敦 OVH VPS」动态域名解析 lon.polaris-node.net", `{"domain": "lon.polaris-node.net", "target_ip": "146.59.12.88"}`, "114.88.23.15", "succeeded", 120000},
+			{"listener.created", "listener", "lis-tyo-vless", "东京 VLESS Reality 高速节点", "创建接入服务「东京 VLESS Reality 高速节点」(协议: VLESS, 端口: 443/tcp)", `{"name": "东京 VLESS Reality 高速节点", "protocol": "vless", "port": 443, "network": "tcp", "domain": "itunes.apple.com"}`, "114.88.23.15", "succeeded", 86000},
+			{"endpoint.created", "endpoint", "ep-tyo-mac", "MacBook Pro M3 Max", "为用户「MacBook Pro M3 Max」签发接入凭证与连接密钥", `{"user": "user_macbook_m3", "listener": "lis-tyo-vless", "outbound": "direct"}`, "114.88.23.15", "succeeded", 82000},
+			{"rule_provider.synced", "mihomo_rule_provider", "rp-cn-domain", "Geosite-CN 规则供应商", "同步规则供应商「Geosite-CN」成功 (共 4,820 条规则)", `{"format": "yaml", "behavior": "domain", "rules_count": 4820}`, "114.88.23.15", "succeeded", 64000},
+			{"proxy_group.created", "mihomo_proxy_group", "pg-select", "节点选择", "创建代理分组「节点选择」(策略: 手动选择)", `{"strategy": "select", "members": ["lis-tyo-vless", "lis-hk-hysteria2"]}`, "114.88.23.15", "succeeded", 48000},
+			{"client_config.published", "mihomo_client_config", "cfg-general", "全平台通用标准配置", "编译并发布客户端订阅配置「全平台通用标准配置」", `{"profile": "general", "rules_count": 52}`, "114.88.23.15", "succeeded", 36000},
+			{"firewall.rule_add", "firewall_rule", "fw-rule-01", "放行 8443/tcp", "修改服务器防火墙：放行 8443/tcp 接入端口", `{"port": 8443, "protocol": "tcp", "action": "accept"}`, "114.88.23.15", "succeeded", 28000},
+			{"fail2ban.unban", "fail2ban", "f2b-01", "198.51.100.42", "手动解封被自动拦截的 IP 地址 198.51.100.42", `{"ip": "198.51.100.42", "jail": "sshd", "reason": "operator_unban"}`, "114.88.23.15", "succeeded", 15000},
+			{"outbound.created", "outbound", "ob-cf-warp-v4", "Cloudflare WARP (IPv4)", "配置全局上网出口「Cloudflare WARP (IPv4)」162.159.192.1:2408", `{"type": "wireguard", "server": "162.159.192.1", "port": 2408}`, "114.88.23.15", "succeeded", 7200},
+			{"task.completed.succeeded", "task", "task-01", "平滑下发配置", "节点完成系统任务：更新连接服务配置", `{"node": "demo-node-tyo-01", "status": "succeeded"}`, "127.0.0.1", "succeeded", 3600},
+			{"alert.settings_updated", "alert_settings", "alerts", "告警推送设置", "更新告警推送策略与阈值", `{"telegram_enabled": true, "webhook_enabled": true}`, "114.88.23.15", "succeeded", 1200},
 		}
 
 		for idx, item := range demoAudit {
 			eventID := fmt.Sprintf("ae-%03d", idx+1)
-			_, _ = s.store.db.ExecContext(ctx, `INSERT INTO audit_events (id, operator_id, action, target_type, target_id, summary, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)`,
-				eventID, opID, item.action, item.targetType, item.targetID, item.summary, now-item.offsetSec)
+			_, _ = s.store.db.ExecContext(ctx, `INSERT INTO audit_events (id, operator_id, action, target_type, target_id, target_name, summary, detail, ip_address, status, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				eventID, opID, item.action, item.targetType, item.targetID, item.targetName, item.summary, item.detail, item.ip, item.status, now-item.offsetSec)
 		}
 	}
 
@@ -1046,18 +1054,21 @@ func (s *Server) EnsureDemoFleetData(ctx context.Context) error {
 	_ = s.store.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM tasks`).Scan(&taskTableCount)
 	if taskTableCount == 0 {
 		demoTasks := []struct {
-			id, nodeID, kind, summary string
-			offsetSec                 int64
+			id, nodeID, kind, summary, status string
+			durationSec                       int64
+			offsetSec                         int64
 		}{
-			{"task-01", "demo-node-tyo-01", "singbox.apply_config", "连接服务配置编译完成并顺利平滑重载", 72000},
-			{"task-02", "demo-node-hk-01", "singbox.apply_config", "连接服务配置编译完成并顺利平滑重载", 54000},
-			{"task-03", "demo-node-lax-01", "dns.update", "DDNS 动态域名解析刷新完成", 36000},
-			{"task-04", "demo-node-fra-01", "nginx.apply_config", "SNI 分流接入端口监听分配成功", 18000},
-			{"task-05", "demo-node-tyo-01", "firewall.mutate", "防火墙安全策略放行 TCP/UDP 流量规则写入成功", 7200},
+			{"task-01", "demo-node-tyo-01", "singbox.apply_config", "配置已生效", "succeeded", 2, 72000},
+			{"task-02", "demo-node-hk-01", "singbox.apply_config", "配置已生效", "succeeded", 3, 54000},
+			{"task-03", "demo-node-lax-01", "dns.update", "解析已刷新", "succeeded", 1, 36000},
+			{"task-04", "demo-node-fra-01", "nginx.apply_config", "端口分配成功", "succeeded", 1, 18000},
+			{"task-05", "demo-node-tyo-01", "firewall.mutate", "防火墙已同步", "succeeded", 1, 7200},
+			{"task-06", "demo-node-hk-01", "singbox.apply_config", "listen tcp 0.0.0.0:443: bind: address already in use", "failed", 1, 3600},
+			{"task-07", "demo-node-tyo-01", "singbox.apply_config", "Job for sing-box.service failed because the control process exited with error code", "rolled_back", 4, 1800},
 		}
 		for _, t := range demoTasks {
-			_, _ = s.store.db.ExecContext(ctx, `INSERT OR REPLACE INTO tasks (id, node_id, created_by, kind, idempotency_key, payload, expected_hash, status, result_summary, created_at, started_at, finished_at) VALUES (?, ?, ?, ?, ?, '{}', 'hash', 'succeeded', ?, ?, ?, ?)`,
-				t.id, t.nodeID, opID, t.kind, t.id, t.summary, now-t.offsetSec, now-t.offsetSec+1, now-t.offsetSec+3)
+			_, _ = s.store.db.ExecContext(ctx, `INSERT OR REPLACE INTO tasks (id, node_id, created_by, kind, idempotency_key, payload, expected_hash, status, result_summary, created_at, started_at, finished_at) VALUES (?, ?, ?, ?, ?, '{}', 'hash', ?, ?, ?, ?, ?)`,
+				t.id, t.nodeID, opID, t.kind, t.id, t.status, t.summary, now-t.offsetSec, now-t.offsetSec+1, now-t.offsetSec+1+t.durationSec)
 		}
 	}
 

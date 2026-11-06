@@ -163,18 +163,23 @@ type PendingRegistration struct {
 // Task is a structured, idempotent instruction. The payload is never shell
 // text; its shape is defined by the task kind and validated by both roles.
 type Task struct {
-	ID             string `json:"id"`
-	NodeID         string `json:"node_id"`
-	OperatorID     string `json:"operator_id,omitempty"`
-	Kind           string `json:"kind"`
-	IdempotencyKey string `json:"idempotency_key"`
-	Payload        string `json:"payload"`
-	ExpectedHash   string `json:"expected_hash"`
-	Status         string `json:"status"`
-	ResultSummary  string `json:"result_summary,omitempty"`
-	CreatedAt      string `json:"created_at"`
-	StartedAt      string `json:"started_at,omitempty"`
-	FinishedAt     string `json:"finished_at,omitempty"`
+	ID               string `json:"id"`
+	NodeID           string `json:"node_id"`
+	NodeName         string `json:"node_name,omitempty"`
+	OperatorID       string `json:"operator_id,omitempty"`
+	OperatorUsername string `json:"operator_username,omitempty"`
+	Kind             string `json:"kind"`
+	KindName         string `json:"kind_name,omitempty"`
+	IdempotencyKey   string `json:"idempotency_key"`
+	Payload          string `json:"payload"`
+	ExpectedHash     string `json:"expected_hash"`
+	Status           string `json:"status"`
+	ResultSummary    string `json:"result_summary,omitempty"`
+	Diagnostic       string `json:"diagnostic,omitempty"`
+	DurationMs       int64  `json:"duration_ms,omitempty"`
+	CreatedAt        string `json:"created_at"`
+	StartedAt        string `json:"started_at,omitempty"`
+	FinishedAt       string `json:"finished_at,omitempty"`
 }
 
 type AuditEvent struct {
@@ -184,7 +189,12 @@ type AuditEvent struct {
 	Action     string `json:"action"`
 	TargetType string `json:"target_type"`
 	TargetID   string `json:"target_id"`
+	TargetName string `json:"target_name"`
 	Summary    string `json:"summary"`
+	Detail     string `json:"detail,omitempty"`
+	IPAddress  string `json:"ip_address,omitempty"`
+	IPLocation string `json:"ip_location,omitempty"`
+	Status     string `json:"status"`
 	CreatedAt  string `json:"created_at"`
 }
 
@@ -2368,62 +2378,32 @@ func (s *Store) PendingTasks(ctx context.Context, nodeID string) ([]Task, error)
 }
 
 func (s *Store) ListTasks(ctx context.Context, nodeID, status string, page, pageSize int) ([]Task, int, error) {
-	where := ` WHERE 1 = 1`
-	arguments := []any{}
-	if nodeID != "" {
-		where += " AND node_id = ?"
-		arguments = append(arguments, nodeID)
-	}
-	if status != "" {
-		if status != "queued" && status != "dispatched" && status != "succeeded" && status != "failed" && status != "rolled_back" {
-			return nil, 0, errors.New("task status filter is invalid")
-		}
-		where += " AND status = ?"
-		arguments = append(arguments, status)
-	}
-	var total int
-	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM tasks`+where, arguments...).Scan(&total); err != nil {
-		return nil, 0, fmt.Errorf("count tasks: %w", err)
-	}
-	query := `SELECT id, node_id, COALESCE(created_by, ''), kind, idempotency_key, payload, expected_hash, status, COALESCE(result_summary, ''), created_at,
-		COALESCE(started_at, 0), COALESCE(finished_at, 0) FROM tasks` + where + ` ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?`
-	arguments = append(arguments, pageSize, (page-1)*pageSize)
-	rows, err := s.db.QueryContext(ctx, query, arguments...)
-	if err != nil {
-		return nil, 0, fmt.Errorf("list tasks: %w", err)
-	}
-	defer rows.Close()
-	var tasks []Task
-	for rows.Next() {
-		var task Task
-		var createdAt, startedAt, finishedAt int64
-		if err := rows.Scan(&task.ID, &task.NodeID, &task.OperatorID, &task.Kind, &task.IdempotencyKey, &task.Payload, &task.ExpectedHash, &task.Status, &task.ResultSummary, &createdAt, &startedAt, &finishedAt); err != nil {
-			return nil, 0, fmt.Errorf("read task: %w", err)
-		}
-		task.CreatedAt = time.Unix(createdAt, 0).UTC().Format(time.RFC3339)
-		if startedAt != 0 {
-			task.StartedAt = time.Unix(startedAt, 0).UTC().Format(time.RFC3339)
-		}
-		if finishedAt != 0 {
-			task.FinishedAt = time.Unix(finishedAt, 0).UTC().Format(time.RFC3339)
-		}
-		task.Payload = ""
-		tasks = append(tasks, task)
-	}
-	return tasks, total, rows.Err()
+	return s.ListTasksFiltered(ctx, nodeID, status, "", page, pageSize)
 }
 
 func (s *Store) TaskByID(ctx context.Context, taskID string) (Task, error) {
 	var task Task
 	var createdAt, startedAt, finishedAt int64
-	err := s.db.QueryRowContext(ctx, `SELECT id, node_id, COALESCE(created_by, ''), kind, idempotency_key, payload, expected_hash, status, COALESCE(result_summary, ''), created_at,
-		COALESCE(started_at, 0), COALESCE(finished_at, 0) FROM tasks WHERE id = ?`, taskID).
-		Scan(&task.ID, &task.NodeID, &task.OperatorID, &task.Kind, &task.IdempotencyKey, &task.Payload, &task.ExpectedHash, &task.Status, &task.ResultSummary, &createdAt, &startedAt, &finishedAt)
+	err := s.db.QueryRowContext(ctx, `SELECT t.id, t.node_id, COALESCE(n.name, t.node_id), COALESCE(t.created_by, ''), COALESCE(o.email, ''),
+		t.kind, t.idempotency_key, t.payload, t.expected_hash, t.status, COALESCE(t.result_summary, ''),
+		t.created_at, COALESCE(t.started_at, 0), COALESCE(t.finished_at, 0)
+		FROM tasks t
+		LEFT JOIN nodes n ON n.id = t.node_id
+		LEFT JOIN operators o ON o.id = t.created_by
+		WHERE t.id = ?`, taskID).
+		Scan(&task.ID, &task.NodeID, &task.NodeName, &task.OperatorID, &task.OperatorUsername,
+			&task.Kind, &task.IdempotencyKey, &task.Payload, &task.ExpectedHash, &task.Status, &task.ResultSummary,
+			&createdAt, &startedAt, &finishedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Task{}, ErrNotFound
 	}
 	if err != nil {
 		return Task{}, fmt.Errorf("load task: %w", err)
+	}
+	task.KindName = TranslateTaskKind(task.Kind)
+	task.Diagnostic = FormatTaskDiagnostic(task.Status, task.ResultSummary)
+	if startedAt > 0 && finishedAt >= startedAt {
+		task.DurationMs = (finishedAt - startedAt) * 1000
 	}
 	task.CreatedAt = time.Unix(createdAt, 0).UTC().Format(time.RFC3339)
 	if startedAt != 0 {
@@ -2478,16 +2458,14 @@ func (s *Store) CompleteTask(ctx context.Context, taskID, nodeID, status, summar
 // AppendAudit stores an intentionally redacted summary. Callers must never pass
 // credentials, private keys, subscription values, or full configuration bodies.
 func (s *Store) AppendAudit(ctx context.Context, operatorID, action, targetType, targetID, summary string) error {
-	id, err := newID()
-	if err != nil {
-		return err
-	}
-	_, err = s.db.ExecContext(ctx, `INSERT INTO audit_events (id, operator_id, action, target_type, target_id, summary, created_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?)`, id, operatorID, action, targetType, targetID, summary, nowUnix())
-	if err != nil {
-		return fmt.Errorf("append audit event: %w", err)
-	}
-	return nil
+	return s.AppendAuditRecord(ctx, AuditRecord{
+		OperatorID: operatorID,
+		Action:     action,
+		TargetType: targetType,
+		TargetID:   targetID,
+		Summary:    summary,
+		Status:     "succeeded",
+	})
 }
 
 // OperationRecordRetention is how long the console keeps operation records.
@@ -2510,27 +2488,7 @@ func (s *Store) PurgeExpiredOperationRecords(ctx context.Context) error {
 }
 
 func (s *Store) ListAudit(ctx context.Context, page, pageSize int) ([]AuditEvent, int, error) {
-	var total int
-	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM audit_events`).Scan(&total); err != nil {
-		return nil, 0, fmt.Errorf("count audit events: %w", err)
-	}
-	rows, err := s.db.QueryContext(ctx, `SELECT a.id, a.operator_id, o.email, a.action, a.target_type, a.target_id, a.summary, a.created_at
-		FROM audit_events a JOIN operators o ON o.id = a.operator_id ORDER BY a.created_at DESC, a.id DESC LIMIT ? OFFSET ?`, pageSize, (page-1)*pageSize)
-	if err != nil {
-		return nil, 0, fmt.Errorf("list audit events: %w", err)
-	}
-	defer rows.Close()
-	var events []AuditEvent
-	for rows.Next() {
-		var event AuditEvent
-		var createdAt int64
-		if err := rows.Scan(&event.ID, &event.OperatorID, &event.Username, &event.Action, &event.TargetType, &event.TargetID, &event.Summary, &createdAt); err != nil {
-			return nil, 0, fmt.Errorf("read audit event: %w", err)
-		}
-		event.CreatedAt = time.Unix(createdAt, 0).UTC().Format(time.RFC3339)
-		events = append(events, event)
-	}
-	return events, total, rows.Err()
+	return s.ListAuditFiltered(ctx, "", "", "", page, pageSize)
 }
 
 func (s *Store) migrate(ctx context.Context) error {
@@ -2586,7 +2544,9 @@ CREATE TABLE IF NOT EXISTS nodes (
 CREATE TABLE IF NOT EXISTS node_expiry_reminders (node_id TEXT NOT NULL, expires_on TEXT NOT NULL, days_before INTEGER NOT NULL, sent_at INTEGER NOT NULL, PRIMARY KEY(node_id, expires_on, days_before));
 CREATE TABLE IF NOT EXISTS audit_events (
   id TEXT PRIMARY KEY, operator_id TEXT NOT NULL REFERENCES operators(id), action TEXT NOT NULL,
-  target_type TEXT NOT NULL, target_id TEXT NOT NULL, summary TEXT NOT NULL, created_at INTEGER NOT NULL
+  target_type TEXT NOT NULL, target_id TEXT NOT NULL, target_name TEXT NOT NULL DEFAULT '',
+  summary TEXT NOT NULL, detail TEXT NOT NULL DEFAULT '', ip_address TEXT NOT NULL DEFAULT '',
+  status TEXT NOT NULL DEFAULT 'succeeded', created_at INTEGER NOT NULL
 );
 CREATE TABLE IF NOT EXISTS tasks (
   id TEXT PRIMARY KEY, node_id TEXT NOT NULL REFERENCES nodes(id), created_by TEXT REFERENCES operators(id), kind TEXT NOT NULL, idempotency_key TEXT NOT NULL,
@@ -2950,6 +2910,20 @@ INSERT OR IGNORE INTO alert_settings (id, updated_at) VALUES (1, unixepoch());
 	if err := s.migrateEmbeddedMihomoRuleProviders(ctx); err != nil {
 		return err
 	}
+	if err := s.addAuditEventColumn(ctx, "target_name TEXT NOT NULL DEFAULT ''"); err != nil {
+		return err
+	}
+	if err := s.addAuditEventColumn(ctx, "detail TEXT NOT NULL DEFAULT ''"); err != nil {
+		return err
+	}
+	if err := s.addAuditEventColumn(ctx, "ip_address TEXT NOT NULL DEFAULT ''"); err != nil {
+		return err
+	}
+	if err := s.addAuditEventColumn(ctx, "status TEXT NOT NULL DEFAULT 'succeeded'"); err != nil {
+		return err
+	}
+	_, _ = s.db.ExecContext(ctx, `CREATE INDEX IF NOT EXISTS idx_audit_events_created_at ON audit_events(created_at DESC)`)
+	_, _ = s.db.ExecContext(ctx, `CREATE INDEX IF NOT EXISTS idx_audit_events_target ON audit_events(target_type, target_id)`)
 	return nil
 }
 
@@ -3066,6 +3040,14 @@ func (s *Store) addEndpointColumn(ctx context.Context, definition string) error 
 		return nil
 	}
 	return fmt.Errorf("migrate endpoints table: %w", err)
+}
+
+func (s *Store) addAuditEventColumn(ctx context.Context, definition string) error {
+	_, err := s.db.ExecContext(ctx, "ALTER TABLE audit_events ADD COLUMN "+definition)
+	if err == nil || strings.Contains(err.Error(), "duplicate column name") {
+		return nil
+	}
+	return fmt.Errorf("migrate audit_events table: %w", err)
 }
 
 func (s *Store) addListenerColumn(ctx context.Context, definition string) error {

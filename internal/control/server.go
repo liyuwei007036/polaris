@@ -427,6 +427,7 @@ func (s *Server) registerBrowserRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/v1/tasks", s.listTasks)
 	mux.HandleFunc("GET /api/v1/tasks/{id}", s.getTask)
 	mux.HandleFunc("GET /api/v1/audit-events", s.listAuditEvents)
+	mux.HandleFunc("GET /api/v1/audit-stats", s.getAuditStats)
 	mux.HandleFunc("GET /api/v1/subscriptions", s.listSubscriptions)
 	mux.HandleFunc("POST /api/v1/subscriptions", s.createSubscription)
 	mux.HandleFunc("PUT /api/v1/subscriptions/{id}", s.updateSubscription)
@@ -1172,6 +1173,24 @@ func (s *Server) listenerHasIngressRoute(ctx context.Context, listenerID string)
 	return count > 0, nil
 }
 
+func (s *Server) clientIP(r *http.Request) string {
+	if r == nil {
+		return ""
+	}
+	return requestIP(r.RemoteAddr, map[string]string{
+		"CF-Connecting-IP": r.Header.Get("CF-Connecting-IP"),
+		"X-Real-IP":        r.Header.Get("X-Real-IP"),
+		"X-Forwarded-For":  r.Header.Get("X-Forwarded-For"),
+	})
+}
+
+func (s *Server) logAudit(r *http.Request, operatorID string, record AuditRecord) error {
+	if record.IPAddress == "" && r != nil {
+		record.IPAddress = s.clientIP(r)
+	}
+	return s.store.AppendAuditRecord(r.Context(), record)
+}
+
 func (s *Server) listTasks(w http.ResponseWriter, r *http.Request) {
 	if _, err := s.operator(r, false); err != nil {
 		writeError(w, err)
@@ -1187,7 +1206,10 @@ func (s *Server) listTasks(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
-	tasks, total, err := s.store.ListTasks(r.Context(), r.URL.Query().Get("node_id"), r.URL.Query().Get("status"), page, pageSize)
+	keyword := r.URL.Query().Get("keyword")
+	nodeID := r.URL.Query().Get("node_id")
+	status := r.URL.Query().Get("status")
+	tasks, total, err := s.store.ListTasksFiltered(r.Context(), nodeID, status, keyword, page, pageSize)
 	if err != nil {
 		writeError(w, err)
 		return
@@ -1205,7 +1227,6 @@ func (s *Server) getTask(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
-	task.Payload = ""
 	writeJSON(w, http.StatusOK, task)
 }
 
@@ -1224,12 +1245,35 @@ func (s *Server) listAuditEvents(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
-	events, total, err := s.store.ListAudit(r.Context(), page, pageSize)
+	keyword := r.URL.Query().Get("keyword")
+	targetType := r.URL.Query().Get("target_type")
+	status := r.URL.Query().Get("status")
+	events, total, err := s.store.ListAuditFiltered(r.Context(), keyword, targetType, status, page, pageSize)
 	if err != nil {
 		writeError(w, err)
 		return
 	}
+	if s.ipLocator != nil {
+		for i := range events {
+			if events[i].IPAddress != "" {
+				events[i].IPLocation = s.ipLocator.Locate(events[i].IPAddress)
+			}
+		}
+	}
 	writeJSON(w, http.StatusOK, map[string]any{"audit_events": events, "total": total, "page": page, "page_size": pageSize})
+}
+
+func (s *Server) getAuditStats(w http.ResponseWriter, r *http.Request) {
+	if _, err := s.operator(r, false); err != nil {
+		writeError(w, err)
+		return
+	}
+	stats, err := s.store.GetAuditStats(r.Context())
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, stats)
 }
 
 func (s *Server) listSubscriptions(w http.ResponseWriter, r *http.Request) {
@@ -1353,7 +1397,7 @@ func (s *Server) deleteSubscription(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) clientSubscriptionContent(w http.ResponseWriter, r *http.Request) {
 	token := r.PathValue("token")
-	content, err := s.store.GenerateClientSubscription(r.Context(), token)
+	sub, content, err := s.store.GenerateClientSubscriptionWithMeta(r.Context(), token)
 	ip := requestIP(r.RemoteAddr, map[string]string{
 		"CF-Connecting-IP": r.Header.Get("CF-Connecting-IP"),
 		"X-Real-IP":        r.Header.Get("X-Real-IP"),
@@ -1371,6 +1415,15 @@ func (s *Server) clientSubscriptionContent(w http.ResponseWriter, r *http.Reques
 	w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
 	w.Header().Set("Pragma", "no-cache")
 	w.Header().Set("Expires", "0")
+	subName := sub.Name
+	if subName == "" {
+		subName = "通用节点订阅"
+	}
+	w.Header().Set("Profile-Title", "base64:"+base64.StdEncoding.EncodeToString([]byte(subName)))
+	w.Header().Set("Profile-Update-Interval", "24")
+	if webURL := requestWebURL(r); webURL != "" {
+		w.Header().Set("Profile-Web-Page-Url", webURL)
+	}
 	if match := r.Header.Get("If-None-Match"); match != "" {
 		if strings.Trim(match, `"`) == strings.Trim(etag, `"`) || match == etag {
 			w.WriteHeader(http.StatusNotModified)
@@ -1378,10 +1431,12 @@ func (s *Server) clientSubscriptionContent(w http.ResponseWriter, r *http.Reques
 		}
 	}
 	if s.alertEngine != nil {
-		s.alertEngine.NotifySubscriptionPullSuccess("通用节点订阅", ip, r.UserAgent())
+		s.alertEngine.NotifySubscriptionPullSuccess(subName, ip, r.UserAgent())
 	}
+	asciiFilename := sanitizeASCIIFilename(subName, "subscription")
+	utf8Filename := url.PathEscape(subName + ".txt")
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-	w.Header().Set("Content-Disposition", "attachment; filename=polaris-subscription.txt")
+	w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s.txt"; filename*=UTF-8''%s`, asciiFilename, utf8Filename))
 	_, _ = w.Write([]byte(content))
 }
 
@@ -3342,7 +3397,8 @@ func (s *Server) operator(r *http.Request, requireCSRF bool) (Operator, error) {
 }
 
 func (s *Server) admin(r *http.Request) (Operator, error) {
-	operator, err := s.operator(r, true)
+	requireCSRF := r.Method != http.MethodGet && r.Method != http.MethodHead
+	operator, err := s.operator(r, requireCSRF)
 	if err != nil {
 		return Operator{}, err
 	}
@@ -3356,7 +3412,8 @@ func (s *Server) admin(r *http.Request) (Operator, error) {
 // credential authority, certificate revocation and destructive Listener actions
 // for administrators.
 func (s *Server) writer(r *http.Request) (Operator, error) {
-	operator, err := s.operator(r, true)
+	requireCSRF := r.Method != http.MethodGet && r.Method != http.MethodHead
+	operator, err := s.operator(r, requireCSRF)
 	if err != nil {
 		return Operator{}, err
 	}

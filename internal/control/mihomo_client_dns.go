@@ -116,7 +116,7 @@ func validateMihomoDefaultNameserver(server string) error {
 
 func normalizeMihomoClientDNS(config *MihomoClientConfig) error {
 	config.DNSMode = strings.ToLower(strings.TrimSpace(config.DNSMode))
-	if config.DNSMode == "" {
+	if config.DNSMode == "" || config.DNSMode == "structured" {
 		config.DNSMode = "form"
 	}
 	// Only the active editor is validated, and both are kept: switching modes

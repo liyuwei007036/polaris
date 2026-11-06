@@ -367,7 +367,7 @@ func (s *Store) normalizeMihomoClientConfigV3(ctx context.Context, config *Mihom
 		return err
 	}
 	config.RuleMode = strings.ToLower(strings.TrimSpace(config.RuleMode))
-	if config.RuleMode == "" {
+	if config.RuleMode == "" || config.RuleMode == "preset" {
 		config.RuleMode = "table"
 	}
 	switch config.RuleMode {
@@ -1346,11 +1346,8 @@ func (s *Store) generateMihomoClientYAML(ctx context.Context, config MihomoClien
 			// nothing to connect to and is left out rather than failing the
 			// whole profile — the same way the node links are built.
 			proxy, err := s.mihomoProxy(ctx, member.ID, "")
-			if errors.Is(err, ErrNotFound) {
-				continue
-			}
 			if err != nil {
-				return "", err
+				continue
 			}
 			endpointNames[member.ID] = proxy["name"].(string)
 			proxies = append(proxies, proxy)

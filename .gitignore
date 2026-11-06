@@ -1,6 +1,7 @@
 bin/
 .tools/
 data/
+data_dev/
 *.db
 *.pem
 *.key

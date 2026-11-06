@@ -2,6 +2,7 @@ package control
 
 import (
 	"crypto/sha256"
+	"encoding/base64"
 	"fmt"
 	"log"
 	"net/http"
@@ -461,20 +462,21 @@ func (s *Server) mihomoClientSubscription(w http.ResponseWriter, r *http.Request
 	if err := s.store.RecordSubscriptionAccess(r.Context(), configID, name, ip, s.ipLocator.Locate(ip), redactSubscriptionSecret(r.UserAgent())); err != nil {
 		log.Printf("record subscription access for client config %s: %v", configID, err)
 	}
-	filename := strings.Map(func(r rune) rune {
-		if r == '-' || r == '_' || r == '.' || r >= '0' && r <= '9' || r >= 'A' && r <= 'Z' || r >= 'a' && r <= 'z' {
-			return r
-		}
-		return '-'
-	}, name)
-	if filename == "" {
-		filename = "mihomo"
-	}
+	asciiFilename := sanitizeASCIIFilename(name, "subscription")
+	utf8Filename := url.PathEscape(name + ".yaml")
 	etag := fmt.Sprintf(`"%x"`, sha256.Sum256([]byte(yaml)))
 	w.Header().Set("ETag", etag)
 	w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
 	w.Header().Set("Pragma", "no-cache")
 	w.Header().Set("Expires", "0")
+	w.Header().Set("Profile-Title", "base64:"+base64.StdEncoding.EncodeToString([]byte(name)))
+	w.Header().Set("Profile-Update-Interval", "24")
+	if access.ExpiresAt > 0 {
+		w.Header().Set("Subscription-Userinfo", fmt.Sprintf("expire=%d", access.ExpiresAt))
+	}
+	if webURL := requestWebURL(r); webURL != "" {
+		w.Header().Set("Profile-Web-Page-Url", webURL)
+	}
 	if match := r.Header.Get("If-None-Match"); match != "" {
 		if strings.Trim(match, `"`) == strings.Trim(etag, `"`) || match == etag {
 			w.WriteHeader(http.StatusNotModified)
@@ -485,9 +487,7 @@ func (s *Server) mihomoClientSubscription(w http.ResponseWriter, r *http.Request
 		s.alertEngine.NotifySubscriptionPullSuccess(name, ip, r.UserAgent())
 	}
 	w.Header().Set("Content-Type", "application/yaml; charset=utf-8")
-	utf8Filename := url.PathEscape(name + ".yaml")
-	w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s.yaml"; filename*=UTF-8''%s`, filename, utf8Filename))
-	w.Header().Set("Profile-Update-Interval", "24")
+	w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s.yaml"; filename*=UTF-8''%s`, asciiFilename, utf8Filename))
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write([]byte(yaml))
 }
