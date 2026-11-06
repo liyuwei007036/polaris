@@ -5,6 +5,8 @@ import (
 	"database/sql"
 	"fmt"
 	"log"
+	"net"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -17,10 +19,22 @@ import (
 const (
 	dailyReportHour     = 9
 	dailyRankingLimit   = 5
+	dailyTargetLimit    = 10
 	dailyProbeNodeLimit = 10
 )
 
+type dailyProbeItem struct {
+	ProbeName string
+	Samples   int
+	Failed    int
+	Loss      float64
+	AvgMs     float64
+	MinMs     float64
+	MaxMs     float64
+}
+
 type dailyNodeProbeStat struct {
+	NodeID  string
 	Name    string
 	Samples int
 	Failed  int
@@ -28,6 +42,7 @@ type dailyNodeProbeStat struct {
 	AvgMs   float64
 	MinMs   float64
 	MaxMs   float64
+	Probes  []dailyProbeItem
 }
 
 type dailyDeviceStat struct {
@@ -254,7 +269,89 @@ func (s *Server) dailyTopDevices(ctx context.Context, start, end int64) ([]daily
 	return items, rows.Err()
 }
 
+func isNoiseTarget(raw string) bool {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return true
+	}
+
+	host := strings.ToLower(raw)
+	var port string
+	if h, p, err := net.SplitHostPort(host); err == nil {
+		host = h
+		port = p
+	} else if idx := strings.LastIndex(host, ":"); idx != -1 && !strings.Contains(host, "]") {
+		host = host[:idx]
+		port = host[idx+1:]
+	}
+	host = strings.Trim(host, "[]")
+
+	// Standard DNS/DoT/NTP ports
+	if port == "53" || port == "853" || port == "123" {
+		return true
+	}
+
+	// Direct DNS server IPs
+	switch host {
+	case "8.8.8.8", "8.8.4.4",
+		"1.1.1.1", "1.0.0.1",
+		"9.9.9.9", "149.112.112.112",
+		"223.5.5.5", "223.6.6.6",
+		"119.29.29.29", "182.254.116.116",
+		"180.76.76.76",
+		"114.114.114.114", "114.114.115.115",
+		"208.67.222.222", "208.67.220.220",
+		"208.67.222.123", "208.67.220.123",
+		"76.76.2.0", "76.76.10.0",
+		"94.140.14.14", "94.140.15.15":
+		return true
+	}
+
+	// Connectivity check / probe / captive portal domains
+	if strings.Contains(host, "connectivitycheck") ||
+		strings.Contains(host, "msftconnecttest") ||
+		strings.Contains(host, "msftncsi") ||
+		strings.Contains(host, "detectportal") ||
+		strings.Contains(host, "network-test") ||
+		strings.Contains(host, "captive") ||
+		host == "gstatic.com" || strings.HasSuffix(host, ".gstatic.com") ||
+		host == "clients3.google.com" ||
+		host == "cp.cloudflare.com" ||
+		host == "connectivity.apple.com" ||
+		host == "nmcheck.gnome.org" ||
+		host == "networkcheck.kde.org" ||
+		host == "ping.archlinux.org" ||
+		host == "mask.icloud.com" ||
+		host == "mask-h2.icloud.com" ||
+		strings.HasSuffix(host, ".ntp.org") || host == "pool.ntp.org" {
+		return true
+	}
+
+	// DNS / DoH / DoT resolver domains
+	if host == "dns.google" || strings.HasSuffix(host, ".dns.google") ||
+		host == "one.one.one.one" ||
+		host == "dns.sb" || host == "doh.sb" || host == "doh.pub" ||
+		strings.HasSuffix(host, "cloudflare-dns.com") ||
+		strings.HasSuffix(host, "opendns.com") ||
+		strings.HasSuffix(host, "quad9.net") ||
+		strings.HasSuffix(host, "nextdns.io") ||
+		strings.HasSuffix(host, "adguard-dns.com") ||
+		strings.HasSuffix(host, "alidns.com") ||
+		strings.HasSuffix(host, "dnspod.cn") ||
+		strings.HasPrefix(host, "dns.") || strings.HasPrefix(host, "doh.") || strings.HasPrefix(host, "dot.") ||
+		strings.Contains(host, ".dns.") || strings.Contains(host, "-dns.") ||
+		strings.Contains(host, ".doh.") || strings.Contains(host, "-doh.") {
+		return true
+	}
+
+	return false
+}
+
 func (s *Server) dailyTopTargets(ctx context.Context, start, end int64) ([]dailyTargetStat, error) {
+	candidateLimit := dailyTargetLimit * 20
+	if candidateLimit < 100 {
+		candidateLimit = 100
+	}
 	rows, err := s.store.db.QueryContext(ctx, `
 		SELECT
 			CASE WHEN host != '' THEN '域名' ELSE 'IP' END,
@@ -268,18 +365,24 @@ func (s *Server) dailyTopTargets(ctx context.Context, start, end int64) ([]daily
 			CASE WHEN host != '' THEN '域名' ELSE 'IP' END,
 			CASE WHEN host != '' THEN host ELSE destination END
 		ORDER BY COUNT(*) DESC, SUM(upload + download) DESC
-		LIMIT ?`, start, end, dailyRankingLimit)
+		LIMIT ?`, start, end, candidateLimit)
 	if err != nil {
 		return nil, fmt.Errorf("daily report top targets: %w", err)
 	}
 	defer rows.Close()
-	items := []dailyTargetStat{}
+	items := make([]dailyTargetStat, 0, dailyTargetLimit)
 	for rows.Next() {
 		var item dailyTargetStat
 		if err := rows.Scan(&item.Kind, &item.Label, &item.Location, &item.Count, &item.TotalBytes); err != nil {
 			return nil, err
 		}
+		if isNoiseTarget(item.Label) {
+			continue
+		}
 		items = append(items, item)
+		if len(items) >= dailyTargetLimit {
+			break
+		}
 	}
 	return items, rows.Err()
 }
@@ -344,7 +447,9 @@ func (s *Server) dailyTopNodes(ctx context.Context, start, end int64, traffic ma
 
 func (s *Server) dailyNodeProbes(ctx context.Context, start, end int64) ([]dailyNodeProbeStat, error) {
 	rows, err := s.store.db.QueryContext(ctx, `
-		SELECT n.name,
+		SELECT p.node_id,
+		       n.name,
+		       COALESCE(NULLIF(p.probe_name, ''), p.probe_id) AS probe_display,
 		       COUNT(*),
 		       COALESCE(SUM(CASE WHEN p.latency_ms < 0 THEN 1 ELSE 0 END), 0),
 		       COALESCE(AVG(CASE WHEN p.latency_ms >= 0 THEN p.latency_ms END), 0),
@@ -353,24 +458,132 @@ func (s *Server) dailyNodeProbes(ctx context.Context, start, end int64) ([]daily
 		FROM node_latency_points p
 		JOIN nodes n ON n.id = p.node_id
 		WHERE p.ts >= ? AND p.ts < ? AND n.revoked_at IS NULL
-		GROUP BY p.node_id
-		ORDER BY (CAST(SUM(CASE WHEN p.latency_ms < 0 THEN 1 ELSE 0 END) AS REAL) / COUNT(*)) ASC,
-		         AVG(CASE WHEN p.latency_ms >= 0 THEN p.latency_ms END) ASC
-		LIMIT ?`, start, end, dailyProbeNodeLimit)
+		GROUP BY p.node_id, probe_display
+		ORDER BY n.name ASC, probe_display ASC`, start, end)
 	if err != nil {
 		return nil, fmt.Errorf("daily report node probes: %w", err)
 	}
 	defer rows.Close()
-	items := []dailyNodeProbeStat{}
+
+	type nodeAccumulator struct {
+		nodeID     string
+		name       string
+		samples    int
+		failed     int
+		validCount int
+		validSum   float64
+		minMs      float64
+		maxMs      float64
+		probes     []dailyProbeItem
+	}
+
+	nodeMap := make(map[string]*nodeAccumulator)
+	nodeOrder := make([]string, 0)
+
 	for rows.Next() {
-		var item dailyNodeProbeStat
-		if err := rows.Scan(&item.Name, &item.Samples, &item.Failed, &item.AvgMs, &item.MinMs, &item.MaxMs); err != nil {
+		var (
+			nodeID       string
+			name         string
+			probeDisplay string
+			samples      int
+			failed       int
+			avgMs        float64
+			minMs        float64
+			maxMs        float64
+		)
+		if err := rows.Scan(&nodeID, &name, &probeDisplay, &samples, &failed, &avgMs, &minMs, &maxMs); err != nil {
 			return nil, err
 		}
-		item.Loss = float64(item.Failed) * 100 / float64(item.Samples)
-		items = append(items, item)
+
+		acc, ok := nodeMap[nodeID]
+		if !ok {
+			acc = &nodeAccumulator{
+				nodeID: nodeID,
+				name:   name,
+				minMs:  -1,
+				maxMs:  -1,
+			}
+			nodeMap[nodeID] = acc
+			nodeOrder = append(nodeOrder, nodeID)
+		}
+
+		probeLoss := 0.0
+		if samples > 0 {
+			probeLoss = float64(failed) * 100 / float64(samples)
+		}
+
+		acc.probes = append(acc.probes, dailyProbeItem{
+			ProbeName: probeDisplay,
+			Samples:   samples,
+			Failed:    failed,
+			Loss:      probeLoss,
+			AvgMs:     avgMs,
+			MinMs:     minMs,
+			MaxMs:     maxMs,
+		})
+
+		acc.samples += samples
+		acc.failed += failed
+		validSamples := samples - failed
+		if validSamples > 0 {
+			acc.validCount += validSamples
+			acc.validSum += avgMs * float64(validSamples)
+			if acc.minMs < 0 || minMs < acc.minMs {
+				acc.minMs = minMs
+			}
+			if acc.maxMs < 0 || maxMs > acc.maxMs {
+				acc.maxMs = maxMs
+			}
+		}
 	}
-	return items, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	results := make([]dailyNodeProbeStat, 0, len(nodeOrder))
+	for _, nodeID := range nodeOrder {
+		acc := nodeMap[nodeID]
+		overallLoss := 0.0
+		if acc.samples > 0 {
+			overallLoss = float64(acc.failed) * 100 / float64(acc.samples)
+		}
+		overallAvg := 0.0
+		if acc.validCount > 0 {
+			overallAvg = acc.validSum / float64(acc.validCount)
+		}
+		minVal := acc.minMs
+		if minVal < 0 {
+			minVal = 0
+		}
+		maxVal := acc.maxMs
+		if maxVal < 0 {
+			maxVal = 0
+		}
+		results = append(results, dailyNodeProbeStat{
+			NodeID:  acc.nodeID,
+			Name:    acc.name,
+			Samples: acc.samples,
+			Failed:  acc.failed,
+			Loss:    overallLoss,
+			AvgMs:   overallAvg,
+			MinMs:   minVal,
+			MaxMs:   maxVal,
+			Probes:  acc.probes,
+		})
+	}
+
+	sort.SliceStable(results, func(i, j int) bool {
+		if results[i].Loss != results[j].Loss {
+			return results[i].Loss < results[j].Loss
+		}
+		return results[i].AvgMs < results[j].AvgMs
+	})
+
+	if len(results) > dailyProbeNodeLimit {
+		results = results[:dailyProbeNodeLimit]
+	}
+
+	return results, nil
 }
 
 func (s *Server) dailyNodesWithoutProbes(ctx context.Context, start, end int64) ([]string, error) {
@@ -401,91 +614,116 @@ func (s *Server) dailyNodesWithoutProbes(ctx context.Context, start, end int64) 
 
 func (r dailyReportData) alertPayload() alertPayload {
 	dateRange := fmt.Sprintf("%s 00:00 - 23:59 (%s)", r.Date, NotificationLocation.String())
-	lines := make([]string, 0, 48)
 
-	lines = append(lines, "<b>【昨日总览】</b>")
-	lines = append(lines, tgLine("日期", r.Date))
-	lines = append(lines, tgLine("连接记录", fmt.Sprintf("%s 次", formatReportCount(r.Connections))))
-	lines = append(lines, tgLine("活跃设备", fmt.Sprintf("%s 个", formatReportCount(r.Devices))))
-	lines = append(lines, tgLine("活跃节点", fmt.Sprintf("%s 个", formatReportCount(r.Nodes))))
+	var b strings.Builder
+	b.WriteString("<b>Polaris 管理通知 · 每日简报</b>\n")
+	b.WriteString(tgEscape(dateRange))
+	b.WriteString("\n\n")
+
+	// 1. 昨日总览
+	b.WriteString("<b>【昨日总览】</b>\n")
+	b.WriteString(fmt.Sprintf("• <b>日期</b>：%s\n", tgEscape(r.Date)))
+	b.WriteString(fmt.Sprintf("• <b>连接记录</b>：%s 次\n", formatReportCount(r.Connections)))
+	b.WriteString(fmt.Sprintf("• <b>活跃设备</b>：%s 个\n", formatReportCount(r.Devices)))
+	b.WriteString(fmt.Sprintf("• <b>活跃节点</b>：%s 个\n", formatReportCount(r.Nodes)))
 	if r.TrafficByRate {
-		lines = append(lines, tgLine("总流量", formatReportBytes(r.TotalBytes)))
+		b.WriteString(fmt.Sprintf("• <b>总流量</b>：%s\n", formatReportBytes(r.TotalBytes)))
 	} else {
-		lines = append(lines, tgLine("总流量", fmt.Sprintf("↓ %s / ↑ %s（共 %s）",
-			formatReportBytes(r.Upload), formatReportBytes(r.Download), formatReportBytes(r.TotalBytes))))
+		b.WriteString(fmt.Sprintf("• <b>总流量</b>：↓ %s / ↑ %s（共 %s）\n",
+			formatReportBytes(r.Upload), formatReportBytes(r.Download), formatReportBytes(r.TotalBytes)))
 	}
 	if r.ProbeChecks > 0 && r.ProbeOK == 0 {
-		lines = append(lines, tgLine("探针", "丢包 100%（全部超时）"))
+		b.WriteString("• <b>探针</b>：丢包 100%（全部超时）\n")
 	} else if r.ProbeChecks > 0 {
-		lines = append(lines, tgLine("探针", fmt.Sprintf("丢包 %s｜平均延迟 %.0f ms",
-			formatReportPercent(r.ProbeChecks-r.ProbeOK, r.ProbeChecks), r.ProbeAvgMs)))
+		b.WriteString(fmt.Sprintf("• <b>探针</b>：丢包 %s｜平均延迟 %.0f ms\n",
+			formatReportPercent(r.ProbeChecks-r.ProbeOK, r.ProbeChecks), r.ProbeAvgMs))
 	} else {
-		lines = append(lines, tgLine("探针", "昨日没有探针数据"))
+		b.WriteString("• <b>探针</b>：昨日没有探针数据\n")
 	}
 
-	lines = append(lines, "", "<b>【节点网络质量】</b>")
+	// 2. 节点网络质量
+	b.WriteString("\n<b>【节点网络质量】</b>\n")
 	if len(r.NodeProbes) == 0 {
-		lines = append(lines, "昨日没有探针数据。")
+		b.WriteString("昨日没有探针数据。\n")
 	} else {
 		for _, node := range r.NodeProbes {
-			if node.Samples == node.Failed {
-				lines = append(lines, tgLine(node.Name, "丢包 100%（全部超时）"))
-				continue
+			nodeName := node.Name
+			if nodeName == "" {
+				nodeName = node.NodeID
 			}
-			lines = append(lines, tgLine(node.Name, fmt.Sprintf("丢包 %.1f%%｜平均延迟 %.0f ms（最低 %.0f / 最高 %.0f）",
-				node.Loss, node.AvgMs, node.MinMs, node.MaxMs)))
-		}
-		if len(r.NodeProbes) >= dailyProbeNodeLimit {
-			lines = append(lines, fmt.Sprintf("仅列出网络质量最好的 %d 个节点。", dailyProbeNodeLimit))
+			if node.Samples == node.Failed {
+				b.WriteString(fmt.Sprintf("• <b>%s</b>：丢包 100%%（全部超时）\n", tgEscape(nodeName)))
+			} else {
+				b.WriteString(fmt.Sprintf("• <b>%s</b>：综合丢包 %.1f%%｜平均延迟 %.0f ms（最低 %.0f / 最高 %.0f）\n",
+					tgEscape(nodeName), node.Loss, node.AvgMs, node.MinMs, node.MaxMs))
+			}
+			for _, probe := range node.Probes {
+				probeName := probe.ProbeName
+				if probeName == "" {
+					probeName = "未知探针"
+				}
+				if probe.Samples == probe.Failed {
+					b.WriteString(fmt.Sprintf("  ↳ %s：丢包 100%%（超时）\n", tgEscape(probeName)))
+				} else {
+					b.WriteString(fmt.Sprintf("  ↳ %s：丢包 %.1f%% · 平均 %.0f ms\n",
+						tgEscape(probeName), probe.Loss, probe.AvgMs))
+				}
+			}
 		}
 		if len(r.MissingProbes) > 0 {
-			lines = append(lines, tgLine("无探针数据节点", strings.Join(r.MissingProbes, "、")))
+			b.WriteString(fmt.Sprintf("• <b>无探针数据节点</b>：%s\n", tgEscape(strings.Join(r.MissingProbes, "、"))))
 		}
 	}
 
-	lines = append(lines, "", "<b>【活跃设备排行】</b>")
+	// 3. 活跃设备排行
+	b.WriteString("\n<b>【活跃设备排行】</b>\n")
 	if len(r.TopDevices) == 0 {
-		lines = append(lines, "昨日没有连接记录。")
+		b.WriteString("昨日没有连接记录。\n")
 	} else {
 		for index, device := range r.TopDevices {
-			label := fmt.Sprintf("%d. %s", index+1, device.SourceIP)
-			value := fmt.Sprintf("%d 次｜%s", device.Count, formatReportBytes(device.TotalBytes))
+			loc := ""
 			if device.Location != "" {
-				value = device.Location + "｜" + value
+				loc = tgEscape(device.Location) + "｜"
 			}
-			lines = append(lines, tgLine(label, value))
+			b.WriteString(fmt.Sprintf("%d. <code>%s</code>：%s%s 次｜%s\n",
+				index+1, tgEscape(device.SourceIP), loc, formatReportCount(device.Count), formatReportBytes(device.TotalBytes)))
 		}
 	}
 
-	lines = append(lines, "", "<b>【热门访问目标】</b>")
+	// 4. 热门访问目标
+	b.WriteString("\n<b>【热门访问目标】</b>\n")
 	if len(r.TopTargets) == 0 {
-		lines = append(lines, "昨日没有可统计的访问目标。")
+		b.WriteString("昨日没有可统计的访问目标。\n")
 	} else {
 		for index, target := range r.TopTargets {
-			label := fmt.Sprintf("%d. %s", index+1, target.Label)
-			value := fmt.Sprintf("%d 次｜%s", target.Count, formatReportBytes(target.TotalBytes))
+			loc := ""
 			if target.Location != "" {
-				value = target.Location + "｜" + value
+				loc = tgEscape(target.Location) + "｜"
 			}
-			lines = append(lines, tgLine(label, value))
+			b.WriteString(fmt.Sprintf("%d. <code>%s</code>：%s%s 次｜%s\n",
+				index+1, tgEscape(target.Label), loc, formatReportCount(target.Count), formatReportBytes(target.TotalBytes)))
 		}
 	}
 
-	lines = append(lines, "", "<b>【节点使用排行】</b>")
+	// 5. 节点使用排行
+	b.WriteString("\n<b>【节点使用排行】</b>\n")
 	if len(r.TopNodes) == 0 {
-		lines = append(lines, "昨日没有节点访问记录。")
+		b.WriteString("昨日没有节点访问记录。\n")
 	} else {
 		for index, node := range r.TopNodes {
 			name := node.Name
 			if name == "" {
 				name = node.NodeID
 			}
-			lines = append(lines, tgLine(fmt.Sprintf("%d. %s", index+1, name),
-				fmt.Sprintf("%d 次连接｜%s", node.Connections, formatReportBytes(node.TotalBytes))))
+			b.WriteString(fmt.Sprintf("%d. <b>%s</b>：%s 次连接｜%s\n",
+				index+1, tgEscape(name), formatReportCount(node.Connections), formatReportBytes(node.TotalBytes)))
 		}
 	}
 
-	telegramText := buildTelegramAlert(severityInfo, "每日简报", "", dateRange, lines, "")
+	b.WriteString("\n时间：")
+	b.WriteString(tgEscape(NowAlertTime()))
+
+	telegramText := b.String()
 
 	barkLines := []string{
 		fmt.Sprintf("连接 %s 次｜设备 %s 个｜节点 %s 个", formatReportCount(r.Connections), formatReportCount(r.Devices), formatReportCount(r.Nodes)),

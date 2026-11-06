@@ -197,6 +197,109 @@ func maxBytesKey(values map[string]int64) string {
 	return bestKey
 }
 
+type countedItem struct {
+	key   string
+	count int
+}
+
+func topCountedItems(counts map[string]int, limit int) []countedItem {
+	items := make([]countedItem, 0, len(counts))
+	for k, v := range counts {
+		if k != "" && v > 0 {
+			items = append(items, countedItem{key: k, count: v})
+		}
+	}
+	sort.Slice(items, func(i, j int) bool {
+		if items[i].count != items[j].count {
+			return items[i].count > items[j].count
+		}
+		return items[i].key < items[j].key
+	})
+	if limit > 0 && len(items) > limit {
+		items = items[:limit]
+	}
+	return items
+}
+
+func summarizeConnectionDestinations(connections []storedConnection, limit int) []string {
+	destCounts := make(map[string]int)
+	for _, c := range connections {
+		host := strings.TrimSpace(c.Host)
+		dest := strings.TrimSpace(c.Destination)
+		target := host
+		if target == "" {
+			target = dest
+		} else if dest != "" {
+			if _, port, err := net.SplitHostPort(dest); err == nil && port != "80" && port != "443" && port != "" {
+				target = fmt.Sprintf("%s:%s", host, port)
+			}
+		}
+		if target == "" {
+			target = "未知目标"
+		} else if host == "" && c.DestinationLocation != "" && c.DestinationLocation != "未知" {
+			target = fmt.Sprintf("%s（%s）", target, c.DestinationLocation)
+		}
+		destCounts[target]++
+	}
+
+	top := topCountedItems(destCounts, limit)
+	result := make([]string, 0, len(top))
+	for _, item := range top {
+		result = append(result, fmt.Sprintf("%s（%d 条）", item.key, item.count))
+	}
+	return result
+}
+
+func isInternalUserID(name string) bool {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return true
+	}
+	lower := strings.ToLower(name)
+	return strings.HasPrefix(lower, "user_") || strings.HasPrefix(lower, "user-")
+}
+
+func summarizeConnectionSources(connections []storedConnection, limit int) []string {
+	sourceCounts := make(map[string]int)
+	for _, c := range connections {
+		user := strings.TrimSpace(c.User)
+		if isInternalUserID(user) {
+			user = ""
+		}
+		srcIP := strings.TrimSpace(c.SourceIP)
+		if srcIP == "" && c.Source != "" {
+			if sh, _, err := net.SplitHostPort(c.Source); err == nil {
+				srcIP = strings.TrimSpace(sh)
+			} else {
+				srcIP = strings.TrimSpace(c.Source)
+			}
+		}
+		var label string
+		if c.RelayUpstreamNodeID != "" && srcIP != "" {
+			label = fmt.Sprintf("中转自节点 %s（%s）", c.RelayUpstreamNodeID, srcIP)
+		} else if user != "" && srcIP != "" {
+			label = fmt.Sprintf("%s（%s）", srcIP, user)
+		} else if user != "" {
+			label = user
+		} else if srcIP != "" {
+			label = srcIP
+		} else {
+			label = "未知客户端"
+		}
+		if c.SourceLocation != "" && c.SourceLocation != "未知" && !strings.Contains(label, c.SourceLocation) {
+			label = fmt.Sprintf("%s（%s）", label, c.SourceLocation)
+		}
+		sourceCounts[label]++
+	}
+
+	top := topCountedItems(sourceCounts, limit)
+	result := make([]string, 0, len(top))
+	for _, item := range top {
+		result = append(result, fmt.Sprintf("%s（%d 条）", item.key, item.count))
+	}
+	return result
+}
+
 type nodeAlertContext struct {
 	Name     string
 	IP       string
@@ -465,25 +568,60 @@ func (e *AlertEngine) CheckConnectionsTelemetry(nodeID, nodeName string, downloa
 			if durationExceeded {
 				alertKey := "traffic:" + nodeID
 				if e.canAlert(alertKey, settings.CooldownMinutes) {
+					downloadMbps := (downloadRate * 8) / (1000 * 1000)
+					uploadMbps := (uploadRate * 8) / (1000 * 1000)
 					mainIP, mainDest := e.topTrafficEndpoints(connections)
 					if mainDest == "" {
 						mainDest = "未指定域名/IP"
 					}
-					barkBody := fmt.Sprintf("当前 %.1f Mbps，超过阈值 %.1f Mbps\n持续超过 %d 秒\n目标 %s\n来源 %s",
-						maxRateMbps, settings.TrafficThresholdMbps, settings.TrafficDurationSec, mainDest, e.formatIP(mainIP))
+					var topSourceDesc string
+					if mainIP != "" {
+						var mainUser string
+						var mainLoc string
+						for _, c := range connections {
+							if cleanIPAddress(c.SourceIP) == mainIP {
+								if c.User != "" && mainUser == "" && !isInternalUserID(c.User) {
+									mainUser = c.User
+								}
+								if c.SourceLocation != "" && c.SourceLocation != "未知" && mainLoc == "" {
+									mainLoc = c.SourceLocation
+								}
+							}
+						}
+						if mainUser != "" {
+							topSourceDesc = fmt.Sprintf("%s（%s）", mainIP, mainUser)
+						} else {
+							topSourceDesc = e.formatIP(mainIP)
+						}
+						if mainLoc != "" && !strings.Contains(topSourceDesc, mainLoc) {
+							topSourceDesc += fmt.Sprintf("（%s）", mainLoc)
+						}
+					}
+					if topSourceDesc == "" {
+						topSourceDesc = "未知来源"
+					}
+
 					overPercent := 0.0
 					if settings.TrafficThresholdMbps > 0 {
 						overPercent = (maxRateMbps/settings.TrafficThresholdMbps - 1) * 100
 					}
 					nodeCtx := e.nodeContext(nodeID, nodeName)
-					telegramText := buildTelegramAlert(severityWarning, "流量告警", "瞬时流量突增", nodeName, e.withNodeInfo(nodeCtx, []string{
-						tgLine("当前速率", fmt.Sprintf("%.1f Mbps", maxRateMbps)),
+					lines := []string{
+						tgLine("当前速率", fmt.Sprintf("%.1f Mbps（↓ %.1f Mbps ｜ ↑ %.1f Mbps）", maxRateMbps, downloadMbps, uploadMbps)),
 						tgLine("告警阈值", fmt.Sprintf("%.1f Mbps", settings.TrafficThresholdMbps)),
 						tgLine("超出幅度", fmt.Sprintf("%.1f%%", overPercent)),
 						tgLine("持续时长", fmt.Sprintf("超过 %d 秒", settings.TrafficDurationSec)),
-						tgLine("主要来源", e.formatIP(mainIP)),
-						tgLine("目标主机", mainDest),
-					}), "先确认主要来源 IP 和目标主机是否属于正常业务。如果不是，建议在连接列表中阻断该来源，并检查该节点是否有异常下载、备份任务或流量盗用。")
+						tgLine("主要来源", topSourceDesc),
+						tgLine("主要目标", mainDest),
+					}
+					topDests := summarizeConnectionDestinations(connections, 3)
+					if len(topDests) > 1 {
+						lines = append(lines, tgLine("其他活跃目标", strings.Join(topDests, "｜")))
+					}
+
+					telegramText := buildTelegramAlert(severityWarning, "流量告警", "瞬时流量突增", nodeName, e.withNodeInfo(nodeCtx, lines), "")
+					barkBody := fmt.Sprintf("当前 %.1f Mbps（↓%.1f/↑%.1f）\n超限持续 %d 秒\n目标：%s\n来源：%s",
+						maxRateMbps, downloadMbps, uploadMbps, settings.TrafficDurationSec, mainDest, topSourceDesc)
 					e.sendAlert(context.Background(), alertPayload{
 						Severity:  severityWarning,
 						BarkTitle: fmt.Sprintf("流量突增：%s", nodeName),
@@ -506,18 +644,38 @@ func (e *AlertEngine) CheckConnectionsTelemetry(nodeID, nodeName string, downloa
 	if settings.ConnAlertEnabled && settings.ConnThresholdCount > 0 && connCount >= settings.ConnThresholdCount {
 		alertKey := "conn:" + nodeID
 		if e.canAlert(alertKey, settings.CooldownMinutes) {
-			barkBody := fmt.Sprintf("当前 %d 条，超过上限 %d 条\n建议检查并发来源与代理客户端",
-				connCount, settings.ConnThresholdCount)
 			overCount := connCount - settings.ConnThresholdCount
 			if overCount < 0 {
 				overCount = 0
 			}
+			topDests := summarizeConnectionDestinations(connections, 5)
+			topSources := summarizeConnectionSources(connections, 3)
+
 			nodeCtx := e.nodeContext(nodeID, nodeName)
-			telegramText := buildTelegramAlert(severityWarning, "连接告警", "活跃连接数激增", nodeName, e.withNodeInfo(nodeCtx, []string{
+			lines := []string{
 				tgLine("当前连接", fmt.Sprintf("%d 条", connCount)),
 				tgLine("设定上限", fmt.Sprintf("%d 条", settings.ConnThresholdCount)),
 				tgLine("超出数量", fmt.Sprintf("%d 条", overCount)),
-			}), "先查看连接是否集中在单一 IP。若集中在单一 IP，请结合「单 IP 高并发」告警处理；若分散在大量客户端，请检查是否有异常客户端、容器镜像拉取或外部探测。")
+			}
+			if len(topDests) > 0 {
+				lines = append(lines, tgLine("主要访问目标", "\n• "+strings.Join(topDests, "\n• ")))
+			}
+			if len(topSources) > 0 {
+				lines = append(lines, tgLine("主要请求来源", "\n• "+strings.Join(topSources, "\n• ")))
+			}
+
+			telegramText := buildTelegramAlert(severityWarning, "连接告警", "活跃连接数激增", nodeName, e.withNodeInfo(nodeCtx, lines), "")
+
+			barkBody := fmt.Sprintf("当前 %d 条，超限 %d 条", connCount, overCount)
+			if len(topDests) > 0 {
+				shortDests := summarizeConnectionDestinations(connections, 2)
+				barkBody += "\n目标：" + strings.Join(shortDests, "、")
+			}
+			if len(topSources) > 0 {
+				shortSources := summarizeConnectionSources(connections, 2)
+				barkBody += "\n来源：" + strings.Join(shortSources, "、")
+			}
+
 			e.sendAlert(context.Background(), alertPayload{
 				Severity:  severityWarning,
 				BarkTitle: fmt.Sprintf("连接数激增：%s", nodeName),
@@ -531,29 +689,42 @@ func (e *AlertEngine) CheckConnectionsTelemetry(nodeID, nodeName string, downloa
 
 	// 3. Single IP Connection Surge Check
 	if settings.SingleIPAlertEnabled && settings.SingleIPThresholdCount > 0 {
-		ipCounts := make(map[string]int)
+		ipConns := make(map[string][]storedConnection)
 		for _, c := range connections {
 			if ip := cleanIPAddress(c.SourceIP); ip != "" {
-				ipCounts[ip]++
+				ipConns[ip] = append(ipConns[ip], c)
 			}
 		}
-		for ip, count := range ipCounts {
+		for ip, conns := range ipConns {
+			count := len(conns)
 			if count >= settings.SingleIPThresholdCount {
 				alertKey := "single_ip:" + nodeID + ":" + ip
 				if e.canAlert(alertKey, settings.CooldownMinutes) {
-					barkBody := fmt.Sprintf("%s\n%d 条连接，超过单 IP 上限 %d 条\n请确认是否为本人设备",
-						e.formatIP(ip), count, settings.SingleIPThresholdCount)
 					overCount := count - settings.SingleIPThresholdCount
 					if overCount < 0 {
 						overCount = 0
 					}
+					topDests := summarizeConnectionDestinations(conns, 3)
+
 					nodeCtx := e.nodeContext(nodeID, nodeName)
-					telegramText := buildTelegramAlert(severityCritical, "安全告警", "单 IP 异常高并发", nodeName, e.withNodeInfo(nodeCtx, []string{
+					lines := []string{
 						tgLine("来源 IP", e.formatIP(ip)),
 						tgLine("活跃连接", fmt.Sprintf("%d 条", count)),
 						tgLine("单 IP 上限", fmt.Sprintf("%d 条", settings.SingleIPThresholdCount)),
 						tgLine("超出数量", fmt.Sprintf("%d 条", overCount)),
-					}), "确认该 IP 是否为客户本人。如果不是，建议在安全防护中阻断该 IP，并检查该客户的订阅链接或账号是否泄露。")
+					}
+					if len(topDests) > 0 {
+						lines = append(lines, tgLine("主要访问目标", "\n• "+strings.Join(topDests, "\n• ")))
+					}
+
+					telegramText := buildTelegramAlert(severityCritical, "安全告警", "单 IP 异常高并发", nodeName, e.withNodeInfo(nodeCtx, lines), "")
+
+					barkBody := fmt.Sprintf("%s\n%d 条连接，超限 %d 条",
+						e.formatIP(ip), count, overCount)
+					if len(topDests) > 0 {
+						barkBody += "\n目标：" + strings.Join(topDests, "、")
+					}
+
 					e.sendAlert(context.Background(), alertPayload{
 						Severity:  severityCritical,
 						BarkTitle: fmt.Sprintf("单 IP 高并发：%s", nodeName),
@@ -729,14 +900,32 @@ func (e *AlertEngine) CheckConnectionsTelemetry(nodeID, nodeName string, downloa
 				cooldown = 15
 			}
 			if e.canAlert(alertKey, cooldown) {
-				barkBody := fmt.Sprintf("%s\n%s\n%s\n建议排查来源或添加阻断规则",
-					e.formatIP(clientIP), triggerReason, triggerDetails)
+				var scannerListener string
+				for _, c := range connections {
+					if cleanIPAddress(c.SourceIP) == clientIP {
+						if c.ListenerName != "" && scannerListener == "" {
+							scannerListener = c.ListenerName
+						} else if c.Inbound != "" && scannerListener == "" {
+							scannerListener = c.Inbound
+						}
+					}
+				}
+
 				nodeCtx := e.nodeContext(nodeID, nodeName)
-				telegramText := buildTelegramAlert(severityCritical, "安全告警", "检测到异常网络扫描", nodeName, e.withNodeInfo(nodeCtx, []string{
+				scanLines := []string{
 					tgLine("来源 IP", e.formatIP(clientIP)),
+				}
+				if scannerListener != "" {
+					scanLines = append(scanLines, tgLine("接入入站", scannerListener))
+				}
+				scanLines = append(scanLines,
 					tgLine("扫描特征", triggerReason),
 					tgLine("探测详情", triggerDetails),
-				}), "确认来源 IP 是否为客户。如果不是，建议阻断；同时检查节点 SSH、RDP、Redis 等高危端口是否需要对公网开放，以及是否存在弱口令。")
+				)
+
+				barkBody := fmt.Sprintf("%s\n%s\n%s",
+					e.formatIP(clientIP), triggerReason, triggerDetails)
+				telegramText := buildTelegramAlert(severityCritical, "安全告警", "检测到异常网络扫描", nodeName, e.withNodeInfo(nodeCtx, scanLines), "")
 				e.sendAlert(context.Background(), alertPayload{
 					Severity:  severityCritical,
 					BarkTitle: fmt.Sprintf("异常扫描：%s", nodeName),
@@ -751,11 +940,31 @@ func (e *AlertEngine) CheckConnectionsTelemetry(nodeID, nodeName string, downloa
 }
 
 type routeIssue struct {
-	destIP   string
-	location string
-	outbound string
-	host     string
-	count    int
+	destIP      string
+	location    string
+	outbound    string
+	host        string
+	count       int
+	ports       []string
+	users       []string
+	sourceAddrs []string
+	listeners   []string
+}
+
+func appendDistinctLimit(list []string, item string, limit int) []string {
+	item = strings.TrimSpace(item)
+	if item == "" {
+		return list
+	}
+	for _, existing := range list {
+		if existing == item {
+			return list
+		}
+	}
+	if limit > 0 && len(list) >= limit {
+		return list
+	}
+	return append(list, item)
 }
 
 // checkProxyRouting reports destinations that belong to China or a private
@@ -771,8 +980,10 @@ func (e *AlertEngine) checkProxyRouting(nodeID, nodeName string, connections []s
 		destination := strings.TrimSpace(connection.Destination)
 		host := strings.TrimSpace(connection.Host)
 		ipText := destination
-		if parsedHost, _, err := net.SplitHostPort(destination); err == nil {
+		var destPort string
+		if parsedHost, port, err := net.SplitHostPort(destination); err == nil {
 			ipText = parsedHost
+			destPort = strings.TrimSpace(port)
 		}
 		ipText = strings.TrimSpace(ipText)
 		ip := net.ParseIP(ipText)
@@ -823,6 +1034,34 @@ func (e *AlertEngine) checkProxyRouting(nodeID, nodeName string, connections []s
 		if issue.host == "" && host != "" {
 			issue.host = host
 		}
+		if destPort != "" {
+			issue.ports = appendDistinctLimit(issue.ports, destPort, 3)
+		}
+		if connection.User != "" && !isInternalUserID(connection.User) {
+			issue.users = appendDistinctLimit(issue.users, connection.User, 3)
+		}
+		srcIP := strings.TrimSpace(connection.SourceIP)
+		if srcIP == "" && connection.Source != "" {
+			if sh, _, err := net.SplitHostPort(connection.Source); err == nil {
+				srcIP = strings.TrimSpace(sh)
+			} else {
+				srcIP = strings.TrimSpace(connection.Source)
+			}
+		}
+		if srcIP != "" {
+			srcDesc := srcIP
+			if loc := strings.TrimSpace(connection.SourceLocation); loc != "" && loc != "未知" {
+				srcDesc += fmt.Sprintf("（%s）", loc)
+			}
+			issue.sourceAddrs = appendDistinctLimit(issue.sourceAddrs, srcDesc, 3)
+		}
+		listener := strings.TrimSpace(connection.ListenerName)
+		if listener == "" {
+			listener = strings.TrimSpace(connection.Inbound)
+		}
+		if listener != "" {
+			issue.listeners = appendDistinctLimit(issue.listeners, listener, 3)
+		}
 	}
 	if len(issues) == 0 {
 		return
@@ -847,6 +1086,16 @@ func (e *AlertEngine) checkProxyRouting(nodeID, nodeName string, connections []s
 		return
 	}
 
+	hasDirectIP := false
+	hasDomain := false
+	for _, issue := range list {
+		if issue.host != "" {
+			hasDomain = true
+		} else {
+			hasDirectIP = true
+		}
+	}
+
 	nodeCtx := e.nodeContext(nodeID, nodeName)
 	lines := []string{
 		tgLine("检测结果", fmt.Sprintf("%d 个国内或局域网目标正在走代理出口", len(list))),
@@ -854,15 +1103,41 @@ func (e *AlertEngine) checkProxyRouting(nodeID, nodeName string, connections []s
 	barkTargets := make([]string, 0, 3)
 	for index, issue := range list {
 		label := issue.destIP
+		if len(issue.ports) == 1 {
+			label += ":" + issue.ports[0]
+		} else if len(issue.ports) > 1 {
+			label += fmt.Sprintf(" (端口 %s)", strings.Join(issue.ports, ", "))
+		}
 		if issue.host != "" {
 			label += "（" + issue.host + "）"
 		}
 		if index < 5 {
 			lines = append(lines, tgLine(label, fmt.Sprintf("%s｜出口 %s｜%d 条连接",
 				issue.location, issue.outbound, issue.count)))
+
+			var sourceParts []string
+			if len(issue.users) > 0 {
+				sourceParts = append(sourceParts, "用户 "+strings.Join(issue.users, "、"))
+			}
+			if len(issue.sourceAddrs) > 0 {
+				sourceParts = append(sourceParts, "来源 "+strings.Join(issue.sourceAddrs, "、"))
+			}
+			if len(issue.listeners) > 0 {
+				sourceParts = append(sourceParts, "入站 "+strings.Join(issue.listeners, "、"))
+			}
+			if issue.host == "" {
+				sourceParts = append(sourceParts, "直接 IP 请求（无域名 SNI）")
+			}
+			if len(sourceParts) > 0 {
+				lines = append(lines, tgLine("↳ 来源追溯", strings.Join(sourceParts, "｜")))
+			}
 		}
 		if index < 3 {
-			barkTargets = append(barkTargets, fmt.Sprintf("%s → %s", label, issue.outbound))
+			barkLabel := label
+			if len(issue.users) > 0 {
+				barkLabel += fmt.Sprintf("（%s）", strings.Join(issue.users, ","))
+			}
+			barkTargets = append(barkTargets, fmt.Sprintf("%s → %s", barkLabel, issue.outbound))
 		}
 	}
 	if len(list) > 5 {
@@ -872,9 +1147,18 @@ func (e *AlertEngine) checkProxyRouting(nodeID, nodeName string, connections []s
 		barkTargets = append(barkTargets, fmt.Sprintf("另有 %d 个目标", len(list)-3))
 	}
 
+	var actionText string
+	if hasDirectIP && !hasDomain {
+		actionText = "检测到客户端直接连接国内/内网 IP（如国内公共 DNS/DoH）。请检查对应客户端是否开启了国内/局域网流量绕过代理；若节点作为中转出口，可为对应用户或入站配置国内直连规则。"
+	} else if hasDirectIP && hasDomain {
+		actionText = "请在分流规则中把上述目标改为直连；若是域名，请检查 DNS 解析结果与规则优先级；若是客户端直接发起的 IP 连接，请检查客户端分流设置。"
+	} else {
+		actionText = "请在分流规则中把上述目标改为直连；如果是域名，请检查 DNS 解析结果和规则优先级。"
+	}
+
 	telegramText := buildTelegramAlert(severityWarning, "分流策略", "国内/局域网目标正在走代理", nodeName,
 		e.withNodeInfo(nodeCtx, lines),
-		"请在分流规则中把上述目标改为直连；如果是域名，请检查 DNS 解析结果和规则优先级。")
+		actionText)
 
 	e.sendAlert(context.Background(), alertPayload{
 		Severity:  severityWarning,
@@ -906,15 +1190,16 @@ func (e *AlertEngine) NotifyNodeOffline(nodeID, nodeName string) {
 		e.mu.Lock()
 		e.offlineNodes[nodeID] = time.Now()
 		e.mu.Unlock()
-		telegramText := buildTelegramAlert(severityCritical, "节点状态", "节点已离线", nodeName, []string{
-			tgLine("当前状态", "控制端已失去该节点心跳"),
-			tgLine("影响", "该节点上的代理、监控和任务下发暂时不可用"),
-			tgLine("可能原因", "网络中断、机房维护、主机宕机或 Agent 进程异常"),
-		}, "先检查节点网络、电源和 Agent 服务。若短时间内自动恢复，可忽略；若持续离线，请登录服务商后台检查主机状态。")
+		nodeCtx := e.nodeContext(nodeID, nodeName)
+		lines := []string{
+			tgLine("当前状态", "控制端已失去该节点心跳（Agent 离线）"),
+			tgLine("影响范围", "该节点上的代理、监控和任务下发暂时不可用"),
+		}
+		telegramText := buildTelegramAlert(severityCritical, "节点状态", "节点已离线", nodeName, e.withNodeInfo(nodeCtx, lines), "")
 		e.sendAlert(context.Background(), alertPayload{
 			Severity:  severityCritical,
 			BarkTitle: fmt.Sprintf("节点离线：%s", nodeName),
-			BarkBody:  "控制端已失去该节点心跳。\n代理与监控服务可能暂停，请检查网络、电源或机房状态。",
+			BarkBody:  e.barkWithNode(nodeCtx, "控制端已失去该节点心跳。\n代理与监控服务暂停，请检查主机网络与 Agent。"),
 			BarkGroup: "节点状态",
 			BarkSound: "alarm.caf",
 			Telegram:  telegramText,
@@ -941,15 +1226,15 @@ func (e *AlertEngine) NotifyNodeOnline(nodeID, nodeName string) {
 	}
 	alertKey := "online:" + nodeID
 	if e.canAlert(alertKey, settings.CooldownMinutes) {
-		telegramText := buildTelegramAlert(severityRecovery, "节点状态", "节点已恢复", nodeName, []string{
-			tgLine("当前状态", "控制端已重新收到该节点心跳"),
-			tgLine("控制通道", "加密控制通道已重建"),
-			tgLine("服务状态", "代理、监控与任务下发能力已恢复"),
-		}, "")
+		nodeCtx := e.nodeContext(nodeID, nodeName)
+		lines := []string{
+			tgLine("当前状态", "控制通道已重建，服务已恢复正常"),
+		}
+		telegramText := buildTelegramAlert(severityRecovery, "节点状态", "节点已恢复", nodeName, e.withNodeInfo(nodeCtx, lines), "")
 		e.sendAlert(context.Background(), alertPayload{
 			Severity:  severityRecovery,
 			BarkTitle: fmt.Sprintf("节点恢复：%s", nodeName),
-			BarkBody:  "控制通道已重建，代理与监控服务恢复就绪。",
+			BarkBody:  e.barkWithNode(nodeCtx, "控制通道已重建，代理与监控服务已恢复。"),
 			BarkGroup: "节点状态",
 			BarkSound: "calypso.caf",
 			Telegram:  telegramText,

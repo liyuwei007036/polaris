@@ -55,8 +55,8 @@
           role="button"
           tabindex="0"
           :aria-label="`${p.label}，${p.online}/${p.nodes.length} 台在线`"
-          @keydown.enter.prevent="toggleSelect(p.key)"
-          @keydown.space.prevent="toggleSelect(p.key)"
+          @keydown.enter.prevent="toggleSelect(p.key, $event)"
+          @keydown.space.prevent="toggleSelect(p.key, $event)"
         >
           <title>{{ pinTitle(p) }}</title>
           <!-- 防重叠展开后的引线：从真实坐标指向显示位置 -->
@@ -131,46 +131,54 @@
         </svg>
       </button>
 
-      <!-- Region Popup on marker click -->
-      <transition name="pop-fade">
-        <div v-if="activePlace" class="place-popup neu" @click.stop>
-          <div class="popup-head">
-            <span class="popup-flag">{{ activePlace.flag }}</span>
-            <span class="popup-title truncate">{{ activePlace.label }}</span>
-            <span class="popup-stat">{{ activePlace.online }}/{{ activePlace.nodes.length }} 在线</span>
-            <button class="popup-close" title="关闭" @click="selectedKey = null">&times;</button>
+      <!-- Region Popup on marker click：跟随点击位置显示，而不是固定在角落 -->
+      <Teleport :to="popupTarget">
+        <transition name="pop-fade">
+          <div
+            v-if="activePlace"
+            ref="popupRef"
+            class="place-popup neu"
+            :style="{ left: `${popupPos.x}px`, top: `${popupPos.y}px` }"
+            @click.stop
+          >
+            <div class="popup-head">
+              <span class="popup-flag">{{ activePlace.flag }}</span>
+              <span class="popup-title truncate">{{ activePlace.label }}</span>
+              <span class="popup-stat">{{ activePlace.online }}/{{ activePlace.nodes.length }} 在线</span>
+              <button class="popup-close" title="关闭" @click="selectedKey = null">&times;</button>
+            </div>
+            <div class="popup-sub tnum">
+              {{ activePlace.nodes.length }} 台 VPS · {{ activePlace.approximate ? '位置近似（按国家中心显示）' : formatCoords(activePlace.lat, activePlace.lon) }}
+            </div>
+            <div class="popup-nodes-list">
+              <button
+                v-for="node in activePlace.nodes"
+                :key="node.id"
+                type="button"
+                class="popup-node-item"
+                :title="node.name"
+                @click="handleNodeClick(node.id)"
+              >
+                <span class="popup-node-status" :class="node.online ? 'is-online' : 'is-offline'" />
+                <span class="popup-node-main">
+                  <span class="popup-node-name truncate">{{ node.name }}</span>
+                  <span class="popup-node-meta truncate">{{ nodeMeta(node) }}</span>
+                </span>
+                <span class="popup-node-tag" :class="node.online ? 'is-online' : 'is-offline'">
+                  {{ node.online ? '在线' : '离线' }}
+                </span>
+                <span class="popup-node-arrow">&rsaquo;</span>
+              </button>
+            </div>
           </div>
-          <div class="popup-sub tnum">
-            {{ activePlace.nodes.length }} 台 VPS · {{ activePlace.approximate ? '位置近似（按国家中心显示）' : formatCoords(activePlace.lat, activePlace.lon) }}
-          </div>
-          <div class="popup-nodes-list">
-            <button
-              v-for="node in activePlace.nodes"
-              :key="node.id"
-              type="button"
-              class="popup-node-item"
-              :title="node.name"
-              @click="handleNodeClick(node.id)"
-            >
-              <span class="popup-node-status" :class="node.online ? 'is-online' : 'is-offline'" />
-              <span class="popup-node-main">
-                <span class="popup-node-name truncate">{{ node.name }}</span>
-                <span class="popup-node-meta truncate">{{ nodeMeta(node) }}</span>
-              </span>
-              <span class="popup-node-tag" :class="node.online ? 'is-online' : 'is-offline'">
-                {{ node.online ? '在线' : '离线' }}
-              </span>
-              <span class="popup-node-arrow">&rsaquo;</span>
-            </button>
-          </div>
-        </div>
-      </transition>
+        </transition>
+      </Teleport>
     </div>
   </div>
 </template>
 
 <script setup>
-import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { countryCoords, LAND_POSITIONS, MAP_H, MAP_W, project } from '../geo'
 import { connectionSnapshots, subscribeConnections } from '../connections'
 
@@ -197,7 +205,11 @@ const svgRef = ref(null)
 const canvasRef = ref(null)
 const selectedKey = ref(null)
 const hoveredKey = ref(null)
+const popupRef = ref(null)
+const popupPos = ref({ x: 0, y: 0 })
 const isFullscreen = ref(false)
+// 全屏时 popup 必须挂在全屏元素内部，否则浏览器不会渲染 body 下的兄弟节点。
+const popupTarget = computed(() => (isFullscreen.value && cardRef.value ? cardRef.value : 'body'))
 
 let unsubConnections = null
 let animationFrameId = null
@@ -472,8 +484,56 @@ function pinRadius(place) {
   return 2.2 + Math.min(1.2, Math.max(0, place.nodes.length - 1) * 0.35)
 }
 
-function toggleSelect(key) {
-  selectedKey.value = selectedKey.value === key ? null : key
+function toggleSelect(key, event) {
+  if (selectedKey.value === key) {
+    selectedKey.value = null
+    return
+  }
+  const place = places.value.find((p) => p.key === key)
+  if (place) openPlacePopup(place, event)
+}
+
+// 弹窗跟随点击位置：点击地图上的任意标记，弹窗都出现在鼠标附近，
+// 靠近视口边缘时自动翻到另一侧，避免被裁掉。
+async function openPlacePopup(place, event) {
+  let clientX = Number(event?.clientX)
+  let clientY = Number(event?.clientY)
+  if (!Number.isFinite(clientX) || !Number.isFinite(clientY)) {
+    const svg = svgRef.value
+    const ctm = svg?.getScreenCTM()
+    if (svg && ctm) {
+      const point = svg.createSVGPoint()
+      point.x = place.x
+      point.y = place.y
+      const screen = point.matrixTransform(ctm)
+      clientX = screen.x
+      clientY = screen.y
+    }
+  }
+  if (!Number.isFinite(clientX) || !Number.isFinite(clientY)) {
+    const rect = wrapRef.value?.getBoundingClientRect()
+    clientX = rect ? rect.left + rect.width / 2 : window.innerWidth / 2
+    clientY = rect ? rect.top + rect.height / 2 : window.innerHeight / 2
+  }
+  selectedKey.value = place.key
+  popupPos.value = { x: clientX + 12, y: clientY + 12 }
+  await nextTick()
+  fitPopupToViewport(clientX, clientY)
+}
+
+function fitPopupToViewport(clientX, clientY) {
+  const el = popupRef.value
+  const width = el?.offsetWidth || 260
+  const height = el?.offsetHeight || 200
+  const gap = 12
+  const margin = 10
+  let x = clientX + gap
+  let y = clientY + gap
+  if (x + width > window.innerWidth - margin) x = clientX - width - gap
+  if (y + height > window.innerHeight - margin) y = clientY - height - gap
+  x = Math.max(margin, Math.min(x, window.innerWidth - width - margin))
+  y = Math.max(margin, Math.min(y, window.innerHeight - height - margin))
+  popupPos.value = { x, y }
 }
 
 // 地图上两个城市可能只差几个像素（例如洛杉矶和圣何塞）。
@@ -527,7 +587,7 @@ function onMapClick(event) {
   if (!place) return
   // 阻止全局 click 把刚刚选中的弹窗立刻关掉
   event.stopPropagation()
-  toggleSelect(place.key)
+  toggleSelect(place.key, event)
 }
 
 function handleNodeClick(nodeId) {
@@ -1085,14 +1145,13 @@ onUnmounted(() => {
 }
 
 .place-popup {
-  position: absolute;
-  top: 12px;
-  right: 12px;
-  z-index: 10;
+  position: fixed;
+  z-index: 2200;
   width: 248px;
   border-radius: 12px;
   padding: 10px 12px;
   box-shadow: var(--sh-neu);
+  background: var(--sb-panel-solid, var(--sb-surface));
 }
 
 .popup-head {

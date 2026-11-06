@@ -1,6 +1,7 @@
 package control
 
 import (
+	"compress/gzip"
 	"context"
 	"crypto/sha256"
 	"database/sql"
@@ -548,6 +549,16 @@ func (s *Server) dashboard(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Security-Policy", "default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self'; img-src 'self' data:; base-uri 'none'; frame-ancestors 'none'")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
+	if len(content) > 512 && strings.Contains(r.Header.Get("Accept-Encoding"), "gzip") {
+		w.Header().Set("Content-Encoding", "gzip")
+		w.Header().Set("Vary", "Accept-Encoding")
+		gw, err := gzip.NewWriterLevel(w, gzip.BestCompression)
+		if err == nil {
+			defer gw.Close()
+			_, _ = gw.Write(content)
+			return
+		}
+	}
 	_, _ = w.Write(content)
 }
 

@@ -109,12 +109,6 @@ func buildTelegramAlertFor(audience, severity, category, headline, subject strin
 		}
 	}
 
-	if action != "" {
-		b.WriteString("\n<b>建议操作</b>\n")
-		b.WriteString(tgEscape(action))
-		b.WriteString("\n")
-	}
-
 	b.WriteString("\n时间：")
 	b.WriteString(tgEscape(NowAlertTime()))
 	return b.String()

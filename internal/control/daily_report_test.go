@@ -39,7 +39,12 @@ func TestBuildDailyReport(t *testing.T) {
 	}{
 		{"c1", "1.2.3.4", "example.com", "93.184.216.34:443", 1000, 2000},
 		{"c2", "1.2.3.4", "example.com", "93.184.216.34:443", 500, 500},
-		{"c3", "5.6.7.8", "", "1.1.1.1:443", 300, 700},
+		{"c3", "5.6.7.8", "", "93.184.216.34:443", 300, 700},
+		{"c4", "1.2.3.4", "dns.google", "8.8.8.8:443", 100, 100},
+		{"c5", "1.2.3.4", "www.gstatic.com", "142.250.72.14:443", 100, 100},
+		{"c6", "1.2.3.4", "doh.opendns.com", "208.67.222.222:443", 100, 100},
+		{"c7", "5.6.7.8", "", "1.1.1.1:443", 100, 100},
+		{"c8", "5.6.7.8", "", "223.5.5.5:53", 100, 100},
 	} {
 		if _, err := store.db.ExecContext(ctx, `INSERT INTO connection_records
 			(id, node_id, node_name, source_ip, source_location, destination, host, upload, download, started_at, created_at)
@@ -83,7 +88,7 @@ func TestBuildDailyReport(t *testing.T) {
 		t.Fatalf("build daily report: %v", err)
 	}
 
-	if report.Connections != 3 || report.Devices != 2 || report.Nodes != 1 {
+	if report.Connections != 8 || report.Devices != 2 || report.Nodes != 1 {
 		t.Errorf("unexpected summary: %+v", report)
 	}
 	if !report.TrafficByRate || report.TotalBytes != 180000 {
@@ -92,23 +97,29 @@ func TestBuildDailyReport(t *testing.T) {
 	if report.ProbeChecks != 5 || report.ProbeOK != 4 || report.ProbeAvgMs != 16.25 {
 		t.Errorf("unexpected probe summary: checks=%d ok=%d avg=%.2f", report.ProbeChecks, report.ProbeOK, report.ProbeAvgMs)
 	}
-	if len(report.TopDevices) == 0 || report.TopDevices[0].SourceIP != "1.2.3.4" || report.TopDevices[0].Count != 2 {
+	if len(report.TopDevices) == 0 || report.TopDevices[0].SourceIP != "1.2.3.4" || report.TopDevices[0].Count != 5 {
 		t.Errorf("unexpected top devices: %+v", report.TopDevices)
 	}
-	if len(report.TopTargets) < 2 ||
+	if len(report.TopTargets) != 2 ||
 		report.TopTargets[0].Kind != "域名" || report.TopTargets[0].Label != "example.com" || report.TopTargets[0].Count != 2 ||
-		report.TopTargets[1].Kind != "IP" || report.TopTargets[1].Label != "1.1.1.1:443" || report.TopTargets[1].Count != 1 {
+		report.TopTargets[1].Kind != "IP" || report.TopTargets[1].Label != "93.184.216.34:443" || report.TopTargets[1].Count != 1 {
 		t.Errorf("unexpected top targets: %+v", report.TopTargets)
 	}
 	if len(report.NodeProbes) != 2 ||
 		report.NodeProbes[0].Name != "大阪节点" || report.NodeProbes[0].Loss != 0 || report.NodeProbes[0].AvgMs != 5 {
 		t.Errorf("expected best node first, got: %+v", report.NodeProbes)
 	}
+	if len(report.NodeProbes[0].Probes) != 1 || report.NodeProbes[0].Probes[0].ProbeName != "Telegram" {
+		t.Errorf("expected 大阪节点 probes: %+v", report.NodeProbes[0].Probes)
+	}
 	if report.NodeProbes[1].Name != "香港节点" ||
 		report.NodeProbes[1].Samples != 4 || report.NodeProbes[1].Failed != 1 ||
 		report.NodeProbes[1].Loss != 25 || report.NodeProbes[1].AvgMs != 20 ||
 		report.NodeProbes[1].MinMs != 10 || report.NodeProbes[1].MaxMs != 30 {
 		t.Errorf("unexpected node probe stats: %+v", report.NodeProbes)
+	}
+	if len(report.NodeProbes[1].Probes) != 2 {
+		t.Errorf("expected 2 probes under 香港节点, got: %+v", report.NodeProbes[1].Probes)
 	}
 	if len(report.MissingProbes) != 1 || report.MissingProbes[0] != "东京节点" {
 		t.Errorf("expected 东京节点 without probes, got %+v", report.MissingProbes)
@@ -129,8 +140,14 @@ func TestBuildDailyReport(t *testing.T) {
 	if strings.Contains(payload.Telegram, "检测次数") {
 		t.Errorf("report should not show probe check counts: %s", payload.Telegram)
 	}
-	if !strings.Contains(payload.Telegram, "example.com") || !strings.Contains(payload.Telegram, "1.1.1.1:443") {
-		t.Errorf("expected merged domain/IP targets, got: %s", payload.Telegram)
+	if !strings.Contains(payload.Telegram, "<code>example.com</code>") || !strings.Contains(payload.Telegram, "<code>93.184.216.34:443</code>") {
+		t.Errorf("expected code-tagged targets, got: %s", payload.Telegram)
+	}
+	if strings.Contains(payload.Telegram, "dns.google") || strings.Contains(payload.Telegram, "www.gstatic.com") || strings.Contains(payload.Telegram, "1.1.1.1:443") {
+		t.Errorf("noise targets should be excluded from report: %s", payload.Telegram)
+	}
+	if !strings.Contains(payload.Telegram, "↳ Telegram") || !strings.Contains(payload.Telegram, "↳ Google") {
+		t.Errorf("expected probe breakdown in telegram text: %s", payload.Telegram)
 	}
 	if strings.Contains(payload.Telegram, "[域名]") || strings.Contains(payload.Telegram, "[IP]") {
 		t.Errorf("target type labels should not be shown: %s", payload.Telegram)
@@ -146,6 +163,49 @@ func TestBuildDailyReport(t *testing.T) {
 	}
 	if !strings.Contains(payload.BarkBody, "丢包 20.0%") {
 		t.Errorf("expected probe loss in bark body, got: %s", payload.BarkBody)
+	}
+}
+
+func TestIsNoiseTarget(t *testing.T) {
+	noise := []string{
+		"dns.google",
+		"www.gstatic.com",
+		"connectivitycheck.gstatic.com",
+		"connectivitycheck.android.com",
+		"msftconnecttest.com",
+		"msftncsi.com",
+		"captive.apple.com",
+		"cp.cloudflare.com",
+		"detectportal.firefox.com",
+		"doh.opendns.com",
+		"chrome.cloudflare-dns.com",
+		"one.one.one.one",
+		"1.1.1.1:443",
+		"8.8.8.8:53",
+		"223.5.5.5:443",
+		"114.114.114.114:53",
+		"mask.icloud.com",
+		"pool.ntp.org",
+	}
+	for _, target := range noise {
+		if !isNoiseTarget(target) {
+			t.Errorf("expected isNoiseTarget(%q) = true, got false", target)
+		}
+	}
+
+	valid := []string{
+		"example.com",
+		"cdn.jsdelivr.net",
+		"api.openai.com",
+		"github.com",
+		"93.184.216.34:443",
+		"google.com",
+		"cloudflare.com",
+	}
+	for _, target := range valid {
+		if isNoiseTarget(target) {
+			t.Errorf("expected isNoiseTarget(%q) = false, got true", target)
+		}
 	}
 }
 

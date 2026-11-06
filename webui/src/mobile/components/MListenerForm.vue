@@ -378,7 +378,7 @@ function save() {
     @update:model-value="emit('update:modelValue', $event)"
   >
     <div v-if="template" class="m-notice m-notice--info">
-      已带入原配置，保存前请确认服务器、端口与域名，并修改客户端节点别名。连接凭据和 Reality 密钥会重新生成。
+      已复制原服务配置，保存前请确认服务器、端口与域名。
     </div>
 
     <div class="m-section">接入模式</div>
@@ -406,7 +406,7 @@ function save() {
     <div class="m-field">
       <label class="m-field__label">服务端口 <em>*</em></label>
       <el-input-number v-model="model.port" :min="1" :max="65535" controls-position="right" aria-label="服务端口" style="width: 100%" />
-      <div v-if="listener" class="m-field__hint">改端口后会自动重新下发 sing-box 与 Nginx 配置，客户端需按新端口更新。</div>
+      <div v-if="listener" class="m-field__hint">端口变更后需同步更新客户端。</div>
     </div>
     <div class="m-field">
       <label class="m-field__label">连接域名 <em>*</em></label>
@@ -421,15 +421,14 @@ function save() {
         >{{ item.value }}<small v-if="item.note">{{ item.note }}</small></button>
       </div>
       <div class="m-field__hint">
-        客户端连接的域名；经 Cloudflare 的 httpupgrade/gRPC 同时作为回源 SNI。
-        <template v-if="!nodeAddress">请先选择服务器再挑域名，也可直接输入。</template>
-        <template v-else-if="matchedDomains.length">上面是解析到 {{ nodeAddress }} 的域名，点一下即可填入。</template>
-        <template v-else>没有找到解析到 {{ nodeAddress }} 的域名，可直接输入，或先到「域名解析」添加记录。</template>
+        <template v-if="!nodeAddress">选择服务器后可选域名。</template>
+        <template v-else-if="matchedDomains.length">可选解析到该服务器的域名，也可手动输入。</template>
+        <template v-else>没有解析到该服务器的域名，可直接输入。</template>
       </div>
     </div>
 
     <template v-if="showReality">
-      <div class="m-section">连接安全</div>
+      <div class="m-section">Reality</div>
       <div class="m-field">
         <label class="m-field__label">目标网站 <em>*</em></label>
         <el-input v-model="model.reality_handshake_server" aria-label="Reality 目标网站" placeholder="www.microsoft.com" />
@@ -438,7 +437,6 @@ function save() {
         <label class="m-field__label">网站端口</label>
         <el-input-number v-model="model.reality_handshake_port" :min="1" :max="65535" controls-position="right" aria-label="Reality 网站端口" style="width: 100%" />
       </div>
-      <div class="m-notice m-notice--info">Reality 密钥和 Short ID 会在创建时自动生成，无需手动配置。</div>
     </template>
 
     <template v-if="model.transport_type === 'httpupgrade'">
@@ -448,7 +446,7 @@ function save() {
         <el-input v-model="model.transport_path" readonly aria-label="httpupgrade 请求路径">
           <template #append><el-button @click="model.transport_path = randomPath()">重新生成</el-button></template>
         </el-input>
-        <div class="m-field__hint">由系统随机生成，避免被探测。重新生成后客户端需要同步更新。</div>
+        <div class="m-field__hint">系统随机生成；重新生成后需同步更新客户端。</div>
       </div>
     </template>
 
@@ -457,11 +455,11 @@ function save() {
       <div class="m-field">
         <label class="m-field__label">gRPC 服务名称 <em>*</em></label>
         <el-input v-model="model.transport_service_name" aria-label="gRPC 服务名称" placeholder="grpc-service" />
-        <div class="m-field__hint">客户端必须填写完全相同的值。</div>
+        <div class="m-field__hint">客户端需填写相同名称。</div>
       </div>
     </template>
 
-    <div class="m-section">用户与客户端节点</div>
+    <div class="m-section">用户</div>
     <div class="accounts">
       <!-- 一次只展开一个用户，否则三四个用户的表单会把页面拉得很长。 -->
       <div v-for="(account, index) in accounts" :key="account.id || `new-${index}`" class="account">
@@ -478,7 +476,7 @@ function save() {
           <div class="m-field">
             <label class="m-field__label">客户端节点别名 <em>*</em></label>
             <div class="alias-input">
-              <el-input v-model="account.alias" maxlength="128" aria-label="客户端节点别名" placeholder="会写入该用户的订阅配置" />
+              <el-input v-model="account.alias" maxlength="128" aria-label="客户端节点别名" placeholder="节点别名" />
               <el-popover trigger="click" placement="bottom-end" :width="244">
                 <template #reference><el-button class="alias-flag-trigger" aria-label="选择国旗" title="选择国旗">🏳️</el-button></template>
                 <div class="alias-flag-grid">

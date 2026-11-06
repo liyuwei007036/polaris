@@ -1,8 +1,10 @@
 import { createApp, defineAsyncComponent } from 'vue'
-import ElementPlus from 'element-plus'
-import { ElDialog, ElMessage, ElMessageBox } from 'element-plus'
+import { ElDialog, ElLoading, ElMessage, ElMessageBox, provideGlobalConfig } from 'element-plus'
 import zhCn from 'element-plus/es/locale/lang/zh-cn'
-import 'element-plus/dist/index.css'
+import 'element-plus/theme-chalk/base.css'
+import 'element-plus/theme-chalk/el-message.css'
+import 'element-plus/theme-chalk/el-message-box.css'
+import 'element-plus/theme-chalk/el-loading.css'
 import 'element-plus/theme-chalk/dark/css-vars.css'
 import './styles.css'
 import './theme'
@@ -63,4 +65,7 @@ window.addEventListener('unhandledrejection', (event) => {
 // 页面本身与登录后的控制台完全一致。
 const root = defineAsyncComponent(() => (isMobileUI() ? import('./mobile/MobileApp.vue') : import('./App.vue')))
 
-createApp(root).use(ElementPlus, { locale: zhCn }).mount('#app')
+const app = createApp(root)
+app.use(ElLoading)
+provideGlobalConfig({ locale: zhCn }, app, true)
+app.mount('#app')

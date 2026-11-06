@@ -1,7 +1,7 @@
 <script setup>
 import { computed, inject, onMounted, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Delete, DocumentCopy, Edit, Grid, Plus, Refresh, Search } from '@element-plus/icons-vue'
+import { Delete, DocumentCopy, Edit, Grid, Plus, Refresh, Search, SwitchButton } from '@element-plus/icons-vue'
 import { api, del, post, put } from '../api'
 import { waitForTask } from '../live'
 import { includesText } from '../format'
@@ -46,7 +46,7 @@ const formEndpoints = computed(() => {
 const filteredListeners = computed(() => listeners.value.filter((row) => {
   if (selectedNode.value && row.node_id !== selectedNode.value) return false
   if (selectedStatus.value && String(row.enabled) !== selectedStatus.value) return false
-  return includesText([nodeNames.value[row.node_id], row.name, row.connection_domain, row.port, row.spec?.protocol, row.spec?.transport?.type, securityLabel(row)], keyword.value)
+  return includesText([nodeNames.value[row.node_id], row.name, row.connection_domain, row.port, protocolLabel(row)], keyword.value)
 }))
 
 // The listener list already reports how many users each service has, so the
@@ -91,6 +91,18 @@ function securityLabel(listener) {
   if (listener.spec?.reality?.enabled) return 'Reality'
   if (listener.spec?.tls?.enabled) return 'TLS'
   return '无加密'
+}
+
+// 一行只展示一个组合后的协议标签，避免 VLESS / TCP / Reality / 传输类型
+// 四个标签把服务名称挤成两行。
+function protocolLabel(listener) {
+  const protocol = listener.spec?.protocol
+  if (protocol === 'hysteria2') return 'Hysteria2'
+  const transport = listener.spec?.transport?.type
+  if (listener.spec?.reality?.enabled) return 'VLESS · Reality'
+  if (transport === 'httpupgrade') return 'VLESS · HTTPUpgrade'
+  if (transport === 'grpc') return 'VLESS · gRPC'
+  return protocol ? `${protocolMap[protocol]?.label || protocol} · ${securityLabel(listener)}` : ''
 }
 
 // Each user of a service has a node link of their own, so the dialog is opened
@@ -279,22 +291,20 @@ onMounted(load)
       <div class="table-panel">
         <PagedTable :rows="filteredListeners" :loading="loading" empty-text="还没有接入服务">
           <el-table-column label="服务器" min-width="150" show-overflow-tooltip><template #default="{ row }">{{ nodeNames[row.node_id] || row.node_id }}</template></el-table-column>
-          <el-table-column label="服务名称" min-width="200">
+          <el-table-column label="服务名称" min-width="220">
             <template #default="{ row }">
               <div class="inbound-name">{{ row.name }}</div>
               <div class="inbound-meta">
-                <el-tag size="small">{{ protocolMap[row.spec?.protocol]?.label || row.spec?.protocol }}</el-tag>
-                <el-tag size="small" type="info">{{ (row.spec?.network || 'tcp').toUpperCase() }}</el-tag>
-                <el-tag size="small" type="info">{{ securityLabel(row) }}</el-tag>
-                <el-tag v-if="row.spec?.transport?.type" size="small" type="warning">{{ row.spec.transport.type }}</el-tag>
+                <el-tag size="small">{{ protocolLabel(row) }}</el-tag>
+                <el-tag v-if="row.spec?.transport?.type === 'httpupgrade'" size="small" type="info">CDN</el-tag>
               </div>
             </template>
           </el-table-column>
-          <el-table-column label="端口" width="96">
-            <template #default="{ row }"><span class="mono">{{ row.port }}</span></template>
-          </el-table-column>
-          <el-table-column label="连接域名" min-width="180" show-overflow-tooltip>
-            <template #default="{ row }"><span class="mono">{{ row.connection_domain || '使用服务器地址' }}</span></template>
+          <el-table-column label="连接地址" min-width="230" show-overflow-tooltip>
+            <template #default="{ row }">
+              <span class="mono">{{ row.connection_domain || '服务器地址' }}</span>
+              <span class="inbound-port tnum">:{{ row.port }}</span>
+            </template>
           </el-table-column>
           <el-table-column label="用户" width="84" align="center">
             <template #default="{ row }">{{ row.endpoint_count ?? 0 }}</template>
@@ -304,12 +314,12 @@ onMounted(load)
               <el-tag :type="row.enabled ? 'success' : 'info'">{{ row.enabled ? '启用' : '停用' }}</el-tag>
             </template>
           </el-table-column>
-          <el-table-column label="操作" width="344" fixed="right" class-name="action-column">
+          <el-table-column label="操作" width="376" fixed="right" class-name="action-column">
             <template #default="{ row }">
               <el-button link :icon="Grid" @click="showShareLinks(row)">二维码</el-button>
               <el-button v-if="canWrite" link :icon="Edit" @click="openEdit(row)">编辑</el-button>
               <el-button v-if="canWrite" link :icon="DocumentCopy" @click="openCopy(row)">复制</el-button>
-              <el-button v-if="canWrite" link @click="toggle(row)">{{ row.enabled ? '停用' : '启用' }}</el-button>
+              <el-button v-if="canWrite" link :icon="SwitchButton" @click="toggle(row)">{{ row.enabled ? '停用' : '启用' }}</el-button>
               <el-button v-if="isAdmin" link type="danger" :icon="Delete" @click="removeListener(row)">删除</el-button>
             </template>
           </el-table-column>

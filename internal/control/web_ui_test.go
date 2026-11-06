@@ -49,4 +49,16 @@ func TestDashboardUsesGuidedOperatorLanguage(t *testing.T) {
 	if cacheControl := response.Header().Get("Cache-Control"); cacheControl != "public, max-age=31536000, immutable" {
 		t.Fatalf("dashboard asset cache control = %q", cacheControl)
 	}
+
+	// Verify gzip compression when requested.
+	requestGzip := httptest.NewRequest("GET", match[1], nil)
+	requestGzip.Header.Set("Accept-Encoding", "gzip, deflate, br")
+	responseGzip := httptest.NewRecorder()
+	(&Server{}).dashboard(responseGzip, requestGzip)
+	if responseGzip.Code != 200 {
+		t.Fatalf("dashboard asset with gzip was not served: status=%d", responseGzip.Code)
+	}
+	if encoding := responseGzip.Header().Get("Content-Encoding"); encoding != "gzip" {
+		t.Fatalf("dashboard asset did not return gzip encoding, got %q", encoding)
+	}
 }

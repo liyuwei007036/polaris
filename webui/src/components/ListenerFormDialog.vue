@@ -1,7 +1,7 @@
 <script setup>
 import { computed, nextTick, ref, watch } from 'vue'
 import { ElMessage } from 'element-plus'
-import { CircleCheck, Delete, Plus } from '@element-plus/icons-vue'
+import { Delete, Plus } from '@element-plus/icons-vue'
 import {
   createListenerModel,
   defaultALPNFor,
@@ -9,7 +9,6 @@ import {
   listenerProfiles,
   listenerPayload,
   protocolMap,
-  securityOptions,
 } from '../protocols'
 
 const props = defineProps({
@@ -376,29 +375,16 @@ async function save() {
     @close="close"
   >
     <div class="listener-dialog-body">
-      <el-alert
-        v-if="template"
-        title="已带入原配置，保存前请确认服务器、端口与域名，并修改客户端节点别名（别名不能与已有的重复）。连接凭据和 Reality 密钥会重新生成。"
-        type="info" show-icon :closable="false" style="margin-bottom: 14px" />
+      <p v-if="template" class="copy-note">已复制原服务配置，保存前请确认服务器、端口与域名。</p>
       <div class="form-section">
-        <div class="form-section__head">选择连接协议</div>
-        <div class="protocol-select">
-          <label>接入模式</label>
-          <el-select :model-value="model.profile" style="width: 100%" placeholder="请选择接入模式" @update:model-value="setProfile">
-            <el-option v-for="profile in listenerProfiles" :key="profile.value" :label="profile.label" :value="profile.value">
-              <span>{{ profile.label }}</span>
-              <span class="option-meta">{{ profile.summary }}</span>
-            </el-option>
-          </el-select>
-        </div>
-        <div v-if="selectedProfile" class="protocol-summary">
-          <el-icon color="var(--sb-accent)" :size="24"><CircleCheck /></el-icon>
-          <div class="protocol-summary__main">
-            <strong>{{ selectedProfile.label }}</strong>
-            <span>{{ selectedProfile.summary }}</span>
-          </div>
-          <el-tag effect="plain">{{ securityOptions[model.security]?.label }}</el-tag>
-        </div>
+        <div class="form-section__head">接入模式</div>
+        <el-select :model-value="model.profile" style="width: 100%" placeholder="选择协议与加密方式" @update:model-value="setProfile">
+          <el-option v-for="profile in listenerProfiles" :key="profile.value" :label="profile.label" :value="profile.value">
+            <span>{{ profile.label }}</span>
+            <span class="option-meta">{{ profile.summary }}</span>
+          </el-option>
+        </el-select>
+        <p v-if="selectedProfile" class="form-note">{{ selectedProfile.summary }}</p>
       </div>
 
       <el-form ref="formRef" :model="model" :rules="rules" label-position="top">
@@ -420,7 +406,7 @@ async function save() {
             <el-col :span="8">
               <el-form-item label="服务端口" prop="port">
                 <el-input-number v-model="model.port" :min="1" :max="65535" controls-position="right" style="width: 100%" />
-                <div v-if="listener" class="form-hint">修改端口后会自动重新生成并下发 sing-box 与 Nginx 配置，客户端需按新端口更新。</div>
+                <div v-if="listener" class="form-hint">端口变更后需同步更新客户端。</div>
               </el-form-item>
             </el-col>
           </el-row>
@@ -439,10 +425,9 @@ async function save() {
                   </template>
                 </el-autocomplete>
                 <div class="form-hint">
-                  客户端连接的域名；经 Cloudflare 的 httpupgrade/gRPC 同时作为回源 SNI。
-                  <template v-if="!nodeAddress">请先选择服务器，再挑选解析到它的域名，也可直接输入。</template>
-                  <template v-else-if="matchedDomains.length">点击输入框可选择解析到 {{ nodeAddress }} 的域名，也可直接输入其它域名。</template>
-                  <template v-else>没有找到解析到 {{ nodeAddress }} 的域名，可直接输入，或先到「域名解析」中添加记录。</template>
+                  <template v-if="!nodeAddress">选择服务器后可选域名。</template>
+                  <template v-else-if="matchedDomains.length">可选解析到该服务器的域名，也可手动输入。</template>
+                  <template v-else>没有解析到该服务器的域名，可直接输入。</template>
                 </div>
               </el-form-item>
             </el-col>
@@ -450,8 +435,8 @@ async function save() {
         </div>
 
         <div v-if="showReality" class="form-section">
-          <div class="form-section__head">连接安全</div>
-          <el-row v-if="showReality" :gutter="16">
+          <div class="form-section__head">Reality</div>
+          <el-row :gutter="16">
             <el-col :span="14">
               <el-form-item label="目标网站" prop="reality_handshake_server">
                 <el-input v-model="model.reality_handshake_server" placeholder="www.microsoft.com" />
@@ -463,7 +448,6 @@ async function save() {
               </el-form-item>
             </el-col>
           </el-row>
-          <el-alert v-if="showReality" title="Reality 密钥和 Short ID 会在创建接入服务时自动生成，无需手动配置。" type="success" :closable="false" />
         </div>
 
         <div v-if="['httpupgrade', 'grpc'].includes(model.transport_type)" class="form-section">
@@ -476,13 +460,13 @@ async function save() {
                     <el-button @click="model.transport_path = randomPath()">重新生成</el-button>
                   </template>
                 </el-input>
-                <div class="form-hint">由系统随机生成，避免被探测。重新生成后客户端需要同步更新。</div>
+                <div class="form-hint">系统随机生成；重新生成后需同步更新客户端。</div>
               </el-form-item>
             </el-col>
             <el-col v-if="model.transport_type === 'grpc'" :span="14">
               <el-form-item label="gRPC 服务名称">
                 <el-input v-model="model.transport_service_name" placeholder="grpc-service" />
-                <div class="form-hint">客户端必须填写完全相同的值。</div>
+                <div class="form-hint">客户端需填写相同名称。</div>
               </el-form-item>
             </el-col>
           </el-row>
@@ -490,15 +474,23 @@ async function save() {
 
         <div class="form-section">
           <div class="account-section-head">
-            <div><div class="form-section__head">用户与客户端节点</div><span>别名会写入该用户的订阅配置。</span></div>
-            <el-button :icon="Plus" @click="addAccount">添加</el-button>
+            <div class="form-section__head">用户</div>
+            <el-button :icon="Plus" @click="addAccount">添加用户</el-button>
+          </div>
+          <div class="account-head-row">
+            <span />
+            <span>用户名称</span>
+            <span>客户端别名</span>
+            <span>出口</span>
+            <span>状态</span>
+            <span />
           </div>
           <div class="account-list">
             <div v-for="(account, index) in accounts" :key="account.id || `new-${index}`" class="account-row">
               <span class="account-index">{{ index + 1 }}</span>
               <el-input v-model="account.name" aria-label="用户名称" placeholder="用户名称" />
               <div class="alias-input">
-                <el-input v-model="account.alias" aria-label="客户端节点别名" maxlength="128" placeholder="客户端节点别名" />
+                <el-input v-model="account.alias" aria-label="客户端节点别名" maxlength="128" placeholder="节点别名" />
                 <el-popover trigger="click" placement="bottom-end" :width="244">
                   <template #reference><el-button class="alias-flag-trigger" aria-label="选择国旗" title="选择国旗">🏳️</el-button></template>
                   <div class="alias-flag-grid">
@@ -512,7 +504,7 @@ async function save() {
                 v-model="account.outbound_id"
                 filterable
                 style="width: 100%"
-                placeholder="选择出口或其他服务器"
+                placeholder="选择出口"
               >
                 <el-option-group v-if="nodeEgressOptions.length" label="出口 IP">
                   <el-option
@@ -564,15 +556,16 @@ async function save() {
 </template>
 
 <style scoped>
-.protocol-select { margin-bottom: 14px; }
-.protocol-select label { display: block; margin-bottom: 8px; color: var(--sb-text); font-size: 13px; font-weight: 550; }
+.copy-note { margin: 0 0 12px; padding: 8px 12px; border-left: 2px solid var(--sb-accent); border-radius: 6px; background: var(--sb-surface-2); color: var(--sb-text-2); font-size: 12px; }
+.form-note { margin: 8px 0 0; color: var(--sb-muted); font-size: 12px; }
 .option-meta { float: right; max-width: 520px; margin-left: 20px; overflow: hidden; color: var(--sb-muted); font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
-.listener-dialog-body { max-width: 100%; max-height: min(72vh, 760px); padding-right: 4px; overflow-x: hidden; overflow-y: auto; scrollbar-width: none; }
+.listener-dialog-body { max-width: 100%; max-height: min(72vh, 760px); box-sizing: border-box; overflow-x: hidden; overflow-y: auto; scrollbar-width: none; }
 .listener-dialog-body::-webkit-scrollbar { display: none; }
-.account-section-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 20px; margin-bottom: 14px; }
-.account-section-head span { color: var(--sb-muted); font-size: 12px; }
+.account-section-head { display: flex; align-items: center; justify-content: space-between; gap: 20px; margin-bottom: 8px; }
+.account-section-head .form-section__head { flex: 1; margin-bottom: 0; }
+.account-head-row { display: grid; grid-template-columns: 32px minmax(140px, 1fr) minmax(160px, 1fr) minmax(190px, 1.2fr) 62px 38px; gap: 10px; padding: 10px 0 6px; color: var(--sb-muted); font-size: 11px; }
 .account-list { border-top: 1px solid var(--sb-border); }
-.account-row { display: grid; grid-template-columns: 32px minmax(140px, 1fr) minmax(160px, 1fr) minmax(190px, 1.2fr) 62px 38px; gap: 10px; align-items: center; padding: 10px 0; border-bottom: 1px solid var(--sb-border); }
+.account-row { display: grid; grid-template-columns: 32px minmax(140px, 1fr) minmax(160px, 1fr) minmax(190px, 1.2fr) 62px 38px; gap: 10px; align-items: center; padding: 8px 0; border-bottom: 1px solid var(--sb-border); }
 .alias-input { display: flex; gap: 6px; min-width: 0; }
 .alias-input :deep(.el-input) { flex: 1; min-width: 0; }
 .alias-flag-trigger { padding: 0 9px; }
@@ -586,6 +579,7 @@ async function save() {
 .dialog-footer { display: flex; justify-content: flex-end; gap: 8px; }
 @media (max-width: 680px) {
   .listener-dialog-body :deep(.el-col) { max-width: 100%; flex: 0 0 100%; }
+  .account-head-row { display: none; }
   .account-row { grid-template-columns: 28px 1fr 62px 36px; }
   .account-row :deep(.el-input), .account-row :deep(.el-select) { grid-column: 2 / -1; }
 }

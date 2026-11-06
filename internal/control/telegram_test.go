@@ -81,7 +81,8 @@ func TestTelegramClientSendHTML(t *testing.T) {
 func TestBuildTelegramAlertEscapesDynamicValues(t *testing.T) {
 	text := buildTelegramAlert(severityInfo, "测试", "节点告警", "node<&>", []string{
 		tgLine("字段", "<script>alert(1)</script>"),
-	}, "点击 <a> 或联系管理员")
+		tgLine("说明", "测试 <a> 标签"),
+	}, "")
 
 	if strings.Contains(text, "<script>") {
 		t.Fatalf("dynamic value was not escaped: %s", text)
@@ -90,7 +91,10 @@ func TestBuildTelegramAlertEscapesDynamicValues(t *testing.T) {
 		t.Fatalf("expected escaped dynamic value, got: %s", text)
 	}
 	if !strings.Contains(text, "&lt;a&gt;") {
-		t.Fatalf("expected escaped action text, got: %s", text)
+		t.Fatalf("expected escaped line text, got: %s", text)
+	}
+	if !strings.Contains(text, "node&lt;&amp;&gt;") {
+		t.Fatalf("expected escaped subject text, got: %s", text)
 	}
 }
 
@@ -175,8 +179,8 @@ func TestAlertEngineTelegramOnlyChannel(t *testing.T) {
 	if !strings.Contains(gotText[0], "Polaris") || !strings.Contains(gotText[0], "<b>") {
 		t.Errorf("expected bot-style HTML message, got: %s", gotText[0])
 	}
-	if !strings.Contains(gotText[0], "详细信息") || !strings.Contains(gotText[0], "建议操作") {
-		t.Errorf("expected detailed bot message, got: %s", gotText[0])
+	if !strings.Contains(gotText[0], "详细信息") || strings.Contains(gotText[0], "建议操作") {
+		t.Errorf("expected detailed bot message without action advice, got: %s", gotText[0])
 	}
 	if strings.Contains(gotText[0], "🤖") {
 		t.Errorf("expected no decorative icons, got: %s", gotText[0])

@@ -1,7 +1,7 @@
 <script setup>
 import { computed, inject, onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Delete, Lock, Plus, Refresh, Search } from '@element-plus/icons-vue'
+import { Delete, Edit, Lock, Plus, Refresh, Search, Unlock } from '@element-plus/icons-vue'
 import { api, post } from '../api'
 import { formatDateTime, includesText } from '../format'
 import PageHeader from '../components/PageHeader.vue'
@@ -350,10 +350,10 @@ onMounted(load)
               <el-table-column label="运行情况" min-width="180" show-overflow-tooltip>
                 <template #default="{ row }"><el-tag :type="jailRuntime(row).type" effect="plain">{{ jailRuntime(row).text }}</el-tag></template>
               </el-table-column>
-              <el-table-column label="操作" width="130" class-name="action-column">
+              <el-table-column label="操作" width="156" class-name="action-column">
                 <template #default="{ row }">
                   <template v-if="isAdmin && row.managed">
-                    <el-button link :loading="saving" @click="editJail(row)">修改</el-button>
+                    <el-button link :icon="Edit" :loading="saving" @click="editJail(row)">修改</el-button>
                     <el-button link type="danger" :icon="Delete" :loading="saving" @click="removeJail(row)">删除</el-button>
                   </template>
                   <span v-else class="subtle">仅查看</span>
@@ -375,7 +375,7 @@ onMounted(load)
               <el-table-column label="操作" width="110" class-name="action-column">
                 <template #default="{ row }">
                   <el-button
-                    v-if="isAdmin" link type="primary"
+                    v-if="isAdmin" link :icon="Unlock"
                     :loading="unbanning === `${row.node_id}-${row.jail}-${row.ip}`"
                     :disabled="Boolean(unbanning)"
                     @click="unban(row)"

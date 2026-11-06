@@ -433,6 +433,7 @@ html.light .metric__label {
 .status-dot.offline { background: var(--sb-muted); }
 .inbound-name { font-weight: 600; color: var(--sb-text); }
 .inbound-meta { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 6px; }
+.inbound-port { margin-left: 1px; color: var(--sb-muted); font-size: 12px; }
 
 /* ── 表单与弹窗 ─────────────────────────────────────────── */
 .form-section { margin: 8px 0 18px; }

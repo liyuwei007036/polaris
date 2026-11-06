@@ -112,7 +112,7 @@
           {{ item.label }}
         </button>
       </div>
-      <div class="seg neu-inset">
+      <div v-if="tab !== 'facts'" class="seg neu-inset">
         <button
           v-for="range in ranges"
           :key="range.hours"
@@ -125,7 +125,7 @@
         </button>
       </div>
       <span class="tabs-spacer" />
-      <span class="tabs-note">{{ tab === 'latency' ? `${probes.length} 个探测` : `最近 ${hours} 小时` }}</span>
+      <span class="tabs-note">{{ tabsNote }}</span>
     </div>
 
     <!-- 资源 -->
@@ -156,7 +156,7 @@
     </div>
 
     <!-- 网络延迟 -->
-    <div v-else class="latency-tab">
+    <div v-else-if="tab === 'latency'" class="latency-tab">
       <LatencyPanel v-if="effectiveLatency" :latency="effectiveLatency" />
       <p v-if="latencyFailed" class="detail-empty">读取历史数据失败：{{ latencyFailed }}</p>
       <p v-else-if="latencyLoading && !probes.length" class="detail-empty">正在读取延迟历史…</p>
@@ -227,8 +227,8 @@
       </section>
     </div>
 
-    <!-- 事实分组：硬件 / 运行 / 网络 / 服务商与套餐 / DDNS / 出口别名 -->
-    <div class="fact-grid">
+    <!-- 详情：硬件 / 运行 / 网络 / 服务商与套餐 / DDNS / 出口别名 -->
+    <div v-else class="fact-grid">
       <section v-for="group in factGroups" :key="group.label" class="fact-card neu">
         <div class="fact-card-head">
           <h4 class="fact-title">
@@ -354,6 +354,7 @@ const singBoxUpdateAvailable = computed(() => {
 const TABS = [
   { key: 'resources', label: '资源' },
   { key: 'latency', label: '网络延迟' },
+  { key: 'facts', label: '详情' },
 ]
 const RESOURCE_RANGES = [
   { hours: 1, label: '1 小时' },
@@ -376,6 +377,11 @@ const pingHistory = ref(null)
 const latencyLoading = ref(false)
 const latencyFailed = ref('')
 const ranges = computed(() => (tab.value === 'latency' ? LATENCY_RANGES : RESOURCE_RANGES))
+const tabsNote = computed(() => {
+  if (tab.value === 'latency') return `${probes.value.length} 个探测`
+  if (tab.value === 'facts') return '硬件 · 网络 · 计费 · DDNS'
+  return `最近 ${hours.value} 小时`
+})
 
 const host = computed(() => props.live?.host || props.metrics.host || {})
 const latency = computed(() => props.live?.latency || props.metrics.latency || null)
@@ -782,6 +788,7 @@ const factGroups = computed(() => {
 })
 
 async function loadHistory() {
+  if (tab.value === 'facts') return
   if (tab.value === 'latency') {
     latencyLoading.value = true
     latencyFailed.value = ''
@@ -908,7 +915,7 @@ onMounted(loadHistory)
 .only-btn.active { border-color: var(--sb-accent); background: color-mix(in oklab, var(--sb-accent) 12%, transparent); color: var(--sb-accent); }
 .detail-empty { margin: 0; padding: 24px; text-align: center; color: var(--sb-muted); font-size: 12.5px; }
 
-.fact-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; border-top: 1px solid var(--sb-line); padding-top: 14px; }
+.fact-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
 .fact-card { padding: 14px 16px; border: 1px solid var(--sb-line); border-radius: 16px; }
 .fact-card-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; }
 .fact-title {

@@ -289,9 +289,9 @@ onMounted(load)
               </el-table-column>
               <el-table-column label="CDN 加速" width="106" align="center"><template #default="{ row }">{{ row.proxied ? '已启用' : '未启用' }}</template></el-table-column>
               <el-table-column label="缓存时间" width="106" align="center"><template #default="{ row }">{{ row.ttl === 1 ? '自动' : `${row.ttl} 秒` }}</template></el-table-column>
-              <el-table-column label="操作" width="150" fixed="right" class-name="action-column">
+              <el-table-column label="操作" width="156" fixed="right" class-name="action-column">
                 <template #default="{ row }">
-                  <el-button v-if="isAdmin" link type="primary" :icon="Edit" @click="editRecord(row)">修改</el-button>
+                  <el-button v-if="isAdmin" link :icon="Edit" @click="editRecord(row)">编辑</el-button>
                   <el-button v-if="isAdmin" link type="danger" :icon="Delete" @click="remove(row)">删除</el-button>
                 </template>
               </el-table-column>
@@ -318,9 +318,9 @@ onMounted(load)
                   </span>
                 </template>
               </el-table-column>
-              <el-table-column label="操作" width="140" fixed="right" class-name="action-column">
+              <el-table-column label="操作" width="156" fixed="right" class-name="action-column">
                 <template #default="{ row }">
-                  <el-button v-if="isAdmin" link type="primary" @click="editCertificate(row)">修改</el-button>
+                  <el-button v-if="isAdmin" link :icon="Edit" @click="editCertificate(row)">编辑</el-button>
                   <el-button v-if="isAdmin" link type="danger" :icon="Delete" @click="removeCertificate(row)">删除</el-button>
                 </template>
               </el-table-column>
@@ -339,11 +339,11 @@ onMounted(load)
             <div v-if="zone.error" class="zone-error">{{ zone.error }}</div>
           </div>
           <el-tag :type="zone.connected ? 'success' : 'danger'" effect="plain">{{ zone.connected ? '已连接' : '连接异常' }}</el-tag>
-          <el-button v-if="isAdmin" link type="primary" @click="editZone(zone)">更新令牌</el-button>
-          <el-button v-if="isAdmin" link type="danger" @click="removeZone(zone)">删除</el-button>
+          <el-button v-if="isAdmin" link :icon="Edit" @click="editZone(zone)">更新令牌</el-button>
+          <el-button v-if="isAdmin" link type="danger" :icon="Delete" @click="removeZone(zone)">删除</el-button>
         </div>
         <div v-if="!zones.length" class="form-hint">还没有绑定区域。填写区域编号、域名和访问令牌后点击「保存」。</div>
-        <div v-else class="zone-add"><el-button v-if="isAdmin" link type="primary" :icon="Plus" @click="newZone">添加新区域</el-button></div>
+        <div v-else class="zone-add"><el-button v-if="isAdmin" link :icon="Plus" @click="newZone">添加新区域</el-button></div>
       </div>
       <el-divider />
       <div class="form-hint" style="margin-bottom: 8px">同一个访问令牌可以授权多个区域；每个区域单独添加一次即可。</div>
