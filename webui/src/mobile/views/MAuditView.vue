@@ -1,6 +1,6 @@
 <script setup>
 import { computed, inject, onMounted, reactive, ref, watch } from 'vue'
-import { DocumentCopy, Search } from '@element-plus/icons-vue'
+import { DocumentCopy, Refresh, Search } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
 import { api } from '../../api'
 import { formatDateTime, formatRelativeTime, localTimeZoneLabel } from '../../format'
@@ -160,7 +160,12 @@ onMounted(async () => {
 </script>
 
 <template>
-  <MPage :loading="loading">
+  <MPage title="操作审计与任务" :loading="loading">
+    <template #actions>
+      <button type="button" class="m-header__btn" :disabled="loading" aria-label="刷新" @click="refreshCurrent">
+        <el-icon><Refresh /></el-icon>
+      </button>
+    </template>
     <MSegmented v-model="tab" :options="tabs" />
     <div class="m-count">保留最近 7 天 · 时间按 {{ timeZoneLabel }} 显示</div>
 
@@ -360,11 +365,11 @@ onMounted(async () => {
 
 <style scoped>
 .m-note--err {
-  color: var(--sb-danger, #ef4444);
+  color: var(--sb-danger);
 }
 
 .m-note--warn {
-  color: var(--sb-warning, #f59e0b);
+  color: var(--sb-warning);
 }
 
 .pager {
@@ -382,7 +387,7 @@ onMounted(async () => {
 
 .pager__label {
   flex: 1;
-  color: var(--sb-muted, #94a3b8);
+  color: var(--sb-muted);
   font-size: 12px;
   text-align: center;
 }
@@ -408,13 +413,13 @@ onMounted(async () => {
 .issue-banner.is-err {
   background: rgba(239, 68, 68, 0.08);
   border: 1px solid rgba(239, 68, 68, 0.2);
-  color: var(--sb-danger, #ef4444);
+  color: var(--sb-danger);
 }
 
 .issue-banner.is-warn {
   background: rgba(245, 158, 11, 0.08);
   border: 1px solid rgba(245, 158, 11, 0.2);
-  color: var(--sb-warning, #f59e0b);
+  color: var(--sb-warning);
 }
 
 .issue-dot {
@@ -427,8 +432,8 @@ onMounted(async () => {
 
 .m-kv-group,
 .m-param-group {
-  background: var(--sb-card-bg, #fff);
-  border: 1px solid var(--sb-border, #eee);
+  background: var(--sb-surface-2);
+  border: 1px solid var(--sb-line-strong);
   border-radius: 8px;
   padding: 8px 12px;
 }
@@ -436,10 +441,10 @@ onMounted(async () => {
 .group-title {
   font-size: 12px;
   font-weight: 600;
-  color: var(--el-text-color-secondary);
+  color: var(--sb-muted);
   margin-bottom: 6px;
   padding-bottom: 4px;
-  border-bottom: 1px solid var(--sb-border, #eee);
+  border-bottom: 1px solid var(--sb-line);
 }
 
 .m-kv-row {
@@ -448,7 +453,7 @@ onMounted(async () => {
   align-items: center;
   font-size: 12px;
   padding: 6px 0;
-  border-bottom: 1px solid var(--el-border-color-extra-light, #f8f9fa);
+  border-bottom: 1px solid var(--sb-line);
 }
 
 .m-kv-row:last-child {
@@ -456,19 +461,21 @@ onMounted(async () => {
 }
 
 .m-kv-lbl {
-  color: var(--el-text-color-secondary);
+  color: var(--sb-muted);
   flex: none;
   width: 90px;
 }
 
 .m-kv-val {
-  color: var(--el-text-color-primary);
+  color: var(--sb-text);
   text-align: right;
   word-break: break-all;
 }
 
 .m-raw-box {
-  background: var(--el-fill-color-light, #f5f7fa);
+  background: var(--neu-inset-bg);
+  color: var(--sb-text);
+  border: 1px solid var(--sb-line);
   padding: 8px 10px;
   border-radius: 6px;
   font-size: 11px;

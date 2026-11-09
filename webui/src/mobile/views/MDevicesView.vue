@@ -145,6 +145,11 @@ function filterByDeviceIP(ip) {
   handleSearch()
 }
 
+function refresh() {
+  if (tab.value === 'popular') loadPopular()
+  else handleSearch()
+}
+
 onMounted(async () => {
   await loadNodes()
   loadPopular()
@@ -153,7 +158,12 @@ onMounted(async () => {
 </script>
 
 <template>
-  <MPage :loading="loading && popularLoading">
+  <MPage title="热门设备与历史连接" :loading="loading && popularLoading">
+    <template #actions>
+      <button type="button" class="m-header__btn" :disabled="loading || popularLoading" aria-label="刷新" @click="refresh">
+        <el-icon><Refresh /></el-icon>
+      </button>
+    </template>
     <MSegmented v-model="tab" :options="tabOptions" />
 
     <!-- 热门排行 TAB -->
@@ -256,9 +266,10 @@ onMounted(async () => {
 .m-stats-card {
   padding: 14px 16px;
   margin-bottom: 12px;
-  background: var(--sb-panel);
+  background: var(--sb-panel-solid);
   border: 1px solid var(--sb-line);
   border-radius: var(--sb-radius);
+  box-shadow: var(--sb-shadow-sm);
 }
 .m-stat-row {
   display: grid;
@@ -274,22 +285,18 @@ onMounted(async () => {
 .m-stat-col__val {
   font-size: 15px;
   font-weight: 700;
-  color: var(--sb-text-title, inherit);
+  color: var(--sb-text);
+  font-variant-numeric: tabular-nums;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 .m-stat-col__lbl {
   font-size: 11px;
-  color: var(--sb-text-subtle, #8496b0);
+  color: var(--sb-muted);
 }
 .m-rank-title {
   display: flex;
   align-items: center;
-}
-.m-empty {
-  padding: 40px 0;
-  text-align: center;
-  color: var(--sb-text-subtle, #8496b0);
 }
 </style>

@@ -535,7 +535,7 @@ function save() {
   gap: 8px;
   padding: 11px 13px;
   color: var(--sb-text);
-  background: rgba(148, 163, 184, .05);
+  background: var(--sb-surface-2);
   border: 0;
   font: inherit;
   font-size: 14.5px;

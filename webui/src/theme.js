@@ -39,6 +39,7 @@ export function toggleTheme() {
 // Initial sync
 if (typeof window !== 'undefined') {
   window.__toggleTheme = toggleTheme
+  window.__applyTheme = applyTheme
   try {
     localStorage.removeItem('sb_ui_style')
   } catch {}

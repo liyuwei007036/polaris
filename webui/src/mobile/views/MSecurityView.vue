@@ -1,7 +1,7 @@
 <script setup>
 import { computed, inject, onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Delete, Loading, Plus, Search, Unlock } from '@element-plus/icons-vue'
+import { Delete, Loading, Plus, Refresh, Search, Unlock } from '@element-plus/icons-vue'
 import { api, post } from '../../api'
 import { formatDateTime, includesText } from '../../format'
 import MPage from '../components/MPage.vue'
@@ -323,7 +323,12 @@ onMounted(load)
 </script>
 
 <template>
-  <MPage :loading="loading">
+  <MPage title="安全中心" :loading="loading">
+    <template #actions>
+      <button type="button" class="m-header__btn" :disabled="loading" aria-label="刷新" @click="load">
+        <el-icon><Refresh /></el-icon>
+      </button>
+    </template>
     <MSegmented v-model="tab" :options="tabs" />
 
     <el-input v-model="keyword" clearable :prefix-icon="Search" placeholder="搜索服务器、地址或规则" />

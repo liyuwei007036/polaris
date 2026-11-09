@@ -1,7 +1,7 @@
 <script setup>
 import { computed, inject, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Plus, Search } from '@element-plus/icons-vue'
+import { Plus, Refresh, Search } from '@element-plus/icons-vue'
 import { api, post, put } from '../../api'
 import { formatDateTime, includesText } from '../../format'
 import MPage from '../components/MPage.vue'
@@ -245,7 +245,12 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <MPage :loading="loading">
+  <MPage title="系统设置" :loading="loading">
+    <template #actions>
+      <button type="button" class="m-header__btn" :disabled="loading" aria-label="刷新" @click="load">
+        <el-icon><Refresh /></el-icon>
+      </button>
+    </template>
     <template v-if="isAdmin">
     <MSegmented v-model="tab" :options="tabs" />
 

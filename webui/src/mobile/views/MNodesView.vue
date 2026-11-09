@@ -1,7 +1,7 @@
 <script setup>
 import { computed, inject, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Check, Delete, Plus, Search } from '@element-plus/icons-vue'
+import { Check, Delete, Plus, Refresh, Search } from '@element-plus/icons-vue'
 import { api, post, put } from '../../api'
 import { writeClipboard } from '../../clipboard'
 import { formatBandwidth, formatBytes, formatDateTime, includesText } from '../../format'
@@ -395,7 +395,17 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <MPage :loading="loading">
+  <MPage title="服务器" :loading="loading">
+    <template #actions>
+      <el-button
+        circle
+        size="small"
+        :icon="Refresh"
+        :loading="refreshing"
+        aria-label="刷新"
+        @click="load(false)"
+      />
+    </template>
     <div class="m-listbar">
       <el-input v-model="keyword" clearable :prefix-icon="Search" placeholder="搜索名称、地址或版本" />
       <div class="m-filters">
@@ -422,31 +432,104 @@ onBeforeUnmount(() => {
 
     <div class="m-section">已接入服务器（{{ filteredNodes.length }}）</div>
     <!-- 整条就是详情入口：完整字段和编辑、升级、移除都在弹出的抽屉里。 -->
-    <article v-for="node in shownNodes" :key="node.id" class="m-item neu">
-      <button type="button" class="m-item__hit" @click="openActions(node)">
-        <div class="m-item__head">
-          <StatusDot :online="node.online" />
-          <OsIcon :os="node.os_name || node.os" style="width: 15px; height: 15px; flex-shrink: 0;" />
-          <span class="m-item__title">
-            {{ node.name }}
+    <article
+      v-for="node in shownNodes"
+      :key="node.id"
+      class="m-node-card neu rise"
+      :class="{ 'is-offline': !node.online }"
+      role="button"
+      tabindex="0"
+      @click="openActions(node)"
+    >
+      <span class="m-node-glow" :class="node.online ? 'is-online' : 'is-offline'" />
+
+      <div class="m-node-head">
+        <div class="m-node-hero min-w-0 flex-1">
+          <OsIcon :os="node.os_name || node.os" class="m-node-os" />
+          <h3 class="m-node-title truncate" :title="node.name">{{ node.name }}</h3>
+        </div>
+        <div class="m-node-status" :class="node.online ? 'is-online' : 'is-offline'">
+          <span class="m-node-pulse" />
+          <span>{{ node.online ? '在线' : '离线' }}</span>
+        </div>
+      </div>
+
+      <div class="m-node-tags">
+        <span class="m-node-addr font-mono truncate">{{ addressText(node) }}</span>
+        <span v-if="!node.client_address" class="m-pill m-pill--warning">缺地址</span>
+        <span v-if="agentUpdateAvailable(node) || singBoxUpdateAvailable(node)" class="m-pill m-pill--amber">可升级</span>
+        <span v-if="node.ddns_enabled" class="m-pill m-pill--info">DDNS</span>
+        <span v-if="node.bandwidth" class="m-pill m-pill--neutral">⚡ {{ formatBandwidth(node.bandwidth) }}</span>
+      </div>
+
+      <div class="m-node-gauges neu-inset">
+        <div class="gauge-col">
+          <div class="gauge-meta">
+            <span class="gauge-dot is-down" />
+            <span class="gauge-lbl">实时下行</span>
+          </div>
+          <div class="gauge-val font-mono" :class="{ 'is-muted': !node.online }">
+            ↓ {{ statOf(node, 'down') }}
+          </div>
+        </div>
+        <div class="gauge-sep" />
+        <div class="gauge-col">
+          <div class="gauge-meta">
+            <span class="gauge-dot is-up" />
+            <span class="gauge-lbl">实时上行</span>
+          </div>
+          <div class="gauge-val font-mono" :class="{ 'is-muted': !node.online }">
+            ↑ {{ statOf(node, 'up') }}
+          </div>
+        </div>
+        <div class="gauge-sep" />
+        <div class="gauge-col">
+          <div class="gauge-meta">
+            <span class="gauge-dot is-conn" />
+            <span class="gauge-lbl">活动连接</span>
+          </div>
+          <div class="gauge-val font-mono" :class="{ 'is-muted': !node.online }">
+            {{ statOf(node, 'connections') }}
+          </div>
+        </div>
+      </div>
+
+      <div v-if="node.online && metrics[node.id]?.host" class="m-node-host-meters">
+        <div v-if="metrics[node.id].host.cpu_percent != null" class="m-host-meter">
+          <span class="m-host-meter__lbl">CPU</span>
+          <div class="m-host-meter__track neu-inset">
+            <div class="m-host-meter__fill is-cpu" :style="{ width: `${Math.min(100, Math.max(2, metrics[node.id].host.cpu_percent))}%` }" />
+          </div>
+          <span class="m-host-meter__val font-mono">{{ metrics[node.id].host.cpu_percent.toFixed(0) }}%</span>
+        </div>
+        <div v-if="metrics[node.id].host.memory_total" class="m-host-meter">
+          <span class="m-host-meter__lbl">内存</span>
+          <div class="m-host-meter__track neu-inset">
+            <div class="m-host-meter__fill is-mem" :style="{ width: `${Math.min(100, Math.max(2, (metrics[node.id].host.memory_used / metrics[node.id].host.memory_total) * 100))}%` }" />
+          </div>
+          <span class="m-host-meter__val font-mono">{{ formatBytes(metrics[node.id].host.memory_used) }}</span>
+        </div>
+      </div>
+
+      <div v-if="metrics[node.id]?.latency" class="m-node-latency">
+        <LatencyPanel :latency="metrics[node.id]?.latency" :compact="true" />
+      </div>
+
+      <div class="m-node-footer">
+        <div class="m-node-traffic">{{ totalText(node) }}</div>
+        <div v-if="node.expires_on || node.provider || node.price_period" class="m-node-billing">
+          <span v-if="node.provider" class="provider-link" :class="{ 'is-clickable': node.provider_url }" @click.stop="openProvider(node)">
+            {{ node.provider }}
           </span>
-          <span v-if="!node.client_address" class="m-pill m-pill--warning">缺地址</span>
-          <span v-if="agentUpdateAvailable(node)" class="m-pill m-pill--warning">可升级</span>
+          <span v-if="node.expires_on" class="expire-date">到期 {{ node.expires_on }}</span>
+          <span v-if="node.price_period" class="price-chip">
+            {{ node.price_period === 'free' ? '免费' : `${node.currency || 'USD'} ${node.price}/${({day:'天',month:'月',quarter:'季',year:'年'})[node.price_period] || node.price_period}` }}
+          </span>
         </div>
-        <div class="m-item__stats">
-          <span class="m-stat"><b :class="{ 'is-muted': !node.online }">↓ {{ statOf(node, 'down') }}</b><small>实时下行</small></span>
-          <span class="m-stat"><b :class="{ 'is-muted': !node.online }">↑ {{ statOf(node, 'up') }}</b><small>实时上行</small></span>
-          <span class="m-stat"><b :class="{ 'is-muted': !node.online }">{{ statOf(node, 'connections') }}</b><small>活动连接</small></span>
+        <div v-if="!node.online" class="m-node-offline-hint">
+          离线 · 最后在线 {{ formatDateTime(node.last_seen_at, '从未在线') }}
         </div>
-        <div class="m-item__meta">{{ addressText(node) }} · {{ totalText(node) }}</div>
-        <LatencyPanel v-if="metrics[node.id]?.latency" :latency="metrics[node.id]?.latency" :compact="true" style="margin-top: 6px;" />
-        <div v-if="node.expires_on || node.provider || node.price_period || node.traffic_plan || node.bandwidth" class="m-item__meta">
-          <span v-if="node.provider" :role="node.provider_url ? 'link' : undefined" :tabindex="node.provider_url ? 0 : undefined" @click.stop="openProvider(node)" @keydown.enter.stop="openProvider(node)">{{ node.provider }}</span>
-          {{ [node.expires_on ? `到期 ${node.expires_on}` : '', node.price_period === 'free' ? '免费' : (node.price_period ? `${node.currency || 'USD'} ${node.price}/${({day:'天',month:'月',quarter:'季',year:'年'})[node.price_period] || node.price_period}` : ''), node.traffic_plan ? `流量 ${node.traffic_plan}` : '', node.bandwidth ? `带宽 ${formatBandwidth(node.bandwidth)}` : ''].filter(Boolean).join(' · ') }}
-        </div>
-        <!-- 离线这件事状态点已经说了，但「最后一次在线是什么时候」只有写出来才知道。 -->
-        <div v-if="!node.online" class="m-item__meta">离线 · 最后在线 {{ formatDateTime(node.last_seen_at, '从未在线') }}</div>
-      </button>
+      </div>
     </article>
 
     <div v-if="!filteredNodes.length" class="m-empty">尚未接入任何服务器</div>
@@ -479,7 +562,7 @@ onBeforeUnmount(() => {
         <el-input v-model="editForm.client_address" aria-label="客户端连接域名或 IP 地址" placeholder="例如：proxy.example.com" />
         <div class="m-field__hint">接入时会自动填入来源 IP。仅填域名或 IP，不含 http://、端口与路径。</div>
         <div v-if="editNodeAllIPs.length" style="margin-top: 6px; display: flex; flex-wrap: wrap; gap: 6px; align-items: center">
-          <span style="font-size: 12px; color: var(--color-text-subtle, #999)">点击填入：</span>
+          <span style="font-size: 12px; color: var(--sb-muted)">点击填入：</span>
           <el-tag
             v-for="ip in editNodeAllIPs"
             :key="ip"
@@ -499,7 +582,7 @@ onBeforeUnmount(() => {
           <div
             v-for="ip in editNodeAllIPs"
             :key="ip"
-            style="background: var(--color-bg-page, #f8f9fa); padding: 8px 10px; border-radius: 8px; border: 1px solid var(--color-border, #eee)"
+            style="background: var(--sb-surface-2); padding: 8px 10px; border-radius: 8px; border: 1px solid var(--sb-line)"
           >
             <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px">
               <span style="font-family: monospace; font-size: 12px; font-weight: 600; word-break: break-all">{{ ip }}</span>
@@ -628,4 +711,287 @@ onBeforeUnmount(() => {
   word-break: break-all;
   user-select: all;
 }
+
+.m-node-card {
+  position: relative;
+  display: block;
+  width: 100%;
+  padding: 14px 15px 12px;
+  margin-bottom: 12px;
+  background: var(--sb-panel-solid);
+  border: 1px solid var(--sb-line);
+  border-radius: var(--m-radius);
+  box-shadow: var(--sb-shadow-sm);
+  cursor: pointer;
+  text-align: left;
+  user-select: none;
+  overflow: hidden;
+  transition: transform 0.15s ease, border-color 0.15s ease, box-shadow 0.15s ease;
+}
+.m-node-card:active {
+  transform: scale(0.992);
+}
+.m-node-card.is-offline {
+  opacity: 0.72;
+}
+
+.m-node-glow {
+  position: absolute;
+  top: 0;
+  right: 0;
+  width: 70px;
+  height: 70px;
+  border-radius: 0 var(--m-radius) 0 50px;
+  pointer-events: none;
+  opacity: 0.35;
+  transition: opacity 0.3s ease;
+}
+.m-node-glow.is-online {
+  background: radial-gradient(circle at top right, rgba(16, 185, 129, 0.45) 0%, transparent 70%);
+}
+.m-node-glow.is-offline {
+  background: radial-gradient(circle at top right, rgba(148, 163, 184, 0.25) 0%, transparent 70%);
+}
+
+.m-node-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+.m-node-hero {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.m-node-os {
+  width: 17px;
+  height: 17px;
+  flex-shrink: 0;
+}
+.m-node-title {
+  margin: 0;
+  color: var(--sb-text);
+  font-size: 15.5px;
+  font-weight: 650;
+  letter-spacing: -0.01em;
+  line-height: 1.35;
+}
+
+.m-node-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 9px;
+  border-radius: 999px;
+  font-size: 11.5px;
+  font-weight: 600;
+  flex-shrink: 0;
+}
+.m-node-status.is-online {
+  background: rgba(16, 185, 129, 0.12);
+  color: #059669;
+  border: 1px solid rgba(16, 185, 129, 0.28);
+}
+html.dark .m-node-status.is-online {
+  background: rgba(16, 185, 129, 0.18);
+  color: #34D399;
+  border-color: rgba(16, 185, 129, 0.35);
+}
+.m-node-status.is-offline {
+  background: var(--sb-surface-3);
+  color: var(--sb-muted);
+  border: 1px solid var(--sb-line);
+}
+.m-node-pulse {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+.m-node-status.is-online .m-node-pulse {
+  background: #10B981;
+  box-shadow: 0 0 0 2px rgba(16, 185, 129, 0.35);
+  animation: pulse-dot 2s infinite ease-in-out;
+}
+.m-node-status.is-offline .m-node-pulse {
+  background: #94A3B8;
+}
+@keyframes pulse-dot {
+  0%, 100% { transform: scale(1); opacity: 1; }
+  50% { transform: scale(1.3); opacity: 0.6; }
+}
+
+.m-node-tags {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+}
+.m-node-addr {
+  font-size: 12px;
+  color: var(--sb-muted);
+  max-width: 60%;
+}
+.m-pill--amber {
+  background: rgba(245, 158, 11, 0.12);
+  color: #D97706;
+  border: 1px solid rgba(245, 158, 11, 0.28);
+}
+html.dark .m-pill--amber {
+  background: rgba(245, 158, 11, 0.2);
+  color: #FBBF24;
+  border-color: rgba(245, 158, 11, 0.35);
+}
+.m-pill--neutral {
+  background: var(--sb-surface-3);
+  color: var(--sb-text-2);
+  border: 1px solid var(--sb-line);
+}
+
+.m-node-gauges {
+  display: flex;
+  align-items: center;
+  margin-top: 10px;
+  padding: 9px 12px;
+  border-radius: 10px;
+  background: var(--neu-inset-bg);
+  border: 1px solid var(--sb-line);
+  box-shadow: var(--sh-inset);
+}
+.gauge-col {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.gauge-meta {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.gauge-dot {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+.gauge-dot.is-down { background: #0284C7; }
+html.dark .gauge-dot.is-down { background: #38BDF8; }
+.gauge-dot.is-up { background: #D97706; }
+html.dark .gauge-dot.is-up { background: #FBBF24; }
+.gauge-dot.is-conn { background: #10B981; }
+html.dark .gauge-dot.is-conn { background: #34D399; }
+
+.gauge-lbl {
+  font-size: 10.5px;
+  color: var(--sb-muted);
+}
+.gauge-val {
+  font-size: 13px;
+  font-weight: 650;
+  color: var(--sb-text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.gauge-val.is-muted {
+  color: var(--sb-muted);
+}
+.gauge-sep {
+  width: 1px;
+  height: 24px;
+  background: var(--sb-line);
+  margin: 0 8px;
+  flex-shrink: 0;
+}
+
+.m-node-host-meters {
+  display: flex;
+  gap: 12px;
+  margin-top: 8px;
+  padding: 0 2px;
+}
+.m-host-meter {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+}
+.m-host-meter__lbl {
+  color: var(--sb-muted);
+  font-weight: 600;
+  width: 24px;
+  flex-shrink: 0;
+}
+.m-host-meter__track {
+  flex: 1;
+  height: 6px;
+  background: var(--neu-inset-bg);
+  border-radius: 999px;
+  border: 1px solid var(--sb-line);
+  overflow: hidden;
+}
+.m-host-meter__fill {
+  height: 100%;
+  border-radius: 999px;
+  transition: width 0.3s ease;
+}
+.m-host-meter__fill.is-cpu {
+  background: linear-gradient(90deg, #38BDF8, #0284C7);
+}
+.m-host-meter__fill.is-mem {
+  background: linear-gradient(90deg, #A78BFA, #7C3AED);
+}
+.m-host-meter__val {
+  color: var(--sb-text-2);
+  font-size: 11px;
+  min-width: 32px;
+  text-align: right;
+  flex-shrink: 0;
+}
+
+.m-node-latency {
+  margin-top: 8px;
+}
+
+.m-node-footer {
+  margin-top: 9px;
+  padding-top: 8px;
+  border-top: 1px solid var(--sb-line);
+  font-size: 11.5px;
+  color: var(--sb-muted);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.m-node-traffic {
+  color: var(--sb-text-2);
+}
+.m-node-billing {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.provider-link.is-clickable {
+  color: var(--sb-accent);
+  text-decoration: underline;
+  cursor: pointer;
+}
+.price-chip {
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: var(--sb-surface-3);
+  border: 1px solid var(--sb-line);
+}
+.m-node-offline-hint {
+  color: var(--sb-danger);
+  font-weight: 500;
+}
+
 </style>

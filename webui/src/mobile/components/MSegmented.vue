@@ -33,27 +33,44 @@ const emit = defineEmits(['update:modelValue'])
   margin-bottom: 12px;
   padding: 3px;
   overflow-x: auto;
-  background: rgba(148, 163, 184, .07);
+  background: var(--neu-inset-bg);
   border: 1px solid var(--sb-line);
-  border-radius: 11px;
+  box-shadow: var(--sh-inset);
+  border-radius: 10px;
   scrollbar-width: none;
 }
 .m-seg::-webkit-scrollbar { display: none; }
-/* 40×44 是手指按得准的下限；原来的 34px 高在手机上要瞄。 */
+/* 40×44 是手指按得准的触控尺寸 */
 .m-seg__item {
   flex: 1 0 auto;
   min-width: 44px;
-  min-height: 40px;
-  padding: 0 13px;
+  min-height: 38px;
+  padding: 0 14px;
   color: var(--sb-muted);
   background: transparent;
   border: 0;
-  border-radius: 8px;
+  border-radius: 7px;
   font: inherit;
   font-size: 13.5px;
   white-space: nowrap;
   cursor: pointer;
+  transition: all 0.15s ease;
 }
-.m-seg__item.is-active { color: #04121f; background: var(--sb-accent); font-weight: 600; }
+.m-seg__item:hover {
+  color: var(--sb-text);
+}
+html.dark .m-seg__item.is-active {
+  background: rgba(255, 255, 255, 0.14);
+  color: #F8FAFC;
+  font-weight: 600;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.35);
+}
+html.light .m-seg__item.is-active,
+html:not(.dark) .m-seg__item.is-active {
+  background: #FFFFFF;
+  color: #0F172A;
+  font-weight: 600;
+  box-shadow: 0 1px 4px rgba(100, 104, 123, 0.2);
+}
 .m-seg__item i { margin-left: 5px; font-style: normal; opacity: .75; font-size: 12px; }
 </style>

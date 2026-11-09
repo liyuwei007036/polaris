@@ -1,7 +1,7 @@
 <script setup>
 import { computed, inject, onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Plus, Search } from '@element-plus/icons-vue'
+import { Plus, Refresh, Search } from '@element-plus/icons-vue'
 import { api, del, post, put } from '../../api'
 import { includesText } from '../../format'
 import { protocolMap } from '../../protocols'
@@ -199,7 +199,17 @@ onMounted(load)
 </script>
 
 <template>
-  <MPage :loading="loading">
+  <MPage title="代理分组" :loading="loading">
+    <template #actions>
+      <el-button
+        circle
+        size="small"
+        :icon="Refresh"
+        :loading="loading"
+        aria-label="刷新"
+        @click="load()"
+      />
+    </template>
     <el-input v-model="keyword" clearable :prefix-icon="Search" placeholder="搜索分组或节点" />
     <div class="m-count">共 {{ filteredGroups.length }} 个分组</div>
 
@@ -273,7 +283,8 @@ onMounted(load)
   max-width: 100%;
   padding: 4px 9px;
   color: var(--sb-text-2);
-  background: rgba(148, 163, 184, .09);
+  background: var(--sb-surface-2);
+  border: 1px solid var(--sb-line);
   border-radius: 8px;
   font-size: 11.5px;
   line-height: 1.5;
@@ -282,7 +293,15 @@ onMounted(load)
   white-space: nowrap;
 }
 .pick--more { color: var(--sb-muted); background: transparent; border: 1px dashed var(--sb-line); }
-/* 停用的照常写名字，只换颜色；真的指不到东西了才是红的。 */
-.pick.is-off { color: #fcd34d; background: rgba(251, 191, 36, .10); }
-.pick.is-broken { color: var(--sb-danger); background: rgba(251, 113, 133, .10); }
+/* 停用的照常写名字，只换颜色；真的指不到东西了才是红的 */
+.pick.is-off {
+  color: var(--sb-warning);
+  background: color-mix(in oklab, var(--sb-warning) 10%, transparent);
+  border-color: color-mix(in oklab, var(--sb-warning) 25%, transparent);
+}
+.pick.is-broken {
+  color: var(--sb-danger);
+  background: color-mix(in oklab, var(--sb-danger) 10%, transparent);
+  border-color: color-mix(in oklab, var(--sb-danger) 25%, transparent);
+}
 </style>

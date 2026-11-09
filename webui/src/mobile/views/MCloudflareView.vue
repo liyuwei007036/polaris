@@ -1,7 +1,7 @@
 <script setup>
 import { computed, inject, onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Plus, Search, Setting } from '@element-plus/icons-vue'
+import { Plus, Refresh, Search, Setting } from '@element-plus/icons-vue'
 import { api, del, post, put } from '../../api'
 import { formatDate, formatDateTime, includesText } from '../../format'
 import MPage from '../components/MPage.vue'
@@ -291,7 +291,12 @@ onMounted(load)
 </script>
 
 <template>
-  <MPage :loading="loading">
+  <MPage title="域名解析" :loading="loading">
+    <template #actions>
+      <button type="button" class="m-header__btn" :disabled="loading" aria-label="刷新" @click="load">
+        <el-icon><Refresh /></el-icon>
+      </button>
+    </template>
     <!-- 连接状态和「设置」入口连在一起：改的就是这条状态里说的那件事。 -->
     <div class="m-notice conn" :class="settings.connected ? 'm-notice--info' : settings.configured ? 'm-notice--danger' : 'm-notice--warning'">
       <span class="conn__text">
@@ -479,9 +484,9 @@ onMounted(load)
 .conn { display: flex; align-items: center; gap: 10px; }
 .conn__text { flex: 1; min-width: 0; }
 .pick { border-style: dashed; cursor: pointer; }
-.zone-row { display: flex; align-items: center; gap: 8px; padding: 8px 10px; margin-bottom: 8px; border: 1px solid var(--el-border-color-lighter); border-radius: 10px; }
+.zone-row { display: flex; align-items: center; gap: 8px; padding: 10px 12px; margin-bottom: 8px; background: var(--sb-surface-2); border: 1px solid var(--sb-line-strong); border-radius: 10px; }
 .zone-main { flex: 1; min-width: 0; }
-.zone-name { font-weight: 600; }
-.zone-meta { font-size: 12px; color: var(--sb-muted); word-break: break-all; }
-.zone-error { margin-top: 4px; font-size: 12px; color: var(--el-color-danger); }
+.zone-name { font-weight: 600; color: var(--sb-text); }
+.zone-meta { font-size: 12px; color: var(--sb-muted); word-break: break-all; margin-top: 2px; }
+.zone-error { margin-top: 4px; font-size: 12px; color: var(--sb-danger); }
 </style>

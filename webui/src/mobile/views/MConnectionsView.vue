@@ -45,6 +45,12 @@ function sourceLine(row) {
     .filter(Boolean).join(' · ') || '未知来源'
 }
 
+function isDirect(exit) {
+  if (!exit) return true
+  const lower = String(exit).toLowerCase()
+  return lower === 'direct' || lower === '直连'
+}
+
 const rows = computed(() => {
   const flat = [...connectionSnapshots.value.values()].flatMap((result) => {
     const node = appState.nodes.find((item) => item.id === result.node_id)
@@ -135,7 +141,7 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <MPage :loading="loading">
+  <MPage title="当前连接" :loading="loading">
     <div class="m-listbar">
       <el-input v-model="keyword" clearable :prefix-icon="Search" placeholder="搜索 IP、目标、入站节点或出口" />
       <div class="m-filters">
@@ -145,26 +151,67 @@ onBeforeUnmount(() => {
     </div>
     <div class="m-count">{{ filteredRows.length }} 条 · 采集于 {{ formatDateTime(collectedAt, '暂无数据') }}</div>
 
-    <article v-for="row in shown" :key="`${row.node_id}/${row.id}`" class="m-item">
-      <!-- 出口靠右居中：目标、速率、来源三层是这条连接「是什么」，出口是它
-           「走哪儿出去」，两件事分列左右比串在标题行里挤更好认。 -->
-      <button type="button" class="m-item__hit conn" @click="openDetail(row)">
-        <div class="conn__main">
-          <div class="m-item__head">
-            <span class="m-item__title m-item__title--mono">{{ row.target }}</span>
-            <span class="m-pill m-pill--info">{{ (row.network || '').toUpperCase() || '—' }}</span>
+    <article
+      v-for="row in shown"
+      :key="`${row.node_id}/${row.id}`"
+      class="m-conn-card neu rise"
+      role="button"
+      tabindex="0"
+      @click="openDetail(row)"
+    >
+      <!-- Top: Host & Badges -->
+      <div class="m-conn-head">
+        <div class="m-conn-target">
+          <div class="m-conn-host font-mono" :title="row.target">{{ row.target }}</div>
+          <div v-if="row.destination_location" class="m-conn-geo">
+            <span class="geo-dot" />
+            <span>{{ row.destination_location }}</span>
           </div>
-          <div v-if="row.destination_location" class="subtle" style="font-size: 11px; margin-top: 1px">{{ row.destination_location }}</div>
-          <!-- 出口占掉右边一截后，三格速率会把「4.60 MB/s」截成「4.60 M…」。
-               TCP/UDP 是个短标签，挪到标题行；留下的两格才装得下完整的数。 -->
-          <div class="m-item__stats">
-            <span class="m-stat"><b>↓ {{ row.has_rates ? formatBytes(row.download_rate, '/s') : '—' }}</b><small>实时下行</small></span>
-            <span class="m-stat"><b>↑ {{ row.has_rates ? formatBytes(row.upload_rate, '/s') : '—' }}</b><small>实时上行</small></span>
-          </div>
-          <div class="m-item__meta">{{ sourceLine(row) }}</div>
         </div>
-        <span class="conn__exit">{{ row.exit }}</span>
-      </button>
+        <div class="m-conn-badges">
+          <span class="m-conn-tag font-mono">{{ (row.network || 'TCP').toUpperCase() }}</span>
+          <span class="m-conn-tag m-conn-tag--exit" :title="row.exit">{{ row.exit }}</span>
+        </div>
+      </div>
+
+      <!-- Middle: Micro-neomorphic Inset Rates Grid -->
+      <div class="m-conn-rates neu-inset">
+        <div class="rate-col">
+          <span class="rate-lbl">实时下行</span>
+          <div class="rate-val font-mono">
+            ↓ {{ row.has_rates ? formatBytes(row.download_rate, '/s') : '—' }}
+          </div>
+        </div>
+        <div class="rate-divider" />
+        <div class="rate-col">
+          <span class="rate-lbl">实时上行</span>
+          <div class="rate-val font-mono">
+            ↑ {{ row.has_rates ? formatBytes(row.upload_rate, '/s') : '—' }}
+          </div>
+        </div>
+        <div class="rate-divider" />
+        <div class="rate-col">
+          <span class="rate-lbl">累计传输</span>
+          <div class="rate-val font-mono">
+            {{ formatBytes((row.download || 0) + (row.upload || 0)) }}
+          </div>
+        </div>
+      </div>
+
+      <!-- Bottom: Client source & Node -->
+      <div class="m-conn-footer">
+        <div class="m-conn-footer__top">
+          <div class="source-client-group">
+            <span class="source-client">{{ row.entry !== '—' ? row.entry : '未知客户端' }}</span>
+            <span class="source-sep">·</span>
+            <span class="source-ip font-mono">{{ row.source_ip || row.source }}</span>
+          </div>
+          <span class="m-conn-node-tag">{{ row.node_name }}</span>
+        </div>
+        <div v-if="row.source_location" class="m-conn-footer__geo">
+          <span class="source-loc">{{ row.source_location }}</span>
+        </div>
+      </div>
     </article>
 
     <div v-if="!filteredRows.length && !loading" class="m-empty">当前没有活动连接</div>
@@ -176,21 +223,180 @@ onBeforeUnmount(() => {
   </MPage>
 </template>
 <style scoped>
-.conn { display: flex; align-items: center; gap: 10px; }
-.conn__main { flex: 1; min-width: 0; }
-/* 出口名长短不一（DIRECT、直连、机场名），宽了就折行而不是截断：
-   一条连接走哪儿出去是排障的落点，截成「美国家宽…」等于没写。 */
-.conn__exit {
-  flex: none;
-  max-width: 34%;
-  padding: 6px 11px;
-  color: #7dd3fc;
-  background: rgba(56, 189, 248, .14);
-  border-radius: 12px;
-  font-size: 12px;
+.m-conn-card {
+  display: block;
+  width: 100%;
+  padding: 13px 14px 11px;
+  margin-bottom: 10px;
+  background: var(--sb-panel-solid);
+  border: 1px solid var(--sb-line);
+  border-radius: var(--m-radius);
+  box-shadow: var(--sb-shadow-sm);
+  cursor: pointer;
+  text-align: left;
+  user-select: none;
+  transition: transform 0.15s ease, border-color 0.15s ease, box-shadow 0.15s ease;
+}
+.m-conn-card:active {
+  transform: scale(0.992);
+}
+.m-conn-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+}
+.m-conn-target {
+  flex: 1;
+  min-width: 0;
+}
+.m-conn-host {
+  color: var(--sb-text);
+  font-size: 14.5px;
+  font-weight: 650;
+  line-height: 1.35;
+  word-break: break-all;
+}
+.m-conn-geo {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  margin-top: 3px;
+  font-size: 11.5px;
+  color: var(--sb-muted);
+}
+.geo-dot {
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: var(--sb-muted);
+  flex-shrink: 0;
+}
+.m-conn-badges {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+.m-conn-tag {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 2px 7px;
+  border-radius: var(--sb-radius-sm);
+  font-size: 11px;
+  font-weight: 550;
+  line-height: 18px;
+  background: var(--sb-surface-2);
+  color: var(--sb-text-2);
+  border: 1px solid var(--sb-line-strong);
+  white-space: nowrap;
+  max-width: 140px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.m-conn-tag--exit {
+  background: var(--sb-accent-soft);
+  color: var(--sb-text);
+  border-color: var(--sb-line-strong);
   font-weight: 600;
-  line-height: 1.4;
-  text-align: center;
-  word-break: break-word;
+}
+
+/* Inset rates row */
+.m-conn-rates {
+  display: flex;
+  align-items: center;
+  margin-top: 10px;
+  padding: 8px 10px;
+  border-radius: 10px;
+  background: var(--neu-inset-bg);
+  border: 1px solid var(--sb-line);
+  box-shadow: var(--sh-inset);
+}
+.rate-col {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.rate-lbl {
+  font-size: 10.5px;
+  color: var(--sb-muted);
+}
+.rate-val {
+  font-size: 11.5px;
+  font-weight: 650;
+  letter-spacing: -0.02em;
+  color: var(--sb-text);
+  white-space: nowrap;
+}
+.rate-divider {
+  width: 1px;
+  height: 22px;
+  background: var(--sb-line);
+  margin: 0 6px;
+  flex-shrink: 0;
+}
+
+/* Footer row */
+.m-conn-footer {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: 9px;
+  padding-top: 8px;
+  border-top: 1px solid var(--sb-line);
+  font-size: 12px;
+}
+.m-conn-footer__top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.source-client-group {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.source-client {
+  color: var(--sb-text-2);
+  font-weight: 600;
+}
+.source-ip {
+  color: var(--sb-muted);
+  font-size: 11.5px;
+}
+.source-sep {
+  opacity: 0.5;
+}
+.m-conn-node-tag {
+  flex-shrink: 0;
+  padding: 1px 7px;
+  border-radius: 5px;
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--sb-muted);
+  background: var(--sb-surface-2);
+  border: 1px solid var(--sb-line);
+}
+.m-conn-footer__geo {
+  display: flex;
+  align-items: flex-start;
+  font-size: 11.5px;
+  line-height: 1.45;
+  color: var(--sb-muted);
+  word-break: break-all;
+  white-space: normal;
+}
+.source-loc {
+  flex: 1;
+  min-width: 0;
 }
 </style>

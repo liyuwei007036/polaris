@@ -93,36 +93,45 @@ function choose(action) {
 .m-action {
   width: 100%;
   min-height: var(--m-tap);
-  padding: 11px 14px;
+  padding: 12px 14px;
   color: var(--sb-text);
   text-align: left;
-  background: rgba(148, 163, 184, .06);
+  background: var(--sb-surface-2);
   border: 1px solid var(--sb-line);
   border-radius: var(--m-radius);
   font: inherit;
   cursor: pointer;
+  transition: all 0.15s ease;
 }
 .m-action + .m-action { margin-top: 8px; }
-.m-action:active { background: rgba(148, 163, 184, .14); }
-.m-action span { display: block; font-size: 14.5px; }
+.m-action:active { background: var(--sb-surface-3); transform: scale(0.99); }
+.m-action span { display: block; font-size: 14.5px; font-weight: 550; }
 .m-action small { display: block; margin-top: 3px; color: var(--sb-muted); font-size: 12px; }
 .m-action.is-danger { color: var(--sb-danger); }
-.m-action.is-disabled { color: var(--sb-muted); opacity: .6; }
+.m-action.is-danger:active { background: color-mix(in oklab, var(--sb-danger) 10%, transparent); }
+.m-action.is-disabled { color: var(--sb-muted); opacity: .5; cursor: not-allowed; }
 
-/* 成组的名字：标签单独一行，下面一行一个。挤在 92px 标签右边那一栏里时，
-   十几个名字会流成一大段，数不出有几个，也认不出具体是哪几个。 */
+/* 成组的名字：标签单独一行，下面一行一个 */
 .m-detail__row.is-stacked { display: block; }
 .detail-list { margin-top: 8px; display: flex; flex-direction: column; gap: 6px; }
 .detail-list span {
-  padding: 7px 10px;
-  background: rgba(148, 163, 184, .07);
+  padding: 8px 10px;
+  background: var(--sb-surface-2);
+  border: 1px solid var(--sb-line);
   border-radius: 8px;
   font-size: 12.5px;
   line-height: 1.45;
   word-break: break-word;
 }
 .detail-list em { color: var(--sb-muted); font-style: normal; font-size: 12.5px; }
-/* 停用的照常写名字，只换颜色；真的指不到东西了才是红的。 */
-.detail-list span.is-warning { color: #fcd34d; }
-.detail-list span.is-danger { color: var(--sb-danger); }
+.detail-list span.is-warning {
+  color: var(--sb-warning);
+  background: color-mix(in oklab, var(--sb-warning) 10%, transparent);
+  border-color: color-mix(in oklab, var(--sb-warning) 25%, transparent);
+}
+.detail-list span.is-danger {
+  color: var(--sb-danger);
+  background: color-mix(in oklab, var(--sb-danger) 10%, transparent);
+  border-color: color-mix(in oklab, var(--sb-danger) 25%, transparent);
+}
 </style>

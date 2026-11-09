@@ -105,7 +105,7 @@ async function confirmLogout() {
 </script>
 
 <template>
-  <MPage>
+  <MPage title="更多">
     <section class="m-card who">
       <span class="who__avatar"><el-icon :size="20"><User /></el-icon></span>
       <span class="who__info">
@@ -164,7 +164,7 @@ async function confirmLogout() {
       </button>
     </div>
 
-    <el-button class="sign-out" @click="confirmLogout">退出登录</el-button>
+    <el-button class="sign-out" type="danger" plain @click="confirmLogout">退出登录</el-button>
 
     <MSheet v-model="accountOpen" title="账户安全">
       <AccountSecurityPanel mobile />
@@ -190,17 +190,17 @@ async function confirmLogout() {
 </template>
 
 <style scoped>
-.who { display: flex; align-items: center; gap: 12px; }
+.who { display: flex; align-items: center; gap: 14px; padding: 16px; }
 .who__avatar {
   flex: none;
-  width: 40px;
-  height: 40px;
+  width: 44px;
+  height: 44px;
   display: grid;
   place-items: center;
   color: var(--sb-accent);
-  background: rgba(56, 189, 248, .12);
-  border: 1px solid rgba(56, 189, 248, .22);
-  border-radius: 11px;
+  background: var(--neu-inset-bg);
+  border: 1px solid var(--sb-line-strong);
+  border-radius: 12px;
 }
 .who__info { min-width: 0; }
 .who__info strong { display: block; color: var(--sb-text); font-size: 15px; }
@@ -211,6 +211,7 @@ async function confirmLogout() {
   background: var(--sb-panel-solid);
   border: 1px solid var(--sb-line);
   border-radius: var(--m-radius);
+  box-shadow: var(--sb-shadow-sm);
 }
 .entry {
   width: 100%;

@@ -91,7 +91,9 @@ function chosen(option) {
   >
     <span class="m-picker__text">{{ labels.length ? labels.join('、') : placeholder }}</span>
     <span v-if="multiple && labels.length > 1" class="m-picker__count">{{ labels.length }}</span>
-    <span class="m-picker__arrow" aria-hidden="true">›</span>
+    <svg class="m-picker__chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" aria-hidden="true">
+      <path stroke-linecap="round" stroke-linejoin="round" d="M19 9l-7 7-7-7" />
+    </svg>
   </button>
 
   <!-- 底部只有「清空 / 确定」，两个都不是放弃：右上角的 ✕ 是唯一的退路。 -->
@@ -134,47 +136,113 @@ function chosen(option) {
   padding: 9px 12px;
   color: var(--sb-text);
   text-align: left;
-  background: rgba(148, 163, 184, .07);
+  background: var(--sb-surface-2);
   border: 1px solid var(--sb-line-strong);
-  border-radius: 8px;
+  border-radius: var(--sb-radius-sm);
   font: inherit;
   font-size: 15px;
   cursor: pointer;
+  transition: all 0.15s ease;
 }
-.m-picker.is-empty .m-picker__text { color: #64748b; }
-.m-picker.is-disabled { opacity: .6; }
+.m-picker.is-empty .m-picker__text { color: var(--sb-muted); }
+.m-picker.is-disabled { opacity: .55; cursor: not-allowed; }
 .m-picker.is-chip {
   width: auto;
-  max-width: 62vw;
-  min-height: 44px;
-  padding: 0 11px;
-  border-radius: 11px;
-  font-size: 13.5px;
+  max-width: 100%;
+  min-height: 38px;
+  height: 38px;
+  box-sizing: border-box;
+  padding: 0 12px;
+  border-radius: 10px;
+  font-size: 13px;
+  background: var(--neu-inset-bg);
+  border: 1px solid var(--sb-line);
+  box-shadow: var(--sh-inset);
+  color: var(--sb-muted);
+  display: inline-flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  cursor: pointer;
+  transition: all 0.15s ease;
 }
-.m-picker.is-chip:not(.is-empty) { color: #04121f; background: var(--sb-accent); border-color: var(--sb-accent); font-weight: 600; }
-.m-picker.is-chip:not(.is-empty) .m-picker__arrow { color: rgba(4, 18, 31, .6); }
-.m-picker.is-chip .m-picker__arrow { font-size: 16px; }
+.m-picker.is-chip:hover {
+  color: var(--sb-text);
+}
+html.dark .m-picker.is-chip:not(.is-empty) {
+  color: #F8FAFC;
+  background: rgba(255, 255, 255, 0.14);
+  border-color: var(--sb-line-strong);
+  font-weight: 600;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.35);
+}
+html.light .m-picker.is-chip:not(.is-empty),
+html:not(.dark) .m-picker.is-chip:not(.is-empty) {
+  color: #0F172A;
+  background: #FFFFFF;
+  border-color: var(--sb-line-strong);
+  font-weight: 600;
+  box-shadow: 0 1px 4px rgba(100, 104, 123, 0.2);
+}
+.m-picker__chevron {
+  width: 11px;
+  height: 11px;
+  flex-shrink: 0;
+  opacity: 0.65;
+  transition: transform 0.2s ease, opacity 0.2s ease;
+}
+.m-picker:hover .m-picker__chevron {
+  opacity: 0.9;
+}
 .m-picker__text { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.m-picker__count { flex: none; padding: 1px 7px; color: #04121f; background: var(--sb-accent); border-radius: 999px; font-size: 11.5px; font-weight: 600; }
-.m-picker__arrow { flex: none; color: var(--sb-muted); font-size: 19px; line-height: 1; }
-.m-picker__search { position: sticky; top: -16px; z-index: 1; margin: -16px -16px 12px; padding: 12px 16px; background: var(--sb-surface); }
+.m-picker__count {
+  flex: none;
+  padding: 1px 7px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 600;
+}
+html.dark .m-picker__count {
+  color: #0E1015;
+  background: #F8FAFC;
+}
+html.light .m-picker__count,
+html:not(.dark) .m-picker__count {
+  color: #FFFFFF;
+  background: #0F172A;
+}
+.m-picker__arrow { flex: none; color: var(--sb-muted); font-size: 18px; line-height: 1; }
+.m-picker__search {
+  position: sticky;
+  top: -16px;
+  z-index: 1;
+  margin: -16px -16px 12px;
+  padding: 12px 16px;
+  background: var(--sb-surface);
+  border-bottom: 1px solid var(--sb-line);
+}
 .m-picker__option {
   position: relative;
   width: 100%;
   min-height: var(--m-tap);
-  padding: 10px 34px 10px 13px;
+  padding: 11px 36px 11px 14px;
   color: var(--sb-text);
   text-align: left;
-  background: rgba(148, 163, 184, .05);
+  background: var(--sb-surface-2);
   border: 1px solid var(--sb-line);
-  border-radius: 11px;
+  border-radius: var(--sb-radius-sm);
   font: inherit;
   cursor: pointer;
+  transition: all 0.15s ease;
 }
 .m-picker__option + .m-picker__option { margin-top: 7px; }
-.m-picker__option.is-chosen { background: rgba(56, 189, 248, .12); border-color: rgba(56, 189, 248, .45); }
-.m-picker__option.is-disabled { color: var(--sb-muted); opacity: .55; }
-.m-picker__label { display: block; font-size: 14.5px; line-height: 1.4; word-break: break-all; }
+.m-picker__option.is-chosen {
+  background: var(--sb-accent-soft);
+  border-color: var(--sb-line-strong);
+  box-shadow: 0 0 0 1px var(--sb-text);
+}
+.m-picker__option.is-disabled { color: var(--sb-muted); opacity: .5; cursor: not-allowed; }
+.m-picker__label { display: block; font-size: 14.5px; font-weight: 550; line-height: 1.4; word-break: break-all; }
 .m-picker__option small { display: block; margin-top: 3px; color: var(--sb-muted); font-size: 12px; line-height: 1.45; word-break: break-all; }
-.m-picker__tick { position: absolute; top: 50%; right: 12px; transform: translateY(-50%); color: var(--sb-accent); font-style: normal; }
+.m-picker__tick { position: absolute; top: 50%; right: 14px; transform: translateY(-50%); color: var(--sb-text); font-style: normal; font-weight: 700; font-size: 16px; }
 </style>

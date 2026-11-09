@@ -1,7 +1,7 @@
 <script setup>
 import { computed, inject, onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Plus, Search } from '@element-plus/icons-vue'
+import { Plus, Refresh, Search } from '@element-plus/icons-vue'
 import { api, del, post, put } from '../../api'
 import { writeClipboard } from '../../clipboard'
 import { formatDate, formatDateTime, includesText, parseServerTime } from '../../format'
@@ -497,7 +497,17 @@ onMounted(() => { load(); loadAccess() })
 </script>
 
 <template>
-  <MPage v-if="mode === 'list'" :loading="loading">
+  <MPage v-if="mode === 'list'" title="客户端配置" :loading="loading">
+    <template #actions>
+      <el-button
+        circle
+        size="small"
+        :icon="Refresh"
+        :loading="loading || accessLoading"
+        aria-label="刷新"
+        @click="tab === 'configs' ? load() : loadAccess()"
+      />
+    </template>
     <MSegmented v-model="tab" :options="[{ value: 'configs', label: '客户端配置' }, { value: 'access', label: '访问记录' }]" />
 
     <template v-if="tab === 'configs'">
@@ -596,7 +606,7 @@ onMounted(() => { load(); loadAccess() })
     </template>
   </MPage>
 
-  <MPage v-else>
+  <MPage v-else :title="editing ? '编辑客户端配置' : '新建客户端配置'" @back="mode = 'list'">
     <MSegmented v-model="activeSection" :options="sectionOptions" />
 
     <template v-if="activeSection === 'basic'">
@@ -624,7 +634,7 @@ onMounted(() => { load(); loadAccess() })
           <button type="button" class="rule__body" @click="editRule(index)">
             <span class="rule__type">{{ rule.type }}</span>
             <span class="rule__value">{{ rule.type === 'MATCH' ? '全部流量' : (rule.value || '未填写匹配值') }}</span>
-            <span class="rule__action">→ {{ rule.action || '未选择动作' }}<i v-if="rule.no_resolve">no-resolve</i></span>
+            <span class="rule__action">{{ rule.action || '未选择动作' }}<i v-if="rule.no_resolve">no-resolve</i></span>
           </button>
           <div class="rule__order">
             <button type="button" aria-label="上移" :disabled="index === 0" @click="moveRule(index, -1)">↑</button>
@@ -796,5 +806,5 @@ onMounted(() => { load(); loadAccess() })
   font-size: 14px;
   cursor: pointer;
 }
-.rule__order button:disabled { color: #475569; }
+.rule__order button:disabled { color: var(--sb-muted); opacity: .5; }
 </style>

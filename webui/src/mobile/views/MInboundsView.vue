@@ -1,7 +1,7 @@
 <script setup>
 import { computed, inject, onMounted, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Plus, Search } from '@element-plus/icons-vue'
+import { Plus, Refresh, Search } from '@element-plus/icons-vue'
 import { api, del, post, put } from '../../api'
 import { waitForTask } from '../../live'
 import { includesText } from '../../format'
@@ -317,7 +317,17 @@ onMounted(load)
 </script>
 
 <template>
-  <MPage :loading="loading">
+  <MPage title="接入服务" :loading="loading">
+    <template #actions>
+      <el-button
+        circle
+        size="small"
+        :icon="Refresh"
+        :loading="loading"
+        aria-label="刷新"
+        @click="load()"
+      />
+    </template>
     <div class="m-listbar">
       <el-input v-model="keyword" clearable :prefix-icon="Search" placeholder="搜索服务、协议或端口" />
       <div class="m-filters">
@@ -331,20 +341,46 @@ onMounted(load)
 
     <div class="m-count">共 {{ filteredListeners.length }} 个接入服务</div>
 
-    <article v-for="row in shown" :key="row.id" class="m-item" :class="{ 'is-off': !row.enabled }">
-      <button type="button" class="m-item__hit" @click="openActions(row)">
-        <div class="m-item__head">
-          <span class="m-item__title">{{ row.name }}</span>
+    <article
+      v-for="row in shown"
+      :key="row.id"
+      class="m-inbound-card neu rise"
+      :class="{ 'is-off': !row.enabled }"
+      role="button"
+      tabindex="0"
+      @click="openActions(row)"
+    >
+      <div class="m-inbound-head">
+        <div class="m-inbound-hero min-w-0 flex-1">
+          <span class="m-inbound-name truncate" :title="row.name">{{ row.name }}</span>
           <span class="m-pill" :class="protocolPill(row)">{{ protocolLabel(row) }}</span>
-          <span v-if="!row.enabled" class="m-pill m-pill--info">停用</span>
         </div>
-        <div class="m-item__stats">
-          <span class="m-stat"><b>{{ securityLabel(row) }}</b><small>加密</small></span>
-          <span class="m-stat"><b>{{ transportLabel(row) }}</b><small>传输</small></span>
-          <span class="m-stat"><b>{{ row.endpoint_count ?? 0 }}</b><small>用户</small></span>
+        <span class="m-inbound-status" :class="row.enabled ? 'is-enabled' : 'is-disabled'">
+          {{ row.enabled ? '启用' : '停用' }}
+        </span>
+      </div>
+
+      <div class="m-inbound-stats neu-inset">
+        <div class="inbound-stat-col">
+          <span class="stat-lbl">加密</span>
+          <span class="stat-val font-mono">{{ securityLabel(row) }}</span>
         </div>
-        <div class="m-item__meta">{{ nodeNames[row.node_id] || row.node_id }} · {{ addressText(row) }}</div>
-      </button>
+        <div class="stat-sep" />
+        <div class="inbound-stat-col">
+          <span class="stat-lbl">传输协议</span>
+          <span class="stat-val font-mono">{{ transportLabel(row) }}</span>
+        </div>
+        <div class="stat-sep" />
+        <div class="inbound-stat-col">
+          <span class="stat-lbl">用户数</span>
+          <span class="stat-val font-mono">{{ row.endpoint_count ?? 0 }} 位</span>
+        </div>
+      </div>
+
+      <div class="m-inbound-footer">
+        <span class="inbound-addr font-mono truncate">{{ addressText(row) }}</span>
+        <span class="inbound-node-tag">{{ nodeNames[row.node_id] || row.node_id }}</span>
+      </div>
     </article>
 
     <div v-if="!filteredListeners.length && !loading" class="m-empty">还没有接入服务</div>
@@ -389,3 +425,126 @@ onMounted(load)
     </template>
   </MPage>
 </template>
+
+
+<style scoped>
+.m-inbound-card {
+  display: block;
+  width: 100%;
+  padding: 13px 14px 11px;
+  margin-bottom: 10px;
+  background: var(--sb-panel-solid);
+  border: 1px solid var(--sb-line);
+  border-radius: var(--m-radius);
+  box-shadow: var(--sb-shadow-sm);
+  cursor: pointer;
+  text-align: left;
+  user-select: none;
+  transition: transform 0.15s ease, border-color 0.15s ease, box-shadow 0.15s ease;
+}
+.m-inbound-card:active {
+  transform: scale(0.992);
+}
+.m-inbound-card.is-off {
+  opacity: 0.65;
+}
+.m-inbound-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+.m-inbound-hero {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.m-inbound-name {
+  color: var(--sb-text);
+  font-size: 15px;
+  font-weight: 650;
+  line-height: 1.35;
+}
+.m-inbound-status {
+  flex-shrink: 0;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 600;
+}
+.m-inbound-status.is-enabled {
+  background: var(--sb-success-soft);
+  color: var(--sb-success);
+  border: 1px solid color-mix(in oklab, var(--sb-success) 30%, transparent);
+}
+.m-inbound-status.is-disabled {
+  background: var(--sb-surface-3);
+  color: var(--sb-muted);
+  border: 1px solid var(--sb-line);
+}
+
+.m-inbound-stats {
+  display: flex;
+  align-items: center;
+  margin-top: 10px;
+  padding: 8px 10px;
+  border-radius: 10px;
+  background: var(--neu-inset-bg);
+  border: 1px solid var(--sb-line);
+  box-shadow: var(--sh-inset);
+}
+.inbound-stat-col {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.stat-lbl {
+  font-size: 10.5px;
+  color: var(--sb-muted);
+}
+.stat-val {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--sb-text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.stat-sep {
+  width: 1px;
+  height: 22px;
+  background: var(--sb-line);
+  margin: 0 8px;
+  flex-shrink: 0;
+}
+
+.m-inbound-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: 9px;
+  padding-top: 8px;
+  border-top: 1px solid var(--sb-line);
+  font-size: 12px;
+  color: var(--sb-muted);
+}
+.inbound-addr {
+  flex: 1;
+  min-width: 0;
+  color: var(--sb-muted);
+  font-size: 11.5px;
+}
+.inbound-node-tag {
+  flex-shrink: 0;
+  padding: 1px 6px;
+  border-radius: 5px;
+  font-size: 11px;
+  color: var(--sb-muted);
+  background: var(--sb-surface-3);
+  border: 1px solid var(--sb-line);
+}
+</style>

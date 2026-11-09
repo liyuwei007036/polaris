@@ -1,5 +1,6 @@
 <script setup>
-import { computed, inject, nextTick, onBeforeUnmount, onMounted, ref, shallowRef } from 'vue'
+import { computed, inject, nextTick, onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vue'
+import { Refresh } from '@element-plus/icons-vue'
 import { BarChart, LineChart, PieChart } from 'echarts/charts'
 import { GridComponent, LegendComponent, TitleComponent, TooltipComponent } from 'echarts/components'
 import { init, use } from 'echarts/core'
@@ -9,6 +10,7 @@ import { formatBytes } from '../../format'
 import { subscribeLive } from '../../live'
 import { fleetTotals, subscribeFleetTotals } from '../../connections'
 import { FLAG_FONT_FAMILY } from '../../flags'
+import { isDark } from '../../theme'
 import MPage from '../components/MPage.vue'
 
 use([BarChart, LineChart, PieChart, GridComponent, LegendComponent, TitleComponent, TooltipComponent, CanvasRenderer])
@@ -29,24 +31,65 @@ const connectionChart = ref()
 const networkChart = ref()
 const proxyChart = ref()
 const charts = []
-const protocolColors = { TCP: '#38bdf8', UDP: '#34d399', 其他: '#64748b' }
-const chartInk = { title: '#e8eef8', label: '#8496b0', line: 'rgba(148,163,184,.22)', split: 'rgba(148,163,184,.10)', empty: 'rgba(148,163,184,.16)' }
-const chartTooltip = { backgroundColor: '#101a2c', borderColor: 'rgba(148,163,184,.28)', textStyle: { color: chartInk.title, fontSize: 12 } }
-const chartLegend = { bottom: 4, itemWidth: 14, itemHeight: 8, textStyle: { color: chartInk.label, fontSize: 11 } }
-// 环形图上的数字：一根引导线牵到环外。这要求图有整行的宽度——两张并排时每张
-// 只剩 178px，一个「203.88 GB」连引导线要 110px，两边加起来放不下，标签会溢出
-// 卡片压住标题。所以这两张图改成各占一整行（见 .chart-pair）。
+
+const protocolColors = { TCP: '#0284C7', UDP: '#059669', 其他: '#64748B' }
+
+const chartInk = computed(() => (isDark.value ? {
+  title: '#F1F3F7',
+  label: '#8E93A6',
+  line: 'rgba(255, 255, 255, 0.12)',
+  split: 'rgba(255, 255, 255, 0.06)',
+  empty: 'rgba(255, 255, 255, 0.1)',
+  pieBorder: '#15181F',
+  down: '#38BDF8',
+  downArea: 'rgba(56, 189, 248, 0.14)',
+  up: '#818CF8',
+  upArea: 'rgba(129, 140, 248, 0.14)',
+  conn: '#A78BFA',
+  connArea: 'rgba(167, 139, 250, 0.14)',
+} : {
+  title: '#0F172A',
+  label: '#64748B',
+  line: 'rgba(0, 0, 0, 0.1)',
+  split: 'rgba(0, 0, 0, 0.05)',
+  empty: 'rgba(0, 0, 0, 0.1)',
+  pieBorder: '#FFFFFF',
+  down: '#0284C7',
+  downArea: 'rgba(2, 132, 199, 0.12)',
+  up: '#6366F1',
+  upArea: 'rgba(99, 102, 241, 0.12)',
+  conn: '#8B5CF6',
+  connArea: 'rgba(139, 92, 246, 0.12)',
+}))
+
+const chartTooltip = computed(() => (isDark.value ? {
+  backgroundColor: '#1B1E26',
+  borderColor: 'rgba(255, 255, 255, 0.14)',
+  textStyle: { color: chartInk.value.title, fontSize: 12 },
+} : {
+  backgroundColor: '#FFFFFF',
+  borderColor: 'rgba(0, 0, 0, 0.12)',
+  textStyle: { color: chartInk.value.title, fontSize: 12 },
+}))
+
+const chartLegend = computed(() => ({
+  bottom: 4,
+  itemWidth: 14,
+  itemHeight: 8,
+  textStyle: { color: chartInk.value.label, fontSize: 11 },
+}))
+
 function donutLabels(formatter, show) {
   return {
     label: show
-      ? { show: true, color: chartInk.title, fontSize: 11, formatter }
+      ? { show: true, color: chartInk.value.title, fontSize: 11, formatter }
       : { show: false },
     labelLine: show
-      ? { show: true, length: 12, length2: 12, lineStyle: { color: chartInk.line } }
+      ? { show: true, length: 12, length2: 12, lineStyle: { color: chartInk.value.line } }
       : { show: false },
   }
 }
-// 节点按秒上报，手机上保留一分钟——再长在这块屏上也分辨不出来，还费电。
+
 const historyLength = 60
 let stopLive
 let stopTotals
@@ -56,16 +99,13 @@ let renderQueued = false
 
 const online = computed(() => appState.nodes.filter((node) => node.online).length)
 const offline = computed(() => appState.nodes.length - online.value)
-// 这一页的实时数字全部来自 master 每轮汇总的那一条 totals 事件：连接数、流量、
-// 传输协议、热门节点。浏览器不再自己遍历连接列表——同一份数据算两遍，只会让
-// 卡片和曲线差一拍，也让每个控制台各算各的。
 const activeConnections = computed(() => Number(fleetTotals.value?.connection_count || 0))
 
 const metrics = computed(() => [
-  { label: '服务器总数', value: appState.nodes.length, view: 'nodes', query: '' },
-  { label: '在线服务器', value: online.value, view: 'nodes', query: 'status=online' },
-  { label: '活动连接', value: activeConnections.value, view: 'connections', query: '' },
-  { label: '节点数量', value: endpointCount.value, view: 'inbounds', query: '' },
+  { label: '服务器总数', value: appState.nodes.length, view: 'nodes', query: '', tone: 'primary' },
+  { label: '在线服务器', value: online.value, view: 'nodes', query: 'status=online', tone: 'ok' },
+  { label: '活动连接', value: activeConnections.value, view: 'connections', query: '', tone: 'info' },
+  { label: '节点数量', value: endpointCount.value, view: 'inbounds', query: '', tone: 'accent' },
 ])
 
 function readDismissed(key) {
@@ -78,19 +118,21 @@ function dismissOffline() {
   window.localStorage.setItem('sb_dashboard_offline', String(offline.value))
 }
 
-// 窄屏上标题和图例都要往里收，否则轴标签会被裁掉半个字。
 function chartBase(title) {
   return {
     animation: false,
-    title: { text: title, left: 12, top: 10, textStyle: { color: chartInk.title, fontSize: 12.5, fontWeight: 600 } },
-    tooltip: { ...chartTooltip, trigger: 'axis', confine: true },
-    grid: { left: 44, right: 14, top: 44, bottom: 44 },
+    title: {
+      text: title,
+      left: 14,
+      top: 12,
+      textStyle: { color: chartInk.value.title, fontSize: 13, fontWeight: 600 },
+    },
+    tooltip: { ...chartTooltip.value, trigger: 'axis', confine: true },
+    grid: { left: 46, right: 14, top: 46, bottom: 44 },
     textStyle: { fontFamily: `"${FLAG_FONT_FAMILY}", Inter, Segoe UI, Microsoft YaHei, sans-serif` },
   }
 }
 
-// 纵轴上「878.91 KB/s」要占掉 130px 宽，画布只剩三分之二。轴上一位小数够看趋势，
-// 准确数字看 tooltip。
 function compactRate(value) {
   const number = Number(value || 0)
   const units = ['B', 'K', 'M', 'G', 'T']
@@ -117,7 +159,6 @@ function initCharts() {
   renderCharts()
 }
 
-// 各节点每秒推送多次，五张图逐次重绘会让页面明显发烫。合并到一帧里画。
 function scheduleRender() {
   if (renderQueued) return
   renderQueued = true
@@ -129,37 +170,39 @@ function scheduleRender() {
 
 function renderCharts() {
   if (charts.length !== 5) return
+  const ink = chartInk.value
+  const tip = chartTooltip.value
+  const leg = chartLegend.value
   const axis = {
-    axisLine: { lineStyle: { color: chartInk.line } },
+    axisLine: { lineStyle: { color: ink.line } },
     axisTick: { show: false },
-    axisLabel: { color: chartInk.label, fontSize: 10 },
-    splitLine: { lineStyle: { color: chartInk.split } },
+    axisLabel: { color: ink.label, fontSize: 10 },
+    splitLine: { lineStyle: { color: ink.split } },
   }
+
   charts[0].setOption({
-    ...chartBase('实时流量'),
+    ...chartBase('实时流量速率'),
     tooltip: {
-      ...chartTooltip,
+      ...tip,
       trigger: 'axis',
       confine: true,
       formatter: (items) => [timeLabel(items[0].axisValue), ...items.map((item) => `${item.marker}${item.seriesName} ${formatBytes(item.value[1], '/s')}`)].join('<br>'),
     },
-    legend: { ...chartLegend, data: ['下载', '上传'] },
-    // 用时间轴而不是类目轴：上报间隔本来就不均匀，等距排列会把二十秒的空档
-    // 画得和一秒一样宽，而且每个采样点都出一个刻度，同一秒会连着出现两次。
+    legend: { ...leg, data: ['下载', '上传'] },
     xAxis: { ...axis, type: 'time', splitNumber: 3, axisLabel: { ...axis.axisLabel, hideOverlap: true, formatter: (value) => timeLabel(value).slice(3) } },
     yAxis: { ...axis, type: 'value', minInterval: 1, axisLabel: { ...axis.axisLabel, formatter: compactRate } },
     series: [
-      { name: '下载', type: 'line', data: trafficHistory.value.map((item) => [item.time, item.download]), showSymbol: false, smooth: 0.25, itemStyle: { color: '#38bdf8' }, lineStyle: { width: 2, color: '#38bdf8' }, areaStyle: { color: 'rgba(56,189,248,.14)' } },
-      { name: '上传', type: 'line', data: trafficHistory.value.map((item) => [item.time, item.upload]), showSymbol: false, smooth: 0.25, itemStyle: { color: '#34d399' }, lineStyle: { width: 2, color: '#34d399' }, areaStyle: { color: 'rgba(52,211,153,.12)' } },
+      { name: '下载', type: 'line', data: trafficHistory.value.map((item) => [item.time, item.download]), showSymbol: false, smooth: 0.25, itemStyle: { color: ink.down }, lineStyle: { width: 2, color: ink.down }, areaStyle: { color: ink.downArea } },
+      { name: '上传', type: 'line', data: trafficHistory.value.map((item) => [item.time, item.up || item.upload]), showSymbol: false, smooth: 0.25, itemStyle: { color: ink.up }, lineStyle: { width: 2, color: ink.up }, areaStyle: { color: ink.upArea } },
     ],
   }, true)
+
   const totals = cumulative.value.download + cumulative.value.upload
   charts[1].setOption({
     animation: false,
     title: chartBase('累计流量').title,
-    // 没有流量时只画占位圆环，不要把占位用的 1 当成流量报出来。
-    tooltip: { ...chartTooltip, trigger: 'item', confine: true, formatter: ({ name, value }) => (totals > 0 ? `${name}<br>${formatBytes(value)}` : name) },
-    legend: { ...chartLegend, show: totals > 0 },
+    tooltip: { ...tip, trigger: 'item', confine: true, formatter: ({ name, value }) => (totals > 0 ? `${name}<br>${formatBytes(value)}` : name) },
+    legend: { ...leg, show: totals > 0 },
     series: [{
       type: 'pie',
       silent: totals === 0,
@@ -167,32 +210,34 @@ function renderCharts() {
       center: ['50%', '48%'],
       avoidLabelOverlap: true,
       ...donutLabels(({ value }) => formatBytes(value), totals > 0),
-      itemStyle: { borderColor: '#0e1524', borderWidth: 2 },
+      itemStyle: { borderColor: ink.pieBorder, borderWidth: 2 },
       data: totals > 0 ? [
-        { name: '下载', value: cumulative.value.download, itemStyle: { color: '#38bdf8' } },
-        { name: '上传', value: cumulative.value.upload, itemStyle: { color: '#34d399' } },
-      ] : [{ name: '暂无流量', value: 1, itemStyle: { color: chartInk.empty } }],
+        { name: '下载', value: cumulative.value.download, itemStyle: { color: ink.down } },
+        { name: '上传', value: cumulative.value.upload, itemStyle: { color: ink.up } },
+      ] : [{ name: '暂无流量', value: 1, itemStyle: { color: ink.empty } }],
     }],
   }, true)
+
   charts[2].setOption({
-    ...chartBase('活动连接'),
-    tooltip: { ...chartTooltip, trigger: 'axis', confine: true, formatter: (items) => `${timeLabel(items[0].axisValue)}<br>${items[0].marker}${items[0].seriesName} ${items[0].value[1]}` },
-    legend: { ...chartLegend, data: ['连接数'] },
+    ...chartBase('活动连接趋势'),
+    tooltip: { ...tip, trigger: 'axis', confine: true, formatter: (items) => `${timeLabel(items[0].axisValue)}<br>${items[0].marker}${items[0].seriesName} ${items[0].value[1]}` },
+    legend: { ...leg, data: ['连接数'] },
     xAxis: { ...axis, type: 'time', splitNumber: 3, axisLabel: { ...axis.axisLabel, hideOverlap: true, formatter: (value) => timeLabel(value).slice(3) } },
     yAxis: { ...axis, type: 'value', minInterval: 1 },
-    series: [{ name: '连接数', type: 'line', data: connectionHistory.value.map((item) => [item.time, item.count]), showSymbol: false, smooth: 0.25, itemStyle: { color: '#a78bfa' }, lineStyle: { width: 2, color: '#a78bfa' }, areaStyle: { color: 'rgba(167,139,250,.14)' } }],
+    series: [{ name: '连接数', type: 'line', data: connectionHistory.value.map((item) => [item.time, item.count]), showSymbol: false, smooth: 0.25, itemStyle: { color: ink.conn }, lineStyle: { width: 2, color: ink.conn }, areaStyle: { color: ink.connArea } }],
   }, true)
+
   const protocolCounts = Object.entries(fleetTotals.value?.protocols || {})
   charts[3].setOption({
     animation: false,
-    title: chartBase('传输协议').title,
+    title: chartBase('传输协议分布').title,
     tooltip: {
-      ...chartTooltip,
+      ...tip,
       trigger: 'item',
       confine: true,
       formatter: ({ name, value, percent }) => (protocolCounts.length ? `${name}<br>${value} 条连接（${percent}%）` : name),
     },
-    legend: { ...chartLegend, show: protocolCounts.length > 0 },
+    legend: { ...leg, show: protocolCounts.length > 0 },
     series: [{
       type: 'pie',
       silent: protocolCounts.length === 0,
@@ -200,42 +245,41 @@ function renderCharts() {
       center: ['50%', '48%'],
       avoidLabelOverlap: true,
       ...donutLabels(({ value }) => `${value} 条`, protocolCounts.length > 0),
-      itemStyle: { borderColor: '#0e1524', borderWidth: 2 },
+      itemStyle: { borderColor: ink.pieBorder, borderWidth: 2 },
       data: protocolCounts.length
         ? protocolCounts.map(([name, value]) => ({ name, value, itemStyle: { color: protocolColors[name] || '#64748b' } }))
-        : [{ name: '暂无连接', value: 1, itemStyle: { color: chartInk.empty } }],
+        : [{ name: '暂无连接', value: 1, itemStyle: { color: ink.empty } }],
     }],
   }, true)
+
   const popular = fleetTotals.value?.popular_nodes || []
   charts[4].setOption({
-    ...chartBase(`热门节点（最近 ${Number(fleetTotals.value?.popular_window_minutes) || 10} 分钟）`),
-    grid: { left: 110, right: 42, top: 44, bottom: 16 },
-    tooltip: { ...chartTooltip, trigger: 'axis', confine: true, formatter: (items) => `${items[0].name}<br>${items[0].value} 次连接` },
+    ...chartBase(`热门节点（近 ${Number(fleetTotals.value?.popular_window_minutes) || 10} 分钟）`),
+    grid: { left: 110, right: 44, top: 46, bottom: 18 },
+    tooltip: { ...tip, trigger: 'axis', confine: true, formatter: (items) => `${items[0].name}<br>${items[0].value} 次连接` },
     xAxis: { ...axis, type: 'value', minInterval: 1 },
-    // 这一列是名称而不是刻度，用标题的亮度写，暗一档在深底上就糊了。
-    yAxis: { ...axis, type: 'category', inverse: true, data: popular.map((item) => item.name), axisLabel: { ...axis.axisLabel, color: chartInk.title, width: 94, overflow: 'truncate' } },
+    yAxis: { ...axis, type: 'category', inverse: true, data: popular.map((item) => item.name), axisLabel: { ...axis.axisLabel, color: ink.title, width: 94, overflow: 'truncate' } },
     series: [{
       type: 'bar',
       data: popular.map((item) => item.count),
       barMaxWidth: 14,
-      // 数字写在柱子末端：横条上比长短要来回对轴上的刻度，直接写出来省这一步。
-      label: { show: true, position: 'right', color: chartInk.title, fontSize: 10, formatter: '{c}' },
-      itemStyle: { color: '#22d3ee', borderRadius: [0, 3, 3, 0] },
+      label: { show: true, position: 'right', color: ink.title, fontSize: 10, formatter: '{c}' },
+      itemStyle: { color: ink.down, borderRadius: [0, 3, 3, 0] },
     }],
   }, true)
 }
 
-// 一个上报节拍对应图上一个点。各服务器在同一个墙钟时刻采样并上报，主控等这一
-// 轮到齐后算好合计再推过来，浏览器不再自己求和——原先按到达顺序累加，会把同一
-// 台服务器的读数画进相邻好几个点，曲线画的其实是上报相位而不是流量。
+watch(isDark, () => {
+  scheduleRender()
+})
+
 function appendTotals(totals) {
-  // 协议分布和热门节点是当轮的即时数字，每一轮都照画；只有两条曲线要挑，
-  // 因为整个舰队都还没测出速率时的那个 0 是"不知道"而不是"没有流量"，画上去
-  // 会在曲线上留一个没发生过的凹坑。
   if (totals.has_rates || Number(totals.nodes) === 0) {
     const at = Date.parse(totals.at) || Date.now()
     trafficHistory.value = [...trafficHistory.value, {
-      time: at, download: Number(totals.download_rate || 0), upload: Number(totals.upload_rate || 0),
+      time: at,
+      download: Number(totals.download_rate || 0),
+      upload: Number(totals.upload_rate || 0),
     }].slice(-historyLength)
     connectionHistory.value = [...connectionHistory.value, { time: at, count: Number(totals.connection_count || 0) }].slice(-historyLength)
   }
@@ -252,7 +296,7 @@ async function load(silent = false) {
       api('/listeners').catch(() => ({ listeners: [] })),
       api('/nodes/metrics').catch(() => ({ nodes: [] })),
     ])
-    endpointCount.value = (listenerResult.listeners || []).reduce((total, listener) => total + Number(listener.endpoint_count || 0), 0)
+    endpointCount.value = (listenerResult.listeners || []).length
     cumulative.value = (metricResult.nodes || []).reduce((total, entry) => ({
       download: total.download + Number(entry.report?.proxy?.received_bytes || 0),
       upload: total.upload + Number(entry.report?.proxy?.sent_bytes || 0),
@@ -276,7 +320,6 @@ onMounted(async () => {
   await load()
   await nextTick()
   initCharts()
-  // 国旗字体是异步加载的，画布上已经画好的字不会自己更新，就绪后补画一次。
   document.fonts?.ready.then(scheduleRender)
   stopTotals = subscribeFleetTotals(appendTotals)
   stopLive = subscribeLive((event) => {
@@ -294,66 +337,104 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <MPage :loading="loading">
+  <MPage title="运行概览" :loading="loading">
+    <template #actions>
+      <el-button
+        circle
+        size="small"
+        :icon="Refresh"
+        :loading="refreshing"
+        aria-label="刷新数据"
+        @click="load(false)"
+      />
+    </template>
+
     <div v-if="offline > 0 && dismissedOffline !== offline" class="m-notice m-notice--warning offline">
       <button type="button" class="offline__go" @click="navigate('nodes', 'status=offline')">
-        {{ offline }} 台服务器离线，去看看 ›
+        {{ offline }} 台服务器离线，点击查看排障 ›
       </button>
       <button type="button" class="offline__skip" @click="dismissOffline">忽略</button>
     </div>
 
-    <!-- 四个数字同时是四个入口：看到「3 台离线」「54 条连接」时想做的下一件事
-         就是去看那一批，不该让人自己回到底部再找页面。 -->
+    <!-- 顶部四格指标卡 -->
     <section class="metrics">
       <button
         v-for="metric in metrics"
         :key="metric.label"
         type="button"
-        class="metric"
+        class="metric neu"
+        :class="`tone-${metric.tone}`"
         @click="navigate(metric.view, metric.query)"
       >
-        <span>{{ metric.label }}</span>
-        <strong>{{ metric.value }}</strong>
+        <span class="metric__label">{{ metric.label }}</span>
+        <strong class="metric__val font-mono">{{ metric.value }}</strong>
       </button>
     </section>
 
-    <div ref="trafficChart" class="chart chart--tall" />
+    <!-- 图表容器 -->
+    <div ref="trafficChart" class="chart chart--tall neu-sm" />
     <div class="chart-pair">
-      <div ref="totalChart" class="chart" />
-      <div ref="networkChart" class="chart" />
+      <div ref="totalChart" class="chart neu-sm" />
+      <div ref="networkChart" class="chart neu-sm" />
     </div>
-    <div ref="connectionChart" class="chart" />
-    <div ref="proxyChart" class="chart chart--bars" />
+    <div ref="connectionChart" class="chart neu-sm" />
+    <div ref="proxyChart" class="chart chart--bars neu-sm" />
   </MPage>
 </template>
 
 <style scoped>
-.offline { display: flex; align-items: center; gap: 10px; padding: 4px 12px; }
+.offline {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 12px;
+  margin-bottom: 12px;
+}
 .offline button {
-  min-height: 40px;
+  min-height: 36px;
   color: inherit;
   background: none;
   border: 0;
   font: inherit;
   cursor: pointer;
 }
-.offline__go { flex: 1; min-width: 0; padding: 0; font-size: 12.5px; text-align: left; }
-.offline__skip { flex: none; min-width: 44px; padding: 0 6px; font-size: 12px; text-decoration: underline; }
+.offline__go {
+  flex: 1;
+  min-width: 0;
+  padding: 0;
+  font-size: 13px;
+  font-weight: 550;
+  text-align: left;
+}
+.offline__skip {
+  flex: none;
+  min-width: 40px;
+  padding: 0 4px;
+  font-size: 12px;
+  text-decoration: underline;
+  opacity: 0.8;
+}
 
-/* 四个数字占掉大半屏就没地方放图了：一格压到 62px，四格连同间距不到 140px。 */
-.metrics { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; margin-bottom: 12px; }
+/* 四格指标卡：优雅微拟态 + 响应式布局 */
+.metrics {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  margin-bottom: 12px;
+}
 .metric {
   position: relative;
-  padding: 9px 12px;
+  padding: 12px 14px;
   overflow: hidden;
   text-align: left;
-  background: var(--sb-panel);
-  border: 1px solid var(--sb-line);
   border-radius: var(--m-radius);
   font: inherit;
   cursor: pointer;
+  transition: transform 0.12s ease, border-color 0.15s ease, box-shadow 0.15s ease;
 }
-.metric:active { background: var(--sb-surface-3); }
+.metric:active {
+  transform: scale(0.985);
+}
 .metric::before {
   content: "";
   position: absolute;
@@ -361,24 +442,45 @@ onBeforeUnmount(() => {
   right: 0;
   top: 0;
   height: 2px;
-  background: linear-gradient(90deg, var(--sb-accent), rgba(99, 102, 241, .55) 45%, transparent);
+  background: linear-gradient(90deg, var(--sb-accent), color-mix(in oklab, var(--sb-accent-2) 55%, transparent) 45%, transparent);
 }
-.metric span { display: block; color: var(--sb-muted); font-size: 11.5px; }
-/* 箭头用伪元素画：它是「这里能点」的提示，不该混进指标名的文本里。 */
-.metric span::after { content: " ›"; font-size: 13px; }
-.metric strong { display: block; margin-top: 2px; color: #fff; font-size: 21px; font-weight: 650; font-variant-numeric: tabular-nums; }
+.metric.tone-ok::before {
+  background: linear-gradient(90deg, var(--sb-success), transparent);
+}
+.metric.tone-info::before {
+  background: linear-gradient(90deg, var(--sb-info), transparent);
+}
+.metric__label {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  color: var(--sb-muted);
+  font-size: 11.5px;
+  font-weight: 550;
+  letter-spacing: .3px;
+}
+.metric__label::after {
+  content: "›";
+  font-size: 14px;
+  color: var(--sb-muted);
+  opacity: 0.7;
+}
+.metric__val {
+  display: block;
+  margin-top: 4px;
+  color: var(--sb-text);
+  font-size: 22px;
+  font-weight: 700;
+  line-height: 1.2;
+}
 
 .chart {
-  height: 190px;
+  height: 195px;
   margin-bottom: 10px;
-  background: var(--sb-panel);
-  border: 1px solid var(--sb-line);
   border-radius: var(--m-radius);
   overflow: hidden;
 }
-.chart--tall { height: 210px; }
-.chart--bars { height: 220px; }
-/* 这两张环形图各占一整行：并排时每张只有 178px 宽，牵出来的数字标签
-   会溢出卡片、压住标题。整行之后环两边各剩 130px，标签放得下。 */
-.chart-pair .chart { height: 185px; }
+.chart--tall { height: 215px; }
+.chart--bars { height: 225px; }
+.chart-pair .chart { height: 190px; }
 </style>

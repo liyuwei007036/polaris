@@ -77,27 +77,49 @@ async function copy() {
 .qr { display: flex; flex-direction: column; align-items: center; gap: 14px; min-height: 140px; }
 .qr__picks { display: flex; flex-wrap: wrap; gap: 6px; align-self: stretch; }
 .qr__pick {
-  padding: 7px 11px;
+  padding: 6px 12px;
   color: var(--sb-text-2);
-  background: rgba(148, 163, 184, .08);
+  background: var(--sb-surface-2);
   border: 1px solid var(--sb-line);
   border-radius: 999px;
   font: inherit;
   font-size: 12.5px;
   cursor: pointer;
+  transition: all 0.15s ease;
 }
-.qr__pick.is-active { color: #04121f; background: var(--sb-accent); border-color: var(--sb-accent); font-weight: 600; }
-.qr__frame { padding: 10px; background: #fff; border-radius: var(--m-radius); line-height: 0; }
+html.dark .qr__pick.is-active {
+  color: #0E1015;
+  background: #F8FAFC;
+  border-color: #F8FAFC;
+  font-weight: 600;
+}
+html.light .qr__pick.is-active,
+html:not(.dark) .qr__pick.is-active {
+  color: #FFFFFF;
+  background: #0F172A;
+  border-color: #0F172A;
+  font-weight: 600;
+}
+.qr__frame {
+  padding: 12px;
+  background: #FFFFFF;
+  border: 1px solid var(--sb-line);
+  border-radius: var(--m-radius);
+  line-height: 0;
+  box-shadow: var(--sb-shadow-sm);
+}
 .qr__frame img { display: block; width: min(240px, 62vw); height: min(240px, 62vw); }
 .qr__value {
   align-self: stretch;
   max-height: 110px;
   padding: 10px 12px;
   color: var(--sb-text-2);
-  background: rgba(148, 163, 184, .06);
+  background: var(--sb-surface-2);
+  border: 1px solid var(--sb-line);
   border-radius: var(--sb-radius-sm);
   overflow-y: auto;
   line-height: 1.6;
+  font-size: 12px;
   word-break: break-all;
 }
 .qr__copy { align-self: stretch; height: var(--m-tap); }

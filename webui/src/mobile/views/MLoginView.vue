@@ -58,7 +58,7 @@ async function finishAuthentication(result) {
 <template>
   <div class="m-login">
     <header class="m-login__brand">
-      <span class="m-login__mark"><BrandMark :size="26" /></span>
+      <span class="m-login__mark"><BrandMark :size="24" /></span>
       <strong>{{ brandName }}</strong>
       <small>{{ brandTagline }}</small>
     </header>
@@ -112,33 +112,80 @@ async function finishAuthentication(result) {
   display: flex;
   flex-direction: column;
   justify-content: center;
-  gap: 26px;
+  gap: 24px;
   padding: 24px 20px calc(24px + var(--m-safe-bottom));
+  background: var(--sb-bg);
   overflow-y: auto;
 }
-.m-login__brand { display: flex; flex-direction: column; align-items: center; gap: 8px; }
+.m-login__brand {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+}
 .m-login__mark {
-  width: 52px;
-  height: 52px;
+  width: 50px;
+  height: 50px;
   display: grid;
   place-items: center;
-  color: #04121f;
-  background: linear-gradient(135deg, var(--sb-accent), var(--sb-accent-2));
-  border-radius: 15px;
-  box-shadow: 0 0 26px -6px rgba(56, 189, 248, .85);
+  border-radius: 14px;
+  transition: all 0.2s ease;
 }
-.m-login__brand strong { color: #fff; font-size: 20px; letter-spacing: 1px; }
-.m-login__brand small { color: var(--sb-muted); font-size: 11px; letter-spacing: 4px; }
+html.dark .m-login__mark {
+  color: #0E1015;
+  background: linear-gradient(135deg, #F8FAFC, #CBD5E1);
+  box-shadow: 0 0 24px -4px rgba(248, 250, 252, 0.4);
+}
+html.light .m-login__mark,
+html:not(.dark) .m-login__mark {
+  color: #FFFFFF;
+  background: linear-gradient(135deg, #0F172A, #334155);
+  box-shadow: 0 6px 20px -4px rgba(15, 23, 42, 0.3);
+}
+.m-login__brand strong {
+  color: var(--sb-text);
+  font-size: 20px;
+  font-weight: 700;
+  letter-spacing: .8px;
+}
+.m-login__brand small {
+  color: var(--sb-muted);
+  font-size: 11px;
+  letter-spacing: 3px;
+}
 .m-login__form {
   padding: 24px 20px 22px;
-  background: var(--sb-panel);
-  border: 1px solid var(--sb-line);
-  border-radius: 16px;
+  background: var(--sb-panel-solid);
+  border: 1px solid var(--sb-line-strong);
+  border-radius: var(--m-radius);
   box-shadow: var(--sb-shadow);
 }
-.m-login__form h1 { margin: 0 0 20px; color: #fff; font-size: 21px; font-weight: 620; }
-.m-login__sub { margin: -14px 0 20px; color: var(--sb-muted); font-size: 13px; line-height: 1.6; }
-.m-login__form :deep(.el-button--primary) { width: 100%; height: 46px; margin-top: 4px; }
-.m-login__code :deep(.el-input__inner) { letter-spacing: 8px; text-align: center; font-size: 20px; }
-.m-login__back { width: 100%; margin-top: 12px; }
+.m-login__form h1 {
+  margin: 0 0 20px;
+  color: var(--sb-text);
+  font-size: 20px;
+  font-weight: 650;
+  letter-spacing: .2px;
+}
+.m-login__sub {
+  margin: -14px 0 20px;
+  color: var(--sb-muted);
+  font-size: 13px;
+  line-height: 1.6;
+}
+.m-login__form :deep(.el-button--primary) {
+  width: 100%;
+  height: var(--m-tap);
+  margin-top: 6px;
+  font-weight: 600;
+}
+.m-login__code :deep(.el-input__inner) {
+  letter-spacing: 8px;
+  text-align: center;
+  font-size: 20px;
+}
+.m-login__back {
+  width: 100%;
+  margin-top: 12px;
+}
 </style>
