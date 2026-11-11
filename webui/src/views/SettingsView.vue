@@ -32,7 +32,6 @@ const alertSettings = reactive({
   bark_device_key: '',
   bark_sound: 'minuet.caf',
   bark_group: 'Polaris',
-  bark_url: '',
   telegram_enabled: false,
   telegram_server: 'https://api.telegram.org',
   telegram_bot_token: '',
@@ -273,7 +272,6 @@ async function sendTestAlert() {
       device_key: alertSettings.bark_device_key,
       sound: alertSettings.bark_sound,
       group: alertSettings.bark_group,
-      url: alertSettings.bark_url,
       telegram_server: alertSettings.telegram_server,
       telegram_bot_token: alertSettings.telegram_bot_token,
       telegram_chat_id: alertSettings.telegram_chat_id,
@@ -401,11 +399,6 @@ onMounted(load)
                         <span class="notify-field__label">推送分组</span>
                         <el-input v-model="alertSettings.bark_group" placeholder="Polaris" clearable />
                         <span class="notify-field__hint">不同分组的通知会在 Bark 中分别归档。</span>
-                      </label>
-                      <label class="notify-field">
-                        <span class="notify-field__label">点击跳转</span>
-                        <el-input v-model="alertSettings.bark_url" placeholder="https://控制台地址" clearable />
-                        <span class="notify-field__hint">点击通知时打开的地址，可留空。</span>
                       </label>
                       <label class="notify-field notify-field--full">
                         <span class="notify-field__label">默认铃声</span>

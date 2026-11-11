@@ -29,6 +29,7 @@ import (
 	"github.com/liyuwei007036/polaris/internal/nginxroute"
 	"github.com/liyuwei007036/polaris/internal/selfupdate"
 	"github.com/liyuwei007036/polaris/internal/version"
+	"github.com/liyuwei007036/polaris/internal/wire"
 	"golang.org/x/net/proxy"
 )
 
@@ -93,6 +94,8 @@ type NginxPassthroughRoute struct {
 
 type TaskOptions struct {
 	DataDir                string
+	MasterAddress          string
+	MasterPublicKey        [wire.KeySize]byte
 	NginxPassthroughRoutes []NginxPassthroughRoute
 }
 
@@ -124,7 +127,7 @@ func executeTask(ctx context.Context, task Task, options TaskOptions) TaskResult
 	case "singbox.install", "singbox.upgrade":
 		return installSingBox(ctx, task, options.DataDir)
 	case "agent.upgrade":
-		return upgradeAgent(ctx, task, options.DataDir)
+		return upgradeAgentWithOptions(ctx, task, options)
 	case "outbound.test":
 		return testOutbound(ctx, task)
 	case "probe.tcp", "probe.network", "network.probe":
@@ -337,25 +340,114 @@ func installSingBox(ctx context.Context, task Task, dataDir string) TaskResult {
 // still never accepts a bare download URL from the control stream. On success
 // the session loop re-executes the process after the result is reported.
 func upgradeAgent(ctx context.Context, task Task, dataDir string) TaskResult {
-	manifest, err := VerifyReleaseTask(dataDir, task)
+	return upgradeAgentWithOptions(ctx, task, TaskOptions{DataDir: dataDir})
+}
+
+func upgradeAgentWithOptions(ctx context.Context, task Task, options TaskOptions) TaskResult {
+	manifest, err := VerifyReleaseTask(options.DataDir, task)
 	if err != nil {
 		return TaskResult{Status: "failed", Summary: err.Error()}
 	}
 	if manifest.Architecture != runtime.GOARCH {
 		return TaskResult{Status: "failed", Summary: "signed agent release architecture does not match this agent"}
 	}
-	if manifest.Version == version.Version {
+	targetVersion := strings.TrimPrefix(strings.TrimSpace(manifest.Version), "v")
+	runningVersion := strings.TrimPrefix(strings.TrimSpace(version.Version), "v")
+	if targetVersion == runningVersion {
 		return TaskResult{Status: "succeeded", Summary: "agent 已是版本 " + manifest.Version + "，无需更新"}
+	}
+	if version.IsNewer(runningVersion, targetVersion) {
+		return TaskResult{Status: "succeeded", Summary: "agent 当前版本 " + version.Version + " 已高于目标版本 " + manifest.Version + "，跳过降级"}
 	}
 	executable, err := os.Executable()
 	if err != nil {
 		return TaskResult{Status: "failed", Summary: "定位当前可执行文件失败: " + err.Error()}
 	}
+	// If a prior attempt already wrote the verified target binary onto disk
+	// before failing to exec-restart, trigger a restart directly instead of
+	// re-downloading and overwriting .polaris.last-good with the new binary.
+	if executableBinaryVersionMatches(ctx, executable, manifest.Version) {
+		return TaskResult{Status: "succeeded", Summary: "agent 已更新到版本 " + manifest.Version + "，正在重启", RestartAgent: true}
+	}
 	update := selfupdate.Manifest{Version: manifest.Version, URL: manifest.URL, SHA256: manifest.SHA256, Archive: manifest.Archive}
+	if options.MasterAddress != "" && options.DataDir != "" {
+		update.FallbackFetch = func(fetchCtx context.Context, dst io.Writer) error {
+			return fetchAgentArtifactFromMaster(fetchCtx, options.DataDir, options.MasterAddress, options.MasterPublicKey, manifest, dst)
+		}
+	}
 	if err := selfupdate.Apply(ctx, update, executable, nil); err != nil {
 		return TaskResult{Status: "failed", Summary: err.Error()}
 	}
 	return TaskResult{Status: "succeeded", Summary: "agent 已更新到版本 " + manifest.Version + "，正在重启", RestartAgent: true}
+}
+
+func executableBinaryVersionMatches(ctx context.Context, executable, expectedVersion string) bool {
+	if executable == "" || expectedVersion == "" {
+		return false
+	}
+	checkCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	output, err := exec.CommandContext(checkCtx, executable, "version").CombinedOutput()
+	if err != nil {
+		return false
+	}
+	return strings.TrimPrefix(strings.TrimSpace(string(output)), "v") == strings.TrimPrefix(strings.TrimSpace(expectedVersion), "v")
+}
+
+func fetchAgentArtifactFromMaster(ctx context.Context, dataDir, masterAddr string, masterPub [wire.KeySize]byte, manifest releaseManifest, dst io.Writer) error {
+	keypair, err := LoadOrCreateKeypair(dataDir)
+	if err != nil {
+		return fmt.Errorf("load agent identity: %w", err)
+	}
+	conn, err := Connect(ctx, masterAddr, keypair, masterPub)
+	if err != nil {
+		return fmt.Errorf("connect master artifact relay: %w", err)
+	}
+	defer conn.Close()
+
+	reqBody, err := wire.Encode(wire.ArtifactRequest{
+		Kind:         "polaris",
+		Version:      manifest.Version,
+		Architecture: manifest.Architecture,
+		SHA256:       manifest.SHA256,
+	})
+	if err != nil {
+		return err
+	}
+	_ = conn.SetWriteDeadline(time.Now().Add(15 * time.Second))
+	if err := conn.WriteMessage(wire.MsgArtifactRequest, reqBody); err != nil {
+		return fmt.Errorf("send artifact request: %w", err)
+	}
+	_ = conn.SetWriteDeadline(time.Time{})
+
+	for {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		_ = conn.SetReadDeadline(time.Now().Add(60 * time.Second))
+		msgType, body, err := conn.ReadMessage()
+		if err != nil {
+			return fmt.Errorf("read artifact chunk: %w", err)
+		}
+		if msgType != wire.MsgArtifactChunk {
+			return fmt.Errorf("unexpected artifact message type %d", msgType)
+		}
+		var chunk wire.ArtifactChunk
+		if err := wire.Decode(body, &chunk); err != nil {
+			return fmt.Errorf("decode artifact chunk: %w", err)
+		}
+		if chunk.Error != "" {
+			return errors.New(chunk.Error)
+		}
+		if len(chunk.Data) > 0 {
+			if _, err := dst.Write(chunk.Data); err != nil {
+				return fmt.Errorf("write artifact chunk: %w", err)
+			}
+		}
+		if chunk.Done {
+			return nil
+		}
+	}
 }
 
 func extractSingBoxArchive(archivePath, directory string) (string, error) {

@@ -3,6 +3,7 @@ package control
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -393,5 +394,92 @@ func TestBarkClientAndAlertEngine(t *testing.T) {
 	}
 	if !scanFound {
 		t.Errorf("expected abnormal scan alert")
+	}
+}
+
+func TestBarkAlertsNeverContainURL(t *testing.T) {
+	ctx := context.Background()
+	var (
+		mu       sync.Mutex
+		rawBarks []string
+		gotTG    []string
+	)
+	barkServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		bodyBytes, _ := io.ReadAll(r.Body)
+		mu.Lock()
+		rawBarks = append(rawBarks, string(bodyBytes))
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{"code": 200, "message": "success"})
+	}))
+	defer barkServer.Close()
+
+	tgServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var msg struct {
+			Text string `json:"text"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&msg)
+		mu.Lock()
+		gotTG = append(gotTG, msg.Text)
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{"ok": true})
+	}))
+	defer tgServer.Close()
+
+	store, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+
+	if _, err := store.UpdateAlertSettings(ctx, AlertSettings{
+		BarkServer:       barkServer.URL,
+		BarkDeviceKey:    "test_key",
+		TelegramEnabled:  true,
+		TelegramServer:   tgServer.URL,
+		TelegramBotToken: "12345:token",
+		TelegramChatID:   "1001",
+		CooldownMinutes:  1,
+	}); err != nil {
+		t.Fatalf("update alert settings: %v", err)
+	}
+
+	// Simulate an existing DB row that previously saved a legacy bark_url.
+	if _, err := store.db.ExecContext(ctx, `UPDATE alert_settings SET bark_url = ? WHERE id = 1`, "https://legacy.example.com/admin"); err != nil {
+		t.Fatalf("seed legacy bark_url: %v", err)
+	}
+
+	engine := NewAlertEngine(store, nil)
+	engine.NotifyServerExpiry(Node{
+		ID:             "node-exp",
+		Name:           "ExpiryNode",
+		LastObservedIP: "198.51.100.88",
+		ExpiresOn:      "2026-12-01",
+		Provider:       "DMIT",
+		ProviderURL:    "https://www.dmit.io/clientarea.php",
+	}, 3)
+
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		mu.Lock()
+		bCount, tCount := len(rawBarks), len(gotTG)
+		mu.Unlock()
+		if bCount >= 1 && tCount >= 1 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out waiting for notifications (bark=%d tg=%d)", bCount, tCount)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if strings.Contains(rawBarks[0], `"url"`) || strings.Contains(rawBarks[0], "https://") || strings.Contains(rawBarks[0], "续费入口") {
+		t.Errorf("expected Bark payload to contain zero URL fields or links, got: %s", rawBarks[0])
+	}
+	if !strings.Contains(gotTG[0], "https://www.dmit.io/clientarea.php") {
+		t.Errorf("expected Telegram notification to still include provider URL link, got: %s", gotTG[0])
 	}
 }

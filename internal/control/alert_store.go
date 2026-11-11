@@ -14,7 +14,6 @@ type AlertSettings struct {
 	BarkDeviceKey          string  `json:"bark_device_key"`
 	BarkSound              string  `json:"bark_sound"`
 	BarkGroup              string  `json:"bark_group"`
-	BarkURL                string  `json:"bark_url"`
 	TelegramEnabled        bool    `json:"telegram_enabled"`
 	TelegramServer         string  `json:"telegram_server"`
 	TelegramBotToken       string  `json:"telegram_bot_token"`
@@ -67,8 +66,9 @@ func (s *Store) GetAlertSettings(ctx context.Context) (AlertSettings, error) {
 		scan_alert_enabled, updated_at
 		FROM alert_settings WHERE id = 1`)
 
+	var ignoredBarkURL string
 	err := row.Scan(
-		&settings.BarkServer, &settings.BarkDeviceKey, &settings.BarkSound, &settings.BarkGroup, &settings.BarkURL,
+		&settings.BarkServer, &settings.BarkDeviceKey, &settings.BarkSound, &settings.BarkGroup, &ignoredBarkURL,
 		&telegramEnabled, &settings.TelegramServer, &settings.TelegramBotToken, &settings.TelegramChatID,
 		&trafficAlert, &settings.TrafficThresholdMbps, &settings.TrafficDurationSec,
 		&connAlert, &settings.ConnThresholdCount,
@@ -82,7 +82,6 @@ func (s *Store) GetAlertSettings(ctx context.Context) (AlertSettings, error) {
 			BarkServer:             "https://api.day.app",
 			BarkSound:              "minuet",
 			BarkGroup:              "Polaris",
-			BarkURL:                "",
 			TelegramEnabled:        false,
 			TelegramServer:         telegramDefaultAPIBase,
 			TrafficAlertEnabled:    true,
@@ -129,7 +128,8 @@ func (s *Store) UpdateAlertSettings(ctx context.Context, in AlertSettings) (Aler
 	if group == "" {
 		group = "Polaris"
 	}
-	url := strings.TrimSpace(in.BarkURL)
+	url := ""
+	_ = url
 	telegramServer := strings.TrimRight(strings.TrimSpace(in.TelegramServer), "/")
 	if telegramServer == "" {
 		telegramServer = telegramDefaultAPIBase

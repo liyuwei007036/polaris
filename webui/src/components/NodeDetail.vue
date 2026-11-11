@@ -325,6 +325,7 @@ import { ElMessage } from 'element-plus'
 import LatencyPanel from './LatencyPanel.vue'
 import TrendChart from './TrendChart.vue'
 import { api, post } from '../api'
+import { formatDDNSBindSummary } from '../ddns'
 import { formatBandwidth, formatBytes, formatUptime } from '../format'
 import { summarizePing } from '../latency'
 import { isShareMode } from '../share'
@@ -753,6 +754,13 @@ const factGroups = computed(() => {
       cls: 'font-mono',
     },
   ]
+  if (node.ddns_enabled) {
+    ddnsFacts.push({
+      label: '绑定出口策略',
+      value: formatDDNSBindSummary(node),
+      cls: 'font-mono',
+    })
+  }
   groups.push({
     label: '动态域名解析',
     icon: 'dns',

@@ -1,6 +1,7 @@
 package control
 
 import (
+	"bytes"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -874,4 +875,246 @@ func TestExecuteNodeDDNSAcrossZones(t *testing.T) {
 	if patched["rec-a"] != "203.0.113.77" || patched["rec-b"] != "203.0.113.77" {
 		t.Fatalf("expected both zones patched, got %#v", patched)
 	}
+}
+
+func TestServerDDNSMultiIPBindingAndPerRecordOverrides(t *testing.T) {
+	var (
+		mu      sync.Mutex
+		patched = map[string]string{}
+	)
+	recordDefs := map[string]map[string]any{
+		"rec-a1":   {"id": "rec-a1", "type": "A", "name": "a1.example.com", "content": "198.51.100.1", "ttl": 60, "proxied": false},
+		"rec-a2":   {"id": "rec-a2", "type": "A", "name": "a2.example.com", "content": "198.51.100.1", "ttl": 60, "proxied": false},
+		"rec-aaaa": {"id": "rec-aaaa", "type": "AAAA", "name": "v6.example.com", "content": "2001:db8::1", "ttl": 60, "proxied": false},
+	}
+
+	mockCF := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		defer mu.Unlock()
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/zones/zone-multi":
+			_ = json.NewEncoder(w).Encode(map[string]any{"success": true, "result": map[string]any{"id": "zone-multi", "name": "example.com"}})
+		case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/zones/zone-multi/dns_records/"):
+			recID := strings.TrimPrefix(r.URL.Path, "/zones/zone-multi/dns_records/")
+			rec, ok := recordDefs[recID]
+			if !ok {
+				http.NotFound(w, r)
+				return
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{"success": true, "result": rec})
+		case r.Method == http.MethodPatch && strings.HasPrefix(r.URL.Path, "/zones/zone-multi/dns_records/"):
+			recID := strings.TrimPrefix(r.URL.Path, "/zones/zone-multi/dns_records/")
+			rec, ok := recordDefs[recID]
+			if !ok {
+				http.NotFound(w, r)
+				return
+			}
+			var body map[string]any
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			content, _ := body["content"].(string)
+			patched[recID] = content
+			rec["content"] = content
+			_ = json.NewEncoder(w).Encode(map[string]any{"success": true, "result": rec})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer mockCF.Close()
+
+	oldAPI := cloudflareAPI
+	cloudflareAPI = mockCF.URL
+	defer func() { cloudflareAPI = oldAPI }()
+
+	store, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+
+	if err := store.SetCloudflareSettings(t.Context(), "zone-multi", "example.com", "token"); err != nil {
+		t.Fatal(err)
+	}
+
+	server, err := NewServer(store, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	admin, _, err := store.createOperator(t.Context(), "admin_ddns", "AdminPass123456!", "admin", false, false, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	session, err := store.createSession(t.Context(), admin.ID, admin.Role, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := server.BrowserHandler()
+	doRequest := func(method, path string, body any) *httptest.ResponseRecorder {
+		var reqBody []byte
+		if body != nil {
+			reqBody, _ = json.Marshal(body)
+		}
+		req := httptest.NewRequest(method, path, bytes.NewReader(reqBody))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("X-CSRF-Token", session.CSRFToken)
+		req.AddCookie(&http.Cookie{Name: sessionCookieName, Value: session.Token})
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+		return rec
+	}
+
+	nodeID := newTestNode(t, store, "multi-ip-node", "m")
+
+	// Simulate multi-IP + dual-stack agent status update where primary control IP is 198.51.100.1.
+	if err := store.UpdateNodeIdentityWithIPs(t.Context(), nodeID, "v1", "linux", "debian", "amd64", "", "",
+		[]string{"198.51.100.1", "198.51.100.2", "198.51.100.3", "2001:db8::2"},
+		map[string]string{}); err != nil {
+		t.Fatal(err)
+	}
+	server.controlMu.Lock()
+	server.controls[nodeID] = &controlSession{remoteAddr: "198.51.100.1"}
+	server.controlMu.Unlock()
+
+	// Reject invalid bind IP via PUT /api/v1/nodes/{id}.
+	badResp := doRequest(http.MethodPut, "/api/v1/nodes/"+nodeID, map[string]any{
+		"name":         "multi-ip-node",
+		"ddns_enabled": true,
+		"ddns_bind_ip": "not-an-ip",
+	})
+	if badResp.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 on invalid ddns_bind_ip, got %d: %s", badResp.Code, badResp.Body.String())
+	}
+
+	// Set node-level ddns_bind_ip=198.51.100.2 plus per-record overrides for rec-a2 and rec-aaaa.
+	updResp := doRequest(http.MethodPut, "/api/v1/nodes/"+nodeID, map[string]any{
+		"name":            "multi-ip-node",
+		"ddns_enabled":    true,
+		"ddns_record_ids": []string{"rec-a1", "rec-a2", "rec-aaaa"},
+		"ddns_domains":    []string{"a1.example.com", "a2.example.com", "v6.example.com"},
+		"ddns_bind_ip":    "198.51.100.2",
+		"ddns_record_ips": map[string]string{
+			"rec-a2":   "198.51.100.3",
+			"rec-aaaa": "2001:db8::2",
+		},
+	})
+	if updResp.Code != http.StatusOK {
+		t.Fatalf("expected 200 updating multi-IP DDNS settings, got %d: %s", updResp.Code, updResp.Body.String())
+	}
+
+	syncResp := doRequest(http.MethodPost, "/api/v1/nodes/"+nodeID+"/ddns/sync", map[string]any{})
+	if syncResp.Code != http.StatusOK {
+		t.Fatalf("expected 200 on manual multi-IP ddns sync, got %d: %s", syncResp.Code, syncResp.Body.String())
+	}
+
+	mu.Lock()
+	gotA1, gotA2, gotAAAA := patched["rec-a1"], patched["rec-a2"], patched["rec-aaaa"]
+	mu.Unlock()
+	if gotA1 != "198.51.100.2" {
+		t.Errorf("expected rec-a1 bound to node ddns_bind_ip 198.51.100.2 (not active IP 198.51.100.1), got %q", gotA1)
+	}
+	if gotA2 != "198.51.100.3" {
+		t.Errorf("expected rec-a2 override 198.51.100.3, got %q", gotA2)
+	}
+	if gotAAAA != "2001:db8::2" {
+		t.Errorf("expected rec-aaaa IPv6 override 2001:db8::2, got %q", gotAAAA)
+	}
+
+	persisted, err := store.GetNode(t.Context(), nodeID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if persisted.DDNSBindIP != "198.51.100.2" || persisted.DDNSRecordIPs["rec-aaaa"] != "2001:db8::2" {
+		t.Errorf("unexpected persisted DDNS binding: bind=%q map=%#v", persisted.DDNSBindIP, persisted.DDNSRecordIPs)
+	}
+}
+
+func TestServerDDNSLocalBindIPTracksDynamicNATMapping(t *testing.T) {
+	var (
+		mu            sync.Mutex
+		recordContent = "222.1.2.1"
+	)
+	mockCF := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		defer mu.Unlock()
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/zones/zone-nat":
+			_ = json.NewEncoder(w).Encode(map[string]any{"success": true, "result": map[string]any{"id": "zone-nat", "name": "example.com"}})
+		case r.Method == http.MethodGet && r.URL.Path == "/zones/zone-nat/dns_records/rec-nat":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"success": true,
+				"result":  map[string]any{"id": "rec-nat", "type": "A", "name": "nat2.example.com", "content": recordContent, "ttl": 60, "proxied": false},
+			})
+		case r.Method == http.MethodPatch && r.URL.Path == "/zones/zone-nat/dns_records/rec-nat":
+			var body map[string]any
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			recordContent, _ = body["content"].(string)
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"success": true,
+				"result":  map[string]any{"id": "rec-nat", "type": "A", "name": "nat2.example.com", "content": recordContent, "ttl": 60, "proxied": false},
+			})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer mockCF.Close()
+
+	oldAPI := cloudflareAPI
+	cloudflareAPI = mockCF.URL
+	defer func() { cloudflareAPI = oldAPI }()
+
+	store, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+
+	if err := store.SetCloudflareSettings(t.Context(), "zone-nat", "example.com", "token"); err != nil {
+		t.Fatal(err)
+	}
+	server, err := NewServer(store, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	nodeID := newTestNode(t, store, "multi-nic-nat", "n")
+	enabled := true
+	recID := "rec-nat"
+	domain := "nat2.example.com"
+	if err := store.UpdateNodeWithDDNS(t.Context(), nodeID, "Multi NIC NAT", "nat2.example.com", &enabled, &recID, &domain); err != nil {
+		t.Fatal(err)
+	}
+	// Operator binds DDNS to local NIC2 IP (10.0.0.2) rather than control session NIC1 (198.51.100.1).
+	bindLocal := "10.0.0.2"
+	if err := store.UpdateNodeDDNSBinding(t.Context(), nodeID, &bindLocal, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	// Primary control socket stays constant on 198.51.100.1; NIC2 public NAT IP is 222.1.2.20.
+	server.controlMu.Lock()
+	server.controls[nodeID] = &controlSession{remoteAddr: "198.51.100.1"}
+	server.controlMu.Unlock()
+	if err := store.UpdateNodeIdentityWithIPs(t.Context(), nodeID, "v1", "linux", "debian", "amd64", "", "",
+		[]string{"222.1.2.10", "222.1.2.20"},
+		map[string]string{"222.1.2.10": "10.0.0.1", "222.1.2.20": "10.0.0.2"}); err != nil {
+		t.Fatal(err)
+	}
+
+	server.reconcileNodeDDNS(t.Context(), nodeID)
+	waitForDDNS(t, func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return recordContent == "222.1.2.20"
+	})
+
+	// Later heartbeat: NIC2 NAT public IP rotates to 222.1.2.99 while control IP 198.51.100.1 is unchanged.
+	if err := store.UpdateNodeIdentityWithIPs(t.Context(), nodeID, "v1", "linux", "debian", "amd64", "", "",
+		[]string{"222.1.2.10", "222.1.2.99"},
+		map[string]string{"222.1.2.10": "10.0.0.1", "222.1.2.99": "10.0.0.2"}); err != nil {
+		t.Fatal(err)
+	}
+	server.reconcileNodeDDNS(t.Context(), nodeID)
+	waitForDDNS(t, func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return recordContent == "222.1.2.99"
+	})
 }

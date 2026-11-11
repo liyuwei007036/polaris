@@ -343,7 +343,12 @@ func runAgentLoop(ctx context.Context, dataDir, masterAddr string, masterPub [wi
 		fmt.Fprintln(os.Stderr, "managed Nginx capacity check failed:", err)
 	}
 	agent.InitPingRunner(dataDir)
-	handler := agent.NewTaskHandlerWithOptions(agent.TaskOptions{DataDir: dataDir, NginxPassthroughRoutes: passthroughRoutes})
+	handler := agent.NewTaskHandlerWithOptions(agent.TaskOptions{
+		DataDir:                dataDir,
+		MasterAddress:          masterAddr,
+		MasterPublicKey:        masterPub,
+		NginxPassthroughRoutes: passthroughRoutes,
+	})
 	backoff := 5 * time.Second
 	const maxBackoff = 60 * time.Second
 	for ctx.Err() == nil {

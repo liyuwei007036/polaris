@@ -35,7 +35,6 @@ const alertSettings = reactive({
   bark_device_key: '',
   bark_sound: 'minuet.caf',
   bark_group: 'Polaris',
-  bark_url: '',
   telegram_enabled: false,
   telegram_server: 'https://api.telegram.org',
   telegram_bot_token: '',
@@ -136,7 +135,6 @@ async function sendTestAlert() {
       device_key: alertSettings.bark_device_key,
       sound: alertSettings.bark_sound,
       group: alertSettings.bark_group,
-      url: alertSettings.bark_url,
       telegram_server: alertSettings.telegram_server,
       telegram_bot_token: alertSettings.telegram_bot_token,
       telegram_chat_id: alertSettings.telegram_chat_id,
@@ -305,11 +303,6 @@ onBeforeUnmount(() => {
         <div class="m-field">
           <label class="m-field__label">推送分组 (Group)</label>
           <el-input v-model="alertSettings.bark_group" placeholder="Polaris" clearable />
-        </div>
-
-        <div class="m-field">
-          <label class="m-field__label">点击跳转 URL (可选)</label>
-          <el-input v-model="alertSettings.bark_url" placeholder="例如控制台网址" clearable />
         </div>
 
         <div class="m-card-actions">

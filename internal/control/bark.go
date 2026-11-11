@@ -20,7 +20,6 @@ type BarkMessage struct {
 	Sound     string `json:"sound,omitempty"`
 	Level     string `json:"level,omitempty"` // active
 	Icon      string `json:"icon,omitempty"`
-	URL       string `json:"url,omitempty"`
 }
 
 type BarkClient struct {

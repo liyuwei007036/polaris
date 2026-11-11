@@ -315,8 +315,9 @@ const ddnsTooltip = computed(() => {
   if (!props.node.ddns_enabled) return ''
   const domains = (props.node.ddns_domains && props.node.ddns_domains.length ? props.node.ddns_domains : [props.node.ddns_domain]).filter(Boolean)
   const domainText = domains.length ? domains.join(', ') : '未指定域名'
+  const bindText = props.node.ddns_bind_ip ? ` · 绑定: ${props.node.ddns_bind_ip}` : ''
   const ipText = props.node.last_observed_ip ? ` (解析 IP: ${props.node.last_observed_ip})` : ''
-  return `Cloudflare DDNS: ${domainText}${ipText}`
+  return `Cloudflare DDNS: ${domainText}${bindText}${ipText}`
 })
 
 function formatBytes(bytes) {

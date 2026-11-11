@@ -293,6 +293,26 @@ func newConnectionsHub() *connectionsHub {
 	}
 }
 
+// activeNodeConnections returns the latest live connections per node ID so
+// telemetry analysis and history recording can trace cross-node chain hops.
+func (h *connectionsHub) activeNodeConnections() map[string][]storedConnection {
+	if h == nil {
+		return nil
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.pruneLocked(time.Now())
+	out := make(map[string][]storedConnection, len(h.latest))
+	for nodeID, snap := range h.latest {
+		if len(snap.RawConns) > 0 {
+			conns := make([]storedConnection, len(snap.RawConns))
+			copy(conns, snap.RawConns)
+			out[nodeID] = conns
+		}
+	}
+	return out
+}
+
 // fleetTotals is the whole fleet's throughput for one beat of the reporting
 // grid: every open connection's rate, added up. Nodes push on the same
 // wall-clock grid, so each node's rates were measured over the same window
@@ -368,8 +388,7 @@ func (h *connectionsHub) totals(now time.Time, popular []popularNode) fleetTotal
 				consumedRelays[connKey{nodeID: item.nodeID, id: c.ID}] = true
 				continue
 			}
-			isEntry := c.ChainedTarget != "" || strings.HasPrefix(c.Outbound, "chain-") ||
-				(len(c.Chains) > 0 && strings.HasPrefix(c.Chains[0], "chain-"))
+			isEntry := connectionChainEndpointID(c) != ""
 			if !isEntry {
 				continue
 			}
@@ -389,12 +408,7 @@ func (h *connectionsHub) totals(now time.Time, popular []popularNode) fleetTotal
 				if oc.RelayUpstreamNodeID != "" && oc.RelayUpstreamNodeID != item.nodeID {
 					continue
 				}
-				destMatch := (c.Destination != "" && c.Destination == oc.Destination) ||
-					(c.Host != "" && c.Host == oc.Host)
-				if !destMatch {
-					continue
-				}
-				if c.Network != "" && oc.Network != "" && !strings.EqualFold(c.Network, oc.Network) {
+				if !connectionDestMatches(c, oc) {
 					continue
 				}
 				consumedRelays[key] = true

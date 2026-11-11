@@ -8,7 +8,10 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strings"
 	"sync"
+
+	"github.com/liyuwei007036/polaris/internal/version"
 )
 
 var taskIDPattern = regexp.MustCompile(`^[a-f0-9]{32}$`)
@@ -96,6 +99,18 @@ func (e *taskExecutor) Handle(ctx context.Context, task Task) TaskResult {
 	result, found, err := e.completed(task)
 	if err != nil {
 		return TaskResult{Status: "failed", Summary: "read completed task result: " + err.Error()}
+	}
+	if found && task.Kind == "agent.upgrade" && result.Status == "succeeded" {
+		if manifest, vErr := VerifyReleaseTask(e.options.DataDir, task); vErr == nil {
+			targetVersion := strings.TrimPrefix(strings.TrimSpace(manifest.Version), "v")
+			runningVersion := strings.TrimPrefix(strings.TrimSpace(version.Version), "v")
+			if targetVersion != runningVersion && !version.IsNewer(runningVersion, targetVersion) {
+				// RestartAgent is not serialized, so if a prior session died
+				// before re-execing into the upgraded binary, re-run the check
+				// so the agent still restarts into the new build.
+				found = false
+			}
+		}
 	}
 	if !found {
 		result = execute(ctx, task, e.options)

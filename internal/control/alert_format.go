@@ -15,7 +15,6 @@ type alertPayload struct {
 	BarkBody  string
 	BarkGroup string
 	BarkSound string
-	BarkURL   string
 	Telegram  string
 }
 

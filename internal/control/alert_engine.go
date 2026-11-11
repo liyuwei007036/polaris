@@ -53,12 +53,16 @@ type AlertEngine struct {
 	bark          *BarkClient
 	telegram      *TelegramClient
 	locator       *ipLocator
+	hub           *connectionsHub
 	mu            sync.Mutex
 	cooldowns     map[string]time.Time
 	highRateAt    map[string]time.Time
 	loginFailures map[string]int
 	loginFailAt   map[string]time.Time
-	offlineNodes  map[string]time.Time
+	offlineNodes          map[string]time.Time
+	latestConns           map[string][]storedConnection
+	nodeNames             map[string]string
+	pendingChainFirstSeen map[string]time.Time
 	fail2banMu    sync.Mutex
 	fail2banBatch map[string]*fail2banBatch
 	fail2banWait  time.Duration
@@ -96,9 +100,58 @@ func NewAlertEngine(store *Store, locator *ipLocator) *AlertEngine {
 		loginFailures: make(map[string]int),
 		loginFailAt:   make(map[string]time.Time),
 		offlineNodes:  make(map[string]time.Time),
+		latestConns:           make(map[string][]storedConnection),
+		nodeNames:             make(map[string]string),
+		pendingChainFirstSeen: make(map[string]time.Time),
 		fail2banBatch: make(map[string]*fail2banBatch),
 		fail2banWait:  defaultFail2banWindow,
 	}
+}
+
+func (e *AlertEngine) SetConnectionsHub(hub *connectionsHub) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.hub = hub
+}
+
+func (e *AlertEngine) snapshotConnsState() (hub *connectionsHub, fallback map[string][]storedConnection, names map[string]string) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	hub = e.hub
+	if len(e.latestConns) > 0 {
+		fallback = make(map[string][]storedConnection, len(e.latestConns))
+		for k, v := range e.latestConns {
+			fallback[k] = v
+		}
+	}
+	if len(e.nodeNames) > 0 {
+		names = make(map[string]string, len(e.nodeNames))
+		for k, v := range e.nodeNames {
+			names[k] = v
+		}
+	}
+	return hub, fallback, names
+}
+
+func (e *AlertEngine) resolveNodeName(nodeID, fallback string) string {
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	_, _, names := e.snapshotConnsState()
+	return lookupNodeDisplayName(ctx, e.store, names, nodeID, fallback)
+}
+
+func (e *AlertEngine) resolveChain(nodeID, nodeName string, c storedConnection) resolvedChainRoute {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	hub, fallback, names := e.snapshotConnsState()
+	return resolveChainRoute(ctx, e.store, hub, fallback, names, nodeID, nodeName, c)
+}
+
+func (e *AlertEngine) enrichRelayConns(connections []storedConnection) []storedConnection {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	hub, fallback, names := e.snapshotConnsState()
+	return enrichRelayConnections(ctx, e.store, hub, fallback, names, connections)
 }
 
 func (e *AlertEngine) SetIPLocator(locator *ipLocator) {
@@ -259,7 +312,7 @@ func isInternalUserID(name string) bool {
 	return strings.HasPrefix(lower, "user_") || strings.HasPrefix(lower, "user-")
 }
 
-func summarizeConnectionSources(connections []storedConnection, limit int) []string {
+func (e *AlertEngine) summarizeSources(connections []storedConnection, limit int) []string {
 	sourceCounts := make(map[string]int)
 	for _, c := range connections {
 		user := strings.TrimSpace(c.User)
@@ -276,7 +329,12 @@ func summarizeConnectionSources(connections []storedConnection, limit int) []str
 		}
 		var label string
 		if c.RelayUpstreamNodeID != "" && srcIP != "" {
-			label = fmt.Sprintf("中转自节点 %s（%s）", c.RelayUpstreamNodeID, srcIP)
+			upstreamName := e.resolveNodeName(c.RelayUpstreamNodeID, c.RelayUpstreamNodeID)
+			if user != "" {
+				label = fmt.Sprintf("%s（%s｜经 %s 中转）", srcIP, user, upstreamName)
+			} else {
+				label = fmt.Sprintf("中转自 %s（%s）", upstreamName, srcIP)
+			}
 		} else if user != "" && srcIP != "" {
 			label = fmt.Sprintf("%s（%s）", srcIP, user)
 		} else if user != "" {
@@ -381,19 +439,40 @@ func (c nodeAlertContext) BarkSummary() string {
 	return strings.Join(parts, "｜")
 }
 
+func (c nodeAlertContext) BarkCompact() string {
+	if c.Name != "" && c.IP != "" {
+		return fmt.Sprintf("节点：%s（%s）", c.Name, c.IP)
+	}
+	if c.Name != "" {
+		return "节点：" + c.Name
+	}
+	if c.IP != "" {
+		return "IP：" + c.IP
+	}
+	return ""
+}
+
 func (e *AlertEngine) withNodeInfo(ctx nodeAlertContext, lines []string) []string {
-	return append(ctx.TelegramLines(), lines...)
+	nodeLines := ctx.TelegramLines()
+	if len(nodeLines) == 0 {
+		return lines
+	}
+	out := make([]string, 0, len(lines)+len(nodeLines)+1)
+	out = append(out, lines...)
+	out = append(out, "\n<b>节点信息</b>")
+	out = append(out, nodeLines...)
+	return out
 }
 
 func (e *AlertEngine) barkWithNode(ctx nodeAlertContext, body string) string {
-	summary := ctx.BarkSummary()
-	if summary == "" {
+	if strings.TrimSpace(body) == "" {
+		return ctx.BarkSummary()
+	}
+	footer := ctx.BarkCompact()
+	if footer == "" {
 		return body
 	}
-	if strings.TrimSpace(body) == "" {
-		return summary
-	}
-	return summary + "\n" + body
+	return body + "\n\n" + footer
 }
 
 func (e *AlertEngine) getSettings() (AlertSettings, error) {
@@ -483,10 +562,6 @@ func (e *AlertEngine) sendAlert(_ context.Context, payload alertPayload) {
 			default:
 				barkGroup = "Polaris"
 			}
-			barkURL := strings.TrimSpace(payload.BarkURL)
-			if barkURL == "" {
-				barkURL = strings.TrimSpace(settings.BarkURL)
-			}
 			barkBody := strings.TrimSpace(payload.BarkBody)
 			if !strings.Contains(barkBody, "时间：") {
 				if barkBody != "" {
@@ -505,7 +580,6 @@ func (e *AlertEngine) sendAlert(_ context.Context, payload alertPayload) {
 				Group:     barkGroup,
 				Sound:     barkSound,
 				Level:     "active",
-				URL:       barkURL,
 			}
 			if e.bark != nil {
 				pushCtx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
@@ -540,15 +614,31 @@ func (e *AlertEngine) CheckConnectionsTelemetry(nodeID, nodeName string, downloa
 		return
 	}
 
-	nonRelay := make([]storedConnection, 0, len(connections))
-	for _, c := range connections {
-		if !c.IsChainRelay {
-			nonRelay = append(nonRelay, c)
-		}
+	e.mu.Lock()
+	e.latestConns[nodeID] = connections
+	if nodeName != "" {
+		e.nodeNames[nodeID] = nodeName
 	}
-	connections = nonRelay
+	e.mu.Unlock()
 
 	now := time.Now()
+	allConnections := connections
+	nonRelay := make([]storedConnection, 0, len(connections))
+	confirmed := make([]storedConnection, 0, len(connections))
+	for _, c := range connections {
+		if c.IsChainRelay {
+			continue
+		}
+		nonRelay = append(nonRelay, c)
+		if c.OnChainTarget {
+			pendingKey := nodeID + ":" + c.ID + "|" + c.Destination + "|" + c.Host
+			if !e.confirmChainTargetTimeout(pendingKey, now) {
+				continue
+			}
+		}
+		confirmed = append(confirmed, c)
+	}
+	connections = confirmed
 	totalRateBytes := downloadRate + uploadRate
 	maxRateMbps := (totalRateBytes * 8) / (1000 * 1000)
 
@@ -568,9 +658,13 @@ func (e *AlertEngine) CheckConnectionsTelemetry(nodeID, nodeName string, downloa
 			if durationExceeded {
 				alertKey := "traffic:" + nodeID
 				if e.canAlert(alertKey, settings.CooldownMinutes) {
+					trafficConns := nonRelay
+					if len(allConnections) > len(nonRelay) {
+						trafficConns = e.enrichRelayConns(allConnections)
+					}
 					downloadMbps := (downloadRate * 8) / (1000 * 1000)
 					uploadMbps := (uploadRate * 8) / (1000 * 1000)
-					mainIP, mainDest := e.topTrafficEndpoints(connections)
+					mainIP, mainDest := e.topTrafficEndpoints(trafficConns)
 					if mainDest == "" {
 						mainDest = "未指定域名/IP"
 					}
@@ -578,13 +672,17 @@ func (e *AlertEngine) CheckConnectionsTelemetry(nodeID, nodeName string, downloa
 					if mainIP != "" {
 						var mainUser string
 						var mainLoc string
-						for _, c := range connections {
+						var mainRelayNode string
+						for _, c := range trafficConns {
 							if cleanIPAddress(c.SourceIP) == mainIP {
 								if c.User != "" && mainUser == "" && !isInternalUserID(c.User) {
 									mainUser = c.User
 								}
 								if c.SourceLocation != "" && c.SourceLocation != "未知" && mainLoc == "" {
 									mainLoc = c.SourceLocation
+								}
+								if c.RelayUpstreamNodeID != "" && mainRelayNode == "" {
+									mainRelayNode = c.RelayUpstreamNodeID
 								}
 							}
 						}
@@ -595,6 +693,9 @@ func (e *AlertEngine) CheckConnectionsTelemetry(nodeID, nodeName string, downloa
 						}
 						if mainLoc != "" && !strings.Contains(topSourceDesc, mainLoc) {
 							topSourceDesc += fmt.Sprintf("（%s）", mainLoc)
+						}
+						if mainRelayNode != "" {
+							topSourceDesc += fmt.Sprintf("（中转：%s）", mainRelayNode)
 						}
 					}
 					if topSourceDesc == "" {
@@ -607,21 +708,19 @@ func (e *AlertEngine) CheckConnectionsTelemetry(nodeID, nodeName string, downloa
 					}
 					nodeCtx := e.nodeContext(nodeID, nodeName)
 					lines := []string{
-						tgLine("当前速率", fmt.Sprintf("%.1f Mbps（↓ %.1f Mbps ｜ ↑ %.1f Mbps）", maxRateMbps, downloadMbps, uploadMbps)),
-						tgLine("告警阈值", fmt.Sprintf("%.1f Mbps", settings.TrafficThresholdMbps)),
-						tgLine("超出幅度", fmt.Sprintf("%.1f%%", overPercent)),
-						tgLine("持续时长", fmt.Sprintf("超过 %d 秒", settings.TrafficDurationSec)),
-						tgLine("主要来源", topSourceDesc),
+						tgLine("当前速率", fmt.Sprintf("%.1f Mbps（↓ %.1f ｜ ↑ %.1f Mbps）", maxRateMbps, downloadMbps, uploadMbps)),
 						tgLine("主要目标", mainDest),
+						tgLine("主要来源", topSourceDesc),
+						tgLine("超限详情", fmt.Sprintf("阈值 %.1f Mbps · 超出 %.1f%% · 持续超过 %d 秒", settings.TrafficThresholdMbps, overPercent, settings.TrafficDurationSec)),
 					}
-					topDests := summarizeConnectionDestinations(connections, 3)
+					topDests := summarizeConnectionDestinations(trafficConns, 3)
 					if len(topDests) > 1 {
 						lines = append(lines, tgLine("其他活跃目标", strings.Join(topDests, "｜")))
 					}
 
 					telegramText := buildTelegramAlert(severityWarning, "流量告警", "瞬时流量突增", nodeName, e.withNodeInfo(nodeCtx, lines), "")
-					barkBody := fmt.Sprintf("当前 %.1f Mbps（↓%.1f/↑%.1f）\n超限持续 %d 秒\n目标：%s\n来源：%s",
-						maxRateMbps, downloadMbps, uploadMbps, settings.TrafficDurationSec, mainDest, topSourceDesc)
+					barkBody := fmt.Sprintf("目标：%s\n速率：%.1f Mbps（↓%.1f / ↑%.1f · 持续 %d 秒）\n来源：%s",
+						mainDest, maxRateMbps, downloadMbps, uploadMbps, settings.TrafficDurationSec, topSourceDesc)
 					e.sendAlert(context.Background(), alertPayload{
 						Severity:  severityWarning,
 						BarkTitle: fmt.Sprintf("流量突增：%s", nodeName),
@@ -649,13 +748,11 @@ func (e *AlertEngine) CheckConnectionsTelemetry(nodeID, nodeName string, downloa
 				overCount = 0
 			}
 			topDests := summarizeConnectionDestinations(connections, 5)
-			topSources := summarizeConnectionSources(connections, 3)
+			topSources := e.summarizeSources(connections, 3)
 
 			nodeCtx := e.nodeContext(nodeID, nodeName)
 			lines := []string{
-				tgLine("当前连接", fmt.Sprintf("%d 条", connCount)),
-				tgLine("设定上限", fmt.Sprintf("%d 条", settings.ConnThresholdCount)),
-				tgLine("超出数量", fmt.Sprintf("%d 条", overCount)),
+				tgLine("当前连接", fmt.Sprintf("%d 条（上限 %d 条，超出 %d 条）", connCount, settings.ConnThresholdCount, overCount)),
 			}
 			if len(topDests) > 0 {
 				lines = append(lines, tgLine("主要访问目标", "\n• "+strings.Join(topDests, "\n• ")))
@@ -666,13 +763,13 @@ func (e *AlertEngine) CheckConnectionsTelemetry(nodeID, nodeName string, downloa
 
 			telegramText := buildTelegramAlert(severityWarning, "连接告警", "活跃连接数激增", nodeName, e.withNodeInfo(nodeCtx, lines), "")
 
-			barkBody := fmt.Sprintf("当前 %d 条，超限 %d 条", connCount, overCount)
+			barkBody := fmt.Sprintf("连接：%d 条（超限 %d 条）", connCount, overCount)
 			if len(topDests) > 0 {
 				shortDests := summarizeConnectionDestinations(connections, 2)
 				barkBody += "\n目标：" + strings.Join(shortDests, "、")
 			}
 			if len(topSources) > 0 {
-				shortSources := summarizeConnectionSources(connections, 2)
+				shortSources := e.summarizeSources(connections, 2)
 				barkBody += "\n来源：" + strings.Join(shortSources, "、")
 			}
 
@@ -940,15 +1037,17 @@ func (e *AlertEngine) CheckConnectionsTelemetry(nodeID, nodeName string, downloa
 }
 
 type routeIssue struct {
-	destIP      string
-	location    string
-	outbound    string
-	host        string
-	count       int
-	ports       []string
-	users       []string
-	sourceAddrs []string
-	listeners   []string
+	destIP    string
+	location  string
+	outbound  string
+	chainPath string
+	isChained bool
+	host      string
+	count     int
+	ports     []string
+	users     []string
+	sourceIPs []string
+	listeners []string
 }
 
 func appendDistinctLimit(list []string, item string, limit int) []string {
@@ -967,9 +1066,32 @@ func appendDistinctLimit(list []string, item string, limit int) []string {
 	return append(list, item)
 }
 
+const chainRelayConfirmWait = 5 * time.Second
+
+func (e *AlertEngine) confirmChainTargetTimeout(key string, now time.Time) bool {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.pendingChainFirstSeen == nil {
+		e.pendingChainFirstSeen = make(map[string]time.Time)
+	}
+	for k, ts := range e.pendingChainFirstSeen {
+		if now.Sub(ts) > 5*time.Minute {
+			delete(e.pendingChainFirstSeen, k)
+		}
+	}
+	firstSeen, exists := e.pendingChainFirstSeen[key]
+	if !exists {
+		e.pendingChainFirstSeen[key] = now
+		return false
+	}
+	return now.Sub(firstSeen) >= chainRelayConfirmWait
+}
+
 // checkProxyRouting reports destinations that belong to China or a private
 // network but are currently leaving through a proxy outbound. That is almost
 // always a split-routing mistake: domestic and LAN traffic should go direct.
+// For chained connections, it traces downstream hops to report the true final
+// exit outbound and full chain path rather than intermediate relay nodes.
 func (e *AlertEngine) checkProxyRouting(nodeID, nodeName string, connections []storedConnection, settings AlertSettings) {
 	if len(connections) == 0 {
 		return
@@ -977,6 +1099,9 @@ func (e *AlertEngine) checkProxyRouting(nodeID, nodeName string, connections []s
 
 	issues := map[string]*routeIssue{}
 	for _, connection := range connections {
+		if connection.IsChainRelay {
+			continue
+		}
 		destination := strings.TrimSpace(connection.Destination)
 		host := strings.TrimSpace(connection.Host)
 		ipText := destination
@@ -1010,24 +1135,40 @@ func (e *AlertEngine) checkProxyRouting(nodeID, nodeName string, connections []s
 			continue
 		}
 
-		outbound := strings.TrimSpace(connection.OutboundName)
-		if outbound == "" {
-			outbound = strings.TrimSpace(connection.Outbound)
-		}
-		if outbound == "" || isDirectOutbound(outbound) {
+		resolved := e.resolveChain(nodeID, nodeName, connection)
+		if !resolved.IsChained && resolved.FinalIsDirect {
 			continue
 		}
+		outbound := strings.TrimSpace(resolved.FinalOutbound)
+		if outbound == "" {
+			continue
+		}
+		displayOutbound := outbound
+		if resolved.IsChained && resolved.FinalIsDirect && resolved.FinalNodeName != "" && resolved.FinalNodeName != nodeName {
+			displayOutbound = fmt.Sprintf("%s（经 %s 落地）", outbound, resolved.FinalNodeName)
+		}
+		var chainPath string
+		if resolved.IsChained && len(resolved.Path) > 0 {
+			chainPath = strings.Join(resolved.Path, " → ") + " → " + outbound
+		}
 
-		key := ipText + "|" + outbound
+		key := ipText + "|" + displayOutbound + "|" + chainPath
 		issue := issues[key]
 		if issue == nil {
 			location := "局域网/内网"
 			if !isLocal && e.locator != nil {
-				if resolved := strings.TrimSpace(e.locator.Locate(ipText)); resolved != "" && resolved != "未知" {
-					location = resolved
+				if resolvedLoc := strings.TrimSpace(e.locator.Locate(ipText)); resolvedLoc != "" && resolvedLoc != "未知" {
+					location = resolvedLoc
 				}
 			}
-			issue = &routeIssue{destIP: ipText, location: location, outbound: outbound, host: host}
+			issue = &routeIssue{
+				destIP:    ipText,
+				location:  location,
+				outbound:  displayOutbound,
+				chainPath: chainPath,
+				isChained: resolved.IsChained,
+				host:      host,
+			}
 			issues[key] = issue
 		}
 		issue.count++
@@ -1053,7 +1194,7 @@ func (e *AlertEngine) checkProxyRouting(nodeID, nodeName string, connections []s
 			if loc := strings.TrimSpace(connection.SourceLocation); loc != "" && loc != "未知" {
 				srcDesc += fmt.Sprintf("（%s）", loc)
 			}
-			issue.sourceAddrs = appendDistinctLimit(issue.sourceAddrs, srcDesc, 3)
+			issue.sourceIPs = appendDistinctLimit(issue.sourceIPs, srcDesc, 3)
 		}
 		listener := strings.TrimSpace(connection.ListenerName)
 		if listener == "" {
@@ -1086,41 +1227,39 @@ func (e *AlertEngine) checkProxyRouting(nodeID, nodeName string, connections []s
 		return
 	}
 
-	hasDirectIP := false
-	hasDomain := false
-	for _, issue := range list {
-		if issue.host != "" {
-			hasDomain = true
-		} else {
-			hasDirectIP = true
-		}
-	}
-
 	nodeCtx := e.nodeContext(nodeID, nodeName)
 	lines := []string{
-		tgLine("检测结果", fmt.Sprintf("%d 个国内或局域网目标正在走代理出口", len(list))),
+		tgLine("核心结论", fmt.Sprintf("发现 %d 个国内/局域网目标经代理转发", len(list))),
 	}
-	barkTargets := make([]string, 0, 3)
-	for index, issue := range list {
-		label := issue.destIP
-		if len(issue.ports) == 1 {
-			label += ":" + issue.ports[0]
-		} else if len(issue.ports) > 1 {
-			label += fmt.Sprintf(" (端口 %s)", strings.Join(issue.ports, ", "))
-		}
-		if issue.host != "" {
-			label += "（" + issue.host + "）"
-		}
-		if index < 5 {
-			lines = append(lines, tgLine(label, fmt.Sprintf("%s｜出口 %s｜%d 条连接",
-				issue.location, issue.outbound, issue.count)))
 
+	barkBlocks := make([]string, 0, 3)
+	for index, issue := range list {
+		addrLabel := issue.destIP
+		if len(issue.ports) == 1 {
+			addrLabel += ":" + issue.ports[0]
+		} else if len(issue.ports) > 1 {
+			addrLabel += fmt.Sprintf(" (端口 %s)", strings.Join(issue.ports, ", "))
+		}
+
+		if index < 5 {
+			var titleHTML string
+			if issue.host != "" {
+				titleHTML = fmt.Sprintf("<code>%s</code>（<code>%s</code>）", tgEscape(issue.host), tgEscape(addrLabel))
+			} else {
+				titleHTML = fmt.Sprintf("<code>%s</code>", tgEscape(addrLabel))
+			}
+			lines = append(lines, fmt.Sprintf("\n<b>[%d] %s</b>｜%s · %d 条",
+				index+1, titleHTML, tgEscape(issue.location), issue.count))
+			lines = append(lines, tgCodeLine("最终出口", issue.outbound))
+			if issue.chainPath != "" {
+				lines = append(lines, tgLine("代理链路", issue.chainPath))
+			}
 			var sourceParts []string
 			if len(issue.users) > 0 {
 				sourceParts = append(sourceParts, "用户 "+strings.Join(issue.users, "、"))
 			}
-			if len(issue.sourceAddrs) > 0 {
-				sourceParts = append(sourceParts, "来源 "+strings.Join(issue.sourceAddrs, "、"))
+			if len(issue.sourceIPs) > 0 {
+				sourceParts = append(sourceParts, strings.Join(issue.sourceIPs, "、"))
 			}
 			if len(issue.listeners) > 0 {
 				sourceParts = append(sourceParts, "入站 "+strings.Join(issue.listeners, "、"))
@@ -1129,54 +1268,57 @@ func (e *AlertEngine) checkProxyRouting(nodeID, nodeName string, connections []s
 				sourceParts = append(sourceParts, "直接 IP 请求（无域名 SNI）")
 			}
 			if len(sourceParts) > 0 {
-				lines = append(lines, tgLine("↳ 来源追溯", strings.Join(sourceParts, "｜")))
+				lines = append(lines, tgLine("来源追溯", strings.Join(sourceParts, "｜")))
 			}
 		}
+
 		if index < 3 {
-			barkLabel := label
-			if len(issue.users) > 0 {
-				barkLabel += fmt.Sprintf("（%s）", strings.Join(issue.users, ","))
+			barkTarget := addrLabel
+			if issue.host != "" {
+				barkTarget = fmt.Sprintf("%s (%s)", issue.host, addrLabel)
 			}
-			barkTargets = append(barkTargets, fmt.Sprintf("%s → %s", barkLabel, issue.outbound))
+			var itemLines []string
+			itemLines = append(itemLines, fmt.Sprintf("%d. %s [%s · %d条]", index+1, barkTarget, issue.location, issue.count))
+			if issue.chainPath != "" {
+				itemLines = append(itemLines, fmt.Sprintf("   出口：%s｜链路：%s", issue.outbound, issue.chainPath))
+			} else {
+				itemLines = append(itemLines, fmt.Sprintf("   出口：%s", issue.outbound))
+			}
+			var barkSrc []string
+			if len(issue.users) > 0 {
+				barkSrc = append(barkSrc, strings.Join(issue.users, ","))
+			}
+			if len(issue.sourceIPs) > 0 {
+				barkSrc = append(barkSrc, strings.Join(issue.sourceIPs, ","))
+			}
+			if len(issue.listeners) > 0 {
+				barkSrc = append(barkSrc, strings.Join(issue.listeners, ","))
+			}
+			if len(barkSrc) > 0 {
+				itemLines = append(itemLines, "   来源："+strings.Join(barkSrc, "｜"))
+			}
+			barkBlocks = append(barkBlocks, strings.Join(itemLines, "\n"))
 		}
 	}
 	if len(list) > 5 {
-		lines = append(lines, tgLine("其他目标", fmt.Sprintf("另有 %d 个", len(list)-5)))
+		lines = append(lines, tgLine("其他目标", fmt.Sprintf("另有 %d 个未展开", len(list)-5)))
 	}
 	if len(list) > 3 {
-		barkTargets = append(barkTargets, fmt.Sprintf("另有 %d 个目标", len(list)-3))
-	}
-
-	var actionText string
-	if hasDirectIP && !hasDomain {
-		actionText = "检测到客户端直接连接国内/内网 IP（如国内公共 DNS/DoH）。请检查对应客户端是否开启了国内/局域网流量绕过代理；若节点作为中转出口，可为对应用户或入站配置国内直连规则。"
-	} else if hasDirectIP && hasDomain {
-		actionText = "请在分流规则中把上述目标改为直连；若是域名，请检查 DNS 解析结果与规则优先级；若是客户端直接发起的 IP 连接，请检查客户端分流设置。"
-	} else {
-		actionText = "请在分流规则中把上述目标改为直连；如果是域名，请检查 DNS 解析结果和规则优先级。"
+		barkBlocks = append(barkBlocks, fmt.Sprintf("另有 %d 个异常目标", len(list)-3))
 	}
 
 	telegramText := buildTelegramAlert(severityWarning, "分流策略", "国内/局域网目标正在走代理", nodeName,
-		e.withNodeInfo(nodeCtx, lines),
-		actionText)
+		e.withNodeInfo(nodeCtx, lines), "")
 
+	barkBody := fmt.Sprintf("发现 %d 个国内/局域网目标走代理：\n%s", len(list), strings.Join(barkBlocks, "\n"))
 	e.sendAlert(context.Background(), alertPayload{
 		Severity:  severityWarning,
 		BarkTitle: fmt.Sprintf("分流异常：%s", nodeName),
-		BarkBody:  e.barkWithNode(nodeCtx, "以下目标应直连但走了代理：\n"+strings.Join(barkTargets, "\n")),
+		BarkBody:  e.barkWithNode(nodeCtx, barkBody),
 		BarkGroup: "分流策略",
 		BarkSound: "horn.caf",
 		Telegram:  telegramText,
 	})
-}
-
-func isDirectOutbound(name string) bool {
-	switch strings.ToLower(strings.TrimSpace(name)) {
-	case "direct", "direct-out", "direct_out", "direct outbound", "direct-connection", "直连":
-		return true
-	default:
-		return false
-	}
 }
 
 // NotifyNodeOffline sends an alert when a node loses contact with master.
@@ -1245,9 +1387,6 @@ func (e *AlertEngine) NotifyNodeOnline(nodeID, nodeName string) {
 func (e *AlertEngine) NotifyServerExpiry(node Node, days int) {
 	var barkLines []string
 	barkLines = append(barkLines, fmt.Sprintf("到期 %s，剩余 %d 天", node.ExpiresOn, days))
-	if node.ProviderURL != "" {
-		barkLines = append(barkLines, "续费入口："+node.ProviderURL)
-	}
 
 	tgLines := make([]string, 0, 4)
 	tgLines = append(tgLines,
@@ -1265,7 +1404,6 @@ func (e *AlertEngine) NotifyServerExpiry(node Node, days int) {
 		BarkTitle: fmt.Sprintf("服务器即将到期：%s", node.Name),
 		BarkBody:  e.barkWithNode(nodeCtx, strings.Join(barkLines, "\n")),
 		BarkGroup: "服务器到期",
-		BarkURL:   node.ProviderURL,
 		Telegram:  telegramText,
 	})
 }

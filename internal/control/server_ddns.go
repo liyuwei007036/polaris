@@ -8,6 +8,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"sort"
 	"strings"
 	"time"
 )
@@ -20,17 +21,61 @@ type ddnsReconcileAttempt struct {
 	inFlight      bool
 	lastCheckedAt time.Time
 	lastIP        string
+	lastSignature string
 	failures      int
 	nextRetryAt   time.Time
 }
 
+func ipMatchesFamily(ip net.IP, wantIPv4 bool) bool {
+	if ip == nil || ip.IsLoopback() || ip.IsUnspecified() || ip.IsLinkLocalUnicast() || ip.IsMulticast() {
+		return false
+	}
+	if wantIPv4 {
+		return ip.To4() != nil
+	}
+	return ip.To4() == nil
+}
+
+func isPublicRoutableIP(ip net.IP, wantIPv4 bool) bool {
+	return ipMatchesFamily(ip, wantIPv4) && !ip.IsPrivate()
+}
+
 // fetchMasterPublicIP queries external public endpoints to get the outbound IPv4 of Master.
 func (s *Server) fetchMasterPublicIP(ctx context.Context) (string, error) {
-	client := &http.Client{Timeout: 5 * time.Second}
+	return s.fetchMasterPublicIPFamily(ctx, true, "")
+}
+
+// fetchMasterPublicIPFamily queries external public endpoints for either IPv4
+// or IPv6, optionally binding to a specific local interface IP on Master.
+func (s *Server) fetchMasterPublicIPFamily(ctx context.Context, wantIPv4 bool, localBindIP string) (string, error) {
+	network := "tcp4"
+	if !wantIPv4 {
+		network = "tcp6"
+	}
+	dialer := &net.Dialer{Timeout: 4 * time.Second}
+	if parsed := net.ParseIP(strings.TrimSpace(localBindIP)); parsed != nil {
+		dialer.LocalAddr = &net.TCPAddr{IP: parsed}
+	}
+	client := &http.Client{
+		Timeout: 5 * time.Second,
+		Transport: &http.Transport{
+			DialContext: func(dialCtx context.Context, _, addr string) (net.Conn, error) {
+				return dialer.DialContext(dialCtx, network, addr)
+			},
+		},
+	}
+
 	endpoints := []string{
 		"https://cloudflare.com/cdn-cgi/trace",
 		"https://api.ipify.org",
 		"https://icanhazip.com",
+	}
+	if !wantIPv4 {
+		endpoints = []string{
+			"https://cloudflare.com/cdn-cgi/trace",
+			"https://api6.ipify.org",
+			"https://icanhazip.com",
+		}
 	}
 
 	for _, ep := range endpoints {
@@ -61,30 +106,149 @@ func (s *Server) fetchMasterPublicIP(ctx context.Context) (string, error) {
 			candidate = strings.TrimSpace(text)
 		}
 
-		parsed := net.ParseIP(candidate)
-		if parsed != nil && parsed.To4() != nil && !parsed.IsLoopback() && !parsed.IsPrivate() && !parsed.IsUnspecified() {
-			return candidate, nil
+		if parsed := net.ParseIP(candidate); isPublicRoutableIP(parsed, wantIPv4) {
+			return parsed.String(), nil
 		}
 	}
 	return "", errors.New("unable to determine master public IP from external endpoints")
 }
 
-// executeNodeDDNS performs the actual DNS record lookup and update with Cloudflare for all bound records of the node.
-func (s *Server) executeNodeDDNS(ctx context.Context, nodeID, currentIP string) error {
-	currentIP = strings.TrimSpace(currentIP)
-	ip := net.ParseIP(currentIP)
-	if ip == nil || ip.IsLoopback() || ip.IsUnspecified() || ip.IsLinkLocalUnicast() {
-		// Detect public IP (especially for Master node / local combined agent)
-		detected, err := s.fetchMasterPublicIP(ctx)
-		if err == nil && detected != "" {
-			currentIP = detected
-			ip = net.ParseIP(currentIP)
+func resolveMappedPublicIP(node Node, localBindIP string, wantIPv4 bool) string {
+	targetBind := net.ParseIP(strings.TrimSpace(localBindIP))
+	if targetBind == nil || len(node.IPMappings) == 0 {
+		return ""
+	}
+	pubIPs := make([]string, 0, len(node.IPMappings))
+	for pubIP, mappedLocal := range node.IPMappings {
+		if localParsed := net.ParseIP(strings.TrimSpace(mappedLocal)); localParsed != nil && localParsed.Equal(targetBind) {
+			pubIPs = append(pubIPs, pubIP)
 		}
 	}
-	if ip == nil || ip.IsLoopback() || ip.IsUnspecified() || ip.IsLinkLocalUnicast() {
-		return errors.New("无效的公网 IP 地址")
+	sort.Strings(pubIPs)
+	for _, pubIP := range pubIPs {
+		if parsed := net.ParseIP(strings.TrimSpace(pubIP)); isPublicRoutableIP(parsed, wantIPv4) {
+			return parsed.String()
+		}
+	}
+	return ""
+}
+
+func (s *Server) resolveNodeDDNSRecordIP(ctx context.Context, node Node, explicitAutoIP, recordID, recordType string, allowMasterFallback bool) string {
+	if recordType != "A" && recordType != "AAAA" {
+		return ""
+	}
+	wantIPv4 := recordType == "A"
+	spec := firstNonEmpty(node.DDNSRecordIPs[recordID], node.DDNSBindIP)
+
+	if spec != "" {
+		parsedSpec := net.ParseIP(spec)
+		if parsedSpec == nil || !ipMatchesFamily(parsedSpec, parsedSpec.To4() != nil) {
+			return ""
+		}
+		// Prefer NAT mapping lookup so a bound local NIC IP tracks its rotating public IP.
+		if mapped := resolveMappedPublicIP(node, spec, wantIPv4); mapped != "" {
+			return mapped
+		}
+		if parsedSpec.IsPrivate() {
+			// Local NIC bind IP with no NAT mapping from agent: probe on Master if local.
+			if allowMasterFallback {
+				if detected, err := s.fetchMasterPublicIPFamily(ctx, wantIPv4, parsedSpec.String()); err == nil && detected != "" {
+					return detected
+				}
+			}
+			return ""
+		}
+		if isPublicRoutableIP(parsedSpec, wantIPv4) {
+			return parsedSpec.String()
+		}
+		return ""
 	}
 
+	// Auto mode: prefer explicit caller IP (when valid public), active agent session IP,
+	// agent-reported IPAddresses matching record family, NAT IPMappings, or Master fallback.
+	if p := net.ParseIP(strings.TrimSpace(explicitAutoIP)); isPublicRoutableIP(p, wantIPv4) {
+		return p.String()
+	}
+	activeAddr := strings.TrimSpace(s.nodeActiveAddress(node.ID))
+	if p := net.ParseIP(activeAddr); isPublicRoutableIP(p, wantIPv4) {
+		return p.String()
+	}
+	for _, rawIP := range node.IPAddresses {
+		if p := net.ParseIP(strings.TrimSpace(rawIP)); isPublicRoutableIP(p, wantIPv4) {
+			return p.String()
+		}
+	}
+	if len(node.IPMappings) > 0 {
+		pubKeys := make([]string, 0, len(node.IPMappings))
+		for k := range node.IPMappings {
+			pubKeys = append(pubKeys, k)
+		}
+		sort.Strings(pubKeys)
+		for _, k := range pubKeys {
+			if p := net.ParseIP(strings.TrimSpace(k)); isPublicRoutableIP(p, wantIPv4) {
+				return p.String()
+			}
+		}
+	}
+	if p := net.ParseIP(strings.TrimSpace(explicitAutoIP)); ipMatchesFamily(p, wantIPv4) {
+		// Accept non-private custom/test IPs passed directly if valid routable family.
+		if !p.IsPrivate() {
+			return p.String()
+		}
+	}
+	if allowMasterFallback {
+		activeParsed := net.ParseIP(activeAddr)
+		if activeParsed == nil || activeParsed.IsLoopback() || activeParsed.IsUnspecified() || activeParsed.IsLinkLocalUnicast() || activeParsed.IsPrivate() {
+			if detected, err := s.fetchMasterPublicIPFamily(ctx, wantIPv4, ""); err == nil && detected != "" {
+				return detected
+			}
+		}
+	}
+	return ""
+}
+
+func (s *Server) computeDDNSTargetDigest(ctx context.Context, node Node, explicitAutoIP string) (primaryIP, digest string) {
+	recordIDs := node.DDNSRecordIDs
+	if len(recordIDs) == 0 && strings.TrimSpace(node.DDNSRecordID) != "" {
+		recordIDs = []string{strings.TrimSpace(node.DDNSRecordID)}
+	}
+	parts := make([]string, 0, len(recordIDs)+2)
+	parts = append(parts, "bind="+node.DDNSBindIP)
+
+	for _, recID := range recordIDs {
+		recID = strings.TrimSpace(recID)
+		if recID == "" {
+			continue
+		}
+		v4 := s.resolveNodeDDNSRecordIP(ctx, node, explicitAutoIP, recID, "A", false)
+		v6 := s.resolveNodeDDNSRecordIP(ctx, node, explicitAutoIP, recID, "AAAA", false)
+		parts = append(parts, fmt.Sprintf("%s=%s/%s", recID, v4, v6))
+		if primaryIP == "" {
+			if v4 != "" {
+				primaryIP = v4
+			} else if v6 != "" {
+				primaryIP = v6
+			}
+		}
+	}
+	if primaryIP == "" {
+		v4 := s.resolveNodeDDNSRecordIP(ctx, node, explicitAutoIP, "", "A", false)
+		if v4 != "" {
+			primaryIP = v4
+		} else {
+			primaryIP = s.resolveNodeDDNSRecordIP(ctx, node, explicitAutoIP, "", "AAAA", false)
+		}
+	}
+	return primaryIP, strings.Join(parts, "|")
+}
+
+// executeNodeDDNS performs the actual DNS record lookup and update with Cloudflare for all bound records of the node.
+func (s *Server) executeNodeDDNS(ctx context.Context, nodeID, currentIP string) error {
+	_, err := s.executeNodeDDNSWithResult(ctx, nodeID, currentIP)
+	return err
+}
+
+func (s *Server) executeNodeDDNSWithResult(ctx context.Context, nodeID, currentIP string) (string, error) {
 	s.ddnsMu.Lock()
 	defer s.ddnsMu.Unlock()
 
@@ -93,10 +257,10 @@ func (s *Server) executeNodeDDNS(ctx context.Context, nodeID, currentIP string) 
 
 	node, err := s.store.GetNode(ctx, nodeID)
 	if err != nil {
-		return err
+		return "", err
 	}
 	if !node.DDNSEnabled {
-		return nil
+		return "", nil
 	}
 
 	recordIDs := node.DDNSRecordIDs
@@ -104,21 +268,25 @@ func (s *Server) executeNodeDDNS(ctx context.Context, nodeID, currentIP string) 
 		recordIDs = []string{strings.TrimSpace(node.DDNSRecordID)}
 	}
 	if len(recordIDs) == 0 {
-		return nil
+		return "", nil
 	}
 
 	zones, err := s.store.CloudflareZones(ctx)
 	if err != nil {
-		return fmt.Errorf("cloudflare zone not configured: %w", err)
+		return "", fmt.Errorf("cloudflare zone not configured: %w", err)
 	}
 	if len(zones) == 0 {
-		return errors.New("cloudflare zone not configured")
+		return "", errors.New("cloudflare zone not configured")
 	}
 
-	isIPv4 := ip.To4() != nil
-	var updatedDomains []string
-	var oldIP string
-	var lastErr error
+	var (
+		updatedDomains []string
+		primaryIP      string
+		oldIP          string
+		fallbackOldIP  string
+		anyResolved    bool
+		lastErr        error
+	)
 
 	for _, recID := range recordIDs {
 		recID = strings.TrimSpace(recID)
@@ -131,17 +299,20 @@ func (s *Server) executeNodeDDNS(ctx context.Context, nodeID, currentIP string) 
 			lastErr = err
 			continue
 		}
-		if isIPv4 && record.Type != "A" {
+		targetIP := s.resolveNodeDDNSRecordIP(ctx, node, currentIP, recID, record.Type, true)
+		if targetIP == "" {
 			continue
 		}
-		if !isIPv4 && record.Type != "AAAA" {
-			continue
+		anyResolved = true
+		if primaryIP == "" || (record.Type == "A" && net.ParseIP(primaryIP).To4() == nil) {
+			primaryIP = targetIP
 		}
-		if oldIP == "" {
-			oldIP = record.Content
+		if fallbackOldIP == "" {
+			fallbackOldIP = record.Content
 		}
-		if record.Content != currentIP {
-			record.Content = currentIP
+		if record.Content != targetIP {
+			prevContent := record.Content
+			record.Content = targetIP
 			if record.TTL > 120 {
 				record.TTL = 60
 			}
@@ -151,29 +322,38 @@ func (s *Server) executeNodeDDNS(ctx context.Context, nodeID, currentIP string) 
 				lastErr = err
 				continue
 			}
+			if oldIP == "" {
+				oldIP = prevContent
+			}
 			updatedDomains = append(updatedDomains, updated.Name)
 		}
 	}
-
-	if lastErr != nil && len(updatedDomains) == 0 {
-		return lastErr
+	if oldIP == "" {
+		oldIP = fallbackOldIP
 	}
 
-	ipChanged := len(updatedDomains) > 0 || node.LastObservedIP != currentIP
+	if lastErr != nil && len(updatedDomains) == 0 {
+		return "", lastErr
+	}
+	if !anyResolved || primaryIP == "" {
+		return "", errors.New("无效的公网 IP 地址")
+	}
+
+	ipChanged := len(updatedDomains) > 0 || node.LastObservedIP != primaryIP
 
 	if len(updatedDomains) > 0 {
 		operatorID := s.store.SystemOperatorID(ctx)
 		if operatorID != "" {
 			summary := fmt.Sprintf("节点「%s」公网 IP 变更为 %s（原 %s），已自动更新 Cloudflare 解析：%s",
-				node.Name, currentIP, oldIP, strings.Join(updatedDomains, "、"))
+				node.Name, primaryIP, oldIP, strings.Join(updatedDomains, "、"))
 			_ = s.store.AppendAudit(ctx, operatorID, "cloudflare_record.ddns_updated", "node", node.ID, summary)
 		}
 		if s.alertEngine != nil {
-			s.alertEngine.NotifyDDNSUpdated(node.ID, node.Name, oldIP, currentIP, strings.Join(updatedDomains, "、"))
+			s.alertEngine.NotifyDDNSUpdated(node.ID, node.Name, oldIP, primaryIP, strings.Join(updatedDomains, "、"))
 		}
 	}
 
-	_ = s.store.SetNodeLastObservedIP(ctx, node.ID, currentIP)
+	_ = s.store.SetNodeLastObservedIP(ctx, node.ID, primaryIP)
 	if node.DDNSDomain != "" && (node.ClientAddress == "" || node.ClientAddress == oldIP || net.ParseIP(node.ClientAddress) != nil) {
 		_ = s.store.SetNodeClientAddress(ctx, node.ID, node.DDNSDomain)
 	}
@@ -190,10 +370,10 @@ func (s *Server) executeNodeDDNS(ctx context.Context, nodeID, currentIP string) 
 			listenerDomains, _ := s.store.NodeConnectionDomains(ctx, node.ID)
 			domains = append(domains, listenerDomains...)
 			operatorID := s.store.SystemOperatorID(ctx)
-			if _, dispatchErr := s.dispatchNodeDNSUpdate(ctx, chainedNodeIDs, domains, currentIP, operatorID); dispatchErr != nil {
+			if _, dispatchErr := s.dispatchNodeDNSUpdate(ctx, chainedNodeIDs, domains, primaryIP, operatorID); dispatchErr != nil {
 				log.Printf("ddns: dispatch dns.update for node %s (%v) failed: %v", node.ID, chainedNodeIDs, dispatchErr)
 			} else if s.alertEngine != nil {
-				s.alertEngine.NotifyChainedDNSHealing(node.Name, len(chainedNodeIDs), domains, currentIP)
+				s.alertEngine.NotifyChainedDNSHealing(node.Name, len(chainedNodeIDs), domains, primaryIP)
 			}
 		}
 	}
@@ -201,17 +381,19 @@ func (s *Server) executeNodeDDNS(ctx context.Context, nodeID, currentIP string) 
 	s.liveHub.publish(liveEvent{Kind: "node", NodeID: node.ID})
 	s.liveHub.publish(liveEvent{Kind: "cloudflare"})
 
+	_, signature := s.computeDDNSTargetDigest(ctx, node, primaryIP)
 	s.ddnsReconcileMu.Lock()
 	if s.ddnsReconcileState != nil {
 		if st := s.ddnsReconcileState[node.ID]; st != nil {
 			st.failures = 0
-			st.lastIP = currentIP
+			st.lastIP = primaryIP
+			st.lastSignature = signature
 			st.lastCheckedAt = time.Now()
 			st.nextRetryAt = time.Time{}
 		}
 	}
 	s.ddnsReconcileMu.Unlock()
-	return nil
+	return primaryIP, nil
 }
 
 // triggerNodeDDNS is invoked whenever an agent connects or reconnects, or when
@@ -234,15 +416,18 @@ func (s *Server) reconcileNodeDDNS(ctx context.Context, nodeID string) {
 		return
 	}
 
-	currentIP := s.nodeActiveAddress(nodeID)
-	ip := net.ParseIP(currentIP)
-	if ip == nil || ip.IsLoopback() || ip.IsUnspecified() || ip.IsLinkLocalUnicast() {
+	activeAddr := s.nodeActiveAddress(nodeID)
+	primaryIP, signature := s.computeDDNSTargetDigest(ctx, node, activeAddr)
+	if primaryIP == "" {
 		detected, err := s.fetchMasterPublicIP(ctx)
-		if err == nil && detected != "" {
-			currentIP = detected
-		} else {
+		if err != nil || detected == "" {
 			return
 		}
+		activeAddr = detected
+		primaryIP, signature = s.computeDDNSTargetDigest(ctx, node, activeAddr)
+	}
+	if primaryIP == "" {
+		return
 	}
 
 	now := time.Now()
@@ -261,7 +446,12 @@ func (s *Server) reconcileNodeDDNS(ctx context.Context, nodeID string) {
 	}
 
 	needsSync := false
-	if node.LastObservedIP != currentIP || state.lastIP != currentIP {
+	hasBinding := node.DDNSBindIP != "" || len(node.DDNSRecordIPs) > 0
+	if node.LastObservedIP != primaryIP || state.lastIP != primaryIP || (hasBinding && state.lastSignature != signature) {
+		if state.nextRetryAt.IsZero() || now.After(state.nextRetryAt) {
+			needsSync = true
+		}
+	} else if state.lastSignature != "" && state.lastSignature != signature {
 		if state.nextRetryAt.IsZero() || now.After(state.nextRetryAt) {
 			needsSync = true
 		}
@@ -278,15 +468,19 @@ func (s *Server) reconcileNodeDDNS(ctx context.Context, nodeID string) {
 	s.ddnsReconcileMu.Unlock()
 
 	go func() {
-		err := s.executeNodeDDNS(context.Background(), nodeID, currentIP)
+		resolvedPrimary, err := s.executeNodeDDNSWithResult(context.Background(), nodeID, activeAddr)
 		finishTime := time.Now()
 
 		s.ddnsReconcileMu.Lock()
 		defer s.ddnsReconcileMu.Unlock()
 		state.inFlight = false
 		if err == nil {
+			if resolvedPrimary == "" {
+				resolvedPrimary = primaryIP
+			}
 			state.failures = 0
-			state.lastIP = currentIP
+			state.lastIP = resolvedPrimary
+			state.lastSignature = signature
 			state.lastCheckedAt = finishTime
 			state.nextRetryAt = time.Time{}
 		} else {
@@ -328,18 +522,12 @@ func (s *Server) syncNodeDDNS(w http.ResponseWriter, r *http.Request) {
 	if currentIP == "" {
 		currentIP = node.LastObservedIP
 	}
-	ip := net.ParseIP(currentIP)
-	if ip == nil || ip.IsLoopback() || ip.IsUnspecified() || ip.IsLinkLocalUnicast() {
-		detected, err := s.fetchMasterPublicIP(r.Context())
-		if err == nil && detected != "" {
-			currentIP = detected
+	resolvedIP, err := s.executeNodeDDNSWithResult(r.Context(), node.ID, currentIP)
+	if err != nil {
+		if strings.Contains(err.Error(), "无效的公网 IP 地址") {
+			writeError(w, userErrorf("当前无法获取该服务器的公网 IP，请确认服务器已上线或检查 DDNS 绑定 IP"))
+			return
 		}
-	}
-	if currentIP == "" {
-		writeError(w, userErrorf("当前无法获取该服务器的公网 IP，请确认服务器已上线"))
-		return
-	}
-	if err := s.executeNodeDDNS(r.Context(), node.ID, currentIP); err != nil {
 		writeError(w, err)
 		return
 	}
@@ -349,8 +537,8 @@ func (s *Server) syncNodeDDNS(w http.ResponseWriter, r *http.Request) {
 		if domainsStr == "" {
 			domainsStr = updatedNode.DDNSDomain
 		}
-		summary := fmt.Sprintf("手动同步：节点「%s」公网 IP 更新为 %s，已更新 Cloudflare 解析 %s", updatedNode.Name, currentIP, domainsStr)
+		summary := fmt.Sprintf("手动同步：节点「%s」公网 IP 更新为 %s，已更新 Cloudflare 解析 %s", updatedNode.Name, resolvedIP, domainsStr)
 		_ = s.store.AppendAudit(r.Context(), operator.ID, "cloudflare_record.ddns_synced", "node", updatedNode.ID, summary)
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"status": "ok", "ip": currentIP, "domains": updatedNode.DDNSDomains})
+	writeJSON(w, http.StatusOK, map[string]any{"status": "ok", "ip": resolvedIP, "domains": updatedNode.DDNSDomains})
 }

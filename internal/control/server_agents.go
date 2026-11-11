@@ -3,9 +3,12 @@ package control
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"log"
 	"net"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -47,7 +50,21 @@ func (s *Server) handleAgentConn(ctx context.Context, raw net.Conn) {
 		return
 	}
 	msgType, body, err := conn.ReadMessage()
-	if err != nil || msgType != wire.MsgRegister {
+	if err != nil {
+		log.Printf("[AGENT_HANDSHAKE] Read initial message failed from %s: err=%v", raw.RemoteAddr(), err)
+		return
+	}
+	if msgType == wire.MsgArtifactRequest {
+		node, nodeErr := s.store.NodeForPublicKey(ctx, peerPub[:])
+		if nodeErr != nil {
+			log.Printf("[AGENT_ARTIFACT] Rejected artifact request from unrecognized key %s", raw.RemoteAddr())
+			return
+		}
+		_ = raw.SetDeadline(time.Time{})
+		s.handleArtifactRequest(ctx, conn, node, body)
+		return
+	}
+	if msgType != wire.MsgRegister {
 		log.Printf("[AGENT_HANDSHAKE] Read register message failed from %s: type=%d, err=%v", raw.RemoteAddr(), msgType, err)
 		return
 	}
@@ -163,6 +180,107 @@ type agentInboundMessage struct {
 	body    []byte
 }
 
+func (s *Server) handleArtifactRequest(ctx context.Context, conn *wire.Conn, node Node, body []byte) {
+	sendError := func(message string) {
+		chunkBody, err := wire.Encode(wire.ArtifactChunk{Done: true, Error: message})
+		if err != nil {
+			return
+		}
+		_ = conn.SetWriteDeadline(time.Now().Add(30 * time.Second))
+		if conn.WriteMessage(wire.MsgArtifactChunk, chunkBody) == nil {
+			_ = conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+			_, _, _ = conn.ReadMessage()
+		}
+	}
+
+	var req wire.ArtifactRequest
+	if err := wire.Decode(body, &req); err != nil {
+		sendError("invalid artifact request")
+		return
+	}
+	if req.Kind != "polaris" {
+		sendError("unsupported artifact kind")
+		return
+	}
+	log.Printf("[AGENT_ARTIFACT] Node %s (%s) requesting relayed polaris artifact %s (%s)", node.ID, node.Name, req.Version, req.Architecture)
+	type prepResult struct {
+		path string
+		err  error
+	}
+	prepDone := make(chan prepResult, 1)
+	go func() {
+		p, pErr := s.ensurePolarisArtifact(ctx, req.Architecture, req.Version, req.SHA256)
+		prepDone <- prepResult{path: p, err: pErr}
+	}()
+	var archivePath string
+	keepaliveTicker := time.NewTicker(15 * time.Second)
+	defer keepaliveTicker.Stop()
+waitPrep:
+	for {
+		select {
+		case res := <-prepDone:
+			if res.err != nil {
+				log.Printf("[AGENT_ARTIFACT] Failed to prepare artifact for node %s (%s): %v", node.ID, node.Name, res.err)
+				sendError(res.err.Error())
+				return
+			}
+			archivePath = res.path
+			break waitPrep
+		case <-keepaliveTicker.C:
+			kaBody, kaErr := wire.Encode(wire.ArtifactChunk{})
+			if kaErr != nil {
+				continue
+			}
+			_ = conn.SetWriteDeadline(time.Now().Add(30 * time.Second))
+			if wErr := conn.WriteMessage(wire.MsgArtifactChunk, kaBody); wErr != nil {
+				return
+			}
+		case <-ctx.Done():
+			return
+		}
+	}
+	file, err := os.Open(archivePath)
+	if err != nil {
+		sendError(err.Error())
+		return
+	}
+	defer file.Close()
+
+	buf := make([]byte, 256*1024)
+	for {
+		n, readErr := file.Read(buf)
+		if n > 0 {
+			chunkBody, encErr := wire.Encode(wire.ArtifactChunk{Data: buf[:n]})
+			if encErr != nil {
+				return
+			}
+			_ = conn.SetWriteDeadline(time.Now().Add(60 * time.Second))
+			if err := conn.WriteMessage(wire.MsgArtifactChunk, chunkBody); err != nil {
+				return
+			}
+		}
+		if errors.Is(readErr, io.EOF) {
+			break
+		}
+		if readErr != nil {
+			sendError(readErr.Error())
+			return
+		}
+	}
+	eofBody, err := wire.Encode(wire.ArtifactChunk{Done: true})
+	if err != nil {
+		return
+	}
+	_ = conn.SetWriteDeadline(time.Now().Add(60 * time.Second))
+	if err := conn.WriteMessage(wire.MsgArtifactChunk, eofBody); err != nil {
+		return
+	}
+	// Wait briefly for the agent to close after reading the final chunk so KCP
+	// delivers and ACKs the EOF frame before raw.Close() tears down the socket.
+	_ = conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+	_, _, _ = conn.ReadMessage()
+}
+
 // runAgentSession is the long-lived per-connection loop for an approved
 // node: it multiplexes incoming Status/TaskResult/Connections messages with
 // outgoing Task dispatches and periodic keepalives, all over the one Noise
@@ -171,7 +289,7 @@ type agentInboundMessage struct {
 func (s *Server) runAgentSession(ctx context.Context, conn *wire.Conn, node Node, remoteAddr string) {
 	session := &controlSession{
 		done:       make(chan struct{}),
-		tasks:      make(chan Task, 16),
+		tasks:      make(chan Task, 64),
 		questions:  make(chan wire.Task, 16),
 		watch:      make(chan struct{}, 1),
 		remoteAddr: remoteAddr,
@@ -541,12 +659,6 @@ func (s *Server) handleAgentMessage(ctx context.Context, node *Node, msgType byt
 		// arrives, so it has to see every push rather than the round the
 		// console happens to aggregate.
 		s.connActivity.record(node.ID, connections, now)
-		if s.connRecorder != nil {
-			s.connRecorder.RecordPush(node.ID, node.Name, connections)
-		}
-		if s.alertEngine != nil {
-			s.alertEngine.CheckConnectionsTelemetry(node.ID, node.Name, downloadRate, uploadRate, connections)
-		}
 		connJSON, err := json.Marshal(connections)
 		if err != nil {
 			return false
@@ -561,6 +673,12 @@ func (s *Server) handleAgentMessage(ctx context.Context, node *Node, msgType byt
 			Protocols:       protocolCounts(connections),
 			HasRates:        measured, ReceivedRate: downloadRate, SentRate: uploadRate,
 		})
+		if s.connRecorder != nil {
+			s.connRecorder.RecordPush(node.ID, node.Name, connections)
+		}
+		if s.alertEngine != nil {
+			s.alertEngine.CheckConnectionsTelemetry(node.ID, node.Name, downloadRate, uploadRate, connections)
+		}
 	case wire.MsgKeepalive:
 		// no-op
 	default:
@@ -820,7 +938,8 @@ type storedConnection struct {
 	User string `json:"user,omitempty"`
 	// OutboundName is the egress the operator configured, resolved from the
 	// sing-box outbound tag; "直连" for the built-in direct outbound.
-	OutboundName string `json:"outbound_name,omitempty"`
+	OutboundName   string `json:"outbound_name,omitempty"`
+	OutboundDirect bool   `json:"outbound_direct,omitempty"`
 	// HasRates says whether the rates below were measured. It is false for a
 	// connection the master has only seen once, whose totals say nothing about
 	// how fast it is moving right now.
@@ -831,21 +950,48 @@ type storedConnection struct {
 	DownloadRate float64 `json:"download_rate,omitempty"`
 	// IsChainRelay indicates whether this connection is an internal downstream relay
 	// leg of a chained proxy originating from another server in our fleet.
-	IsChainRelay bool `json:"is_chain_relay,omitempty"`
+	IsChainRelay  bool `json:"is_chain_relay,omitempty"`
+	OnChainTarget bool `json:"on_chain_target,omitempty"`
 	// RelayUpstreamNodeID identities the fleet node the relay leg came in from
 	// — the node whose egress IP the source address resolved to. Without it a
 	// flagged leg only says "from some other server", which is not enough to
 	// pair two chains that converge on the same destination.
-	RelayUpstreamNodeID string `json:"relay_upstream_node_id,omitempty"`
-	ChainedTarget       string `json:"chained_target,omitempty"`
+	RelayUpstreamNodeID  string   `json:"relay_upstream_node_id,omitempty"`
+	ChainedTarget        string   `json:"chained_target,omitempty"`
+	ResolvedOutboundName string   `json:"resolved_outbound_name,omitempty"`
+	ChainPath            string   `json:"chain_path,omitempty"`
+	ChainNodeIDs         []string `json:"chain_node_ids,omitempty"`
 }
 
 func (s *Server) convertConnections(ctx context.Context, nodeID string, in []wire.ConnectionInfo) []storedConnection {
 	names := s.listenerNames(ctx, nodeID)
 	aliases := s.endpointAliases(ctx, nodeID)
-	egress := s.outboundNames(ctx)
+	egress, directOutbounds := s.outboundMeta(ctx)
 	fleetIPs := s.fleetNodeIPs(ctx)
-	chainTargets := s.chainTargetUsers(ctx, nodeID)
+	chainTargets, chainUpstreams := s.chainTargetUsersWithUpstreams(ctx, nodeID)
+
+	var activeSnapshots map[string][]storedConnection
+	getActiveSnapshots := func() map[string][]storedConnection {
+		if activeSnapshots == nil && s.connHub != nil {
+			activeSnapshots = s.connHub.activeNodeConnections()
+		}
+		return activeSnapshots
+	}
+	var cachedNodeNames map[string]string
+	getNodeNames := func() map[string]string {
+		if cachedNodeNames != nil {
+			return cachedNodeNames
+		}
+		cachedNodeNames = make(map[string]string)
+		if nodes, err := s.store.ListNodes(ctx); err == nil {
+			for _, n := range nodes {
+				cachedNodeNames[n.ID] = n.Name
+			}
+		}
+		return cachedNodeNames
+	}
+	resolvedChainCache := make(map[string]resolvedChainRoute)
+
 	out := make([]storedConnection, 0, len(in))
 	for _, c := range in {
 		ip := addressIP(c.Source)
@@ -860,20 +1006,100 @@ func (s *Server) convertConnections(ctx context.Context, nodeID string, in []wir
 
 		var isChainRelay bool
 		var chainedTarget string
-		if strings.HasPrefix(c.Outbound, "chain-") {
-			chainedTarget = strings.TrimPrefix(c.Outbound, "chain-")
-		} else if len(c.Chains) > 0 && strings.HasPrefix(c.Chains[0], "chain-") {
-			chainedTarget = strings.TrimPrefix(c.Chains[0], "chain-")
-		}
-
-		// Detect if this connection arrived on a chain target endpoint from another node in the fleet
-		var relayUpstreamNodeID string
-		if chainTargets[listenerID+"\x00"+account] || chainTargets[listenerID] {
-			if fromNodeID, ok := fleetIPs[ip]; ok && fromNodeID != nodeID {
-				isChainRelay = true
-				relayUpstreamNodeID = fromNodeID
+		if id, ok := strings.CutPrefix(strings.TrimSpace(c.Outbound), "chain-"); ok && id != "" {
+			chainedTarget = id
+		} else {
+			for _, tag := range c.Chains {
+				if id, ok := strings.CutPrefix(strings.TrimSpace(tag), "chain-"); ok && id != "" {
+					chainedTarget = id
+					break
+				}
 			}
 		}
+
+		// Detect if this connection arrived on a chain target endpoint from another node in the fleet.
+		// Important: only fall back to listenerID-level matching when account == "" so normal users sharing
+		// the same listener are never misclassified as internal chain relays.
+		var relayUpstreamNodeID string
+		keySpecific := listenerID + "\x00" + account
+		isKnownChainAccount := chainTargets[keySpecific]
+		isUnauthenticatedListenerTarget := account == "" && chainTargets[listenerID]
+		var targetUpstreams []string
+		if isKnownChainAccount {
+			targetUpstreams = chainUpstreams[keySpecific]
+		} else if isUnauthenticatedListenerTarget {
+			targetUpstreams = chainUpstreams[listenerID]
+		}
+		if isKnownChainAccount || isUnauthenticatedListenerTarget {
+			upstreams := targetUpstreams
+			upstreamSet := make(map[string]bool, len(upstreams))
+			for _, u := range upstreams {
+				upstreamSet[u] = true
+			}
+			isLoopbackPeer := false
+			if parsedIP := net.ParseIP(ip); parsedIP != nil && parsedIP.IsLoopback() {
+				isLoopbackPeer = true
+			}
+			if candidates := fleetIPs[ip]; len(candidates) > 0 {
+				var fallbackNodeID string
+				for _, cand := range candidates {
+					if cand == nodeID {
+						continue
+					}
+					if upstreamSet[cand] {
+						relayUpstreamNodeID = cand
+						break
+					}
+					if fallbackNodeID == "" {
+						fallbackNodeID = cand
+					}
+				}
+				if relayUpstreamNodeID == "" && !isLoopbackPeer {
+					relayUpstreamNodeID = fallbackNodeID
+				}
+				if relayUpstreamNodeID != "" {
+					isChainRelay = true
+				}
+			}
+			// Fallback 1: unlisted IPv6/ephemeral SNAT egress when the active (or recent) upstream entry leg is known.
+			if !isChainRelay && len(upstreams) > 0 {
+				probe := storedConnection{Destination: c.Destination, Host: c.Host, Network: c.Network}
+				if active := getActiveSnapshots(); len(active) > 0 {
+					for _, upID := range upstreams {
+						if upID == nodeID {
+							continue
+						}
+						for _, oc := range active[upID] {
+							if connectionChainEndpointID(oc) != "" && connectionDestMatches(oc, probe) {
+								isChainRelay = true
+								relayUpstreamNodeID = upID
+								break
+							}
+						}
+						if isChainRelay {
+							break
+						}
+					}
+				}
+				if !isChainRelay {
+					if matchedUpID, ok := s.matchRecentChainEntry(nodeID, upstreams, probe); ok {
+						isChainRelay = true
+						relayUpstreamNodeID = matchedUpID
+					}
+				}
+			}
+			// Fallback 2: loopback peer (e.g. co-hosted / WSL local proxy) on a chain target account.
+			if !isChainRelay && isLoopbackPeer && len(upstreams) > 0 {
+				for _, upID := range upstreams {
+					if upID != "" && upID != nodeID {
+						isChainRelay = true
+						relayUpstreamNodeID = upID
+						break
+					}
+				}
+			}
+		}
+		onChainTarget := !isChainRelay && (isKnownChainAccount || isUnauthenticatedListenerTarget) && len(targetUpstreams) > 0
 
 		destIP := addressIP(c.Destination)
 		if destIP == "" && c.Host != "" && net.ParseIP(c.Host) != nil {
@@ -895,16 +1121,117 @@ func (s *Server) convertConnections(ctx context.Context, nodeID string, in []wir
 			hasSrcCoords = srcInfo.HasCoords
 		}
 
-		out = append(out, storedConnection{
+		egressTag := c.Outbound
+		if egressTag == "" && len(c.Chains) > 0 {
+			egressTag = c.Chains[0]
+		}
+
+		sc := storedConnection{
 			ID: c.ID, Inbound: c.Inbound, Network: c.Network, Source: c.Source, Destination: c.Destination,
 			SourceIP: ip, SourceLocation: srcLoc, SourceLat: srcLat, SourceLon: srcLon, HasSourceCoords: hasSrcCoords,
 			DestinationLocation: destLoc, Host: c.Host, Upload: c.Upload, Download: c.Download,
 			StartedAt: c.StartedAt, Outbound: c.Outbound, Rule: c.Rule, RulePayload: c.RulePayload, Chains: c.Chains,
-			ListenerName: names[listenerID], User: user, OutboundName: outboundDisplayName(c.Outbound, egress),
-			IsChainRelay: isChainRelay, RelayUpstreamNodeID: relayUpstreamNodeID, ChainedTarget: chainedTarget,
+			ListenerName: names[listenerID], User: user, OutboundName: outboundDisplayName(egressTag, egress),
+			OutboundDirect: isDirectOutboundTag(egressTag, directOutbounds),
+			IsChainRelay:   isChainRelay, OnChainTarget: onChainTarget, RelayUpstreamNodeID: relayUpstreamNodeID, ChainedTarget: chainedTarget,
+		}
+		if chainedTarget != "" && !isChainRelay {
+			cacheKey := chainedTarget + "\x00" + c.Destination + "\x00" + c.Host + "\x00" + c.Network
+			resolved, cached := resolvedChainCache[cacheKey]
+			if !cached {
+				nodeNames := getNodeNames()
+				resolved = resolveChainRoute(ctx, s.store, s.connHub, nil, nodeNames, nodeID, nodeNames[nodeID], sc)
+				resolvedChainCache[cacheKey] = resolved
+			}
+			if resolved.HopResolved && resolved.FinalOutbound != "" {
+				if resolved.FinalIsDirect && resolved.FinalNodeName != "" && resolved.FinalNodeName != getNodeNames()[nodeID] {
+					sc.ResolvedOutboundName = fmt.Sprintf("%s（经 %s 落地）", resolved.FinalOutbound, resolved.FinalNodeName)
+				} else {
+					sc.ResolvedOutboundName = resolved.FinalOutbound
+				}
+				if len(resolved.Path) > 0 {
+					sc.ChainPath = strings.Join(resolved.Path, " → ")
+				}
+				if len(resolved.NodeIDs) > 0 {
+					sc.ChainNodeIDs = resolved.NodeIDs
+				}
+			}
+		}
+		out = append(out, sc)
+	}
+	s.recordRecentChainEntries(nodeID, out)
+	return out
+}
+
+const recentChainEntryTTL = 30 * time.Second
+
+func (s *Server) recordRecentChainEntries(nodeID string, conns []storedConnection) {
+	if nodeID == "" {
+		return
+	}
+	now := time.Now()
+	s.recentChainMu.Lock()
+	defer s.recentChainMu.Unlock()
+	if s.recentChainEntries == nil {
+		s.recentChainEntries = make(map[string][]recentChainEntry)
+	}
+	kept := s.recentChainEntries[nodeID][:0]
+	for _, entry := range s.recentChainEntries[nodeID] {
+		if now.Sub(entry.seenAt) <= recentChainEntryTTL {
+			kept = append(kept, entry)
+		}
+	}
+	for _, c := range conns {
+		epID := connectionChainEndpointID(c)
+		if epID == "" {
+			continue
+		}
+		kept = append(kept, recentChainEntry{
+			endpointID: epID,
+			conn: storedConnection{
+				ID:          c.ID,
+				Network:     c.Network,
+				Destination: c.Destination,
+				Host:        c.Host,
+				Outbound:    c.Outbound,
+				Chains:      c.Chains,
+			},
+			seenAt: now,
 		})
 	}
-	return out
+	if len(kept) == 0 {
+		delete(s.recentChainEntries, nodeID)
+	} else {
+		if len(kept) > 2000 {
+			kept = kept[len(kept)-2000:]
+		}
+		s.recentChainEntries[nodeID] = kept
+	}
+}
+
+func (s *Server) matchRecentChainEntry(currentNodeID string, upstreams []string, probe storedConnection) (string, bool) {
+	now := time.Now()
+	s.recentChainMu.Lock()
+	defer s.recentChainMu.Unlock()
+	if len(s.recentChainEntries) == 0 {
+		return "", false
+	}
+	for _, upID := range upstreams {
+		if upID == "" || upID == currentNodeID {
+			continue
+		}
+		entries := s.recentChainEntries[upID]
+		for i := len(entries) - 1; i >= 0; i-- {
+			entry := entries[i]
+			if now.Sub(entry.seenAt) > recentChainEntryTTL {
+				continue
+			}
+			if connectionDestMatches(entry.conn, probe) {
+				return upID, true
+			}
+		}
+	}
+	return "", false
 }
 
 // connectionListenerID resolves the listener a connection arrived on. sing-box
@@ -952,6 +1279,16 @@ func outboundDisplayName(tag string, names map[string]string) string {
 		return ""
 	case tag == "direct":
 		return "直连"
+	case strings.HasPrefix(tag, "direct-"):
+		if ip := strings.TrimSpace(strings.TrimPrefix(tag, "direct-")); ip != "" {
+			return fmt.Sprintf("直连 (%s)", ip)
+		}
+		return "直连"
+	case strings.HasPrefix(tag, "direct:"):
+		if ip := strings.TrimSpace(strings.TrimPrefix(tag, "direct:")); ip != "" {
+			return fmt.Sprintf("直连 (%s)", ip)
+		}
+		return "直连"
 	}
 	if id, found := strings.CutPrefix(tag, "outbound-"); found {
 		if name := names[id]; name != "" {
@@ -967,24 +1304,44 @@ func outboundDisplayName(tag string, names map[string]string) string {
 	return tag
 }
 
+func isDirectOutboundTag(tag string, directOutbounds map[string]bool) bool {
+	lower := strings.ToLower(strings.TrimSpace(tag))
+	if lower == "direct" || strings.HasPrefix(lower, "direct-") || strings.HasPrefix(lower, "direct:") {
+		return true
+	}
+	if id, found := strings.CutPrefix(strings.TrimSpace(tag), "outbound-"); found {
+		return directOutbounds[id]
+	}
+	return false
+}
+
 // outboundNames maps outbound IDs to their configured names. Outbounds are
 // global rather than per node, and they change far more rarely than the
 // connection pushes that read them, so one short-lived cache serves them all.
 func (s *Server) outboundNames(ctx context.Context) map[string]string {
+	names, _ := s.outboundMeta(ctx)
+	return names
+}
+
+func (s *Server) outboundMeta(ctx context.Context) (map[string]string, map[string]bool) {
 	s.listenerNameMu.Lock()
-	cached, at := s.outboundNameCache, s.outboundNameCachedAt
+	cached, directCached, at := s.outboundNameCache, s.outboundDirectCache, s.outboundNameCachedAt
 	s.listenerNameMu.Unlock()
-	if cached != nil && time.Since(at) < listenerNameCacheTTL {
-		return cached
+	if cached != nil && directCached != nil && time.Since(at) < listenerNameCacheTTL {
+		return cached, directCached
 	}
 	names := map[string]string{}
-	rows, err := s.store.db.QueryContext(ctx, `SELECT id, name FROM outbounds`)
+	direct := map[string]bool{}
+	rows, err := s.store.db.QueryContext(ctx, `SELECT id, name, type FROM outbounds`)
 	if err == nil {
 		defer rows.Close()
 		for rows.Next() {
-			var id, name string
-			if err := rows.Scan(&id, &name); err == nil {
+			var id, name, obType string
+			if err := rows.Scan(&id, &name, &obType); err == nil {
 				names[id] = name
+				if strings.EqualFold(strings.TrimSpace(obType), "direct") {
+					direct[id] = true
+				}
 			}
 		}
 	}
@@ -1006,9 +1363,9 @@ func (s *Server) outboundNames(ctx context.Context) map[string]string {
 		}
 	}
 	s.listenerNameMu.Lock()
-	s.outboundNameCache, s.outboundNameCachedAt = names, time.Now()
+	s.outboundNameCache, s.outboundDirectCache, s.outboundNameCachedAt = names, direct, time.Now()
 	s.listenerNameMu.Unlock()
-	return names
+	return names, direct
 }
 
 // endpointAliases maps a node's "listener ID + account name" to the alias an
@@ -1018,7 +1375,7 @@ func (s *Server) endpointAliases(ctx context.Context, nodeID string) map[string]
 	s.listenerNameMu.Lock()
 	cached, ok := s.listenerNameCache[nodeID]
 	s.listenerNameMu.Unlock()
-	if ok && time.Since(cached.at) < listenerNameCacheTTL && cached.aliases != nil {
+	if ok && time.Since(cached.aliasesAt) < listenerNameCacheTTL && cached.aliases != nil {
 		return cached.aliases
 	}
 	aliases := map[string]string{}
@@ -1043,6 +1400,7 @@ func (s *Server) endpointAliases(ctx context.Context, nodeID string) map[string]
 	}
 	entry := s.listenerNameCache[nodeID]
 	entry.aliases = aliases
+	entry.aliasesAt = time.Now()
 	s.listenerNameCache[nodeID] = entry
 	s.listenerNameMu.Unlock()
 	return aliases
@@ -1056,7 +1414,7 @@ func (s *Server) listenerNames(ctx context.Context, nodeID string) map[string]st
 	s.listenerNameMu.Lock()
 	cached, ok := s.listenerNameCache[nodeID]
 	s.listenerNameMu.Unlock()
-	if ok && time.Since(cached.at) < listenerNameCacheTTL {
+	if ok && time.Since(cached.namesAt) < listenerNameCacheTTL && cached.names != nil {
 		return cached.names
 	}
 	names := map[string]string{}
@@ -1079,54 +1437,70 @@ func (s *Server) listenerNames(ctx context.Context, nodeID string) map[string]st
 	if s.listenerNameCache == nil {
 		s.listenerNameCache = map[string]listenerNameEntry{}
 	}
-	s.listenerNameCache[nodeID] = listenerNameEntry{names: names, at: time.Now()}
+	entry := s.listenerNameCache[nodeID]
+	entry.names = names
+	entry.namesAt = time.Now()
+	s.listenerNameCache[nodeID] = entry
 	s.listenerNameMu.Unlock()
 	return names
 }
 
+func appendUniqueString(list []string, item string) []string {
+	if item == "" {
+		return list
+	}
+	for _, existing := range list {
+		if existing == item {
+			return list
+		}
+	}
+	return append(list, item)
+}
+
 // fleetNodeIPs returns a set of known IP addresses of all servers in the fleet,
-// mapped to their node ID.
-func (s *Server) fleetNodeIPs(ctx context.Context) map[string]string {
+// mapped to all node IDs known to use each address (handling shared NAT or same-host loops).
+func (s *Server) fleetNodeIPs(ctx context.Context) map[string][]string {
 	s.listenerNameMu.Lock()
 	cached, at := s.fleetIPCache, s.fleetIPCachedAt
 	s.listenerNameMu.Unlock()
 	if cached != nil && time.Since(at) < listenerNameCacheTTL {
 		return cached
 	}
-	ips := make(map[string]string)
+	ips := make(map[string][]string)
+	addIP := func(raw, nodeID string) {
+		addr := strings.TrimSpace(raw)
+		if addr == "" || nodeID == "" {
+			return
+		}
+		if h, _, err := net.SplitHostPort(addr); err == nil {
+			addr = h
+		}
+		addr = strings.Trim(addr, "[]")
+		if parsed := net.ParseIP(addr); parsed != nil {
+			ips[addr] = appendUniqueString(ips[addr], nodeID)
+			canon := parsed.String()
+			if canon != addr {
+				ips[canon] = appendUniqueString(ips[canon], nodeID)
+			}
+		}
+	}
 	nodes, err := s.store.ListNodes(ctx)
 	if err == nil {
 		for _, n := range nodes {
-			if n.ClientAddress != "" {
-				addr := strings.TrimSpace(n.ClientAddress)
-				if h, _, err := net.SplitHostPort(addr); err == nil {
-					addr = h
-				}
-				if net.ParseIP(addr) != nil {
-					ips[addr] = n.ID
-				}
+			addIP(n.ClientAddress, n.ID)
+			addIP(n.LastObservedIP, n.ID)
+			for _, ipAddr := range n.IPAddresses {
+				addIP(ipAddr, n.ID)
 			}
-			if n.LastObservedIP != "" {
-				addr := strings.TrimSpace(n.LastObservedIP)
-				if h, _, err := net.SplitHostPort(addr); err == nil {
-					addr = h
-				}
-				if net.ParseIP(addr) != nil {
-					ips[addr] = n.ID
-				}
+			for pubIP := range n.IPMappings {
+				addIP(pubIP, n.ID)
 			}
 		}
 	}
 	s.controlMu.Lock()
 	for id, session := range s.controls {
 		if session != nil && session.remoteAddr != "" {
-			addr := strings.TrimSpace(session.remoteAddr)
-			if h, _, err := net.SplitHostPort(addr); err == nil {
-				addr = h
-			}
-			if net.ParseIP(addr) != nil {
-				ips[addr] = id
-			}
+			addIP(session.remoteAddr, id)
 		}
 	}
 	s.controlMu.Unlock()
@@ -1140,37 +1514,58 @@ func (s *Server) fleetNodeIPs(ctx context.Context) map[string]string {
 // chainTargetUsers returns endpoint keys (listenerID+"\x00"+accountName and listenerID)
 // on nodeID that are targeted by other nodes' chain outbounds.
 func (s *Server) chainTargetUsers(ctx context.Context, nodeID string) map[string]bool {
+	targets, _ := s.chainTargetUsersWithUpstreams(ctx, nodeID)
+	return targets
+}
+
+func (s *Server) chainTargetUsersWithUpstreams(ctx context.Context, nodeID string) (map[string]bool, map[string][]string) {
 	s.listenerNameMu.Lock()
-	cached, at := s.chainTargetCache, s.chainTargetCachedAt
+	cached, ok := s.chainTargetCache[nodeID]
 	s.listenerNameMu.Unlock()
-	if cached != nil && time.Since(at) < listenerNameCacheTTL {
-		return cached
+	if ok && cached.targets != nil && time.Since(cached.at) < listenerNameCacheTTL {
+		return cached.targets, cached.upstreams
 	}
 	targets := make(map[string]bool)
+	upstreams := make(map[string][]string)
 	rows, err := s.store.db.QueryContext(ctx, `
-		SELECT e.listener_id, e.name
+		SELECT e.listener_id, e.name, COALESCE(up.upstream_node_id, '')
 		FROM endpoints e
 		JOIN listeners l ON l.id = e.listener_id
-		WHERE l.node_id = ?
-		  AND e.id IN (
-			SELECT SUBSTR(outbound_id, 7) FROM endpoints WHERE outbound_id LIKE 'chain:%'
+		JOIN (
+			SELECT SUBSTR(e2.outbound_id, 7) AS target_ep_id, l2.node_id AS upstream_node_id
+			FROM endpoints e2
+			JOIN listeners l2 ON l2.id = e2.listener_id
+			JOIN nodes n2 ON n2.id = l2.node_id
+			WHERE e2.outbound_id LIKE 'chain:%' AND e2.enabled = 1 AND l2.enabled = 1 AND n2.revoked_at IS NULL
 			UNION
-			SELECT SUBSTR(outbound_id, 7) FROM listeners WHERE outbound_id LIKE 'chain:%'
-		  )`, nodeID)
+			SELECT SUBSTR(l2.outbound_id, 7) AS target_ep_id, l2.node_id AS upstream_node_id
+			FROM listeners l2
+			JOIN nodes n2 ON n2.id = l2.node_id
+			WHERE l2.outbound_id LIKE 'chain:%' AND l2.enabled = 1 AND n2.revoked_at IS NULL
+		) up ON up.target_ep_id = e.id
+		WHERE l.node_id = ? AND e.enabled = 1 AND l.enabled = 1`, nodeID)
 	if err == nil {
 		defer rows.Close()
 		for rows.Next() {
-			var listenerID, name string
-			if err := rows.Scan(&listenerID, &name); err == nil {
-				targets[listenerID+"\x00"+name] = true
+			var listenerID, name, upstreamNodeID string
+			if err := rows.Scan(&listenerID, &name, &upstreamNodeID); err == nil {
+				keySpecific := listenerID + "\x00" + name
+				targets[keySpecific] = true
 				targets[listenerID] = true
+				if upstreamNodeID != "" && upstreamNodeID != nodeID {
+					upstreams[keySpecific] = appendUniqueString(upstreams[keySpecific], upstreamNodeID)
+					upstreams[listenerID] = appendUniqueString(upstreams[listenerID], upstreamNodeID)
+				}
 			}
 		}
 	}
 	s.listenerNameMu.Lock()
-	s.chainTargetCache, s.chainTargetCachedAt = targets, time.Now()
+	if s.chainTargetCache == nil {
+		s.chainTargetCache = make(map[string]chainTargetEntry)
+	}
+	s.chainTargetCache[nodeID] = chainTargetEntry{targets: targets, upstreams: upstreams, at: time.Now()}
 	s.listenerNameMu.Unlock()
-	return targets
+	return targets, upstreams
 }
 
 func (s *Server) mergeNodeMetrics(ctx context.Context, nodeID string, mutate func(*storedMetrics)) error {

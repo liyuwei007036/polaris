@@ -108,8 +108,9 @@ export function mergeChainedConnections(connections, nodes = []) {
 
   const isChainEntry = (c) => Boolean(
     c.is_chain_entry ||
+    c.chained_target ||
     (c.outbound && c.outbound.startsWith('chain-')) ||
-    (Array.isArray(c.chains) && c.chains[0] && c.chains[0].startsWith('chain-'))
+    (Array.isArray(c.chains) && c.chains.some((tag) => tag && tag.startsWith('chain-')))
   )
 
   // 取“IP[:端口]”里的 IP。[v6]:端口 去括号；IPv4:端口 去端口；IPv6 本身
@@ -123,9 +124,46 @@ export function mergeChainedConnections(connections, nodes = []) {
     return text
   }
 
+  const splitDest = (addr) => {
+    if (!addr) return { host: '', port: '' }
+    const text = addr.trim().toLowerCase()
+    if (text.startsWith('[')) {
+      const m = text.match(/^\[([^\]]+)\](?::(\d+))?$/)
+      return { host: m?.[1] || '', port: m?.[2] || '' }
+    }
+    const separator = text.lastIndexOf(':')
+    if (separator >= 0 && /^\d+$/.test(text.slice(separator + 1))) {
+      return { host: text.slice(0, separator), port: text.slice(separator + 1) }
+    }
+    return { host: text, port: '' }
+  }
+
+  const destMatches = (a, b) => {
+    const netA = (a.network || '').toLowerCase()
+    const netB = (b.network || '').toLowerCase()
+    if (netA && netB && netA !== netB) return false
+
+    const da = splitDest(a.destination)
+    const db = splitDest(b.destination)
+    if (da.port && db.port && da.port !== db.port) return false
+
+    const ha = (a.host || '').trim().toLowerCase()
+    const hb = (b.host || '').trim().toLowerCase()
+    if (ha && hb) return ha === hb
+
+    if (da.host && db.host && da.host === db.host && (da.port === db.port || !da.port || !db.port)) {
+      return true
+    }
+    if (ha && db.host && ha === db.host) return true
+    if (hb && da.host && hb === da.host) return true
+    return Boolean(a.target && b.target && a.target === b.target && !String(a.target).startsWith(':'))
+  }
+
   for (const entry of connections) {
     if (!isChainEntry(entry) || consumed.has(entry)) continue
 
+    const initialChainNodeIDs = Array.isArray(entry.chain_node_ids) ? [...entry.chain_node_ids] : null
+    let liveChainMatched = false
     let currentLeg = entry
     while (true) {
       // 在整张连接表里扫一遍，挑证据最强的一条候选段（并列取先出现的）。
@@ -142,17 +180,7 @@ export function mergeChainedConnections(connections, nodes = []) {
         if (candidate === entry || candidate === currentLeg || consumed.has(candidate)) continue
         if (candidate.node_id === currentLeg.node_id) continue
 
-        const destMatch = (
-          (currentLeg.target && candidate.target && currentLeg.target === candidate.target) ||
-          (currentLeg.destination && candidate.destination && currentLeg.destination === candidate.destination) ||
-          (currentLeg.host && candidate.host && currentLeg.host === candidate.host)
-        )
-        if (!destMatch) continue
-
-        if (currentLeg.network && candidate.network &&
-            currentLeg.network.toLowerCase() !== candidate.network.toLowerCase()) {
-          continue
-        }
+        if (!destMatches(currentLeg, candidate)) continue
 
         // 主控标记的中继段：能指认来源时按来源判定（精确证据），指认不出
         // 具体节点时才降级为“只说明来自另一台服务器”的兜底证据。来源明确
@@ -168,10 +196,14 @@ export function mergeChainedConnections(connections, nodes = []) {
         // 地址完全一致，或完整 “IP:端口” 来源串里带着该节点地址。对不上
         // fleet 里其他节点的、或来源是本节点自己的，都不算中继段。
         if (sourceNode) {
-          const sourceIPMatch = Boolean(candidate.source_ip && (
-            candidate.source_ip.trim().toLowerCase() === bare(sourceNode.client_address) ||
-            candidate.source_ip.trim().toLowerCase() === bare(sourceNode.last_observed_ip)
-          ))
+          const candIP = candidate.source_ip ? candidate.source_ip.trim().toLowerCase() : ''
+          const nodeKnownIPs = [
+            sourceNode.client_address,
+            sourceNode.last_observed_ip,
+            ...(Array.isArray(sourceNode.ip_addresses) ? sourceNode.ip_addresses : []),
+            ...Object.keys(sourceNode.ip_mappings || {}),
+          ].map(bare).filter(Boolean)
+          const sourceIPMatch = Boolean(candIP && nodeKnownIPs.includes(candIP))
           const sourceAliasMatch = Boolean(candidate.source &&
             sourceNode.client_address && candidate.source.includes(sourceNode.client_address))
           // 账户匹配取出口标签尾部括号里的完整账户名，而不是任意子串匹配：
@@ -189,12 +221,32 @@ export function mergeChainedConnections(connections, nodes = []) {
         }
       }
 
-      if (!best) break
+      if (!best) {
+        if (entry.chain_path && (!entry.chain_node_names ||
+            entry.chain_path.split(' → ').length > entry.chain_node_names.length)) {
+          entry.node_name = entry.chain_path
+          if (initialChainNodeIDs && initialChainNodeIDs.length > (entry.chain_node_ids?.length || 0)) {
+            entry.chain_node_ids = initialChainNodeIDs
+          }
+        }
+        if (entry.resolved_outbound_name) {
+          if (!entry.chain_exit && entry.exit) {
+            entry.chain_exit = `${entry.exit} → ${entry.resolved_outbound_name}`
+          }
+          entry.exit = entry.resolved_outbound_name
+        }
+        break
+      }
 
       consumed.add(best)
+      if (!liveChainMatched) {
+        liveChainMatched = true
+        entry.chain_node_ids = [entry.node_id]
+      }
 
-      if (!entry.chain_node_ids) entry.chain_node_ids = [entry.node_id]
-      entry.chain_node_ids.push(best.node_id)
+      if (!entry.chain_node_ids.includes(best.node_id)) {
+        entry.chain_node_ids.push(best.node_id)
+      }
 
       if (!entry.chain_node_names) entry.chain_node_names = [entry.node_name]
       entry.chain_node_names.push(best.node_name)

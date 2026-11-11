@@ -89,6 +89,7 @@ func (s *Store) SaveConnectionRecords(ctx context.Context, records []ConnectionR
 			download = MAX(connection_records.download, excluded.download),
 			closed_at = CASE WHEN excluded.closed_at > 0 THEN excluded.closed_at ELSE connection_records.closed_at END,
 			node_name = CASE WHEN excluded.node_name != '' THEN excluded.node_name ELSE connection_records.node_name END,
+			outbound_name = CASE WHEN excluded.outbound_name != '' THEN excluded.outbound_name ELSE connection_records.outbound_name END,
 			destination_location = CASE WHEN excluded.destination_location != '' THEN excluded.destination_location ELSE connection_records.destination_location END
 	`)
 	if err != nil {

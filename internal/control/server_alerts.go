@@ -90,7 +90,6 @@ func (s *Server) testAlert(w http.ResponseWriter, r *http.Request) {
 		DeviceKey        string `json:"device_key"`
 		Sound            string `json:"sound"`
 		Group            string `json:"group"`
-		URL              string `json:"url"`
 		TelegramServer   string `json:"telegram_server"`
 		TelegramBotToken string `json:"telegram_bot_token"`
 		TelegramChatID   string `json:"telegram_chat_id"`
@@ -117,7 +116,6 @@ func (s *Server) testAlert(w http.ResponseWriter, r *http.Request) {
 	deviceKey := pick(in.DeviceKey, settings.BarkDeviceKey)
 	sound := pick(in.Sound, settings.BarkSound)
 	group := pick(in.Group, settings.BarkGroup)
-	url := pick(in.URL, settings.BarkURL)
 	if sound == "" {
 		sound = "minuet.caf"
 	}
@@ -154,7 +152,6 @@ func (s *Server) testAlert(w http.ResponseWriter, r *http.Request) {
 			Group: group,
 			Sound: sound,
 			Level: "active",
-			URL:   url,
 		}
 		if err := NewBarkClient().Send(testCtx, server, deviceKey, msg); err != nil {
 			failures = append(failures, "Bark: "+err.Error())

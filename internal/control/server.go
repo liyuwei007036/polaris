@@ -63,6 +63,7 @@ type Server struct {
 	latestPolarisReleaseFn func(context.Context, string) (SingBoxRelease, error)
 	selfUpdateApplyFn      func(context.Context, selfupdate.Manifest, string, func(context.Context, string) error) error
 	selfUpdateRestartFn    func() error
+	artifactMu             sync.Mutex
 	connHub                *connectionsHub
 	connRates              *connectionRates
 	connActivity           *nodeActivity
@@ -73,11 +74,13 @@ type Server struct {
 	listenerNameMu         sync.Mutex
 	listenerNameCache      map[string]listenerNameEntry
 	outboundNameCache      map[string]string
+	outboundDirectCache    map[string]bool
 	outboundNameCachedAt   time.Time
-	fleetIPCache           map[string]string
+	fleetIPCache           map[string][]string
 	fleetIPCachedAt        time.Time
-	chainTargetCache       map[string]bool
-	chainTargetCachedAt    time.Time
+	chainTargetCache       map[string]chainTargetEntry
+	recentChainMu          sync.Mutex
+	recentChainEntries     map[string][]recentChainEntry
 	connectionsInterval    time.Duration
 	// fleetStreaming is whether nodes should currently be pushing their
 	// real-time connection lists. Guarded by controlMu alongside the sessions
@@ -103,9 +106,22 @@ type Server struct {
 const listenerNameCacheTTL = 20 * time.Second
 
 type listenerNameEntry struct {
-	names   map[string]string
-	aliases map[string]string
-	at      time.Time
+	names     map[string]string
+	namesAt   time.Time
+	aliases   map[string]string
+	aliasesAt time.Time
+}
+
+type chainTargetEntry struct {
+	targets   map[string]bool
+	upstreams map[string][]string
+	at        time.Time
+}
+
+type recentChainEntry struct {
+	endpointID string
+	conn       storedConnection
+	seenAt     time.Time
 }
 
 type controlSession struct {
@@ -151,6 +167,8 @@ func NewServer(store *Store, secureCookies bool) (*Server, error) {
 		now:                 time.Now,
 	}
 	server.connHub.onWatchers = server.setFleetStreaming
+	server.connRecorder.SetConnectionsHub(server.connHub)
+	server.alertEngine.SetConnectionsHub(server.connHub)
 	go server.runExpiryReminders()
 	return server, nil
 }
@@ -992,13 +1010,26 @@ func (s *Server) DispatchTask(ctx context.Context, task Task) (Task, error) {
 	if session != nil {
 		select {
 		case session.tasks <- created:
-		default:
+		case <-session.done:
+		case <-time.After(200 * time.Millisecond):
+			log.Printf("[TASK_DISPATCH] session task channel full for node %s (task %s), leaving queued for reconnect", created.NodeID, created.ID)
 		}
 	}
 	return created, nil
 }
 
+func (s *Server) invalidateConnMetadataCache() {
+	s.listenerNameMu.Lock()
+	s.listenerNameCache = nil
+	s.outboundNameCache = nil
+	s.outboundDirectCache = nil
+	s.fleetIPCache = nil
+	s.chainTargetCache = nil
+	s.listenerNameMu.Unlock()
+}
+
 func (s *Server) dispatchNodeConfiguration(ctx context.Context, nodeID, operatorID string) (Task, error) {
+	s.invalidateConnMetadataCache()
 	if operatorID != "" {
 		s.clearReconcileState(nodeID)
 	}
@@ -1872,6 +1903,8 @@ func (s *Server) updateNode(w http.ResponseWriter, r *http.Request) {
 		DDNSDomain    *string           `json:"ddns_domain"`
 		DDNSRecordIDs []string          `json:"ddns_record_ids"`
 		DDNSDomains   []string          `json:"ddns_domains"`
+		DDNSBindIP    *string           `json:"ddns_bind_ip"`
+		DDNSRecordIPs map[string]string `json:"ddns_record_ips"`
 		IPAliases     map[string]string `json:"ip_aliases"`
 		ExpiresOn     string            `json:"expires_on"`
 		Price         string            `json:"price"`
@@ -1890,6 +1923,12 @@ func (s *Server) updateNode(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
+	if input.DDNSBindIP != nil || input.DDNSRecordIPs != nil {
+		if err := s.store.UpdateNodeDDNSBinding(r.Context(), nodeID, input.DDNSBindIP, input.DDNSRecordIPs); err != nil {
+			writeError(w, err)
+			return
+		}
+	}
 	if input.IPAliases != nil {
 		if err := s.store.SetNodeIPAliases(r.Context(), nodeID, input.IPAliases); err != nil {
 			writeError(w, err)
@@ -1905,6 +1944,7 @@ func (s *Server) updateNode(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.clearReconcileState(nodeID)
+	s.invalidateConnMetadataCache()
 	node, err := s.store.GetNode(r.Context(), nodeID)
 	if err != nil {
 		writeError(w, err)
@@ -2705,6 +2745,7 @@ func (s *Server) createOutbound(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
+	s.invalidateConnMetadataCache()
 	writeJSON(w, http.StatusCreated, created)
 }
 
@@ -2733,6 +2774,7 @@ func (s *Server) updateOutbound(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
+	s.invalidateConnMetadataCache()
 	tasks, err := s.dispatchNodeConfigurations(r.Context(), nodeIDs, operator.ID)
 	if err != nil {
 		writeError(w, err)
@@ -2767,6 +2809,7 @@ func (s *Server) setOutboundEnabled(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
+	s.invalidateConnMetadataCache()
 	tasks, err := s.dispatchNodeConfigurations(r.Context(), nodeIDs, operator.ID)
 	if err != nil {
 		writeError(w, err)
@@ -2795,6 +2838,7 @@ func (s *Server) deleteOutbound(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
+	s.invalidateConnMetadataCache()
 	tasks, err := s.dispatchNodeConfigurations(r.Context(), nodeIDs, operator.ID)
 	if err != nil {
 		writeError(w, err)
@@ -3364,6 +3408,7 @@ func (s *Server) revokeNode(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
+	s.invalidateConnMetadataCache()
 	s.disconnectAgent(nodeID)
 	_ = s.store.AppendAudit(r.Context(), operator.ID, "node.certificate_revoked", "node", nodeID, "node revoked")
 	w.WriteHeader(http.StatusNoContent)

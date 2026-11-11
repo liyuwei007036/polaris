@@ -3,9 +3,11 @@ import { computed, inject, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Check, Delete, Plus, Refresh, Search } from '@element-plus/icons-vue'
 import { api, post, put } from '../../api'
+import { buildDDNSIPOptions } from '../../ddns'
 import { writeClipboard } from '../../clipboard'
 import { formatBandwidth, formatBytes, formatDateTime, includesText } from '../../format'
 import { subscribeLive } from '../../live'
+import { performAgentUpgrade } from '../../agent_upgrade'
 import { connectionSnapshots, subscribeConnections } from '../../connections'
 import MPage from '../components/MPage.vue'
 import MSegmented from '../components/MSegmented.vue'
@@ -42,8 +44,14 @@ const agentPort = ref(19994)
 
 const editSheet = ref(false)
 const editNode = ref(null)
-const editForm = ref({ name: '', client_address: '', ddns_enabled: false, ddns_record_id: '', ddns_domain: '', ddns_record_ids: [], ddns_domains: [], ip_aliases: {}, expires_on: '', price: '', price_period: '', currency: 'USD', provider: '', provider_url: '', traffic_plan: '', bandwidth: '' })
+const editForm = ref({ name: '', client_address: '', ddns_enabled: false, ddns_record_id: '', ddns_domain: '', ddns_record_ids: [], ddns_domains: [], ddns_bind_ip: '', ddns_record_ips: {}, ip_aliases: {}, expires_on: '', price: '', price_period: '', currency: 'USD', provider: '', provider_url: '', traffic_plan: '', bandwidth: '' })
 const newCustomEgressIP = ref('')
+
+const editDDNSIPOptions = computed(() => buildDDNSIPOptions(editNode.value, editForm.value.ip_aliases))
+
+function cfRecordById(recId) {
+  return cfRecords.value.find((r) => r.id === recId) || null
+}
 
 const editNodeAllIPs = computed(() => {
   const ips = []
@@ -273,13 +281,10 @@ function runAction(key) {
 }
 
 async function upgradeAgent(node) {
-  await ElMessageBox.confirm(
-    `将“${node.name}”的 agent 升级到最新版本？升级完成后 agent 会自动重启并重新连接，运行中的代理服务不受影响。`,
-    '升级 Agent',
-    { type: 'warning', confirmButtonText: '开始升级' },
-  )
-  await post(`/nodes/${node.id}/agent/upgrade`, {})
-  ElMessage.success('升级任务已下发，agent 更新完成后会自动重新上线')
+  await performAgentUpgrade(node, {
+    refreshList: () => load(true),
+    refreshNodes: () => loadNodes(),
+  })
 }
 
 async function upgradeSingBox(node) {
@@ -318,6 +323,13 @@ function onRecordsSelected(selectedIds) {
   editForm.value.ddns_domains = selectedRecords.map(r => r.name)
   editForm.value.ddns_record_id = selectedIds[0] || ''
   editForm.value.ddns_domain = editForm.value.ddns_domains[0] || ''
+  const nextRecIPs = {}
+  for (const id of selectedIds) {
+    if (editForm.value.ddns_record_ips?.[id]) {
+      nextRecIPs[id] = editForm.value.ddns_record_ips[id]
+    }
+  }
+  editForm.value.ddns_record_ips = nextRecIPs
   if (!editForm.value.client_address || /^[0-9.:]+$/.test(editForm.value.client_address)) {
     if (editForm.value.ddns_domain) {
       editForm.value.client_address = editForm.value.ddns_domain
@@ -343,6 +355,8 @@ async function openEdit(node) {
     ddns_domain: node.ddns_domain || '',
     ddns_record_ids: recordIds,
     ddns_domains: domains,
+    ddns_bind_ip: node.ddns_bind_ip || '',
+    ddns_record_ips: { ...(node.ddns_record_ips || {}) },
     ip_aliases: { ...(node.ip_aliases || {}) },
     expires_on: node.expires_on || '', price: node.price || '', price_period: node.price_period || '', currency: node.currency || 'USD', provider: node.provider || '', provider_url: node.provider_url || '', traffic_plan: node.traffic_plan || '', bandwidth: node.bandwidth || '',
   }
@@ -361,6 +375,8 @@ async function saveNode() {
       ddns_domain: editForm.value.ddns_domain,
       ddns_record_ids: editForm.value.ddns_record_ids,
       ddns_domains: editForm.value.ddns_domains,
+      ddns_bind_ip: (editForm.value.ddns_bind_ip || '').trim(),
+      ddns_record_ips: editForm.value.ddns_record_ips || {},
       ip_aliases: editForm.value.ip_aliases || {},
       expires_on: editForm.value.expires_on, price: editForm.value.price, price_period: editForm.value.price_period, currency: editForm.value.currency,
       provider: editForm.value.provider, provider_url: editForm.value.provider_url, traffic_plan: editForm.value.traffic_plan, bandwidth: editForm.value.bandwidth,
@@ -658,6 +674,38 @@ onBeforeUnmount(() => {
             <el-tag v-for="d in editForm.ddns_domains" :key="d" size="small" type="info">
               {{ d }}
             </el-tag>
+          </div>
+          <div style="margin-top: 10px;">
+            <label class="m-field__label" style="font-size: 12px; margin-bottom: 4px;">绑定出口 IP（多 IP / NAT 可选）</label>
+            <el-select
+              v-model="editForm.ddns_bind_ip"
+              filterable
+              allow-create
+              default-first-option
+              clearable
+              placeholder="自动识别（默认出口 IP）"
+              style="width: 100%;"
+            >
+              <el-option v-for="opt in editDDNSIPOptions" :key="opt.value || '__auto__'" :label="opt.label" :value="opt.value" />
+            </el-select>
+            <div class="m-field__hint">支持绑定指定公网 IP 或 NAT 本地网卡 IP，追踪其公网变动。</div>
+          </div>
+          <div v-if="(editForm.ddns_record_ids || []).length > 1 || Object.keys(editForm.ddns_record_ips || {}).length > 0" style="margin-top: 10px; display: flex; flex-direction: column; gap: 8px;">
+            <label class="m-field__label" style="font-size: 12px; margin: 0;">分记录独立指定 IP（可选）</label>
+            <div v-for="(recId, idx) in editForm.ddns_record_ids" :key="recId" style="display: flex; flex-direction: column; gap: 4px; padding: 8px; border-radius: 8px; background: rgba(148,163,184,0.08);">
+              <span class="font-mono" style="font-size: 12px;">{{ cfRecordById(recId)?.type || 'DNS' }} · {{ cfRecordById(recId)?.name || editForm.ddns_domains[idx] || recId }}</span>
+              <el-select
+                v-model="editForm.ddns_record_ips[recId]"
+                filterable
+                allow-create
+                default-first-option
+                clearable
+                placeholder="沿用上方默认绑定"
+                style="width: 100%;"
+              >
+                <el-option v-for="opt in editDDNSIPOptions.filter((o) => o.value)" :key="opt.value" :label="opt.label" :value="opt.value" />
+              </el-select>
+            </div>
           </div>
         </div>
       </div>

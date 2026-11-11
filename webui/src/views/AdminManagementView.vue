@@ -54,7 +54,7 @@ async function chooseTheme(short) {
   applyTheme(short)
   await load()
 }
-async function checkUpdate() { update.value = await api('/system/update'); message.value = '更新状态已刷新' }
+async function checkUpdate() { update.value = await api('/system/update?refresh=1'); message.value = '更新状态已刷新' }
 async function vacuum() { await post('/db/vacuum', {}); message.value = '历史数据已清理并完成数据库回收' }
 async function restore(event) { const file = event.target.files?.[0]; event.target.value = ''; if (!file) return; const form = new FormData(); form.append('backup', file); await uploadFile('/db/restore', form); message.value = '数据库已恢复，请重新加载页面' }
 async function applyUpdate() { await post('/system/update/apply', {}); message.value = '已开始应用控制端更新' }

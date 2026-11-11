@@ -19,8 +19,11 @@ import {
   Top,
 } from '@element-plus/icons-vue'
 import { api, post, put } from '../api'
+import { buildDDNSIPOptions } from '../ddns'
 import { formatBytes, formatDateTime, formatUptime, includesText } from '../format'
 import { subscribeLive } from '../live'
+import { performAgentUpgrade } from '../agent_upgrade'
+import { isNewerVersion } from '../version'
 import { connectionSnapshots, subscribeConnections } from '../connections'
 import PageHeader from '../components/PageHeader.vue'
 import StatusDot from '../components/StatusDot.vue'
@@ -85,6 +88,8 @@ const editForm = ref({
   ddns_domain: '',
   ddns_record_ids: [],
   ddns_domains: [],
+  ddns_bind_ip: '',
+  ddns_record_ips: {},
   ip_aliases: {},
   expires_on: '', price: '', price_period: '', currency: 'USD', provider: '', provider_url: '', traffic_value: '', traffic_unit: 'MB', bandwidth: '', bandwidth_value: '', bandwidth_unit: 'Gbps',
 })
@@ -115,6 +120,12 @@ const editNodeAllIPs = computed(() => {
   }
   return ips
 })
+
+const editDDNSIPOptions = computed(() => buildDDNSIPOptions(editNode.value, editForm.value.ip_aliases))
+
+function cfRecordById(recId) {
+  return cfRecords.value.find((r) => r.id === recId) || null
+}
 
 // 从既有 traffic_plan（如 "每月 2 TB" / "2 GB"）解析数值与单位
 function parseTrafficPlan(plan) {
@@ -318,7 +329,7 @@ const cards = computed(() => filteredNodes.value.map((node) => {
     price: getPriceText(node),
     expiry: getExpiry(node.expires_on),
     ddnsTip: node.ddns_enabled
-      ? `${(node.ddns_domains?.length ? node.ddns_domains : [node.ddns_domain || node.client_address]).join('、')}<br/>解析: ${node.last_observed_ip || '同步中'}`
+      ? `${(node.ddns_domains?.length ? node.ddns_domains : [node.ddns_domain || node.client_address]).join('、')}<br/>${node.ddns_bind_ip ? `绑定: ${node.ddns_bind_ip} · ` : ''}解析: ${node.last_observed_ip || '同步中'}`
       : '',
     ipTip: node.ip_addresses?.length
       ? node.ip_addresses.map((ip) => ip + (node.ip_aliases?.[ip] ? ` (${node.ip_aliases[ip]})` : '')).join('<br/>')
@@ -538,18 +549,14 @@ async function revoke(node) {
 }
 
 function agentUpdateAvailable(node) {
-  const latest = appState.systemUpdate?.latest_version
-  return Boolean(latest && node.agent_version && node.agent_version !== latest)
+  return isNewerVersion(appState.systemUpdate?.latest_version, node.agent_version)
 }
 
 async function upgradeAgent(node) {
-  await ElMessageBox.confirm(
-    `将“${node.name}”的 agent 升级到最新版本？升级完成后 agent 会自动重启并重新连接，运行中的代理服务不受影响。`,
-    '升级 Agent',
-    { type: 'warning', confirmButtonText: '开始升级' },
-  )
-  await post(`/nodes/${node.id}/agent/upgrade`, {})
-  ElMessage.success('升级任务已下发，agent 更新完成后会自动重新上线')
+  await performAgentUpgrade(node, {
+    refreshList: () => load(true),
+    refreshNodes: () => loadNodes(),
+  })
 }
 
 async function loadSingBoxLatest() {
@@ -600,6 +607,13 @@ function onRecordsSelected(selectedIds) {
   editForm.value.ddns_domains = selectedRecords.map((r) => r.name)
   editForm.value.ddns_record_id = selectedIds[0] || ''
   editForm.value.ddns_domain = editForm.value.ddns_domains[0] || ''
+  const nextRecIPs = {}
+  for (const id of selectedIds) {
+    if (editForm.value.ddns_record_ips?.[id]) {
+      nextRecIPs[id] = editForm.value.ddns_record_ips[id]
+    }
+  }
+  editForm.value.ddns_record_ips = nextRecIPs
   if (!editForm.value.client_address || /^[0-9.:]+$/.test(editForm.value.client_address)) {
     if (editForm.value.ddns_domain) {
       editForm.value.client_address = editForm.value.ddns_domain
@@ -638,6 +652,8 @@ async function openEdit(node) {
     ddns_domain: node.ddns_domain || '',
     ddns_record_ids: recordIds,
     ddns_domains: domains,
+    ddns_bind_ip: node.ddns_bind_ip || '',
+    ddns_record_ips: { ...(node.ddns_record_ips || {}) },
     ip_aliases: { ...(node.ip_aliases || {}) },
     expires_on: node.expires_on || '', price: node.price || '', price_period: node.price_period || '', currency: node.currency || 'USD',
     provider: node.provider || '', provider_url: node.provider_url || '',
@@ -662,6 +678,8 @@ async function saveEdit() {
       ddns_domain: editForm.value.ddns_domain,
       ddns_record_ids: editForm.value.ddns_record_ids,
       ddns_domains: editForm.value.ddns_domains,
+      ddns_bind_ip: (editForm.value.ddns_bind_ip || '').trim(),
+      ddns_record_ips: editForm.value.ddns_record_ips || {},
       ip_aliases: editForm.value.ip_aliases || {},
       expires_on: editForm.value.expires_on, price: editForm.value.price, price_period: editForm.value.price_period, currency: editForm.value.currency,
       provider: editForm.value.provider, provider_url: editForm.value.provider_url,
@@ -1178,15 +1196,52 @@ onBeforeUnmount(() => {
                 filterable
                 collapse-tags
                 collapse-tags-tooltip
-                placeholder="选择绑定的 Cloudflare A 记录（支持多选）"
+                placeholder="选择绑定的 Cloudflare A / AAAA 记录（支持多选）"
                 style="width: 100%"
                 :loading="cfLoading"
                 @change="onRecordsSelected"
               >
-                <el-option v-for="rec in cfRecords" :key="rec.id" :label="`${rec.name} (${rec.content})`" :value="rec.id" />
+                <el-option v-for="rec in cfRecords" :key="rec.id" :label="`${rec.name} (${rec.type} · ${rec.content})`" :value="rec.id" />
               </el-select>
               <div v-if="(editForm.ddns_domains || []).length" class="dlg-pick">
                 <span v-for="d in editForm.ddns_domains" :key="d" class="srv-chip is-violet font-mono">{{ d }}</span>
+              </div>
+              <div style="margin-top: 4px">
+                <div class="dlg-pick-label" style="margin-bottom: 6px">默认绑定出口 IP（多 IP / 双栈 / NAT 机器可选）</div>
+                <el-select
+                  v-model="editForm.ddns_bind_ip"
+                  filterable
+                  allow-create
+                  default-first-option
+                  clearable
+                  placeholder="自动识别（默认出口 IP，可直接选择或输入 IP）"
+                  style="width: 100%"
+                >
+                  <el-option v-for="opt in editDDNSIPOptions" :key="opt.value || '__auto__'" :label="opt.label" :value="opt.value" />
+                </el-select>
+                <div class="dlg-help">支持绑定指定公网 IP（IPv4/IPv6），或选择 NAT 本地网卡 IP 以持续追踪对应公网出口变动。</div>
+              </div>
+              <div v-if="(editForm.ddns_record_ids || []).length > 1 || Object.keys(editForm.ddns_record_ips || {}).length > 0" style="margin-top: 6px">
+                <div class="dlg-pick-label" style="margin-bottom: 6px">分记录独立绑定 IP（可选，适合双栈 A+AAAA 或不同域名绑定不同出口 IP）</div>
+                <div class="dlg-ip-list">
+                  <div v-for="(recId, idx) in editForm.ddns_record_ids" :key="recId" class="dlg-ip-row">
+                    <span class="dlg-ip-kind" :class="cfRecordById(recId)?.type === 'AAAA' ? 'is-v6' : 'is-v4'">
+                      {{ cfRecordById(recId)?.type || 'DNS' }}
+                    </span>
+                    <span class="dlg-ip-addr font-mono truncate">{{ cfRecordById(recId)?.name || editForm.ddns_domains[idx] || recId }}</span>
+                    <el-select
+                      v-model="editForm.ddns_record_ips[recId]"
+                      class="dlg-ip-alias"
+                      filterable
+                      allow-create
+                      default-first-option
+                      clearable
+                      placeholder="沿用上方默认绑定"
+                    >
+                      <el-option v-for="opt in editDDNSIPOptions.filter((o) => o.value)" :key="opt.value" :label="opt.label" :value="opt.value" />
+                    </el-select>
+                  </div>
+                </div>
               </div>
             </template>
           </div>

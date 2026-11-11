@@ -2,14 +2,16 @@ package control
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"os"
+	"path/filepath"
 	"runtime"
-	"strconv"
 	"strings"
 	"time"
 
@@ -19,6 +21,9 @@ import (
 
 // polarisReleaseAPI is a variable so tests can point it at a local server.
 var polarisReleaseAPI = "https://api.github.com/repos/liyuwei007036/polaris/releases/latest"
+
+// polarisArtifactHTTPClient is a variable so tests can serve release archives locally.
+var polarisArtifactHTTPClient = &http.Client{Timeout: 5 * time.Minute}
 
 const polarisReleaseCacheTTL = time.Hour
 
@@ -84,43 +89,7 @@ func LatestPolarisRelease(ctx context.Context, architecture string) (SingBoxRele
 // version than current. Non-numeric versions ("dev", commit hashes) never
 // compare as outdated, so development builds are not prompted to update.
 func IsNewerVersion(latest, current string) bool {
-	latestParts, ok := versionParts(strings.TrimPrefix(latest, "v"))
-	if !ok {
-		return false
-	}
-	currentParts, ok := versionParts(strings.TrimPrefix(current, "v"))
-	if !ok {
-		return false
-	}
-	for i := 0; i < len(latestParts) || i < len(currentParts); i++ {
-		l, c := 0, 0
-		if i < len(latestParts) {
-			l = latestParts[i]
-		}
-		if i < len(currentParts) {
-			c = currentParts[i]
-		}
-		if l != c {
-			return l > c
-		}
-	}
-	return false
-}
-
-func versionParts(value string) ([]int, bool) {
-	if value == "" {
-		return nil, false
-	}
-	segments := strings.Split(value, ".")
-	parts := make([]int, len(segments))
-	for i, segment := range segments {
-		number, err := strconv.Atoi(segment)
-		if err != nil || number < 0 {
-			return nil, false
-		}
-		parts[i] = number
-	}
-	return parts, true
+	return version.IsNewer(latest, current)
 }
 
 func (s *Server) latestPolarisRelease(ctx context.Context, architecture string) (SingBoxRelease, error) {
@@ -129,6 +98,11 @@ func (s *Server) latestPolarisRelease(ctx context.Context, architecture string) 
 
 func (s *Server) latestPolarisReleaseCached(ctx context.Context, architecture string, bypassCache bool) (SingBoxRelease, error) {
 	s.selfUpdateMu.Lock()
+	if bypassCache && s.polarisLatest != nil {
+		// Invalidate all architectures when an explicit refresh is requested so
+		// arm64/amd64 nodes do not lag behind the master's refreshed architecture.
+		clear(s.polarisLatest)
+	}
 	entry, cached := s.polarisLatest[architecture]
 	s.selfUpdateMu.Unlock()
 	if cached && !bypassCache && time.Since(entry.fetchedAt) < polarisReleaseCacheTTL {
@@ -145,6 +119,11 @@ func (s *Server) latestPolarisReleaseCached(ctx context.Context, architecture st
 	s.selfUpdateMu.Lock()
 	if s.polarisLatest == nil {
 		s.polarisLatest = make(map[string]polarisReleaseCacheEntry)
+	}
+	for arch, prev := range s.polarisLatest {
+		if arch != architecture && prev.release.Version != release.Version {
+			delete(s.polarisLatest, arch)
+		}
 	}
 	s.polarisLatest[architecture] = polarisReleaseCacheEntry{release: release, fetchedAt: time.Now()}
 	s.selfUpdateMu.Unlock()
@@ -254,13 +233,21 @@ func (s *Server) upgradeNodeAgent(w http.ResponseWriter, r *http.Request) {
 		writeError(w, errors.New("尚未获取该节点的架构信息，请等待 agent 心跳后重试"))
 		return
 	}
-	release, err := s.latestPolarisRelease(r.Context(), node.Architecture)
+	release, err := s.latestPolarisReleaseCached(r.Context(), node.Architecture, r.URL.Query().Get("refresh") == "1")
 	if err != nil {
 		writeError(w, err)
 		return
 	}
-	if node.AgentVersion == release.Version {
+	currentVersion := strings.TrimPrefix(strings.TrimSpace(node.AgentVersion), "v")
+	if currentVersion == release.Version {
 		writeError(w, fmt.Errorf("该服务器的 agent 已是最新版本 %s", release.Version))
+		return
+	}
+	if activeTask, active, prepErr := s.store.PrepareAgentUpgradeTask(r.Context(), nodeID, release.SHA256, 15*time.Second); prepErr != nil {
+		writeError(w, prepErr)
+		return
+	} else if active {
+		writeJSON(w, http.StatusAccepted, activeTask)
 		return
 	}
 	payload, err := s.store.SignedSingBoxReleasePayload(release)
@@ -282,4 +269,113 @@ func (s *Server) upgradeNodeAgent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusAccepted, task)
+}
+
+const maximumRelayedArtifactBytes = 200 * 1024 * 1024
+
+// ensurePolarisArtifact returns the local path to a verified release tarball
+// cached under <data_dir>/release-cache so agents without direct GitHub
+// connectivity can fetch the signed release through the master Noise/KCP channel.
+func (s *Server) ensurePolarisArtifact(ctx context.Context, architecture, targetVersion, expectedSHA256 string) (string, error) {
+	if architecture != "amd64" && architecture != "arm64" {
+		return "", errors.New("unsupported artifact architecture")
+	}
+	targetVersion = strings.TrimPrefix(strings.TrimSpace(targetVersion), "v")
+	expectedSHA256 = strings.ToLower(strings.TrimSpace(expectedSHA256))
+	if targetVersion == "" || len(expectedSHA256) != sha256HexLength {
+		return "", errors.New("invalid artifact request")
+	}
+	release, err := s.latestPolarisRelease(ctx, architecture)
+	if err != nil {
+		return "", err
+	}
+	if release.Version != targetVersion || !strings.EqualFold(release.SHA256, expectedSHA256) {
+		release, err = s.latestPolarisReleaseCached(ctx, architecture, true)
+		if err != nil {
+			return "", err
+		}
+		if release.Version != targetVersion || !strings.EqualFold(release.SHA256, expectedSHA256) {
+			return "", errors.New("requested artifact does not match an approved release")
+		}
+	}
+	cacheDir := filepath.Join(s.store.DataDir(), "release-cache")
+	if err := os.MkdirAll(cacheDir, 0o700); err != nil {
+		return "", fmt.Errorf("create release cache directory: %w", err)
+	}
+	cacheName := fmt.Sprintf("polaris_%s_linux_%s_%s.tar.gz", release.Version, release.Architecture, expectedSHA256)
+	cachePath := filepath.Join(cacheDir, cacheName)
+
+	s.artifactMu.Lock()
+	defer s.artifactMu.Unlock()
+
+	if fileSHA256Matches(cachePath, expectedSHA256) {
+		return cachePath, nil
+	}
+	_ = os.Remove(cachePath)
+
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, release.URL, nil)
+	if err != nil {
+		return "", fmt.Errorf("build release download request: %w", err)
+	}
+	response, err := polarisArtifactHTTPClient.Do(request)
+	if err != nil {
+		return "", fmt.Errorf("download release archive: %w", err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("download release archive returned HTTP %d", response.StatusCode)
+	}
+
+	tempFile, err := os.CreateTemp(cacheDir, ".polaris-cache-*")
+	if err != nil {
+		return "", fmt.Errorf("create release cache temp file: %w", err)
+	}
+	tempPath := tempFile.Name()
+	defer os.Remove(tempPath)
+
+	hash := sha256.New()
+	written, copyErr := io.Copy(io.MultiWriter(tempFile, hash), io.LimitReader(response.Body, maximumRelayedArtifactBytes+1))
+	closeErr := tempFile.Close()
+	if copyErr != nil {
+		return "", fmt.Errorf("write release cache file: %w", copyErr)
+	}
+	if closeErr != nil {
+		return "", fmt.Errorf("close release cache file: %w", closeErr)
+	}
+	if written > maximumRelayedArtifactBytes {
+		return "", errors.New("release archive exceeds 200 MiB limit")
+	}
+	if !strings.EqualFold(hex.EncodeToString(hash.Sum(nil)), expectedSHA256) {
+		return "", errors.New("release archive SHA-256 verification failed")
+	}
+
+	if entries, listErr := os.ReadDir(cacheDir); listErr == nil {
+		for _, entry := range entries {
+			name := entry.Name()
+			if entry.IsDir() || name == filepath.Base(tempPath) {
+				continue
+			}
+			// Keep at most the current release per architecture; drop stale archives.
+			if strings.Contains(name, "_linux_"+release.Architecture+"_") {
+				_ = os.Remove(filepath.Join(cacheDir, name))
+			}
+		}
+	}
+	if err := os.Rename(tempPath, cachePath); err != nil {
+		return "", fmt.Errorf("commit release cache file: %w", err)
+	}
+	return cachePath, nil
+}
+
+func fileSHA256Matches(path, expected string) bool {
+	file, err := os.Open(path)
+	if err != nil {
+		return false
+	}
+	defer file.Close()
+	hash := sha256.New()
+	if _, err := io.Copy(hash, file); err != nil {
+		return false
+	}
+	return strings.EqualFold(hex.EncodeToString(hash.Sum(nil)), expected)
 }

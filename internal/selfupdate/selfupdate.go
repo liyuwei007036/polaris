@@ -13,6 +13,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"os"
 	"os/exec"
@@ -20,6 +21,7 @@ import (
 	"runtime"
 	"runtime/debug"
 	"strings"
+	"sync/atomic"
 	"time"
 )
 
@@ -28,12 +30,28 @@ type Manifest struct {
 	URL     string
 	SHA256  string
 	Archive string // "tar.gz" or "" for a raw binary
+	// FallbackFetch, when set, retrieves the artifact if direct HTTPS
+	// download fails or stalls. Apply still enforces the signed SHA-256.
+	FallbackFetch func(ctx context.Context, dst io.Writer) error
 }
 
-const maximumArtifactBytes = 200 * 1024 * 1024
+const (
+	maximumArtifactBytes  = 200 * 1024 * 1024
+	downloadStallTimeout  = 45 * time.Second
+	verifyCommandTimeout  = 15 * time.Second
+)
 
 // httpClient is a variable so tests can trust their local TLS server.
-var httpClient = &http.Client{Timeout: 120 * time.Second}
+var httpClient = &http.Client{
+	Timeout: 10 * time.Minute,
+	Transport: &http.Transport{
+		Proxy:                 http.ProxyFromEnvironment,
+		DialContext:           (&net.Dialer{Timeout: 15 * time.Second, KeepAlive: 30 * time.Second}).DialContext,
+		TLSHandshakeTimeout:   15 * time.Second,
+		ResponseHeaderTimeout: 30 * time.Second,
+		IdleConnTimeout:       60 * time.Second,
+	},
+}
 
 // Apply downloads the artifact, checks its SHA-256, extracts the polaris
 // binary, backs up executablePath and installs the new binary over it. verify
@@ -45,28 +63,17 @@ func Apply(ctx context.Context, manifest Manifest, executablePath string, verify
 	}
 	if verify == nil {
 		verify = func(ctx context.Context, binaryPath string) error {
-			output, err := exec.CommandContext(ctx, binaryPath, "version").CombinedOutput()
+			verifyCtx, cancel := context.WithTimeout(ctx, verifyCommandTimeout)
+			defer cancel()
+			output, err := exec.CommandContext(verifyCtx, binaryPath, "version").CombinedOutput()
 			if err != nil {
 				return fmt.Errorf("运行新版本失败: %w", err)
 			}
-			if strings.TrimSpace(string(output)) != manifest.Version {
+			if strings.TrimPrefix(strings.TrimSpace(string(output)), "v") != strings.TrimPrefix(strings.TrimSpace(manifest.Version), "v") {
 				return fmt.Errorf("新版本报告的版本号 %q 与预期 %q 不符", strings.TrimSpace(string(output)), manifest.Version)
 			}
 			return nil
 		}
-	}
-
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet, manifest.URL, nil)
-	if err != nil {
-		return fmt.Errorf("构建下载请求失败: %w", err)
-	}
-	response, err := httpClient.Do(request)
-	if err != nil {
-		return fmt.Errorf("下载新版本失败: %w", err)
-	}
-	defer response.Body.Close()
-	if response.StatusCode != http.StatusOK {
-		return fmt.Errorf("下载新版本返回 HTTP %d", response.StatusCode)
 	}
 
 	binaryDirectory := filepath.Dir(executablePath)
@@ -79,16 +86,34 @@ func Apply(ctx context.Context, manifest Manifest, executablePath string, verify
 	defer os.Remove(artifactPath)
 
 	hash := sha256.New()
-	written, copyErr := io.Copy(io.MultiWriter(artifact, hash), io.LimitReader(response.Body, maximumArtifactBytes+1))
-	if closeErr := artifact.Close(); copyErr != nil {
-		return fmt.Errorf("写入新版本文件失败: %w", copyErr)
+	written, downloadErr := downloadDirect(ctx, manifest.URL, artifact, hash, downloadStallTimeout)
+	checksumOK := downloadErr == nil && written <= maximumArtifactBytes && strings.EqualFold(hex.EncodeToString(hash.Sum(nil)), manifest.SHA256)
+	if !checksumOK && manifest.FallbackFetch != nil {
+		if truncErr := artifact.Truncate(0); truncErr == nil {
+			if _, seekErr := artifact.Seek(0, io.SeekStart); seekErr == nil {
+				hash.Reset()
+				lw := &limitedWriter{w: io.MultiWriter(artifact, hash), limit: maximumArtifactBytes + 1}
+				if fbErr := manifest.FallbackFetch(ctx, lw); fbErr == nil {
+					written = lw.written
+					downloadErr = nil
+					checksumOK = written <= maximumArtifactBytes && strings.EqualFold(hex.EncodeToString(hash.Sum(nil)), manifest.SHA256)
+				} else if downloadErr == nil {
+					downloadErr = fbErr
+				} else {
+					downloadErr = fmt.Errorf("%w（备用通道也失败: %v）", downloadErr, fbErr)
+				}
+			}
+		}
+	}
+	if closeErr := artifact.Close(); downloadErr != nil {
+		return downloadErr
 	} else if closeErr != nil {
 		return fmt.Errorf("关闭新版本文件失败: %w", closeErr)
 	}
 	if written > maximumArtifactBytes {
 		return errors.New("新版本文件超过 200 MiB 限制")
 	}
-	if !strings.EqualFold(hex.EncodeToString(hash.Sum(nil)), manifest.SHA256) {
+	if !checksumOK {
 		return errors.New("新版本文件 SHA-256 校验失败")
 	}
 
@@ -215,4 +240,101 @@ func extractBinary(archivePath, directory string) (string, error) {
 		return targetPath, nil
 	}
 	return "", errors.New("归档中没有 polaris 二进制")
+}
+
+type progressReader struct {
+	r            io.Reader
+	lastProgress *atomic.Int64
+}
+
+func (p *progressReader) Read(buf []byte) (int, error) {
+	n, err := p.r.Read(buf)
+	if n > 0 && p.lastProgress != nil {
+		p.lastProgress.Store(time.Now().UnixNano())
+	}
+	return n, err
+}
+
+type limitedWriter struct {
+	w       io.Writer
+	limit   int64
+	written int64
+}
+
+func (l *limitedWriter) Write(p []byte) (int, error) {
+	if l.written >= l.limit {
+		return 0, errors.New("新版本文件超过 200 MiB 限制")
+	}
+	allowed := p
+	if int64(len(allowed)) > l.limit-l.written {
+		allowed = allowed[:l.limit-l.written]
+	}
+	n, err := l.w.Write(allowed)
+	l.written += int64(n)
+	if err != nil {
+		return n, err
+	}
+	if len(allowed) < len(p) || l.written >= l.limit {
+		return n, errors.New("新版本文件超过 200 MiB 限制")
+	}
+	return n, nil
+}
+
+func downloadDirect(ctx context.Context, url string, dst, hash io.Writer, stallTimeout time.Duration) (int64, error) {
+	dlCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	var lastProgress atomic.Int64
+	lastProgress.Store(time.Now().UnixNano())
+	var stalled atomic.Bool
+
+	done := make(chan struct{})
+	if stallTimeout > 0 {
+		go func() {
+			ticker := time.NewTicker(time.Second)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-done:
+					return
+				case <-dlCtx.Done():
+					return
+				case <-ticker.C:
+					if time.Since(time.Unix(0, lastProgress.Load())) > stallTimeout {
+						stalled.Store(true)
+						cancel()
+						return
+					}
+				}
+			}
+		}()
+	}
+	defer close(done)
+
+	request, err := http.NewRequestWithContext(dlCtx, http.MethodGet, url, nil)
+	if err != nil {
+		return 0, fmt.Errorf("构建下载请求失败: %w", err)
+	}
+	response, err := httpClient.Do(request)
+	if err != nil {
+		if stalled.Load() {
+			return 0, fmt.Errorf("下载新版本超时（连接或传输停滞超过 %s）", stallTimeout)
+		}
+		return 0, fmt.Errorf("下载新版本失败: %w", err)
+	}
+	defer response.Body.Close()
+	lastProgress.Store(time.Now().UnixNano())
+	if response.StatusCode != http.StatusOK {
+		return 0, fmt.Errorf("下载新版本返回 HTTP %d", response.StatusCode)
+	}
+
+	reader := &progressReader{r: io.LimitReader(response.Body, maximumArtifactBytes+1), lastProgress: &lastProgress}
+	written, copyErr := io.Copy(io.MultiWriter(dst, hash), reader)
+	if copyErr != nil {
+		if stalled.Load() {
+			return written, fmt.Errorf("下载新版本超时（传输停滞超过 %s）", stallTimeout)
+		}
+		return written, fmt.Errorf("写入新版本文件失败: %w", copyErr)
+	}
+	return written, nil
 }

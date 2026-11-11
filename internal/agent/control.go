@@ -9,12 +9,32 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/liyuwei007036/polaris/internal/selfupdate"
 	"github.com/liyuwei007036/polaris/internal/version"
 	"github.com/liyuwei007036/polaris/internal/wire"
 )
+
+var (
+	restartAgentMu            sync.Mutex
+	restartAgentFn            = selfupdate.Restart
+	exitAfterRestartFailureFn = os.Exit
+	restartFlushDelay         = 800 * time.Millisecond
+)
+
+func restartUpgradedAgent(conn *wire.Conn) {
+	restartAgentMu.Lock()
+	defer restartAgentMu.Unlock()
+	if conn != nil {
+		_ = conn.Close()
+	}
+	if err := restartAgentFn(); err != nil {
+		fmt.Fprintln(os.Stderr, "restart after agent upgrade failed:", err)
+		exitAfterRestartFailureFn(1)
+	}
+}
 
 type Status struct {
 	AgentVersion      string
@@ -364,7 +384,11 @@ func RunSession(ctx context.Context, conn *wire.Conn, handler TaskHandler, heart
 		task   wire.Task
 		result TaskResult
 	}
-	taskCompletions := make(chan taskCompletionEnvelope, 4)
+	// Unbuffered so once RunSession exits and closes sessionDone, a finishing
+	// background task can never silently drop its result into a dead buffer.
+	taskCompletions := make(chan taskCompletionEnvelope)
+	sessionDone := make(chan struct{})
+	defer close(sessionDone)
 
 	for {
 		select {
@@ -414,6 +438,12 @@ func RunSession(ctx context.Context, conn *wire.Conn, handler TaskHandler, heart
 				}
 				select {
 				case taskCompletions <- taskCompletionEnvelope{task: t, result: res}:
+				case <-sessionDone:
+					// If the session disconnected while an agent upgrade finished
+					// writing the new binary, still replace the running process.
+					if res.RestartAgent {
+						restartUpgradedAgent(nil)
+					}
 				case <-ctx.Done():
 				}
 			}(task)
@@ -425,19 +455,30 @@ func RunSession(ctx context.Context, conn *wire.Conn, handler TaskHandler, heart
 			}
 			resBody, err := wire.Encode(wire.TaskResult{TaskID: task.ID, Status: result.Status, Summary: result.Summary, SingBoxVersion: result.SingBoxVersion, Data: result.Data})
 			if err != nil {
+				if result.RestartAgent {
+					restartUpgradedAgent(conn)
+				}
 				return err
 			}
 			_ = conn.SetWriteDeadline(time.Now().Add(writeTimeout))
-			if err := conn.WriteMessage(wire.MsgTaskResult, resBody); err != nil {
-				return err
-			}
+			writeErr := conn.WriteMessage(wire.MsgTaskResult, resBody)
 			if result.RestartAgent {
-				// Give the kernel a moment to flush the result to the master
-				// before exec closes the connection.
-				time.Sleep(500 * time.Millisecond)
-				if err := selfupdate.Restart(); err != nil {
-					fmt.Fprintln(os.Stderr, "restart after agent upgrade failed:", err)
+				if writeErr == nil && restartFlushDelay > 0 {
+					// Give KCP time to transmit and receive the ACK for the task
+					// result before closing the UDP session and exec-restarting.
+					select {
+					case <-time.After(restartFlushDelay):
+					case <-ctx.Done():
+					}
 				}
+				restartUpgradedAgent(conn)
+				if writeErr != nil {
+					return writeErr
+				}
+				return nil
+			}
+			if writeErr != nil {
+				return writeErr
 			}
 		case <-heartbeatTicker.C:
 			if err := sendStatus(); err != nil {

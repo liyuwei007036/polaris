@@ -17,7 +17,25 @@ const (
 	MsgConnections                 // agent -> master, fast-cadence real-time push
 	MsgKeepalive                   // either direction
 	MsgWatch                       // master -> agent, start/stop the real-time push
+	MsgArtifactRequest             // agent -> master, request signed release artifact when direct download fails
+	MsgArtifactChunk               // master -> agent, streamed artifact chunk or error/EOF
 )
+
+// ArtifactRequest asks the master to stream a verified release archive over
+// the authenticated Noise/KCP channel when the agent cannot reach GitHub.
+type ArtifactRequest struct {
+	Kind         string
+	Version      string
+	Architecture string
+	SHA256       string
+}
+
+// ArtifactChunk carries one slice of a requested release artifact.
+type ArtifactChunk struct {
+	Data  []byte
+	Done  bool
+	Error string
+}
 
 // WatchState tells an agent whether anyone is looking. The real-time push runs
 // at a cadence measured in seconds, which earns its cost — a Clash API call per

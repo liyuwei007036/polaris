@@ -8,6 +8,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -146,5 +147,93 @@ func TestApplyRejectsArchiveWithoutBinary(t *testing.T) {
 	manifest := Manifest{Version: "0.40", URL: server.URL, SHA256: hex.EncodeToString(digest[:]), Archive: "tar.gz"}
 	if err := Apply(t.Context(), manifest, executable, func(context.Context, string) error { return nil }); err == nil {
 		t.Fatal("apply accepted an archive without the polaris binary")
+	}
+}
+
+func TestApplyFallsBackWhenDirectDownloadFails(t *testing.T) {
+	archive := buildArchive(t, "polaris", "fallback-binary-content")
+	digest := sha256.Sum256(archive)
+
+	failingServer := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "upstream blocked", http.StatusBadGateway)
+	}))
+	t.Cleanup(failingServer.Close)
+	previous := httpClient
+	httpClient = failingServer.Client()
+	t.Cleanup(func() { httpClient = previous })
+
+	directory := t.TempDir()
+	executable := filepath.Join(directory, "polaris")
+	if err := os.WriteFile(executable, []byte("old-binary-content"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	fallbackCalled := false
+	manifest := Manifest{
+		Version: "0.40",
+		URL:     failingServer.URL,
+		SHA256:  hex.EncodeToString(digest[:]),
+		Archive: "tar.gz",
+		FallbackFetch: func(_ context.Context, dst io.Writer) error {
+			fallbackCalled = true
+			_, err := dst.Write(archive)
+			return err
+		},
+	}
+	if err := Apply(t.Context(), manifest, executable, func(_ context.Context, binaryPath string) error {
+		content, err := os.ReadFile(binaryPath)
+		if err != nil {
+			return err
+		}
+		if string(content) != "fallback-binary-content" {
+			return errors.New("unexpected installed content")
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("Apply with fallback failed: %v", err)
+	}
+	if !fallbackCalled {
+		t.Fatal("expected FallbackFetch to be invoked")
+	}
+	installed, err := os.ReadFile(executable)
+	if err != nil || string(installed) != "fallback-binary-content" {
+		t.Fatalf("installed binary content %q err=%v", installed, err)
+	}
+}
+
+func TestApplyRejectsFallbackWithChecksumMismatch(t *testing.T) {
+	archive := buildArchive(t, "polaris", "valid-binary")
+	digest := sha256.Sum256(archive)
+
+	failingServer := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "blocked", http.StatusBadGateway)
+	}))
+	t.Cleanup(failingServer.Close)
+	previous := httpClient
+	httpClient = failingServer.Client()
+	t.Cleanup(func() { httpClient = previous })
+
+	directory := t.TempDir()
+	executable := filepath.Join(directory, "polaris")
+	if err := os.WriteFile(executable, []byte("old-binary-content"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	manifest := Manifest{
+		Version: "0.40",
+		URL:     failingServer.URL,
+		SHA256:  hex.EncodeToString(digest[:]),
+		Archive: "tar.gz",
+		FallbackFetch: func(_ context.Context, dst io.Writer) error {
+			_, err := dst.Write([]byte("tampered-payload"))
+			return err
+		},
+	}
+	if err := Apply(t.Context(), manifest, executable, func(context.Context, string) error { return nil }); err == nil {
+		t.Fatal("Apply accepted mismatched fallback payload")
+	}
+	current, readErr := os.ReadFile(executable)
+	if readErr != nil || string(current) != "old-binary-content" {
+		t.Fatalf("binary modified despite fallback checksum mismatch: %q err=%v", current, readErr)
 	}
 }

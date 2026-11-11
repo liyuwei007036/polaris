@@ -17,16 +17,18 @@ type trackedConnection struct {
 // connectionRecorder tracks the lifecycle of connections from agents,
 // buffers updates, and writes them to the SQLite store in efficient batches.
 type connectionRecorder struct {
-	mu           sync.Mutex
-	store        *Store
-	locator      *ipLocator
-	active       map[string]*trackedConnection  // key: nodeID + ":" + connID
-	nodeConns    map[string]map[string]struct{} // nodeID -> set of connID
-	dirty        map[string]ConnectionRecord    // key -> record to save
-	stopCh       chan struct{}
-	doneCh       chan struct{}
-	flushTicker  *time.Ticker
-	batchTrigger chan struct{}
+	mu             sync.Mutex
+	store          *Store
+	locator        *ipLocator
+	hub            *connectionsHub
+	active         map[string]*trackedConnection  // key: nodeID + ":" + connID
+	nodeConns      map[string]map[string]struct{} // nodeID -> set of connID
+	pendingOnChain map[string]time.Time           // key -> first seen when OnChainTarget=true
+	dirty          map[string]ConnectionRecord    // key -> record to save
+	stopCh         chan struct{}
+	doneCh         chan struct{}
+	flushTicker    *time.Ticker
+	batchTrigger   chan struct{}
 }
 
 func newConnectionRecorder(store *Store, locator ...*ipLocator) *connectionRecorder {
@@ -35,20 +37,27 @@ func newConnectionRecorder(store *Store, locator ...*ipLocator) *connectionRecor
 		loc = locator[0]
 	}
 	return &connectionRecorder{
-		store:        store,
-		locator:      loc,
-		active:       make(map[string]*trackedConnection),
-		nodeConns:    make(map[string]map[string]struct{}),
-		dirty:        make(map[string]ConnectionRecord),
-		stopCh:       make(chan struct{}),
-		doneCh:       make(chan struct{}),
-		batchTrigger: make(chan struct{}, 1),
+		store:          store,
+		locator:        loc,
+		active:         make(map[string]*trackedConnection),
+		nodeConns:      make(map[string]map[string]struct{}),
+		pendingOnChain: make(map[string]time.Time),
+		dirty:          make(map[string]ConnectionRecord),
+		stopCh:         make(chan struct{}),
+		doneCh:         make(chan struct{}),
+		batchTrigger:   make(chan struct{}, 1),
 	}
 }
 
 func (r *connectionRecorder) SetIPLocator(locator *ipLocator) {
 	r.mu.Lock()
 	r.locator = locator
+	r.mu.Unlock()
+}
+
+func (r *connectionRecorder) SetConnectionsHub(hub *connectionsHub) {
+	r.mu.Lock()
+	r.hub = hub
 	r.mu.Unlock()
 }
 
@@ -90,6 +99,21 @@ func (r *connectionRecorder) run(ctx context.Context) {
 	}
 }
 
+func (r *connectionRecorder) resolveOutboundName(nodeID, nodeName string, c storedConnection) string {
+	outboundName := c.OutboundName
+	if connectionChainEndpointID(c) != "" {
+		resolved := resolveChainRoute(context.Background(), r.store, r.hub, nil, nil, nodeID, nodeName, c)
+		if resolved.HopResolved && resolved.FinalOutbound != "" {
+			if len(resolved.Path) > 1 {
+				outboundName = strings.Join(resolved.Path[1:], " → ") + " → " + resolved.FinalOutbound
+			} else {
+				outboundName = resolved.FinalOutbound
+			}
+		}
+	}
+	return outboundName
+}
+
 // RecordPush processes a connection snapshot pushed from an agent node.
 func (r *connectionRecorder) RecordPush(nodeID, nodeName string, connections []storedConnection) {
 	if r.store == nil {
@@ -109,11 +133,33 @@ func (r *connectionRecorder) RecordPush(nodeID, nodeName string, connections []s
 	}
 
 	for _, c := range connections {
-		if c.ID == "" || c.IsChainRelay {
+		if c.ID == "" {
 			continue
 		}
-		currentConnIDs[c.ID] = struct{}{}
 		key := nodeID + ":" + c.ID
+		if c.IsChainRelay {
+			delete(r.pendingOnChain, key)
+			delete(r.dirty, key)
+			delete(r.active, key)
+			continue
+		}
+		if c.OnChainTarget {
+			firstSeen, ok := r.pendingOnChain[key]
+			if !ok {
+				r.pendingOnChain[key] = now
+				currentConnIDs[c.ID] = struct{}{}
+				continue
+			}
+			if now.Sub(firstSeen) < chainRelayConfirmWait {
+				currentConnIDs[c.ID] = struct{}{}
+				continue
+			}
+			delete(r.pendingOnChain, key)
+		} else {
+			delete(r.pendingOnChain, key)
+		}
+
+		currentConnIDs[c.ID] = struct{}{}
 
 		tracked, exists := r.active[key]
 		if !exists {
@@ -137,6 +183,8 @@ func (r *connectionRecorder) RecordPush(nodeID, nodeName string, connections []s
 				destLocation = r.locator.Locate(destIP)
 			}
 
+			outboundName := r.resolveOutboundName(nodeID, nodeName, c)
+
 			rec := ConnectionRecord{
 				ID:                  key,
 				NodeID:              nodeID,
@@ -151,7 +199,7 @@ func (r *connectionRecorder) RecordPush(nodeID, nodeName string, connections []s
 				Network:             strings.ToLower(c.Network),
 				User:                c.User,
 				ListenerName:        c.ListenerName,
-				OutboundName:        c.OutboundName,
+				OutboundName:        outboundName,
 				Upload:              c.Upload,
 				Download:            c.Download,
 				StartedAt:           startedAt,
@@ -159,11 +207,20 @@ func (r *connectionRecorder) RecordPush(nodeID, nodeName string, connections []s
 			r.active[key] = &trackedConnection{record: rec, lastSeen: now}
 			r.dirty[key] = rec
 		} else {
-			// Update byte counts if traffic has increased
+			changed := false
 			if c.Upload > tracked.record.Upload || c.Download > tracked.record.Download {
 				tracked.record.Upload = c.Upload
 				tracked.record.Download = c.Download
 				tracked.lastSeen = now
+				changed = true
+			}
+			if connectionChainEndpointID(c) != "" {
+				if updatedOutbound := r.resolveOutboundName(nodeID, nodeName, c); updatedOutbound != "" && updatedOutbound != tracked.record.OutboundName {
+					tracked.record.OutboundName = updatedOutbound
+					changed = true
+				}
+			}
+			if changed {
 				r.dirty[key] = tracked.record
 			}
 		}
@@ -173,6 +230,7 @@ func (r *connectionRecorder) RecordPush(nodeID, nodeName string, connections []s
 	for connID := range prevConnIDs {
 		if _, stillActive := currentConnIDs[connID]; !stillActive {
 			key := nodeID + ":" + connID
+			delete(r.pendingOnChain, key)
 			if tracked, ok := r.active[key]; ok {
 				tracked.record.ClosedAt = nowRFC
 				r.dirty[key] = tracked.record
