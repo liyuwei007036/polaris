@@ -13,7 +13,7 @@ export async function performAgentUpgrade(node, { refreshList, refreshNodes } = 
     { type: 'warning', confirmButtonText: '开始升级' },
   )
   const task = await post(`/nodes/${node.id}/agent/upgrade`, {})
-  ElMessage.success('升级任务已下发，正在等待节点更新并重启')
+  ElMessage.success('升级任务已下发，正在等待服务器更新并重启')
   if (!task?.id) return
   waitForTask(task.id, 180000)
     .then(async (done) => {

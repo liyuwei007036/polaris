@@ -185,55 +185,7 @@ func connectionDestMatches(a, b storedConnection) bool {
 }
 
 func matchDownstreamRelayConn(active map[string][]storedConnection, fromNodeID, preferredTargetNodeID string, entryConn storedConnection, visitedNodes map[string]bool) (string, storedConnection, bool) {
-	if len(active) == 0 {
-		return "", storedConnection{}, false
-	}
-	findInNode := func(candNodeID string, strict bool) (storedConnection, bool) {
-		for _, oc := range active[candNodeID] {
-			if !oc.IsChainRelay {
-				if strict || oc.RelayUpstreamNodeID != fromNodeID {
-					if strict || !oc.OnChainTarget || oc.RelayUpstreamNodeID != "" || preferredTargetNodeID != candNodeID {
-						continue
-					}
-				}
-			}
-			if oc.RelayUpstreamNodeID != "" && oc.RelayUpstreamNodeID != fromNodeID {
-				continue
-			}
-			if strict && oc.RelayUpstreamNodeID == "" && preferredTargetNodeID != candNodeID {
-				continue
-			}
-			if connectionDestMatches(entryConn, oc) {
-				return oc, true
-			}
-		}
-		return storedConnection{}, false
-	}
-
-	if preferredTargetNodeID != "" && !visitedNodes[preferredTargetNodeID] {
-		if oc, ok := findInNode(preferredTargetNodeID, true); ok {
-			return preferredTargetNodeID, oc, true
-		}
-		if oc, ok := findInNode(preferredTargetNodeID, false); ok {
-			return preferredTargetNodeID, oc, true
-		}
-	}
-
-	// Fall back across all nodes when RelayUpstreamNodeID identifies the hop.
-	for candNodeID := range active {
-		if candNodeID == fromNodeID || visitedNodes[candNodeID] {
-			continue
-		}
-		for _, oc := range active[candNodeID] {
-			if !oc.IsChainRelay || oc.RelayUpstreamNodeID != fromNodeID {
-				continue
-			}
-			if connectionDestMatches(entryConn, oc) {
-				return candNodeID, oc, true
-			}
-		}
-	}
-	return "", storedConnection{}, false
+	return matchDownstreamRelayConnScored(active, nil, fromNodeID, preferredTargetNodeID, entryConn, visitedNodes, 0, nil)
 }
 
 // resolveChainRoute traces a connection through live downstream relay legs and,
@@ -244,6 +196,30 @@ func resolveChainRoute(
 	store *Store,
 	hub *connectionsHub,
 	fallback map[string][]storedConnection,
+	cachedNodeNames map[string]string,
+	nodeID, nodeName string,
+	conn storedConnection,
+) resolvedChainRoute {
+	if connectionChainEndpointID(conn) == "" {
+		return resolveChainRouteWithActive(ctx, store, hub, nil, cachedNodeNames, nodeID, nodeName, conn)
+	}
+	active := make(map[string][]storedConnection, len(fallback))
+	for k, v := range fallback {
+		active[k] = v
+	}
+	if hub != nil {
+		for k, v := range hub.activeNodeConnections() {
+			active[k] = v
+		}
+	}
+	return resolveChainRouteWithActive(ctx, store, hub, active, cachedNodeNames, nodeID, nodeName, conn)
+}
+
+func resolveChainRouteWithActive(
+	ctx context.Context,
+	store *Store,
+	hub *connectionsHub,
+	active map[string][]storedConnection,
 	cachedNodeNames map[string]string,
 	nodeID, nodeName string,
 	conn storedConnection,
@@ -265,14 +241,35 @@ func resolveChainRoute(
 		}
 	}
 
-	active := make(map[string][]storedConnection, len(fallback))
-	for k, v := range fallback {
-		active[k] = v
-	}
-	if hub != nil {
-		for k, v := range hub.activeNodeConnections() {
-			active[k] = v
+	metaCache := make(map[string]chainEndpointMeta)
+	hasMetaCache := make(map[string]bool)
+	getEndpointMeta := func(targetEP string) (chainEndpointMeta, bool) {
+		if targetEP == "" {
+			return chainEndpointMeta{}, false
 		}
+		if ok, cached := hasMetaCache[targetEP]; cached {
+			return metaCache[targetEP], ok
+		}
+		meta, ok := lookupChainEndpointMeta(ctx, store, targetEP)
+		metaCache[targetEP] = meta
+		hasMetaCache[targetEP] = ok
+		return meta, ok
+	}
+	preferredTargetsOnNode := func(curNode string) map[string]string {
+		var out map[string]string
+		for _, c := range active[curNode] {
+			sibEP := connectionChainEndpointID(c)
+			if sibEP == "" {
+				continue
+			}
+			if meta, ok := getEndpointMeta(sibEP); ok && meta.NodeID != "" {
+				if out == nil {
+					out = make(map[string]string)
+				}
+				out[sibEP] = meta.NodeID
+			}
+		}
+		return out
 	}
 
 	nodeIDs := []string{nodeID}
@@ -288,13 +285,13 @@ func resolveChainRoute(
 		}
 		visitedEndpoints[epID] = true
 
-		meta, hasMeta := lookupChainEndpointMeta(ctx, store, epID)
+		meta, hasMeta := getEndpointMeta(epID)
 		preferredNodeID := ""
 		if hasMeta {
 			preferredNodeID = meta.NodeID
 		}
 
-		if nextNodeID, nextConn, matched := matchDownstreamRelayConn(active, currentNodeID, preferredNodeID, currentConn, visitedNodes); matched {
+		if nextNodeID, nextConn, matched := matchDownstreamRelayConnScored(active, hub, currentNodeID, preferredNodeID, currentConn, visitedNodes, hop, preferredTargetsOnNode(currentNodeID)); matched {
 			nextName := lookupNodeDisplayName(ctx, store, cachedNodeNames, nextNodeID, meta.NodeName)
 			nodeIDs = append(nodeIDs, nextNodeID)
 			path = append(path, nextName)
@@ -366,11 +363,14 @@ func resolveChainRoute(
 
 func findOriginEntryConn(
 	active map[string][]storedConnection,
+	hub *connectionsHub,
+	relayNodeID string,
 	relayConn storedConnection,
 ) (entryConn storedConnection, ok bool) {
 	if len(active) == 0 {
 		return storedConnection{}, false
 	}
+	curNodeID := relayNodeID
 	cur := relayConn
 	var latestMatch storedConnection
 	visited := map[string]bool{}
@@ -380,21 +380,13 @@ func findOriginEntryConn(
 			break
 		}
 		visited[upstreamID] = true
-		matched := false
-		for _, cand := range active[upstreamID] {
-			if connectionChainEndpointID(cand) == "" {
-				continue
-			}
-			if connectionDestMatches(cand, cur) {
-				latestMatch = cand
-				cur = cand
-				matched = true
-				break
-			}
-		}
+		matchedConn, matched := matchOriginEntryScored(active, hub, upstreamID, curNodeID, cur)
 		if !matched {
 			break
 		}
+		latestMatch = matchedConn
+		curNodeID = upstreamID
+		cur = matchedConn
 	}
 	return latestMatch, latestMatch.Destination != "" || latestMatch.Host != "" || latestMatch.User != "" || latestMatch.SourceIP != ""
 }
@@ -419,11 +411,23 @@ func enrichRelayConnections(
 		}
 	}
 
+	activeNodeByConnPtr := func(c storedConnection) string {
+		for nid, list := range active {
+			for _, item := range list {
+				if item.ID != "" && item.ID == c.ID && item.RelayUpstreamNodeID == c.RelayUpstreamNodeID {
+					return nid
+				}
+			}
+		}
+		return ""
+	}
+
 	out := make([]storedConnection, len(connections))
 	for i, c := range connections {
 		enriched := c
 		if c.RelayUpstreamNodeID != "" {
-			if entry, found := findOriginEntryConn(active, c); found {
+			curNodeID := activeNodeByConnPtr(c)
+			if entry, found := findOriginEntryConn(active, hub, curNodeID, c); found {
 				if entry.User != "" && !isInternalUserID(entry.User) {
 					enriched.User = entry.User
 				}

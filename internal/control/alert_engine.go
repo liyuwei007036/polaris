@@ -400,7 +400,7 @@ func (e *AlertEngine) nodeContext(nodeID, fallbackName string) nodeAlertContext 
 func (c nodeAlertContext) TelegramLines() []string {
 	lines := make([]string, 0, 5)
 	if c.Name != "" {
-		lines = append(lines, tgLine("节点名称", c.Name))
+		lines = append(lines, tgLine("服务器名称", c.Name))
 	}
 	if c.IP != "" {
 		if net.ParseIP(c.IP) != nil {
@@ -421,7 +421,7 @@ func (c nodeAlertContext) TelegramLines() []string {
 func (c nodeAlertContext) BarkSummary() string {
 	parts := make([]string, 0, 4)
 	if c.Name != "" {
-		parts = append(parts, "节点："+c.Name)
+		parts = append(parts, "服务器："+c.Name)
 	}
 	if c.IP != "" {
 		if net.ParseIP(c.IP) != nil {
@@ -441,10 +441,10 @@ func (c nodeAlertContext) BarkSummary() string {
 
 func (c nodeAlertContext) BarkCompact() string {
 	if c.Name != "" && c.IP != "" {
-		return fmt.Sprintf("节点：%s（%s）", c.Name, c.IP)
+		return fmt.Sprintf("服务器：%s（%s）", c.Name, c.IP)
 	}
 	if c.Name != "" {
-		return "节点：" + c.Name
+		return "服务器：" + c.Name
 	}
 	if c.IP != "" {
 		return "IP：" + c.IP
@@ -459,7 +459,7 @@ func (e *AlertEngine) withNodeInfo(ctx nodeAlertContext, lines []string) []strin
 	}
 	out := make([]string, 0, len(lines)+len(nodeLines)+1)
 	out = append(out, lines...)
-	out = append(out, "\n<b>节点信息</b>")
+	out = append(out, "\n<b>服务器信息</b>")
 	out = append(out, nodeLines...)
 	return out
 }
@@ -1256,7 +1256,7 @@ func (e *AlertEngine) checkProxyRouting(nodeID, nodeName string, connections []s
 			}
 			var sourceParts []string
 			if len(issue.users) > 0 {
-				sourceParts = append(sourceParts, "用户 "+strings.Join(issue.users, "、"))
+				sourceParts = append(sourceParts, "节点 "+strings.Join(issue.users, "、"))
 			}
 			if len(issue.sourceIPs) > 0 {
 				sourceParts = append(sourceParts, strings.Join(issue.sourceIPs, "、"))
@@ -1334,15 +1334,15 @@ func (e *AlertEngine) NotifyNodeOffline(nodeID, nodeName string) {
 		e.mu.Unlock()
 		nodeCtx := e.nodeContext(nodeID, nodeName)
 		lines := []string{
-			tgLine("当前状态", "控制端已失去该节点心跳（Agent 离线）"),
-			tgLine("影响范围", "该节点上的代理、监控和任务下发暂时不可用"),
+			tgLine("当前状态", "控制端已失去该服务器心跳（Agent 离线）"),
+			tgLine("影响范围", "该服务器上的代理、监控和任务下发暂时不可用"),
 		}
-		telegramText := buildTelegramAlert(severityCritical, "节点状态", "节点已离线", nodeName, e.withNodeInfo(nodeCtx, lines), "")
+		telegramText := buildTelegramAlert(severityCritical, "服务器状态", "服务器已离线", nodeName, e.withNodeInfo(nodeCtx, lines), "")
 		e.sendAlert(context.Background(), alertPayload{
 			Severity:  severityCritical,
-			BarkTitle: fmt.Sprintf("节点离线：%s", nodeName),
-			BarkBody:  e.barkWithNode(nodeCtx, "控制端已失去该节点心跳。\n代理与监控服务暂停，请检查主机网络与 Agent。"),
-			BarkGroup: "节点状态",
+			BarkTitle: fmt.Sprintf("服务器离线：%s", nodeName),
+			BarkBody:  e.barkWithNode(nodeCtx, "控制端已失去该服务器心跳。\n代理与监控服务暂停，请检查主机网络与 Agent。"),
+			BarkGroup: "服务器状态",
 			BarkSound: "alarm.caf",
 			Telegram:  telegramText,
 		})
@@ -1372,12 +1372,12 @@ func (e *AlertEngine) NotifyNodeOnline(nodeID, nodeName string) {
 		lines := []string{
 			tgLine("当前状态", "控制通道已重建，服务已恢复正常"),
 		}
-		telegramText := buildTelegramAlert(severityRecovery, "节点状态", "节点已恢复", nodeName, e.withNodeInfo(nodeCtx, lines), "")
+		telegramText := buildTelegramAlert(severityRecovery, "服务器状态", "服务器已恢复", nodeName, e.withNodeInfo(nodeCtx, lines), "")
 		e.sendAlert(context.Background(), alertPayload{
 			Severity:  severityRecovery,
-			BarkTitle: fmt.Sprintf("节点恢复：%s", nodeName),
+			BarkTitle: fmt.Sprintf("服务器恢复：%s", nodeName),
 			BarkBody:  e.barkWithNode(nodeCtx, "控制通道已重建，代理与监控服务已恢复。"),
-			BarkGroup: "节点状态",
+			BarkGroup: "服务器状态",
 			BarkSound: "calypso.caf",
 			Telegram:  telegramText,
 		})
@@ -1413,16 +1413,16 @@ func (e *AlertEngine) NotifyDDNSUpdated(nodeID, nodeName, oldIP, currentIP, doma
 	alertKey := "ddns:" + nodeID + ":" + currentIP
 	if e.canAlert(alertKey, 1) {
 		nodeCtx := e.nodeContext(nodeID, nodeName)
-		telegramText := buildTelegramAlert(severityInfo, "DDNS", "NAT 节点 IP 变更", nodeName, e.withNodeInfo(nodeCtx, []string{
+		telegramText := buildTelegramAlert(severityInfo, "DDNS", "NAT 服务器 IP 变更", nodeName, e.withNodeInfo(nodeCtx, []string{
 			tgLine("原公网 IP", e.formatIP(oldIP)),
 			tgLine("新公网 IP", e.formatIP(currentIP)),
 			tgLine("解析域名", domain),
 			tgLine("同步状态", "Cloudflare DNS 已更新，TTL 为 60 秒"),
-			tgLine("影响", "依赖该域名的前置节点会刷新 DNS 并重建连接；客户端无需修改配置"),
-		}), "如业务异常，请检查 Cloudflare 记录、DNS 缓存以及依赖该域名的前置节点。")
+			tgLine("影响", "依赖该域名的前置服务器会刷新 DNS 并重建连接；客户端无需修改配置"),
+		}), "如业务异常，请检查 Cloudflare 记录、DNS 缓存以及依赖该域名的前置服务器。")
 		e.sendAlert(context.Background(), alertPayload{
 			Severity:  severityInfo,
-			BarkTitle: fmt.Sprintf("节点 IP 变更：%s", nodeName),
+			BarkTitle: fmt.Sprintf("服务器 IP 变更：%s", nodeName),
 			BarkBody: e.barkWithNode(nodeCtx, fmt.Sprintf("%s → %s\n%s 已同步 Cloudflare（TTL 60s）",
 				e.formatIP(oldIP), e.formatIP(currentIP), domain)),
 			BarkGroup: "DDNS监控",
@@ -1442,16 +1442,16 @@ func (e *AlertEngine) NotifyChainedDNSHealing(targetNodeName string, chainedCoun
 				nodeCtx.Location = location
 			}
 		}
-		telegramText := buildTelegramAlert(severityWarning, "链路自愈", "已触发前置节点 DNS 刷新", targetNodeName, e.withNodeInfo(nodeCtx, []string{
-			tgLine("依赖前置节点", fmt.Sprintf("%d 台", chainedCount)),
+		telegramText := buildTelegramAlert(severityWarning, "链路自愈", "已触发前置服务器 DNS 刷新", targetNodeName, e.withNodeInfo(nodeCtx, []string{
+			tgLine("依赖前置服务器", fmt.Sprintf("%d 台", chainedCount)),
 			tgLine("影响域名", strings.Join(domains, "、")),
 			tgLine("目标最新 IP", e.formatIP(targetIP)),
 			tgLine("当前动作", "已下发轻量自愈指令，重置旧连接并刷新解析"),
-		}), "系统已自动处理，请等待完成通知。若 5 分钟内仍未恢复，请检查前置节点在线状态和 DNS 解析。")
+		}), "系统已自动处理，请等待完成通知。若 5 分钟内仍未恢复，请检查前置服务器在线状态和 DNS 解析。")
 		e.sendAlert(context.Background(), alertPayload{
 			Severity:  severityWarning,
 			BarkTitle: "链路自愈已触发",
-			BarkBody: e.barkWithNode(nodeCtx, fmt.Sprintf("%d 台前置节点正在刷新 DNS\n域名：%s",
+			BarkBody: e.barkWithNode(nodeCtx, fmt.Sprintf("%d 台前置服务器正在刷新 DNS\n域名：%s",
 				chainedCount, strings.Join(domains, "、"))),
 			BarkGroup: "链路自愈",
 			BarkSound: "anticipate.caf",
@@ -1468,7 +1468,7 @@ func (e *AlertEngine) NotifyChainedDNSCompleted(nodeID, nodeName, summary string
 		telegramText := buildTelegramAlert(severityRecovery, "链路自愈", "DNS 刷新与验证完成", nodeName, e.withNodeInfo(nodeCtx, []string{
 			tgLine("执行结果", summary),
 			tgLine("当前状态", "底层卡死连接已切断，DNS 状态已重载恢复"),
-			tgLine("客户端影响", "依赖该前置节点的链路会使用最新解析，客户端无需修改配置"),
+			tgLine("客户端影响", "依赖该前置服务器的链路会使用最新解析，客户端无需修改配置"),
 		}), "")
 		e.sendAlert(context.Background(), alertPayload{
 			Severity:  severityRecovery,
@@ -1589,8 +1589,8 @@ func (e *AlertEngine) sendFail2banSummary(batch *fail2banBatch) {
 		telegramText := buildTelegramAlert(severityWarning, "安全防护", "已拦截恶意来源", batch.nodeName, e.withNodeInfo(nodeCtx, []string{
 			tgLine("拦截目标", e.formatIP(batch.ips[0])),
 			tgLine("触发规则", batch.jail),
-			tgLine("处置结果", "已自动加入节点防火墙阻断列表"),
-		}), "若该 IP 是业务来源，请在节点 Fail2Ban 白名单中添加；否则可以忽略。")
+			tgLine("处置结果", "已自动加入服务器防火墙阻断列表"),
+		}), "若该 IP 是业务来源，请在服务器 Fail2Ban 白名单中添加；否则可以忽略。")
 		e.sendAlert(context.Background(), alertPayload{
 			Severity:  severityWarning,
 			BarkTitle: fmt.Sprintf("已拦截恶意源：%s", batch.nodeName),
@@ -1607,8 +1607,8 @@ func (e *AlertEngine) sendFail2banSummary(batch *fail2banBatch) {
 		tgLine("触发规则", batch.jail),
 		tgLine("统计窗口", fmt.Sprintf("%s 至 %s，约 %d 秒", start, end, windowSeconds)),
 		tgLine("来源列表", ipList),
-		tgLine("处置结果", "已自动加入节点防火墙阻断列表"),
-	}), "若这些 IP 是业务来源，请在节点 Fail2Ban 白名单中添加；否则可以忽略。")
+		tgLine("处置结果", "已自动加入服务器防火墙阻断列表"),
+	}), "若这些 IP 是业务来源，请在服务器 Fail2Ban 白名单中添加；否则可以忽略。")
 	e.sendAlert(context.Background(), alertPayload{
 		Severity:  severityWarning,
 		BarkTitle: fmt.Sprintf("已拦截 %d 个恶意来源：%s", total, batch.nodeName),

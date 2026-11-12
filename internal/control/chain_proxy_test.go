@@ -322,7 +322,7 @@ func TestChainProxyValidation(t *testing.T) {
 		Enabled:    true,
 		OutboundID: "chain:" + u1.ID,
 	}, EndpointCredentials{UUID: "22222222-2222-2222-2222-222222222222"})
-	if err == nil || !strings.Contains(err.Error(), "只能指定其他服务器上的节点用户") {
+	if err == nil || !strings.Contains(err.Error(), "只能指定其他服务器上的节点") {
 		t.Fatalf("expected same-server rejection, got: %v", err)
 	}
 
@@ -333,7 +333,7 @@ func TestChainProxyValidation(t *testing.T) {
 		Enabled:    true,
 		OutboundID: "chain:non-existent-id",
 	}, EndpointCredentials{UUID: "22222222-2222-2222-2222-222222222222"})
-	if err == nil || !strings.Contains(err.Error(), "指定的链式代理节点用户不存在") {
+	if err == nil || !strings.Contains(err.Error(), "指定的链式代理节点不存在") {
 		t.Fatalf("expected non-existent rejection, got: %v", err)
 	}
 
@@ -345,7 +345,7 @@ func TestChainProxyValidation(t *testing.T) {
 		Enabled:    true,
 		OutboundID: "chain:" + u1.ID,
 	}, nil)
-	if err == nil || !strings.Contains(err.Error(), "不能将链式代理指向用户自身") {
+	if err == nil || !strings.Contains(err.Error(), "不能将链式代理指向节点自身") {
 		t.Fatalf("expected self-chaining rejection, got: %v", err)
 	}
 

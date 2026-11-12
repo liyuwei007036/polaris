@@ -1118,3 +1118,204 @@ func TestServerDDNSLocalBindIPTracksDynamicNATMapping(t *testing.T) {
 		return recordContent == "222.1.2.99"
 	})
 }
+
+func TestServerDDNSRemoteNodeNeverFallsBackToMasterIP(t *testing.T) {
+	patched := false
+	mockCF := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/zones/zone-rem":
+			_ = json.NewEncoder(w).Encode(map[string]any{"success": true, "result": map[string]any{"id": "zone-rem", "name": "example.com"}})
+		case r.Method == http.MethodGet && r.URL.Path == "/zones/zone-rem/dns_records/rec-rem":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"success": true,
+				"result":  map[string]any{"id": "rec-rem", "type": "A", "name": "rem.example.com", "content": "198.51.100.77", "ttl": 60},
+			})
+		case r.Method == http.MethodPatch:
+			patched = true
+			http.Error(w, "must not patch", http.StatusBadRequest)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer mockCF.Close()
+
+	oldAPI := cloudflareAPI
+	cloudflareAPI = mockCF.URL
+	defer func() { cloudflareAPI = oldAPI }()
+
+	store, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+
+	if err := store.SetCloudflareSettings(t.Context(), "zone-rem", "example.com", "token"); err != nil {
+		t.Fatal(err)
+	}
+	server, err := NewServer(store, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	nodeID := newTestNode(t, store, "remote-nat", "r")
+	enabled := true
+	recID := "rec-rem"
+	domain := "rem.example.com"
+	if err := store.UpdateNodeWithDDNS(t.Context(), nodeID, "Remote NAT", "rem.example.com", &enabled, &recID, &domain); err != nil {
+		t.Fatal(err)
+	}
+	// Remote node is connected from a public remote IP and bound to private NIC 127.0.0.1/10.0.0.121
+	// (no IPMappings reported yet). Master must NEVER probe its own host NIC and overwrite remote DNS.
+	bindLocal := "10.0.0.121"
+	if err := store.UpdateNodeDDNSBinding(t.Context(), nodeID, &bindLocal, nil); err != nil {
+		t.Fatal(err)
+	}
+	server.controlMu.Lock()
+	server.controls[nodeID] = &controlSession{remoteAddr: "203.0.113.50"}
+	server.controlMu.Unlock()
+
+	node, err := store.GetNode(t.Context(), nodeID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if server.nodeMasterLocal(node) {
+		t.Fatal("expected remote node with public control socket NOT to be treated as Master-local")
+	}
+	if err := server.executeNodeDDNS(t.Context(), nodeID, ""); err == nil {
+		t.Fatal("expected executeNodeDDNS to fail safely when remote node private bind IP has no IPMappings yet")
+	}
+	if patched {
+		t.Fatal("must never patch remote DNS record when private bind IP cannot be resolved from agent")
+	}
+}
+
+func TestServerDDNSPartialFailureRetriesAndAuditsTrueIP(t *testing.T) {
+	var (
+		mu       sync.Mutex
+		failRec2 = true
+		contents = map[string]string{
+			"rec-1": "198.51.100.1",
+			"rec-2": "198.51.100.99",
+		}
+	)
+	mockCF := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		defer mu.Unlock()
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/zones/zone-p":
+			_ = json.NewEncoder(w).Encode(map[string]any{"success": true, "result": map[string]any{"id": "zone-p", "name": "example.com"}})
+		case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/zones/zone-p/dns_records/"):
+			recID := strings.TrimPrefix(r.URL.Path, "/zones/zone-p/dns_records/")
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"success": true,
+				"result":  map[string]any{"id": recID, "type": "A", "name": recID + ".example.com", "content": contents[recID], "ttl": 60},
+			})
+		case r.Method == http.MethodPatch && strings.HasPrefix(r.URL.Path, "/zones/zone-p/dns_records/"):
+			recID := strings.TrimPrefix(r.URL.Path, "/zones/zone-p/dns_records/")
+			if recID == "rec-2" && failRec2 {
+				http.Error(w, `{"success":false,"errors":[{"message":"transient error"}]}`, http.StatusInternalServerError)
+				return
+			}
+			var body map[string]any
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			contents[recID], _ = body["content"].(string)
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"success": true,
+				"result":  map[string]any{"id": recID, "type": "A", "name": recID + ".example.com", "content": contents[recID], "ttl": 60},
+			})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer mockCF.Close()
+
+	oldAPI := cloudflareAPI
+	cloudflareAPI = mockCF.URL
+	defer func() { cloudflareAPI = oldAPI }()
+
+	store, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+
+	if _, _, err := store.createOperator(t.Context(), "admin_partial", "AdminPass123456!", "admin", false, false, false); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetCloudflareSettings(t.Context(), "zone-p", "example.com", "token"); err != nil {
+		t.Fatal(err)
+	}
+	server, err := NewServer(store, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	nodeID := newTestNode(t, store, "partial-node", "p")
+	enabled := true
+	if err := store.UpdateNodeWithDDNS(t.Context(), nodeID, "Partial Node", "rec-1.example.com", &enabled, nil, nil,
+		[]string{"rec-1"}, []string{"rec-1.example.com"}); err != nil {
+		t.Fatal(err)
+	}
+	_ = store.SetNodeLastObservedIP(t.Context(), nodeID, "198.51.100.1")
+
+	// Adding rec-2 while keeping rec-1 unchanged MUST still clear last_observed_ip.
+	if err := store.UpdateNodeWithDDNS(t.Context(), nodeID, "Partial Node", "rec-1.example.com", &enabled, nil, nil,
+		[]string{"rec-1", "rec-2"}, []string{"rec-1.example.com", "rec-2.example.com"}); err != nil {
+		t.Fatal(err)
+	}
+	afterMultiEdit, _ := store.GetNode(t.Context(), nodeID)
+	if afterMultiEdit.LastObservedIP != "" {
+		t.Fatalf("expected LastObservedIP cleared when DDNSRecordIDs list changed, got %q", afterMultiEdit.LastObservedIP)
+	}
+
+	bind1 := "198.51.100.1"
+	if err := store.UpdateNodeDDNSBinding(t.Context(), nodeID, &bind1, map[string]string{
+		"rec-2": "198.51.100.2",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Simulate rec-1 stale initially so rec-1 succeeds while rec-2 fails -> reconcile MUST track failure backoff!
+	mu.Lock()
+	contents["rec-1"] = "198.51.100.98"
+	mu.Unlock()
+
+	server.reconcileNodeDDNS(t.Context(), nodeID)
+	waitForDDNS(t, func() bool {
+		server.ddnsReconcileMu.Lock()
+		defer server.ddnsReconcileMu.Unlock()
+		st := server.ddnsReconcileState[nodeID]
+		return st != nil && st.failures == 1 && !st.nextRetryAt.IsZero()
+	})
+
+	// Recover rec-2 and expire backoff -> rec-2 updates cleanly to 198.51.100.2 and audit logs 198.51.100.2 (NOT rec-1's 198.51.100.1).
+	mu.Lock()
+	failRec2 = false
+	mu.Unlock()
+	server.ddnsReconcileMu.Lock()
+	server.ddnsReconcileState[nodeID].nextRetryAt = time.Now().Add(-1 * time.Second)
+	server.ddnsReconcileMu.Unlock()
+
+	server.reconcileNodeDDNS(t.Context(), nodeID)
+	waitForDDNS(t, func() bool {
+		server.ddnsReconcileMu.Lock()
+		defer server.ddnsReconcileMu.Unlock()
+		st := server.ddnsReconcileState[nodeID]
+		return st != nil && st.failures == 0 && contents["rec-2"] == "198.51.100.2"
+	})
+
+	events, _, err := store.ListAudit(t.Context(), 1, 20)
+	if err != nil {
+		t.Fatalf("read ddns audit summary: %v", err)
+	}
+	var rec2Summary string
+	for _, ev := range events {
+		if ev.Action == "cloudflare_record.ddns_updated" && strings.Contains(ev.Summary, "rec-2.example.com") {
+			rec2Summary = ev.Summary
+			break
+		}
+	}
+	if !strings.Contains(rec2Summary, "198.51.100.2") {
+		t.Errorf("expected rec-2 audit summary to report actual changed IP 198.51.100.2, got %q (events=%+v)", rec2Summary, events)
+	}
+}

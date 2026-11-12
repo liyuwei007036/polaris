@@ -47,7 +47,7 @@ const outboundOptions = computed(() => [
   ...outbounds.value.filter((item) => item.enabled && item.type !== 'direct').map((item) => ({ value: item.id, label: item.name })),
 ])
 const accountOptions = computed(() => [
-  { value: '', label: '适用于全部用户' },
+  { value: '', label: '适用于全部节点' },
   ...listeners.value
     .filter((listener) => listener.node_id === form.node_id)
     .flatMap((listener) => endpoints.value
@@ -268,8 +268,8 @@ onMounted(load)
           <el-input v-model="form.inbound_tag" aria-label="接入服务标签" />
         </div>
         <div class="m-field">
-          <label class="m-field__label">接入用户</label>
-          <MPicker v-model="form.endpoint_name" :options="accountOptions" title="选择接入用户" placeholder="适用于全部用户" />
+          <label class="m-field__label">接入节点</label>
+          <MPicker v-model="form.endpoint_name" :options="accountOptions" title="选择接入节点" placeholder="适用于全部节点" />
         </div>
       </template>
       <div class="m-field">

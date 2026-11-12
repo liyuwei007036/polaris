@@ -226,11 +226,11 @@ func (s *Server) upgradeNodeAgent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if node.OS != "" && node.OS != "linux" {
-		writeError(w, errors.New("agent 自动更新仅支持 Linux 节点"))
+		writeError(w, errors.New("agent 自动更新仅支持 Linux 服务器"))
 		return
 	}
 	if node.Architecture == "" {
-		writeError(w, errors.New("尚未获取该节点的架构信息，请等待 agent 心跳后重试"))
+		writeError(w, errors.New("尚未获取该服务器的架构信息，请等待 agent 心跳后重试"))
 		return
 	}
 	release, err := s.latestPolarisReleaseCached(r.Context(), node.Architecture, r.URL.Query().Get("refresh") == "1")

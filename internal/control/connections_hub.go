@@ -255,6 +255,7 @@ func (a *nodeActivity) pruneLocked(now time.Time) {
 type nodeConnectionsSnapshot struct {
 	NodeID          string                `json:"node_id"`
 	CollectedAt     string                `json:"collected_at"`
+	ClockOffsetMs   int64                 `json:"clock_offset_ms,omitempty"`
 	Connections     json.RawMessage       `json:"connections,omitempty"`
 	RawConns        []storedConnection    `json:"-"`
 	ConnectionCount int                   `json:"connection_count"`
@@ -274,6 +275,8 @@ type connectionsHub struct {
 	mu           sync.Mutex
 	latest       map[string]nodeConnectionsSnapshot
 	receivedAt   map[string]time.Time
+	clockOffsets map[string]time.Duration
+	stickyPairs  map[string]stickyChainPair
 	clients      map[chan nodeConnectionsSnapshot]struct{}
 	totalClients map[chan fleetTotals]struct{}
 	// onWatchers fires when the number of open browser streams crosses between
@@ -288,9 +291,79 @@ func newConnectionsHub() *connectionsHub {
 	return &connectionsHub{
 		latest:       make(map[string]nodeConnectionsSnapshot),
 		receivedAt:   make(map[string]time.Time),
+		clockOffsets: make(map[string]time.Duration),
+		stickyPairs:  make(map[string]stickyChainPair),
 		clients:      make(map[chan nodeConnectionsSnapshot]struct{}),
 		totalClients: make(map[chan fleetTotals]struct{}),
 	}
+}
+
+func (h *connectionsHub) clockOffsetsSnapshot() map[string]time.Duration {
+	if h == nil {
+		return nil
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if len(h.clockOffsets) == 0 {
+		return nil
+	}
+	out := make(map[string]time.Duration, len(h.clockOffsets))
+	for k, v := range h.clockOffsets {
+		out[k] = v
+	}
+	return out
+}
+
+func (h *connectionsHub) stickyPairFor(upstreamNodeID, upstreamConnID string, hopIndex int) (string, string, bool) {
+	if h == nil || upstreamNodeID == "" || upstreamConnID == "" {
+		return "", "", false
+	}
+	key := stickyChainKey(upstreamNodeID, upstreamConnID, hopIndex)
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	pair, ok := h.stickyPairs[key]
+	if !ok {
+		return "", "", false
+	}
+	return pair.targetNodeID, pair.targetConnID, true
+}
+
+func (h *connectionsHub) rememberStickyPair(upstreamNodeID, upstreamConnID string, hopIndex int, targetNodeID, targetConnID string, now time.Time) {
+	if h == nil || upstreamNodeID == "" || upstreamConnID == "" || targetNodeID == "" || targetConnID == "" {
+		return
+	}
+	key := stickyChainKey(upstreamNodeID, upstreamConnID, hopIndex)
+	h.mu.Lock()
+	if h.stickyPairs == nil {
+		h.stickyPairs = make(map[string]stickyChainPair)
+	}
+	h.stickyPairs[key] = stickyChainPair{
+		upstreamNodeID: upstreamNodeID,
+		upstreamConnID: upstreamConnID,
+		targetNodeID:   targetNodeID,
+		targetConnID:   targetConnID,
+		lastSeen:       now,
+	}
+	h.mu.Unlock()
+}
+
+func (h *connectionsHub) stickyUpstreamFor(upstreamNodeID, targetNodeID, targetConnID string) (string, bool) {
+	if h == nil || upstreamNodeID == "" || targetNodeID == "" || targetConnID == "" {
+		return "", false
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	var bestConnID string
+	var bestSeen time.Time
+	for _, pair := range h.stickyPairs {
+		if pair.upstreamNodeID == upstreamNodeID && pair.targetNodeID == targetNodeID && pair.targetConnID == targetConnID {
+			if bestConnID == "" || pair.lastSeen.After(bestSeen) {
+				bestConnID = pair.upstreamConnID
+				bestSeen = pair.lastSeen
+			}
+		}
+	}
+	return bestConnID, bestConnID != ""
 }
 
 // activeNodeConnections returns the latest live connections per node ID so
@@ -498,9 +571,17 @@ func (h *connectionsHub) pruneLocked(now time.Time) []string {
 			stale = append(stale, id)
 		}
 	}
+	staleSet := make(map[string]bool, len(stale))
 	for _, id := range stale {
+		staleSet[id] = true
 		delete(h.latest, id)
 		delete(h.receivedAt, id)
+		delete(h.clockOffsets, id)
+	}
+	for k, pair := range h.stickyPairs {
+		if now.Sub(pair.lastSeen) > connectionsStaleAfter || staleSet[pair.upstreamNodeID] || staleSet[pair.targetNodeID] {
+			delete(h.stickyPairs, k)
+		}
 	}
 	return stale
 }
@@ -532,6 +613,42 @@ func (h *connectionsHub) node(nodeID string) (nodeConnectionsSnapshot, bool) {
 func (h *connectionsHub) update(snap nodeConnectionsSnapshot) {
 	now := time.Now()
 	h.mu.Lock()
+	if snap.Connections != nil || snap.RawConns != nil {
+		if collectedAt, ok := parseConnStartedAt(snap.CollectedAt); ok {
+			rawDrift := collectedAt.Sub(now)
+			if rawDrift >= -clockDriftDeadband && rawDrift <= clockDriftDeadband {
+				rawDrift = 0
+			}
+			if h.clockOffsets == nil {
+				h.clockOffsets = make(map[string]time.Duration)
+			}
+			if prevOffset, exists := h.clockOffsets[snap.NodeID]; !exists {
+				h.clockOffsets[snap.NodeID] = rawDrift
+			} else if rawDrift == 0 && prevOffset >= -clockDriftDeadband && prevOffset <= clockDriftDeadband {
+				h.clockOffsets[snap.NodeID] = 0
+			} else {
+				h.clockOffsets[snap.NodeID] = (prevOffset*3 + rawDrift) / 4
+			}
+		}
+		if h.clockOffsets != nil {
+			snap.ClockOffsetMs = h.clockOffsets[snap.NodeID].Milliseconds()
+		}
+		if len(h.stickyPairs) > 0 {
+			liveIDs := make(map[string]bool, len(snap.RawConns))
+			for _, c := range snap.RawConns {
+				if c.ID != "" {
+					liveIDs[c.ID] = true
+				}
+			}
+			for k, pair := range h.stickyPairs {
+				if pair.upstreamNodeID == snap.NodeID && !liveIDs[pair.upstreamConnID] {
+					delete(h.stickyPairs, k)
+				} else if pair.targetNodeID == snap.NodeID && !liveIDs[pair.targetConnID] {
+					delete(h.stickyPairs, k)
+				}
+			}
+		}
+	}
 	if prev, ok := h.latest[snap.NodeID]; ok {
 		if snap.Host == nil && prev.Host != nil {
 			snap.Host = prev.Host
@@ -550,6 +667,9 @@ func (h *connectionsHub) update(snap nodeConnectionsSnapshot) {
 			snap.ReceivedRate = prev.ReceivedRate
 			snap.SentRate = prev.SentRate
 			snap.HasRates = prev.HasRates
+			if snap.ClockOffsetMs == 0 {
+				snap.ClockOffsetMs = prev.ClockOffsetMs
+			}
 		}
 	}
 	h.latest[snap.NodeID] = snap

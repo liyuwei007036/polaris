@@ -14,12 +14,12 @@ func TestAuditManagerTranslationAndDiagnostics(t *testing.T) {
 	}
 
 	summary2 := control.TranslateAuditSummary("endpoint.created", "endpoint", "MacBook", "endpoint credentials created")
-	if summary2 != "为用户「MacBook」签发接入凭证与连接密钥" {
+	if summary2 != "为节点「MacBook」签发接入凭证与连接密钥" {
 		t.Fatalf("unexpected summary: %s", summary2)
 	}
 
 	summary3 := control.TranslateAuditSummary("task.completed.succeeded", "task", "", "agent task completed: singbox.apply_config")
-	if summary3 != "节点完成系统任务：更新连接配置" {
+	if summary3 != "服务器完成系统任务：更新连接配置" {
 		t.Fatalf("unexpected summary: %s", summary3)
 	}
 

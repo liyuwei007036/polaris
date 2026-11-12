@@ -39,7 +39,7 @@ func (s *Server) getNodeLocationLabel(node Node) string {
 	if node.Name != "" {
 		return node.Name
 	}
-	return "本地节点"
+	return "本地服务器"
 }
 
 // getNodePublicIPv4 returns the public IPv4 address for a node, prioritizing agent-reported public egress IPs.

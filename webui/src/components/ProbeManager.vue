@@ -94,7 +94,7 @@ async function save() {
 
 async function remove(task) {
   try {
-    await ElMessageBox.confirm(`确认删除探针「${task.name}」？删除后所有节点将停止该探测。`, '删除探针', {
+    await ElMessageBox.confirm(`确认删除探针「${task.name}」？删除后所有服务器将停止该探测。`, '删除探针', {
       type: 'warning',
       confirmButtonText: '删除',
     })
@@ -139,7 +139,7 @@ onMounted(load)
 
     <section class="probes-panel">
       <p class="probe-intro">
-        每个探针由集群内所有服务器各自执行 TCP 握手测速，实时测量节点到目标的网络延迟与丢包率，数据汇总展示于卡片的 24h 链路热力与详情大盘中。
+        每个探针由集群内所有服务器各自执行 TCP 握手测速，实时测量服务器到目标的网络延迟与丢包率，数据汇总展示于卡片的 24h 链路热力与详情大盘中。
       </p>
 
       <el-input
@@ -198,7 +198,7 @@ onMounted(load)
 
         <el-form-item label="目标地址（host:port）" required>
           <el-input v-model="form.target" placeholder="例如：202.103.224.68:53 或 1.1.1.1:443" @keyup.enter="save" />
-          <div class="probe-hint">格式为 host:port，所有节点将定期向此目标建立 TCP 握手并采集往返延迟与丢包率</div>
+          <div class="probe-hint">格式为 host:port，所有服务器将定期向此目标建立 TCP 握手并采集往返延迟与丢包率</div>
         </el-form-item>
 
         <el-form-item label="探测间隔（秒）">

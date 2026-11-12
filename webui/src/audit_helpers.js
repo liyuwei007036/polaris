@@ -3,8 +3,8 @@
 export const AUDIT_MODULES = [
   { value: '', label: '全部操作' },
   { value: 'listener', label: '接入服务', tagType: 'primary' },
-  { value: 'node', label: '服务器节点', tagType: 'warning' },
-  { value: 'endpoint', label: '接入用户', tagType: 'success' },
+  { value: 'node', label: '服务器', tagType: 'warning' },
+  { value: 'endpoint', label: '接入节点', tagType: 'success' },
   { value: 'outbound', label: '上网出口', tagType: 'danger' },
   { value: 'security', label: '安全防护', tagType: 'danger' },
   { value: 'cloudflare', label: '域名与证书', tagType: 'info' },
@@ -16,7 +16,7 @@ export const AUDIT_MODULES = [
 export const TARGET_NAMES = {
   listener: '接入服务',
   node: '服务器',
-  endpoint: '接入用户',
+  endpoint: '接入节点',
   outbound: '上网出口',
   route_rule: '分流规则',
   firewall_rule: '防火墙策略',
@@ -71,7 +71,7 @@ export function getModuleInfo(targetType, action = '') {
   }
   if (targetType === 'listener') return { name: '接入服务', type: 'primary' }
   if (targetType === 'node') return { name: '服务器', type: 'warning' }
-  if (targetType === 'endpoint') return { name: '接入用户', type: 'success' }
+  if (targetType === 'endpoint') return { name: '接入节点', type: 'success' }
   if (targetType === 'outbound') return { name: '上网出口', type: 'danger' }
   if (targetType === 'route_rule') return { name: '分流规则', type: 'primary' }
   if (targetType === 'operator') return { name: '管理账户', type: 'info' }

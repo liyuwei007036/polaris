@@ -44,6 +44,7 @@ const rows = computed(() => {
       ...connection,
       node_id: result.node_id,
       node_name: node?.name || result.node_id,
+      clock_offset_ms: result.clock_offset_ms || 0,
       // The master resolves the sing-box outbound tag to the egress an operator
       // configured; the raw tag is only shown when that lookup found nothing.
       exit: connection.outbound_name || connection.outbound || connection.chains?.[0] || 'DIRECT',

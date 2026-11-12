@@ -635,7 +635,7 @@ func (s *Server) handleAgentMessage(ctx context.Context, node *Node, msgType byt
 			_ = s.store.AppendAudit(ctx, task.OperatorID, "task.completed."+res.Status, "task", task.ID, "agent task completed: "+task.Kind)
 		}
 		if task.Kind == "dns.update" {
-			summary := fmt.Sprintf("前置节点「%s」完成动态 DNS 刷新与链路自愈：%s", node.Name, res.Summary)
+			summary := fmt.Sprintf("前置服务器「%s」完成动态 DNS 刷新与链路自愈：%s", node.Name, res.Summary)
 			_ = s.store.AppendAudit(ctx, task.OperatorID, "node.dns_update_completed", "node", node.ID, summary)
 			if s.alertEngine != nil && res.Status == "succeeded" {
 				s.alertEngine.NotifyChainedDNSCompleted(node.ID, node.Name, res.Summary)
@@ -1135,29 +1135,48 @@ func (s *Server) convertConnections(ctx context.Context, nodeID string, in []wir
 			OutboundDirect: isDirectOutboundTag(egressTag, directOutbounds),
 			IsChainRelay:   isChainRelay, OnChainTarget: onChainTarget, RelayUpstreamNodeID: relayUpstreamNodeID, ChainedTarget: chainedTarget,
 		}
-		if chainedTarget != "" && !isChainRelay {
-			cacheKey := chainedTarget + "\x00" + c.Destination + "\x00" + c.Host + "\x00" + c.Network
+		out = append(out, sc)
+	}
+	var liveActive map[string][]storedConnection
+	hasChainEntry := false
+	for i := range out {
+		if out[i].ChainedTarget != "" && !out[i].IsChainRelay {
+			hasChainEntry = true
+			break
+		}
+	}
+	if hasChainEntry {
+		snap := getActiveSnapshots()
+		liveActive = make(map[string][]storedConnection, len(snap)+1)
+		for k, v := range snap {
+			liveActive[k] = v
+		}
+		liveActive[nodeID] = out
+		nodeNames := getNodeNames()
+		for i := range out {
+			if out[i].ChainedTarget == "" || out[i].IsChainRelay {
+				continue
+			}
+			cacheKey := out[i].ChainedTarget + "\x00" + out[i].ID + "\x00" + out[i].Destination + "\x00" + out[i].Host + "\x00" + out[i].Network
 			resolved, cached := resolvedChainCache[cacheKey]
 			if !cached {
-				nodeNames := getNodeNames()
-				resolved = resolveChainRoute(ctx, s.store, s.connHub, nil, nodeNames, nodeID, nodeNames[nodeID], sc)
+				resolved = resolveChainRouteWithActive(ctx, s.store, s.connHub, liveActive, nodeNames, nodeID, nodeNames[nodeID], out[i])
 				resolvedChainCache[cacheKey] = resolved
 			}
 			if resolved.HopResolved && resolved.FinalOutbound != "" {
-				if resolved.FinalIsDirect && resolved.FinalNodeName != "" && resolved.FinalNodeName != getNodeNames()[nodeID] {
-					sc.ResolvedOutboundName = fmt.Sprintf("%s（经 %s 落地）", resolved.FinalOutbound, resolved.FinalNodeName)
+				if resolved.FinalIsDirect && resolved.FinalNodeName != "" && resolved.FinalNodeName != nodeNames[nodeID] {
+					out[i].ResolvedOutboundName = fmt.Sprintf("%s（经 %s 落地）", resolved.FinalOutbound, resolved.FinalNodeName)
 				} else {
-					sc.ResolvedOutboundName = resolved.FinalOutbound
+					out[i].ResolvedOutboundName = resolved.FinalOutbound
 				}
 				if len(resolved.Path) > 0 {
-					sc.ChainPath = strings.Join(resolved.Path, " → ")
+					out[i].ChainPath = strings.Join(resolved.Path, " → ")
 				}
 				if len(resolved.NodeIDs) > 0 {
-					sc.ChainNodeIDs = resolved.NodeIDs
+					out[i].ChainNodeIDs = resolved.NodeIDs
 				}
 			}
 		}
-		out = append(out, sc)
 	}
 	s.recordRecentChainEntries(nodeID, out)
 	return out

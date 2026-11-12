@@ -177,7 +177,7 @@ function orphanChainLabel(outboundID) {
     const name = targetEndpoint.alias || targetEndpoint.name
     return `${nodeName} · ${listName} · ${name} (已停用或同服务器)`
   }
-  return `已删除的节点用户 (${targetID.slice(0, 8)})`
+  return `已删除的节点 (${targetID.slice(0, 8)})`
 }
 
 function recordName(record) {
@@ -346,9 +346,9 @@ async function save() {
     }
     const names = accounts.value.map((item) => item.name.trim())
     const aliases = accounts.value.map((item) => item.alias.trim())
-    if (!names.length || names.some((name) => !name)) throw new Error('请至少保留一个已填写名称的用户')
-    if (new Set(names).size !== names.length) throw new Error('同一接入服务中的用户名称不能重复')
-    if (aliases.some((alias) => !alias)) throw new Error('请为每个用户填写客户端节点别名')
+    if (!names.length || names.some((name) => !name)) throw new Error('请至少保留一个已填写名称的节点')
+    if (new Set(names).size !== names.length) throw new Error('同一接入服务中的节点名称不能重复')
+    if (aliases.some((alias) => !alias)) throw new Error('请为每个节点填写客户端节点别名')
     if (new Set(aliases).size !== aliases.length) throw new Error('同一接入服务中的客户端节点别名不能重复')
     emit('save', {
       listener: listenerPayload(model.value),
@@ -474,12 +474,12 @@ async function save() {
 
         <div class="form-section">
           <div class="account-section-head">
-            <div class="form-section__head">用户</div>
-            <el-button :icon="Plus" @click="addAccount">添加用户</el-button>
+            <div class="form-section__head">节点</div>
+            <el-button :icon="Plus" @click="addAccount">添加节点</el-button>
           </div>
           <div class="account-head-row">
             <span />
-            <span>用户名称</span>
+            <span>节点名称</span>
             <span>客户端别名</span>
             <span>出口</span>
             <span>状态</span>
@@ -488,7 +488,7 @@ async function save() {
           <div class="account-list">
             <div v-for="(account, index) in accounts" :key="account.id || `new-${index}`" class="account-row">
               <span class="account-index">{{ index + 1 }}</span>
-              <el-input v-model="account.name" aria-label="用户名称" placeholder="用户名称" />
+              <el-input v-model="account.name" aria-label="节点名称" placeholder="节点名称" />
               <div class="alias-input">
                 <el-input v-model="account.alias" aria-label="客户端节点别名" maxlength="128" placeholder="节点别名" />
                 <el-popover trigger="click" placement="bottom-end" :width="244">
@@ -536,7 +536,7 @@ async function save() {
                 </el-option-group>
               </el-select>
               <el-switch v-model="account.enabled" inline-prompt active-text="启用" inactive-text="停用" />
-              <el-button text type="danger" :icon="Delete" :disabled="accounts.length === 1" aria-label="删除用户" @click="removeAccount(index)" />
+              <el-button text type="danger" :icon="Delete" :disabled="accounts.length === 1" aria-label="删除节点" @click="removeAccount(index)" />
             </div>
           </div>
         </div>

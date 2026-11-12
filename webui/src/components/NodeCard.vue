@@ -44,7 +44,6 @@
               <el-dropdown-item command="edit"><el-icon><Edit /></el-icon>配置</el-dropdown-item>
               <el-dropdown-item v-if="node.online" command="networkProbe"><el-icon><Connection /></el-icon>线路排查</el-dropdown-item>
               <el-dropdown-item v-if="node.ddns_enabled" command="syncDDNS"><el-icon><Refresh /></el-icon>同步 DDNS</el-dropdown-item>
-              <el-dropdown-item v-if="isAdmin && agentUpdateAvailable" command="upgradeAgent"><el-icon><Top /></el-icon>升级 Agent</el-dropdown-item>
               <el-dropdown-item v-if="isAdmin && singBoxUpdateAvailable" command="upgradeSingBox"><el-icon><Top /></el-icon>升级 sing-box</el-dropdown-item>
               <el-dropdown-item command="revoke" divided class="danger-item"><el-icon><RemoveFilled /></el-icon>移除</el-dropdown-item>
             </el-dropdown-menu>
@@ -61,7 +60,48 @@
       <OsIcon :os="osLabel" class="meta-os-icon shrink-0" />
       <span class="node-system-text truncate min-w-0 flex-1">{{ systemInfoText }}</span>
       <span
-        v-if="agentUpdateAvailable || singBoxUpdateAvailable"
+        v-if="canUpgrade && agentUpdateAvailable && singBoxUpdateAvailable"
+        class="upgrade-dropdown-wrap shrink-0"
+        @click.stop
+      >
+        <el-dropdown
+          trigger="click"
+          @command="(cmd) => $emit('action', { command: cmd, node })"
+        >
+          <button
+            type="button"
+            class="node-tag upgrade-tag upgrade-tag--interactive"
+            :title="upgradeTooltip"
+          >
+            <span class="upgrade-dot" />
+            <span>可升级</span>
+          </button>
+          <template #dropdown>
+            <el-dropdown-menu>
+              <el-dropdown-item command="upgradeAgent">
+                <el-icon><Top /></el-icon>
+                升级 Agent (v{{ latestAgentVersion }})
+              </el-dropdown-item>
+              <el-dropdown-item command="upgradeSingBox">
+                <el-icon><Top /></el-icon>
+                升级 sing-box ({{ latestSingBoxVersion }})
+              </el-dropdown-item>
+            </el-dropdown-menu>
+          </template>
+        </el-dropdown>
+      </span>
+      <button
+        v-else-if="canUpgrade && (agentUpdateAvailable || singBoxUpdateAvailable)"
+        type="button"
+        class="node-tag upgrade-tag upgrade-tag--interactive shrink-0"
+        :title="upgradeTooltip"
+        @click.stop="onUpgradeClick"
+      >
+        <span class="upgrade-dot" />
+        <span>可升级</span>
+      </button>
+      <span
+        v-else-if="agentUpdateAvailable || singBoxUpdateAvailable"
         class="node-tag upgrade-tag shrink-0"
         :title="upgradeTooltip"
       >
@@ -235,6 +275,7 @@ import OsIcon from './OsIcon.vue'
 import Meter from './Meter.vue'
 import LatencyPanel from './LatencyPanel.vue'
 import { formatBandwidth } from '../format'
+import { formatDDNSBindLabel } from '../ddns'
 import { isShareMode } from '../share'
 import { isNewerVersion } from '../version'
 
@@ -261,10 +302,12 @@ const props = defineProps({
   },
 })
 
-defineEmits(['open', 'action'])
+const emit = defineEmits(['open', 'action'])
 
 const appState = inject('appState', null)
 const isAdmin = inject('isAdmin', { value: false })
+
+const canUpgrade = computed(() => props.canManage && Boolean(isAdmin?.value))
 
 const agentUpdateAvailable = computed(() =>
   isNewerVersion(appState?.systemUpdate?.latest_version, props.node.agent_version),
@@ -275,18 +318,38 @@ const singBoxUpdateAvailable = computed(() => {
   return Boolean(latest && props.node.sing_box_version && props.node.sing_box_version !== latest)
 })
 
+const latestAgentVersion = computed(() =>
+  String(appState?.systemUpdate?.latest_version || '').replace(/^v/, ''),
+)
+
+const latestSingBoxVersion = computed(() =>
+  props.singBoxLatest?.[props.node.architecture] || '',
+)
+
 const upgradeTooltip = computed(() => {
   if (agentUpdateAvailable.value && singBoxUpdateAvailable.value) {
-    return `Agent 与 sing-box 均可升级 (Agent: v${appState?.systemUpdate?.latest_version} · sing-box: ${props.singBoxLatest?.[props.node.architecture]})`
+    const base = `Agent 与 sing-box 均可升级 (Agent: v${latestAgentVersion.value} · sing-box: ${latestSingBoxVersion.value})`
+    return canUpgrade.value ? `${base}，点击选择升级` : base
   }
   if (agentUpdateAvailable.value) {
-    return `有新版本 Agent 可升级至 v${appState?.systemUpdate?.latest_version}`
+    const base = `有新版本 Agent 可升级至 v${latestAgentVersion.value}`
+    return canUpgrade.value ? `${base}，点击立即升级` : base
   }
   if (singBoxUpdateAvailable.value) {
-    return `有新版本 sing-box 可升级至 ${props.singBoxLatest?.[props.node.architecture]}`
+    const base = `有新版本 sing-box 可升级至 ${latestSingBoxVersion.value}`
+    return canUpgrade.value ? `${base}，点击立即升级` : base
   }
   return ''
 })
+
+function onUpgradeClick() {
+  if (!canUpgrade.value) return
+  if (agentUpdateAvailable.value && !singBoxUpdateAvailable.value) {
+    emit('action', { command: 'upgradeAgent', node: props.node })
+  } else if (singBoxUpdateAvailable.value && !agentUpdateAvailable.value) {
+    emit('action', { command: 'upgradeSingBox', node: props.node })
+  }
+}
 
 function countryCodeToFlag(code) {
   if (!code || code.length !== 2) return ''
@@ -552,7 +615,8 @@ const ddnsTooltip = computed(() => {
   if (!props.node.ddns_enabled) return ''
   const domains = (props.node.ddns_domains && props.node.ddns_domains.length ? props.node.ddns_domains : [props.node.ddns_domain]).filter(Boolean)
   const domainText = domains.length ? domains.join(', ') : '未指定域名'
-  const bindText = props.node.ddns_bind_ip ? ` · 绑定: ${props.node.ddns_bind_ip}` : ''
+  const bindLabel = formatDDNSBindLabel(props.node)
+  const bindText = bindLabel ? ` · 绑定: ${bindLabel}` : ''
   const ipText = props.node.last_observed_ip ? ` (解析 IP: ${props.node.last_observed_ip})` : ''
   return `Cloudflare DDNS: ${domainText}${bindText}${ipText}`
 })
@@ -658,11 +722,37 @@ function formatRate(bps) {
   flex-shrink: 0;
 }
 
+.upgrade-dropdown-wrap {
+  display: inline-flex;
+  align-items: center;
+  flex-shrink: 0;
+}
+
+button.upgrade-tag {
+  font-family: inherit;
+  margin: 0;
+  appearance: none;
+}
+
 .upgrade-tag {
   color: var(--sb-warning, #f59e0b);
   border-color: color-mix(in oklab, var(--sb-warning, #f59e0b) 30%, transparent);
   background: color-mix(in oklab, var(--sb-warning, #f59e0b) 10%, transparent);
   font-weight: 550;
+}
+
+.upgrade-tag--interactive {
+  cursor: pointer;
+  transition: background-color 0.15s ease, border-color 0.15s ease, transform 0.12s ease;
+}
+
+.upgrade-tag--interactive:hover {
+  border-color: color-mix(in oklab, var(--sb-warning, #f59e0b) 65%, transparent);
+  background: color-mix(in oklab, var(--sb-warning, #f59e0b) 20%, transparent);
+}
+
+.upgrade-tag--interactive:active {
+  transform: scale(0.96);
 }
 
 .upgrade-dot {

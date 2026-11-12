@@ -1109,7 +1109,7 @@ func (s *Server) dispatchNodeDNSUpdate(ctx context.Context, nodeIDs []string, do
 		}
 		tasks = append(tasks, task)
 		if operatorID != "" {
-			auditSummary := fmt.Sprintf("NAT 出口 IP 变更，已向前置节点「%s」下发 DNS 刷新与链路自愈指令（目标 IP: %s，域名: %s）", nodeID, ip, strings.Join(domains, ", "))
+			auditSummary := fmt.Sprintf("NAT 出口 IP 变更，已向前置服务器「%s」下发 DNS 刷新与链路自愈指令（目标 IP: %s，域名: %s）", nodeID, ip, strings.Join(domains, ", "))
 			_ = s.store.AppendAudit(ctx, operatorID, "node.dns_update_dispatched", "node", nodeID, auditSummary)
 		}
 	}
@@ -2405,7 +2405,7 @@ func (s *Server) createListenerWithDefaultAccount(w http.ResponseWriter, r *http
 	}
 	for _, account := range input.Accounts {
 		if strings.TrimSpace(account.ID) != "" {
-			writeError(w, userErrorf("新建接入服务的用户不能包含已有用户 ID"))
+			writeError(w, userErrorf("新建接入服务的节点不能包含已有节点 ID"))
 			return
 		}
 	}
@@ -2695,7 +2695,7 @@ func (s *Server) deleteListener(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
-	s.notifySubscriptionConfigChanged("接入服务", "删除", listenerName, "该接入服务及其用户已被删除，引用它们的客户端订阅将不再包含相关节点", affected)
+	s.notifySubscriptionConfigChanged("接入服务", "删除", listenerName, "该接入服务及其节点已被删除，引用它们的客户端订阅将不再包含相关节点", affected)
 	tasks, err := s.dispatchNodeConfigurations(r.Context(), deduplicateStrings(append([]string{nodeID}, chainNodeIDs...)), operator.ID)
 	if err != nil {
 		writeError(w, err)
@@ -3000,7 +3000,7 @@ func (s *Server) updateEndpoint(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	affected, _ := s.store.MihomoClientConfigNamesUsingEndpoint(r.Context(), updated.ID)
-	s.notifySubscriptionConfigChanged("接入用户", "修改", updated.Name, "接入用户的名称、别名、凭据或出口发生变化", affected)
+	s.notifySubscriptionConfigChanged("接入节点", "修改", updated.Name, "接入节点的名称、别名、凭据或出口发生变化", affected)
 	nodeID, err := s.listenerNodeID(r.Context(), updated.ListenerID)
 	if err != nil {
 		writeError(w, err)
@@ -3048,7 +3048,7 @@ func (s *Server) setEndpointEnabled(w http.ResponseWriter, r *http.Request) {
 	if input.Enabled {
 		actionLabel = "启用"
 	}
-	s.notifySubscriptionConfigChanged("接入用户", actionLabel, endpointName, "接入用户的启用状态发生变化", affected)
+	s.notifySubscriptionConfigChanged("接入节点", actionLabel, endpointName, "接入节点的启用状态发生变化", affected)
 	tasks, err := s.dispatchNodeConfigurations(r.Context(), deduplicateStrings(append([]string{nodeID}, chainNodeIDs...)), operator.ID)
 	if err != nil {
 		writeError(w, err)
@@ -3080,7 +3080,7 @@ func (s *Server) deleteEndpoint(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
-	s.notifySubscriptionConfigChanged("接入用户", "删除", endpointName, "该接入用户已被删除，引用它的客户端订阅将不再包含该节点", affected)
+	s.notifySubscriptionConfigChanged("接入节点", "删除", endpointName, "该接入节点已被删除，引用它的客户端订阅将不再包含该节点", affected)
 	tasks, err := s.dispatchNodeConfigurations(r.Context(), deduplicateStrings(append([]string{nodeID}, chainNodeIDs...)), operator.ID)
 	if err != nil {
 		writeError(w, err)

@@ -243,7 +243,7 @@ func (s *Server) exportDeviceConnections(w http.ResponseWriter, r *http.Request)
 	writer := csv.NewWriter(w)
 	_ = writer.Write([]string{
 		"记录ID", "来源IP", "来源端口", "来源归属地", "目标主机", "目标地址", "目标归属地",
-		"服务器节点", "认证账号", "入站名", "出站出口", "网络协议",
+		"服务器", "接入节点", "入站名", "出站出口", "网络协议",
 		"上行流量(字节)", "下行流量(字节)", "总流量(字节)", "开始时间", "结束时间", "持续时长(秒)",
 	})
 	writer.Flush()

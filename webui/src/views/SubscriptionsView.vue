@@ -618,7 +618,7 @@ onMounted(() => { load(); loadAccess() })
             </div>
             <div class="subtle" style="margin-bottom: 16px">
               三项都可以留空，留空即不限制。它们管的是「拿到更新地址之后还能不能拉到配置」；
-              已经下载过的配置照样能连节点，要断掉某个人请去停用他名下的端点。
+              已经下载过的配置照样能连接代理，要断掉某个节点请去停用对应的节点。
             </div>
 
             <el-form-item label="访问密钥">

@@ -381,10 +381,10 @@ func (s *Store) validateEndpointOutbound(ctx context.Context, outboundID, listen
 	if IsChainOutbound(outboundID) {
 		targetEndpointID := ChainTargetEndpointID(outboundID)
 		if targetEndpointID == "" {
-			return userErrorf("链式代理目标节点用户不能为空")
+			return userErrorf("链式代理目标节点不能为空")
 		}
 		if endpointID != "" && targetEndpointID == endpointID {
-			return userErrorf("不能将链式代理指向用户自身")
+			return userErrorf("不能将链式代理指向节点自身")
 		}
 		var target struct {
 			EndpointID      string
@@ -402,20 +402,20 @@ func (s *Store) validateEndpointOutbound(ctx context.Context, outboundID, listen
 			WHERE e.id = ?`, targetEndpointID).
 			Scan(&target.EndpointID, &target.ListenerID, &target.EndpointEnabled, &target.TargetOutbound, &target.NodeID, &target.ListenerEnabled, &target.RevokedAt)
 		if errors.Is(err, sql.ErrNoRows) {
-			return userErrorf("指定的链式代理节点用户不存在")
+			return userErrorf("指定的链式代理节点不存在")
 		}
 		if err != nil {
 			return fmt.Errorf("check chain endpoint: %w", err)
 		}
 		if !target.EndpointEnabled || !target.ListenerEnabled || target.RevokedAt.Valid {
-			return userErrorf("指定的链式代理节点用户已被停用或所属服务器不可用")
+			return userErrorf("指定的链式代理节点已被停用或所属服务器不可用")
 		}
 		var currentNodeID string
 		if listenerID != "" {
 			_ = s.db.QueryRowContext(ctx, `SELECT node_id FROM listeners WHERE id = ?`, listenerID).Scan(&currentNodeID)
 		}
 		if currentNodeID != "" && target.NodeID == currentNodeID {
-			return userErrorf("链式代理只能指定其他服务器上的节点用户")
+			return userErrorf("链式代理只能指定其他服务器上的节点")
 		}
 		// Cycle detection
 		visited := map[string]bool{targetEndpointID: true}

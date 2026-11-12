@@ -105,7 +105,7 @@
             <line x1="6" y1="18" x2="6.01" y2="18" />
           </svg>
         </span>
-        <span class="tile-label">节点状态</span>
+        <span class="tile-label">服务器状态</span>
       </div>
       <div class="tile-body">
         <div class="tile-main font-mono">

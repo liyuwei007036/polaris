@@ -414,7 +414,7 @@ func (s *Server) EnsureDemoNodes(ctx context.Context) error {
 	if len(existing) > 0 && metricCount > 0 && gxCount > 0 {
 		return nil
 	}
-	log.Printf("[polaris] 初始化/同步 8 个真实规格监控演示节点及历史时序数据...")
+	log.Printf("[polaris] 初始化/同步 8 个真实规格监控演示服务器及历史时序数据...")
 
 	now := time.Now().Unix()
 	hourSec := int64(3600)
@@ -1031,14 +1031,14 @@ func (s *Server) EnsureDemoFleetData(ctx context.Context) error {
 			{"node.created", "node", "demo-node-hk-01", "香港 CN2+BGP 01", "添加服务器「香港 CN2+BGP 01」并建立安全隧道", `{"os": "Debian 12", "arch": "amd64", "ip": "45.195.12.8"}`, "114.88.23.15", "succeeded", 172000},
 			{"ddns.synced", "node", "demo-node-lon-01", "伦敦 OVH VPS", "更新服务器「伦敦 OVH VPS」动态域名解析 lon.polaris-node.net", `{"domain": "lon.polaris-node.net", "target_ip": "146.59.12.88"}`, "114.88.23.15", "succeeded", 120000},
 			{"listener.created", "listener", "lis-tyo-vless", "东京 VLESS Reality 高速节点", "创建接入服务「东京 VLESS Reality 高速节点」(协议: VLESS, 端口: 443/tcp)", `{"name": "东京 VLESS Reality 高速节点", "protocol": "vless", "port": 443, "network": "tcp", "domain": "itunes.apple.com"}`, "114.88.23.15", "succeeded", 86000},
-			{"endpoint.created", "endpoint", "ep-tyo-mac", "MacBook Pro M3 Max", "为用户「MacBook Pro M3 Max」签发接入凭证与连接密钥", `{"user": "user_macbook_m3", "listener": "lis-tyo-vless", "outbound": "direct"}`, "114.88.23.15", "succeeded", 82000},
+			{"endpoint.created", "endpoint", "ep-tyo-mac", "MacBook Pro M3 Max", "为节点「MacBook Pro M3 Max」签发接入凭证与连接密钥", `{"user": "user_macbook_m3", "listener": "lis-tyo-vless", "outbound": "direct"}`, "114.88.23.15", "succeeded", 82000},
 			{"rule_provider.synced", "mihomo_rule_provider", "rp-cn-domain", "Geosite-CN 规则供应商", "同步规则供应商「Geosite-CN」成功 (共 4,820 条规则)", `{"format": "yaml", "behavior": "domain", "rules_count": 4820}`, "114.88.23.15", "succeeded", 64000},
 			{"proxy_group.created", "mihomo_proxy_group", "pg-select", "节点选择", "创建代理分组「节点选择」(策略: 手动选择)", `{"strategy": "select", "members": ["lis-tyo-vless", "lis-hk-hysteria2"]}`, "114.88.23.15", "succeeded", 48000},
 			{"client_config.published", "mihomo_client_config", "cfg-general", "全平台通用标准配置", "编译并发布客户端订阅配置「全平台通用标准配置」", `{"profile": "general", "rules_count": 52}`, "114.88.23.15", "succeeded", 36000},
 			{"firewall.rule_add", "firewall_rule", "fw-rule-01", "放行 8443/tcp", "修改服务器防火墙：放行 8443/tcp 接入端口", `{"port": 8443, "protocol": "tcp", "action": "accept"}`, "114.88.23.15", "succeeded", 28000},
 			{"fail2ban.unban", "fail2ban", "f2b-01", "198.51.100.42", "手动解封被自动拦截的 IP 地址 198.51.100.42", `{"ip": "198.51.100.42", "jail": "sshd", "reason": "operator_unban"}`, "114.88.23.15", "succeeded", 15000},
 			{"outbound.created", "outbound", "ob-cf-warp-v4", "Cloudflare WARP (IPv4)", "配置全局上网出口「Cloudflare WARP (IPv4)」162.159.192.1:2408", `{"type": "wireguard", "server": "162.159.192.1", "port": 2408}`, "114.88.23.15", "succeeded", 7200},
-			{"task.completed.succeeded", "task", "task-01", "平滑下发配置", "节点完成系统任务：更新连接服务配置", `{"node": "demo-node-tyo-01", "status": "succeeded"}`, "127.0.0.1", "succeeded", 3600},
+			{"task.completed.succeeded", "task", "task-01", "平滑下发配置", "服务器完成系统任务：更新连接服务配置", `{"node": "demo-node-tyo-01", "status": "succeeded"}`, "127.0.0.1", "succeeded", 3600},
 			{"alert.settings_updated", "alert_settings", "alerts", "告警推送设置", "更新告警推送策略与阈值", `{"telegram_enabled": true, "webhook_enabled": true}`, "114.88.23.15", "succeeded", 1200},
 		}
 

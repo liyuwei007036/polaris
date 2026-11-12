@@ -466,7 +466,7 @@ onMounted(load)
                         <span class="rule-row__icon"><el-icon><Connection /></el-icon></span>
                         <div class="rule-row__text">
                           <span class="rule-row__title">连接数激增</span>
-                          <span class="rule-row__desc">单节点活跃连接数超过上限</span>
+                          <span class="rule-row__desc">单台服务器活跃连接数超过上限</span>
                         </div>
                         <div class="rule-row__fields">
                           <label class="rule-row__field"><span>上限</span><el-input-number v-model="alertSettings.conn_threshold_count" :min="10" :max="50000" :step="50" controls-position="right" /><span>条</span></label>
@@ -489,8 +489,8 @@ onMounted(load)
                       <div class="rule-row" :class="{ 'is-off': !alertSettings.offline_alert_enabled }">
                         <span class="rule-row__icon"><el-icon><CircleClose /></el-icon></span>
                         <div class="rule-row__text">
-                          <span class="rule-row__title">节点离线</span>
-                          <span class="rule-row__desc">节点与控制端失联时提醒，恢复后同步通知</span>
+                          <span class="rule-row__title">服务器离线</span>
+                          <span class="rule-row__desc">服务器与控制端失联时提醒，恢复后同步通知</span>
                         </div>
                         <div class="rule-row__fields"></div>
                         <el-switch v-model="alertSettings.offline_alert_enabled" />
@@ -523,7 +523,7 @@ onMounted(load)
                 <section class="notify-section">
                   <div class="notify-section__head">
                     <h3>每日简报</h3>
-                    <p>每天 09:00 自动发送昨日简报，包含各节点网络质量、活跃设备排行、热门访问目标、节点使用排行与流量汇总。</p>
+                    <p>每天 09:00 自动发送昨日简报，包含各服务器网络质量、活跃设备排行、热门访问目标、服务器使用排行与流量汇总。</p>
                   </div>
                 </section>
               </div>

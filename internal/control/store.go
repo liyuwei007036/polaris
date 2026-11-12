@@ -1480,13 +1480,14 @@ func (s *Store) UpdateNodeWithDDNS(ctx context.Context, nodeID, name, address st
 		enabledInt = 1
 	}
 
-	lastObservedIP := existing.LastObservedIP
-	if (enabledVal && !existing.DDNSEnabled) || (existing.DDNSRecordID != recordIDVal) {
-		lastObservedIP = ""
-	}
-
+	existingRecIDsJSON, _ := json.Marshal(existing.DDNSRecordIDs)
 	recordIDsJSON, _ := json.Marshal(multiRecordIDs)
 	domainsJSON, _ := json.Marshal(multiDomains)
+
+	lastObservedIP := existing.LastObservedIP
+	if (enabledVal && !existing.DDNSEnabled) || (existing.DDNSRecordID != recordIDVal) || (string(existingRecIDsJSON) != string(recordIDsJSON)) {
+		lastObservedIP = ""
+	}
 
 	result, err := s.db.ExecContext(ctx, `UPDATE nodes SET name = ?, client_address = ?, ddns_enabled = ?, ddns_record_id = ?, ddns_domain = ?, ddns_record_ids = ?, ddns_domains = ?, last_observed_ip = ? WHERE id = ? AND revoked_at IS NULL`,
 		name, address, enabledInt, recordIDVal, domainVal, string(recordIDsJSON), string(domainsJSON), lastObservedIP, nodeID)
@@ -2083,7 +2084,7 @@ func (s *Store) CreateEndpoint(ctx context.Context, endpoint Endpoint, credentia
 	}
 	var duplicate string
 	if err := s.db.QueryRowContext(ctx, `SELECT id FROM endpoints WHERE listener_id = ? AND name = ?`, endpoint.ListenerID, endpoint.Name).Scan(&duplicate); err == nil {
-		return Endpoint{}, fmt.Errorf("%w: %w", ErrConflict, userErrorf("当前接入服务已存在名为“%s”的用户，请修改用户名称", endpoint.Name))
+		return Endpoint{}, fmt.Errorf("%w: %w", ErrConflict, userErrorf("当前接入服务已存在名为“%s”的节点，请修改节点名称", endpoint.Name))
 	} else if !errors.Is(err, sql.ErrNoRows) {
 		return Endpoint{}, fmt.Errorf("check endpoint name conflict: %w", err)
 	}
@@ -2499,7 +2500,7 @@ func (s *Store) MarkTaskDispatched(ctx context.Context, taskID, nodeID string) e
 // FailInterruptedTasks marks any tasks that were dispatched to a node but not completed
 // as failed when the node unexpectedly disconnects, preventing infinite crash/retry loops.
 func (s *Store) FailInterruptedTasks(ctx context.Context, nodeID string) error {
-	_, err := s.db.ExecContext(ctx, `UPDATE tasks SET status = 'failed', result_summary = '节点在执行任务过程中连接中断，任务已终止', finished_at = ?
+	_, err := s.db.ExecContext(ctx, `UPDATE tasks SET status = 'failed', result_summary = '服务器在执行任务过程中连接中断，任务已终止', finished_at = ?
 		WHERE node_id = ? AND status = 'dispatched'`, nowUnix(), nodeID)
 	if err != nil {
 		return fmt.Errorf("fail interrupted tasks: %w", err)

@@ -173,7 +173,7 @@ func TestAlertEngineTelegramOnlyChannel(t *testing.T) {
 	if !strings.Contains(gotText[0], "Tokyo-TG") {
 		t.Errorf("expected node name in telegram text, got: %s", gotText[0])
 	}
-	if !strings.Contains(gotText[0], "节点已离线") {
+	if !strings.Contains(gotText[0], "服务器已离线") {
 		t.Errorf("expected alert title in telegram text, got: %s", gotText[0])
 	}
 	if !strings.Contains(gotText[0], "Polaris") || !strings.Contains(gotText[0], "<b>") {

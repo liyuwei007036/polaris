@@ -161,7 +161,7 @@
       <p v-if="latencyFailed" class="detail-empty">读取历史数据失败：{{ latencyFailed }}</p>
       <p v-else-if="latencyLoading && !probes.length" class="detail-empty">正在读取延迟历史…</p>
       <p v-else-if="!probes.length" class="detail-empty">
-        {{ latency ? '这段时间没有延迟数据' : '离线节点暂无探针数据' }}
+        {{ latency ? '这段时间没有延迟数据' : '离线服务器暂无探针数据' }}
       </p>
 
       <!-- 多探测链路曲线：与 ref NodeDetail 的 ComposedChart 对应，
@@ -184,11 +184,11 @@
 
       <section v-if="probes.length" class="probe-panel neu">
         <div class="probe-panel-head">
-          <h4>多节点延迟</h4>
+          <h4>多目标延迟</h4>
           <span>点击整行显示 / 隐藏曲线</span>
         </div>
         <div class="probe-row probe-row--head">
-          <span>探测节点</span>
+          <span>探测目标</span>
           <span class="right">当前</span>
           <span class="right">平均</span>
           <span class="right">波动</span>

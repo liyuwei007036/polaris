@@ -170,10 +170,10 @@ const chainTargets = computed(() => {
 
 function accountOutboundOptions(account) {
   const result = []
-  // 1. 直连与出口 IP (普通节点)
+  // 1. 直连与出口 IP
   result.push({
     value: 'direct',
-    label: '服务器直连 (系统默认出口 / 普通节点)',
+    label: '服务器直连 (系统默认出口)',
     desc: '使用服务器系统默认路由与网关出站',
     group: '直连与出口 IP',
   })
@@ -207,7 +207,7 @@ function accountOutboundOptions(account) {
       group: '上网出口（配置的出口）',
     })
   }
-  // 3. 链式代理（其他服务器节点用户）
+  // 3. 链式代理（其他服务器节点）
   for (const item of chainTargets.value) {
     result.push({
       value: item.value,
@@ -350,9 +350,9 @@ function save() {
     if (selectedProfile.value.transport === 'grpc' && !model.value.transport_service_name) throw new Error('请填写 gRPC 服务名称')
     const names = accounts.value.map((item) => item.name.trim())
     const aliases = accounts.value.map((item) => item.alias.trim())
-    if (!names.length || names.some((name) => !name)) throw new Error('请至少保留一个已填写名称的用户')
-    if (new Set(names).size !== names.length) throw new Error('同一接入服务中的用户名称不能重复')
-    if (aliases.some((alias) => !alias)) throw new Error('请为每个用户填写客户端节点别名')
+    if (!names.length || names.some((name) => !name)) throw new Error('请至少保留一个已填写名称的节点')
+    if (new Set(names).size !== names.length) throw new Error('同一接入服务中的节点名称不能重复')
+    if (aliases.some((alias) => !alias)) throw new Error('请为每个节点填写客户端节点别名')
     if (new Set(aliases).size !== aliases.length) throw new Error('同一接入服务中的客户端节点别名不能重复')
     emit('save', {
       listener: listenerPayload(model.value),
@@ -459,19 +459,19 @@ function save() {
       </div>
     </template>
 
-    <div class="m-section">用户</div>
+    <div class="m-section">节点</div>
     <div class="accounts">
       <!-- 一次只展开一个用户，否则三四个用户的表单会把页面拉得很长。 -->
       <div v-for="(account, index) in accounts" :key="account.id || `new-${index}`" class="account">
         <button type="button" class="account__head" @click="expanded = expanded === index ? -1 : index">
-          <span>{{ account.alias || account.name || `用户 ${index + 1}` }}</span>
+          <span>{{ account.alias || account.name || `节点 ${index + 1}` }}</span>
           <span v-if="!account.enabled" class="m-pill m-pill--info">停用</span>
           <i aria-hidden="true">{{ expanded === index ? '⌃' : '⌄' }}</i>
         </button>
         <div v-if="expanded === index" class="account__body">
           <div class="m-field">
-            <label class="m-field__label">用户名称 <em>*</em></label>
-            <el-input v-model="account.name" aria-label="用户名称" placeholder="用户名称" />
+            <label class="m-field__label">节点名称 <em>*</em></label>
+            <el-input v-model="account.name" aria-label="节点名称" placeholder="节点名称" />
           </div>
           <div class="m-field">
             <label class="m-field__label">客户端节点别名 <em>*</em></label>
@@ -492,7 +492,7 @@ function save() {
             <MPicker
               v-model="account.outbound_id"
               :options="accountOutboundOptions(account)"
-              title="选择出口或链式用户"
+              title="选择出口或链式节点"
             />
             <div style="margin-top: 6px">
               <el-button text size="small" type="primary" :icon="Plus" @click="promptAddCustomIP(account)">
@@ -501,14 +501,14 @@ function save() {
             </div>
           </div>
           <div class="m-field m-field--inline">
-            <label class="m-field__label">启用该用户</label>
-            <el-switch v-model="account.enabled" aria-label="启用该用户" />
+            <label class="m-field__label">启用该节点</label>
+            <el-switch v-model="account.enabled" aria-label="启用该节点" />
           </div>
-          <el-button text type="danger" :icon="Delete" :disabled="accounts.length === 1" @click="removeAccount(index)">删除该用户</el-button>
+          <el-button text type="danger" :icon="Delete" :disabled="accounts.length === 1" @click="removeAccount(index)">删除该节点</el-button>
         </div>
       </div>
     </div>
-    <el-button :icon="Plus" class="add-account" @click="addAccount">添加用户</el-button>
+    <el-button :icon="Plus" class="add-account" @click="addAccount">添加节点</el-button>
 
     <template #footer>
       <el-button @click="emit('update:modelValue', false)">取消</el-button>

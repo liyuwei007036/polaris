@@ -105,11 +105,11 @@ func FormatTaskDiagnostic(status, rawSummary string) string {
 	case strings.Contains(lower, "failed to parse") || strings.Contains(lower, "syntax error") || strings.Contains(lower, "unknown field"):
 		cause = "配置解析失败，参数格式不规范"
 	case strings.Contains(lower, "deadline exceeded") || strings.Contains(lower, "timeout") || strings.Contains(lower, "connection refused"):
-		cause = "节点通信超时，未能收到确认结果"
+		cause = "服务器通信超时，未能收到确认结果"
 	case strings.Contains(lower, "permission denied"):
 		cause = "系统权限不足，命令执行被拒绝"
 	case strings.Contains(raw, "连接中断") || strings.Contains(raw, "任务已终止"):
-		cause = "下发过程中节点连接中断"
+		cause = "下发过程中服务器连接中断"
 	default:
 		if raw != "" && containsChinese(raw) {
 			cause = raw
@@ -141,7 +141,7 @@ func TranslateAuditSummary(action, targetType, targetName, oldSummary string) st
 	lower := strings.ToLower(trimmed)
 	switch {
 	case lower == "listener and generated accounts created":
-		return fmt.Sprintf("创建接入服务「%s」并自动生成默认接入用户", name)
+		return fmt.Sprintf("创建接入服务「%s」并自动生成默认节点", name)
 	case lower == "listener definition created":
 		return fmt.Sprintf("创建接入服务「%s」", name)
 	case lower == "listener definition updated":
@@ -149,15 +149,15 @@ func TranslateAuditSummary(action, targetType, targetName, oldSummary string) st
 	case lower == "listener enabled state changed":
 		return fmt.Sprintf("切换接入服务「%s」的启用状态", name)
 	case lower == "listener and endpoints deleted":
-		return fmt.Sprintf("删除接入服务「%s」及其关联的所有用户凭据", name)
+		return fmt.Sprintf("删除接入服务「%s」及其关联的所有节点凭据", name)
 	case lower == "endpoint credentials created" || lower == "generated endpoint credentials created":
-		return fmt.Sprintf("为用户「%s」签发接入凭证与连接密钥", name)
+		return fmt.Sprintf("为节点「%s」签发接入凭证与连接密钥", name)
 	case lower == "endpoint definition updated":
-		return fmt.Sprintf("更新用户「%s」的配置与出站路由出口", name)
+		return fmt.Sprintf("更新节点「%s」的配置与出站路由出口", name)
 	case lower == "endpoint enabled state changed":
-		return fmt.Sprintf("切换用户「%s」的启用状态", name)
+		return fmt.Sprintf("切换节点「%s」的启用状态", name)
 	case lower == "endpoint credentials deleted":
-		return fmt.Sprintf("删除用户「%s」的接入凭据", name)
+		return fmt.Sprintf("删除节点「%s」的接入凭据", name)
 	case lower == "node name, client address, and ddns settings updated" || lower == "node updated":
 		return fmt.Sprintf("更新服务器「%s」的基础信息与动态解析设置", name)
 	case lower == "client connection address updated":
@@ -215,14 +215,14 @@ func TranslateAuditSummary(action, targetType, targetName, oldSummary string) st
 	case lower == "managed reality key created; private key omitted":
 		return fmt.Sprintf("生成新的 Reality 安全密钥对「%s」", name)
 	case lower == "lifetime recorded; token omitted":
-		return "生成服务器节点接入注册令牌"
+		return "生成服务器接入注册令牌"
 	case lower == "ip location database reloaded":
 		return "重新加载本地 IP 归属地高精度数据库"
 	case lower == "high precision mmdb downloaded and activated":
 		return "自动下载并激活最新高精度 MMDB 离线 IP 库"
 	case strings.HasPrefix(lower, "agent task completed: "):
 		taskKind := strings.TrimPrefix(lower, "agent task completed: ")
-		return fmt.Sprintf("节点完成系统任务：%s", TranslateTaskKind(taskKind))
+		return fmt.Sprintf("服务器完成系统任务：%s", TranslateTaskKind(taskKind))
 	case lower == "mihomo proxy group created":
 		return fmt.Sprintf("创建 Mihomo 代理策略分组「%s」", name)
 	case lower == "mihomo proxy group updated":
@@ -284,8 +284,8 @@ func TranslateAuditSummary(action, targetType, targetName, oldSummary string) st
 
 	targetChinese := map[string]string{
 		"listener":              "接入服务",
-		"node":                  "服务器节点",
-		"endpoint":              "接入用户",
+		"node":                  "服务器",
+		"endpoint":              "节点",
 		"outbound":              "上网出口",
 		"route_rule":            "分流规则",
 		"operator":              "管理人员",

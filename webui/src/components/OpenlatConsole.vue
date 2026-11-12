@@ -9,7 +9,7 @@
           </span>
           <span class="brand-text">
             <span class="brand-name">{{ brandName }}</span>
-            <span class="brand-sub">节点在线状态</span>
+            <span class="brand-sub">服务器在线状态</span>
           </span>
         </button>
 
@@ -78,14 +78,14 @@
           v-model:view="view"
         />
 
-        <p v-if="openlatNodes.length === 0" class="console-empty">还没有节点</p>
+        <p v-if="openlatNodes.length === 0" class="console-empty">还没有服务器</p>
         <div v-else-if="filteredNodes.length === 0" class="console-empty console-empty--search">
           <svg class="size-8" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <circle cx="11" cy="11" r="8" />
             <line x1="21" y1="21" x2="16.65" y2="16.65" />
             <line x1="8" y1="11" x2="14" y2="11" />
           </svg>
-          没有匹配「{{ query }}」的节点
+          没有匹配「{{ query }}」的服务器
           <button type="button" class="header-btn neu-track neu-press clear-query-btn" @click="query = ''">清空搜索</button>
         </div>
 

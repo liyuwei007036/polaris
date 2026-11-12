@@ -19,12 +19,12 @@ const totpCode = ref('')
 const disablePassword = ref('')
 
 const meta = computed(() => ({
-  notify: { title: '通知', icon: Bell, intro: '配置通知渠道与节点事件提醒，布局对应 ref/web-admin 的通知页。' },
+  notify: { title: '通知', icon: Bell, intro: '配置通知渠道与服务器事件提醒，布局对应 ref/web-admin 的通知页。' },
   data: { title: '数据', icon: DataAnalysis, intro: '管理历史数据、数据库备份与恢复，危险操作均需要明确确认。' },
   themes: { title: '主题', icon: Collection, intro: '选择公开页主题并管理主题配置，保持 ref 的主题卡片交互。' },
   security: { title: '安全', icon: Lock, intro: '管理登录保护、GitHub 登录和访问安全设置。' },
   settings: { title: '设置', icon: Setting, intro: '管理站点信息、历史保留周期与站点图标。' },
-  update: { title: '更新', icon: Download, intro: '检查控制端版本并向节点下发 Agent 更新。' },
+  update: { title: '更新', icon: Download, intro: '检查控制端版本并向服务器下发 Agent 更新。' },
 }[section.value]))
 
 async function load() {
@@ -89,7 +89,7 @@ onMounted(load)
       </section>
 
       <section v-else-if="section === 'update'" class="admin-card neu admin-form-card">
-        <h3>版本与节点更新</h3><p class="subtle">控制端更新检查与 Agent 分批更新。</p>
+        <h3>版本与服务器更新</h3><p class="subtle">控制端更新检查与 Agent 分批更新。</p>
         <div class="admin-action-row"><el-button type="primary" :icon="Refresh" @click="checkUpdate">检查更新</el-button><el-button :icon="Download" :disabled="!update?.update_available" @click="applyUpdate">应用控制端更新</el-button></div>
         <p v-if="update" class="subtle">当前版本：{{ update.current_version || '未知' }}；最新版本：{{ update.latest_version || '未知' }}</p>
       </section>

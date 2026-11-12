@@ -292,7 +292,7 @@ onBeforeUnmount(() => {
           <el-input
             v-model="filter.user"
             clearable
-            placeholder="认证用户 / 设备"
+            placeholder="接入节点 / 设备"
             style="width: 160px"
             @keyup.enter="handleSearch"
           />
@@ -351,7 +351,7 @@ onBeforeUnmount(() => {
             </template>
           </el-table-column>
 
-          <el-table-column label="认证账号" prop="user" sortable="custom" min-width="150" show-overflow-tooltip>
+          <el-table-column label="接入节点" prop="user" sortable="custom" min-width="150" show-overflow-tooltip>
             <template #default="{ row }">
               <span v-if="row.user">{{ row.user }}</span>
               <span v-else class="subtle">—</span>

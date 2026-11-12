@@ -21,15 +21,15 @@ func TestBuildDailyReport(t *testing.T) {
 	yesterday := start.Unix() + 3600
 
 	if _, err := store.db.ExecContext(ctx, `INSERT INTO nodes (id, name, public_key, created_at) VALUES (?, ?, ?, ?)`,
-		"node-a", "香港节点", []byte("12345678901234567890123456789012"), nowUnix()); err != nil {
+		"node-a", "香港服务器", []byte("12345678901234567890123456789012"), nowUnix()); err != nil {
 		t.Fatalf("insert node-a: %v", err)
 	}
 	if _, err := store.db.ExecContext(ctx, `INSERT INTO nodes (id, name, public_key, created_at) VALUES (?, ?, ?, ?)`,
-		"node-b", "东京节点", []byte("abcdefghijklmnopqrstuvwxyz123456"), nowUnix()); err != nil {
+		"node-b", "东京服务器", []byte("abcdefghijklmnopqrstuvwxyz123456"), nowUnix()); err != nil {
 		t.Fatalf("insert node-b: %v", err)
 	}
 	if _, err := store.db.ExecContext(ctx, `INSERT INTO nodes (id, name, public_key, created_at) VALUES (?, ?, ?, ?)`,
-		"node-c", "大阪节点", []byte("ABCDEFGHIJKLMNOPQRSTUVWXYZ123456"), nowUnix()); err != nil {
+		"node-c", "大阪服务器", []byte("ABCDEFGHIJKLMNOPQRSTUVWXYZ123456"), nowUnix()); err != nil {
 		t.Fatalf("insert node-c: %v", err)
 	}
 
@@ -48,7 +48,7 @@ func TestBuildDailyReport(t *testing.T) {
 	} {
 		if _, err := store.db.ExecContext(ctx, `INSERT INTO connection_records
 			(id, node_id, node_name, source_ip, source_location, destination, host, upload, download, started_at, created_at)
-			VALUES (?, 'node-a', '香港节点', ?, ?, ?, ?, ?, ?, ?, ?)`,
+			VALUES (?, 'node-a', '香港服务器', ?, ?, ?, ?, ?, ?, ?, ?)`,
 			record.id, record.source, "测试地区", record.destination, record.host, record.upload, record.download, yesterday, yesterday); err != nil {
 			t.Fatalf("insert connection record %s: %v", record.id, err)
 		}
@@ -106,33 +106,33 @@ func TestBuildDailyReport(t *testing.T) {
 		t.Errorf("unexpected top targets: %+v", report.TopTargets)
 	}
 	if len(report.NodeProbes) != 2 ||
-		report.NodeProbes[0].Name != "大阪节点" || report.NodeProbes[0].Loss != 0 || report.NodeProbes[0].AvgMs != 5 {
+		report.NodeProbes[0].Name != "大阪服务器" || report.NodeProbes[0].Loss != 0 || report.NodeProbes[0].AvgMs != 5 {
 		t.Errorf("expected best node first, got: %+v", report.NodeProbes)
 	}
 	if len(report.NodeProbes[0].Probes) != 1 || report.NodeProbes[0].Probes[0].ProbeName != "Telegram" {
-		t.Errorf("expected 大阪节点 probes: %+v", report.NodeProbes[0].Probes)
+		t.Errorf("expected 大阪服务器 probes: %+v", report.NodeProbes[0].Probes)
 	}
-	if report.NodeProbes[1].Name != "香港节点" ||
+	if report.NodeProbes[1].Name != "香港服务器" ||
 		report.NodeProbes[1].Samples != 4 || report.NodeProbes[1].Failed != 1 ||
 		report.NodeProbes[1].Loss != 25 || report.NodeProbes[1].AvgMs != 20 ||
 		report.NodeProbes[1].MinMs != 10 || report.NodeProbes[1].MaxMs != 30 {
 		t.Errorf("unexpected node probe stats: %+v", report.NodeProbes)
 	}
 	if len(report.NodeProbes[1].Probes) != 2 {
-		t.Errorf("expected 2 probes under 香港节点, got: %+v", report.NodeProbes[1].Probes)
+		t.Errorf("expected 2 probes under 香港服务器, got: %+v", report.NodeProbes[1].Probes)
 	}
-	if len(report.MissingProbes) != 1 || report.MissingProbes[0] != "东京节点" {
-		t.Errorf("expected 东京节点 without probes, got %+v", report.MissingProbes)
+	if len(report.MissingProbes) != 1 || report.MissingProbes[0] != "东京服务器" {
+		t.Errorf("expected 东京服务器 without probes, got %+v", report.MissingProbes)
 	}
 
 	payload := report.alertPayload()
 	if !strings.Contains(payload.Telegram, "每日简报") || !strings.Contains(payload.Telegram, "example.com") {
 		t.Errorf("unexpected report telegram text: %s", payload.Telegram)
 	}
-	if !strings.Contains(payload.Telegram, "节点网络质量") || !strings.Contains(payload.Telegram, "丢包 25.0%") {
+	if !strings.Contains(payload.Telegram, "服务器网络质量") || !strings.Contains(payload.Telegram, "丢包 25.0%") {
 		t.Errorf("expected packet loss in report, got: %s", payload.Telegram)
 	}
-	for _, heading := range []string{"昨日总览", "活跃设备排行", "热门访问目标", "节点使用排行"} {
+	for _, heading := range []string{"昨日总览", "活跃设备排行", "热门访问目标", "服务器使用排行"} {
 		if !strings.Contains(payload.Telegram, heading) {
 			t.Errorf("expected section heading %q, got: %s", heading, payload.Telegram)
 		}

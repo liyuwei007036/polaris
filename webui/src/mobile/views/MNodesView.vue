@@ -47,7 +47,19 @@ const editNode = ref(null)
 const editForm = ref({ name: '', client_address: '', ddns_enabled: false, ddns_record_id: '', ddns_domain: '', ddns_record_ids: [], ddns_domains: [], ddns_bind_ip: '', ddns_record_ips: {}, ip_aliases: {}, expires_on: '', price: '', price_period: '', currency: 'USD', provider: '', provider_url: '', traffic_plan: '', bandwidth: '' })
 const newCustomEgressIP = ref('')
 
-const editDDNSIPOptions = computed(() => buildDDNSIPOptions(editNode.value, editForm.value.ip_aliases))
+const editDDNSIPOptions = computed(() =>
+  buildDDNSIPOptions(editNode.value, editForm.value.ip_aliases, {
+    selectedValues: [editForm.value.ddns_bind_ip],
+  }),
+)
+
+function editDDNSRecordIPOptions(recId) {
+  const recType = cfRecordById(recId)?.type || ''
+  return buildDDNSIPOptions(editNode.value, editForm.value.ip_aliases, {
+    recordType: recType,
+    selectedValues: [editForm.value.ddns_record_ips?.[recId]],
+  }).filter((o) => o.value)
+}
 
 function cfRecordById(recId) {
   return cfRecords.value.find((r) => r.id === recId) || null
@@ -571,7 +583,7 @@ onBeforeUnmount(() => {
       </div>
       <div class="m-field">
         <label class="m-field__label">服务器名称 <em>*</em></label>
-        <el-input v-model="editForm.name" maxlength="128" aria-label="服务器名称" placeholder="例如：香港节点 01" />
+        <el-input v-model="editForm.name" maxlength="128" aria-label="服务器名称" placeholder="例如：香港服务器 01" />
       </div>
       <div class="m-field">
         <label class="m-field__label">客户端连接域名或 IP 地址</label>
@@ -688,7 +700,7 @@ onBeforeUnmount(() => {
             >
               <el-option v-for="opt in editDDNSIPOptions" :key="opt.value || '__auto__'" :label="opt.label" :value="opt.value" />
             </el-select>
-            <div class="m-field__hint">支持绑定指定公网 IP 或 NAT 本地网卡 IP，追踪其公网变动。</div>
+            <div class="m-field__hint">多网卡或多公网 IP 服务器可指定使用的出口 IP；单 IP 保持「自动识别」即可。</div>
           </div>
           <div v-if="(editForm.ddns_record_ids || []).length > 1 || Object.keys(editForm.ddns_record_ips || {}).length > 0" style="margin-top: 10px; display: flex; flex-direction: column; gap: 8px;">
             <label class="m-field__label" style="font-size: 12px; margin: 0;">分记录独立指定 IP（可选）</label>
@@ -703,7 +715,7 @@ onBeforeUnmount(() => {
                 placeholder="沿用上方默认绑定"
                 style="width: 100%;"
               >
-                <el-option v-for="opt in editDDNSIPOptions.filter((o) => o.value)" :key="opt.value" :label="opt.label" :value="opt.value" />
+                <el-option v-for="opt in editDDNSRecordIPOptions(recId)" :key="opt.value" :label="opt.label" :value="opt.value" />
               </el-select>
             </div>
           </div>

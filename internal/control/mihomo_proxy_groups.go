@@ -165,7 +165,7 @@ func (s *Store) validateMihomoProxyGroupGraph(ctx context.Context, candidate Mih
 			}
 			upperName := strings.ToUpper(name)
 			if previousID, exists := endpointNames[upperName]; exists && previousID != member.ID {
-				return userErrorf("客户端节点别名“%s”被多个用户重复使用，请先修改别名", name)
+				return userErrorf("客户端节点别名“%s”被多个节点重复使用，请先修改别名", name)
 			}
 			if _, exists := groupNames[upperName]; exists {
 				return userErrorf("客户端节点别名“%s”与代理分组名称冲突，请修改其中一个名称", name)

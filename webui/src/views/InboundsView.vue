@@ -256,7 +256,7 @@ async function toggle(listener) {
 async function removeListener(listener) {
   try {
     await ElMessageBox.confirm(
-      `删除“${listener.name}”会同时删除其中的所有用户，且无法恢复。`,
+      `删除“${listener.name}”会同时删除其中的所有节点，且无法恢复。`,
       '删除接入服务',
       { type: 'warning', confirmButtonText: '确认删除' },
     )
@@ -306,7 +306,7 @@ onMounted(load)
               <span class="inbound-port tnum">:{{ row.port }}</span>
             </template>
           </el-table-column>
-          <el-table-column label="用户" width="84" align="center">
+          <el-table-column label="节点数" width="84" align="center">
             <template #default="{ row }">{{ row.endpoint_count ?? 0 }}</template>
           </el-table-column>
           <el-table-column label="状态" width="88">
@@ -346,7 +346,7 @@ onMounted(load)
       :title="qrTitle"
       :items="qrItems"
       :loading="qrLoading"
-      empty-text="该服务下还没有可扫描的节点链接：服务或用户已停用，或服务器还没有填写客户端连接地址。"
+      empty-text="该服务下还没有可扫描的节点链接：服务或节点已停用，或服务器还没有填写客户端连接地址。"
     />
   </div>
 </template>

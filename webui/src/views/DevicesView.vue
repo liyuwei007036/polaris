@@ -114,7 +114,7 @@ onMounted(() => {
               <span>{{ row.source_location || '未知归属地' }}</span>
             </template>
           </el-table-column>
-          <el-table-column label="接入账号" min-width="130" show-overflow-tooltip>
+          <el-table-column label="接入节点" min-width="130" show-overflow-tooltip>
             <template #default="{ row }">
               <span v-if="row.user" class="clickable" @click="filterByUser(row.user)">{{ row.user }}</span>
               <span v-else class="subtle">—</span>

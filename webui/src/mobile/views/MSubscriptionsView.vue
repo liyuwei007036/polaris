@@ -654,7 +654,7 @@ onMounted(() => { load(); loadAccess() })
       <div class="m-field">
         <div class="m-field__hint" style="margin-bottom: 4px">
           三项都可以留空，留空即不限制。它们管的是「拿到更新地址之后还能不能拉到配置」；
-          已经下载过的配置照样能连节点，要断掉某个人请去停用他名下的端点。
+          已经下载过的配置照样能连接代理，要断掉某个节点请去停用对应的节点。
         </div>
       </div>
       <div class="m-field">

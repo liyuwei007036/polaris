@@ -86,14 +86,14 @@
               <line x1="2" y1="10" x2="22" y2="10" />
             </svg>
           </span>
-          <span>节点状态</span>
+          <span>服务器状态</span>
         </div>
         <div class="tile-body">
           <div class="tnum main-val">
             {{ onlineCount }} <span class="total-nodes">/ {{ nodes.length }} 在线</span>
           </div>
           <div class="sub-text truncate">
-            {{ nodes.length > 0 ? `${((onlineCount / nodes.length) * 100).toFixed(0)}% 可用率` : '暂无节点' }}
+            {{ nodes.length > 0 ? `${((onlineCount / nodes.length) * 100).toFixed(0)}% 可用率` : '暂无服务器' }}
           </div>
         </div>
       </div>

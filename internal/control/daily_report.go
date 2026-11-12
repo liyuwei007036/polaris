@@ -625,7 +625,7 @@ func (r dailyReportData) alertPayload() alertPayload {
 	b.WriteString(fmt.Sprintf("• <b>日期</b>：%s\n", tgEscape(r.Date)))
 	b.WriteString(fmt.Sprintf("• <b>连接记录</b>：%s 次\n", formatReportCount(r.Connections)))
 	b.WriteString(fmt.Sprintf("• <b>活跃设备</b>：%s 个\n", formatReportCount(r.Devices)))
-	b.WriteString(fmt.Sprintf("• <b>活跃节点</b>：%s 个\n", formatReportCount(r.Nodes)))
+	b.WriteString(fmt.Sprintf("• <b>活跃服务器</b>：%s 台\n", formatReportCount(r.Nodes)))
 	if r.TrafficByRate {
 		b.WriteString(fmt.Sprintf("• <b>总流量</b>：%s\n", formatReportBytes(r.TotalBytes)))
 	} else {
@@ -642,7 +642,7 @@ func (r dailyReportData) alertPayload() alertPayload {
 	}
 
 	// 2. 节点网络质量
-	b.WriteString("\n<b>【节点网络质量】</b>\n")
+	b.WriteString("\n<b>【服务器网络质量】</b>\n")
 	if len(r.NodeProbes) == 0 {
 		b.WriteString("昨日没有探针数据。\n")
 	} else {
@@ -671,7 +671,7 @@ func (r dailyReportData) alertPayload() alertPayload {
 			}
 		}
 		if len(r.MissingProbes) > 0 {
-			b.WriteString(fmt.Sprintf("• <b>无探针数据节点</b>：%s\n", tgEscape(strings.Join(r.MissingProbes, "、"))))
+			b.WriteString(fmt.Sprintf("• <b>无探针数据服务器</b>：%s\n", tgEscape(strings.Join(r.MissingProbes, "、"))))
 		}
 	}
 
@@ -706,9 +706,9 @@ func (r dailyReportData) alertPayload() alertPayload {
 	}
 
 	// 5. 节点使用排行
-	b.WriteString("\n<b>【节点使用排行】</b>\n")
+	b.WriteString("\n<b>【服务器使用排行】</b>\n")
 	if len(r.TopNodes) == 0 {
-		b.WriteString("昨日没有节点访问记录。\n")
+		b.WriteString("昨日没有服务器访问记录。\n")
 	} else {
 		for index, node := range r.TopNodes {
 			name := node.Name
@@ -726,7 +726,7 @@ func (r dailyReportData) alertPayload() alertPayload {
 	telegramText := b.String()
 
 	barkLines := []string{
-		fmt.Sprintf("连接 %s 次｜设备 %s 个｜节点 %s 个", formatReportCount(r.Connections), formatReportCount(r.Devices), formatReportCount(r.Nodes)),
+		fmt.Sprintf("连接 %s 次｜设备 %s 个｜服务器 %s 台", formatReportCount(r.Connections), formatReportCount(r.Devices), formatReportCount(r.Nodes)),
 	}
 	if r.TrafficByRate {
 		barkLines = append(barkLines, fmt.Sprintf("流量 %s", formatReportBytes(r.TotalBytes)))
@@ -753,7 +753,7 @@ func (r dailyReportData) alertPayload() alertPayload {
 		if name == "" {
 			name = r.TopNodes[0].NodeID
 		}
-		barkLines = append(barkLines, fmt.Sprintf("最多节点：%s（%d 次）", name, r.TopNodes[0].Connections))
+		barkLines = append(barkLines, fmt.Sprintf("最多服务器：%s（%d 次）", name, r.TopNodes[0].Connections))
 	}
 
 	return alertPayload{

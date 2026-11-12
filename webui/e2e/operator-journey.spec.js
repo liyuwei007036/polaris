@@ -130,9 +130,9 @@ test('浏览器页面回归：真实登录，核心工作区 API 使用路由替
   await expect(dialog).toBeVisible()
   await expect(dialog.getByText('端口共享', { exact: true })).toHaveCount(0)
   await expect(dialog.getByText('Reality 密钥和 Short ID 会在创建接入服务时自动生成，无需手动配置。', { exact: true })).toBeVisible()
-  await expect(dialog.getByRole('button', { name: '添加', exact: true })).toBeVisible()
-  await expect(dialog.getByRole('textbox', { name: '用户名称' })).toHaveCount(1)
-  await expect(dialog.getByRole('textbox', { name: '用户名称' })).toHaveValue(/^user_[0-9a-f]{8}$/)
+  await expect(dialog.getByRole('button', { name: '添加节点', exact: true })).toBeVisible()
+  await expect(dialog.getByRole('textbox', { name: '节点名称' })).toHaveCount(1)
+  await expect(dialog.getByRole('textbox', { name: '节点名称' })).toHaveValue(/^user_[0-9a-f]{8}$/)
   await expect(dialog.getByRole('textbox', { name: '客户端节点别名' })).toHaveCount(1)
   await page.locator('.el-overlay').filter({ has: dialog }).click({ position: { x: 5, y: 5 } })
   await expect(dialog).toBeVisible()
@@ -327,7 +327,7 @@ test('浏览器页面回归：真实登录，核心工作区 API 使用路由替
 
   await page.getByRole('button', { name: '编辑', exact: true }).click()
   const editDialog = page.getByRole('dialog', { name: '修改接入服务', exact: true })
-  const accountNames = editDialog.getByRole('textbox', { name: '用户名称' })
+  const accountNames = editDialog.getByRole('textbox', { name: '节点名称' })
   const accountAliases = editDialog.getByRole('textbox', { name: '客户端节点别名' })
   await expect(accountNames).toHaveValue('默认账号')
   await expect(accountAliases).toHaveValue('测试节点 01')
@@ -335,19 +335,19 @@ test('浏览器页面回归：真实登录，核心工作区 API 使用路由替
   // The service port stays editable: changing it re-runs the automatic port
   // placement and re-applies sing-box and Nginx.
   await expect(editDialog.getByRole('spinbutton', { name: '服务端口' })).toBeEnabled()
-  await accountNames.fill('修改后的用户')
-  await expect(editDialog.getByRole('button', { name: '添加', exact: true })).toBeVisible()
-  await editDialog.getByRole('button', { name: '添加', exact: true }).click()
+  await accountNames.fill('修改后的节点')
+  await expect(editDialog.getByRole('button', { name: '添加节点', exact: true })).toBeVisible()
+  await editDialog.getByRole('button', { name: '添加节点', exact: true }).click()
   await expect(accountNames).toHaveCount(2)
-  await accountNames.nth(1).fill('新增用户')
+  await accountNames.nth(1).fill('新增节点')
   await accountAliases.nth(1).fill('测试节点 02')
   await expect(editDialog.getByRole('textbox', { name: '请求路径' })).toHaveValue('')
   await editDialog.getByRole('button', { name: '保存', exact: true }).click()
   await expect(editDialog).toBeHidden()
   expect(savedListener.spec.transport).toEqual({ type: 'httpupgrade', path: '', host: '', service_name: '' })
   expect(savedListener.spec.tls).toMatchObject({ enabled: true, alpn: ['http/1.1'] })
-  expect(updatedAccount).toMatchObject({ name: '修改后的用户', alias: '测试节点 01', enabled: true, outbound_id: 'direct' })
-  expect(createdAccount).toEqual({ name: '新增用户', alias: '测试节点 02', outbound_id: 'direct' })
+  expect(updatedAccount).toMatchObject({ name: '修改后的节点', alias: '测试节点 01', enabled: true, outbound_id: 'direct' })
+  expect(createdAccount).toEqual({ name: '新增节点', alias: '测试节点 02', outbound_id: 'direct' })
 
   // Copying an access service only fills in the create form: the operator
   // still chooses the target server and saves.
@@ -356,7 +356,7 @@ test('浏览器页面回归：真实登录，核心工作区 API 使用路由替
   // A copy carries the source's values verbatim; nothing is renamed for it.
   await expect(copyDialog.getByRole('textbox', { name: '服务名称' })).toHaveValue('httpupgrade 接入')
   await expect(copyDialog.getByRole('textbox', { name: '连接域名' })).toHaveValue('httpupgrade.example.com')
-  await expect(copyDialog.getByRole('textbox', { name: '用户名称' })).toHaveValue('默认账号')
+  await expect(copyDialog.getByRole('textbox', { name: '节点名称' })).toHaveValue('默认账号')
   await expect(copyDialog.getByRole('textbox', { name: '客户端节点别名' })).toHaveValue('测试节点 01')
   // The httpupgrade path is never carried over: a copy gets its own random one.
   await expect(copyDialog.getByRole('textbox', { name: '请求路径' })).toHaveValue(/^\/[0-9a-f]{24}$/)

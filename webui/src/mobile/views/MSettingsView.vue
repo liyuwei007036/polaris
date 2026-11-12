@@ -346,7 +346,7 @@ onBeforeUnmount(() => {
           <el-switch v-model="alertSettings.traffic_alert_enabled" active-text="监控开启" />
         </div>
         <div class="m-card__note">
-          实时监控节点瞬时带宽突发、连接数激增及单一 IP 突发高并发。
+          实时监控服务器瞬时带宽突发、连接数激增及单一 IP 突发高并发。
         </div>
 
         <div class="m-field" style="margin-top: 14px">
@@ -362,9 +362,9 @@ onBeforeUnmount(() => {
         </div>
 
         <div class="m-field">
-          <label class="m-field__label">节点瞬时连接总数上限</label>
+          <label class="m-field__label">服务器瞬时连接总数上限</label>
           <el-input-number v-model="alertSettings.conn_threshold_count" :min="10" :max="50000" :step="50" style="width: 100%" />
-          <div class="m-field__hint">全节点活跃连接总数激增预警。</div>
+          <div class="m-field__hint">全服务器活跃连接总数激增预警。</div>
         </div>
 
         <div class="m-field">
@@ -384,7 +384,7 @@ onBeforeUnmount(() => {
         <div class="m-field">
           <label class="m-field__label">重复报警静默冷却 (分钟)</label>
           <el-input-number v-model="alertSettings.cooldown_minutes" :min="1" :max="1440" :step="5" style="width: 100%" />
-          <div class="m-field__hint">同一节点同一类型的告警在此期间不重复轰炸。</div>
+          <div class="m-field__hint">同一服务器同一类型的告警在此期间不重复轰炸。</div>
         </div>
 
         <div class="m-card-actions">
@@ -397,7 +397,7 @@ onBeforeUnmount(() => {
           <span class="m-card__title">每日简报</span>
         </div>
         <div class="m-card__note">
-          每天 09:00 自动发送昨日简报，包含各节点网络质量、活跃设备排行、热门访问目标、节点使用排行与流量汇总。
+          每天 09:00 自动发送昨日简报，包含各服务器网络质量、活跃设备排行、热门访问目标、服务器使用排行与流量汇总。
         </div>
       </section>
     </template>

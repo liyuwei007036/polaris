@@ -9,16 +9,16 @@
             <path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z" />
           </svg>
         </span>
-        <span class="head-title">节点分布</span>
+        <span class="head-title">服务器分布</span>
       </div>
       <div class="head-right">
         <span
           class="tnum head-stat"
           :title="unmappedCount > 0
-            ? `已定位 ${mappedCount} / ${nodes.length} 个节点，另有 ${unmappedCount} 个节点缺少经纬度，暂未显示在地图上。事件驱动：只有新建立的连接才会发射一颗流星。`
+            ? `已定位 ${mappedCount} / ${nodes.length} 台服务器，另有 ${unmappedCount} 台服务器缺少经纬度，暂未显示在地图上。事件驱动：只有新建立的连接才会发射一颗流星。`
             : '事件驱动：只有新建立的连接才会发射一颗流星，已存在的长连接不会重复飞线'"
         >
-          {{ nodes.length }} 个节点 · {{ places.length }} 个地区 · {{ liveConnectionCount }} 条实时连接<template v-if="unmappedCount > 0">（{{ unmappedCount }} 个未定位）</template>
+          {{ nodes.length }} 台服务器 · {{ places.length }} 个地区 · {{ liveConnectionCount }} 条实时连接<template v-if="unmappedCount > 0">（{{ unmappedCount }} 台未定位）</template>
         </span>
       </div>
     </div>

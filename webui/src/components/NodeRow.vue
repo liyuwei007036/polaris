@@ -134,6 +134,7 @@ import { computed, inject } from 'vue'
 import OsIcon from './OsIcon.vue'
 import LatencyPanel from './LatencyPanel.vue'
 import { formatBandwidth } from '../format'
+import { formatDDNSBindLabel } from '../ddns'
 import { isNewerVersion } from '../version'
 
 const props = defineProps({
@@ -315,7 +316,8 @@ const ddnsTooltip = computed(() => {
   if (!props.node.ddns_enabled) return ''
   const domains = (props.node.ddns_domains && props.node.ddns_domains.length ? props.node.ddns_domains : [props.node.ddns_domain]).filter(Boolean)
   const domainText = domains.length ? domains.join(', ') : '未指定域名'
-  const bindText = props.node.ddns_bind_ip ? ` · 绑定: ${props.node.ddns_bind_ip}` : ''
+  const bindLabel = formatDDNSBindLabel(props.node)
+  const bindText = bindLabel ? ` · 绑定: ${bindLabel}` : ''
   const ipText = props.node.last_observed_ip ? ` (解析 IP: ${props.node.last_observed_ip})` : ''
   return `Cloudflare DDNS: ${domainText}${bindText}${ipText}`
 })

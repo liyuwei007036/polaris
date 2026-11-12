@@ -129,7 +129,7 @@ const details = computed(() => {
     { label: '协议', value: protocolLabel(row) },
     { label: '加密', value: securityLabel(row) },
     { label: '传输', value: transportLabel(row) },
-    { label: '用户数', value: `${row.endpoint_count ?? 0} 位` },
+    { label: '节点数', value: `${row.endpoint_count ?? 0} 个` },
     { label: '状态', value: row.enabled ? '启用' : '停用' },
   ]
 })
@@ -137,7 +137,7 @@ const details = computed(() => {
 const actions = computed(() => {
   const row = actionTarget.value
   if (!row) return []
-  const list = [{ key: 'qr', label: '节点二维码', hint: '每个用户一条链接' }]
+  const list = [{ key: 'qr', label: '节点二维码', hint: '每个节点一条链接' }]
   if (canWrite.value) {
     list.push({ key: 'edit', label: '编辑' })
     list.push({ key: 'copy', label: '复制到其它服务器', hint: '带入配置，保存前可改' })
@@ -297,7 +297,7 @@ async function toggle(listener) {
 async function removeListener(listener) {
   try {
     await ElMessageBox.confirm(
-      `删除“${listener.name}”会同时删除其中的所有用户，且无法恢复。`,
+      `删除“${listener.name}”会同时删除其中的所有节点，且无法恢复。`,
       '删除接入服务',
       { type: 'warning', confirmButtonText: '确认删除' },
     )
@@ -372,8 +372,8 @@ onMounted(load)
         </div>
         <div class="stat-sep" />
         <div class="inbound-stat-col">
-          <span class="stat-lbl">用户数</span>
-          <span class="stat-val font-mono">{{ row.endpoint_count ?? 0 }} 位</span>
+          <span class="stat-lbl">节点数</span>
+          <span class="stat-val font-mono">{{ row.endpoint_count ?? 0 }} 个</span>
         </div>
       </div>
 
@@ -415,7 +415,7 @@ onMounted(load)
       :title="qrTitle"
       :items="qrItems"
       :loading="qrLoading"
-      empty-text="该服务下还没有可扫描的节点链接：服务或用户已停用，或服务器还没有填写客户端连接地址。"
+      empty-text="该服务下还没有可扫描的节点链接：服务或节点已停用，或服务器还没有填写客户端连接地址。"
     />
 
     <template v-if="canWrite" #fab>

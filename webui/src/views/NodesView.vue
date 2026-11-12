@@ -19,7 +19,7 @@ import {
   Top,
 } from '@element-plus/icons-vue'
 import { api, post, put } from '../api'
-import { buildDDNSIPOptions } from '../ddns'
+import { buildDDNSIPOptions, formatDDNSBindLabel } from '../ddns'
 import { formatBytes, formatDateTime, formatUptime, includesText } from '../format'
 import { subscribeLive } from '../live'
 import { performAgentUpgrade } from '../agent_upgrade'
@@ -121,7 +121,19 @@ const editNodeAllIPs = computed(() => {
   return ips
 })
 
-const editDDNSIPOptions = computed(() => buildDDNSIPOptions(editNode.value, editForm.value.ip_aliases))
+const editDDNSIPOptions = computed(() =>
+  buildDDNSIPOptions(editNode.value, editForm.value.ip_aliases, {
+    selectedValues: [editForm.value.ddns_bind_ip],
+  }),
+)
+
+function editDDNSRecordIPOptions(recId) {
+  const recType = cfRecordById(recId)?.type || ''
+  return buildDDNSIPOptions(editNode.value, editForm.value.ip_aliases, {
+    recordType: recType,
+    selectedValues: [editForm.value.ddns_record_ips?.[recId]],
+  }).filter((o) => o.value)
+}
 
 function cfRecordById(recId) {
   return cfRecords.value.find((r) => r.id === recId) || null
@@ -329,7 +341,7 @@ const cards = computed(() => filteredNodes.value.map((node) => {
     price: getPriceText(node),
     expiry: getExpiry(node.expires_on),
     ddnsTip: node.ddns_enabled
-      ? `${(node.ddns_domains?.length ? node.ddns_domains : [node.ddns_domain || node.client_address]).join('、')}<br/>${node.ddns_bind_ip ? `绑定: ${node.ddns_bind_ip} · ` : ''}解析: ${node.last_observed_ip || '同步中'}`
+      ? `${(node.ddns_domains?.length ? node.ddns_domains : [node.ddns_domain || node.client_address]).join('、')}<br/>${formatDDNSBindLabel(node) ? `绑定: ${formatDDNSBindLabel(node)} · ` : ''}解析: ${node.last_observed_ip || '同步中'}`
       : '',
     ipTip: node.ip_addresses?.length
       ? node.ip_addresses.map((ip) => ip + (node.ip_aliases?.[ip] ? ` (${node.ip_aliases[ip]})` : '')).join('<br/>')
@@ -427,7 +439,7 @@ function formatFriendlyTime(value) {
 
 function getCPUTooltip(node) {
   const host = metrics.value[node.id]?.host
-  if (!host) return node.online ? '等待 CPU 指标上报' : '节点离线'
+  if (!host) return node.online ? '等待 CPU 指标上报' : '服务器离线'
   let tip = `CPU 使用率: ${host.cpu_percent.toFixed(1)}%`
   if (host.uptime_seconds) {
     tip += ` · 已连续运行 ${formatUptime(host.uptime_seconds)}`
@@ -437,14 +449,14 @@ function getCPUTooltip(node) {
 
 function getMemTooltip(node) {
   const host = metrics.value[node.id]?.host
-  if (!host?.memory_total) return node.online ? '等待内存指标上报' : '节点离线'
+  if (!host?.memory_total) return node.online ? '等待内存指标上报' : '服务器离线'
   const pct = getResourcePercent(host.memory_used, host.memory_total)
   return `内存: ${formatBytes(host.memory_used)} / ${formatBytes(host.memory_total)} (${pct}%)`
 }
 
 function getDiskTooltip(node) {
   const host = metrics.value[node.id]?.host
-  if (!host?.disk_total) return node.online ? '等待硬盘指标上报' : '节点离线'
+  if (!host?.disk_total) return node.online ? '等待硬盘指标上报' : '服务器离线'
   const pct = getResourcePercent(host.disk_used, host.disk_total)
   return `硬盘: ${formatBytes(host.disk_used)} / ${formatBytes(host.disk_total)} (${pct}%)`
 }
@@ -781,7 +793,7 @@ const runPeerProbes = async (targetNodeId = '') => {
       peerProbeResults.value = res.peers || []
     }
   } catch (err) {
-    ElMessage.error(err.message || '节点互联探测失败')
+    ElMessage.error(err.message || '服务器互联探测失败')
   } finally {
     if (targetNodeId) {
       peerProbingSingle[targetNodeId] = false
@@ -878,7 +890,7 @@ onBeforeUnmount(() => {
               v-model="keyword"
               clearable
               :prefix-icon="Search"
-              placeholder="搜索节点名称、IP地址、系统或架构..."
+              placeholder="搜索服务器名称、IP地址、系统或架构..."
               style="width: 280px"
             />
 
@@ -1159,7 +1171,7 @@ onBeforeUnmount(() => {
             <div class="dlg-block-head">
               <div>
                 <div class="dlg-block-title">出口 IP 与别名</div>
-                <div class="dlg-help">以下出口 IP 由本机网卡自动检测。配置用户出口与节点分流时可使用别名。</div>
+                <div class="dlg-help">以下出口 IP 由本机网卡自动检测。配置节点出口与服务分流时可使用别名。</div>
               </div>
             </div>
             <div v-if="editNodeAllIPs.length" class="dlg-ip-list">
@@ -1219,7 +1231,7 @@ onBeforeUnmount(() => {
                 >
                   <el-option v-for="opt in editDDNSIPOptions" :key="opt.value || '__auto__'" :label="opt.label" :value="opt.value" />
                 </el-select>
-                <div class="dlg-help">支持绑定指定公网 IP（IPv4/IPv6），或选择 NAT 本地网卡 IP 以持续追踪对应公网出口变动。</div>
+                <div class="dlg-help">多网卡或多公网 IP 服务器可在此指定使用的出口 IP；单 IP 服务器保持「自动识别」即可。</div>
               </div>
               <div v-if="(editForm.ddns_record_ids || []).length > 1 || Object.keys(editForm.ddns_record_ips || {}).length > 0" style="margin-top: 6px">
                 <div class="dlg-pick-label" style="margin-bottom: 6px">分记录独立绑定 IP（可选，适合双栈 A+AAAA 或不同域名绑定不同出口 IP）</div>
@@ -1238,7 +1250,7 @@ onBeforeUnmount(() => {
                       clearable
                       placeholder="沿用上方默认绑定"
                     >
-                      <el-option v-for="opt in editDDNSIPOptions.filter((o) => o.value)" :key="opt.value" :label="opt.label" :value="opt.value" />
+                      <el-option v-for="opt in editDDNSRecordIPOptions(recId)" :key="opt.value" :label="opt.label" :value="opt.value" />
                     </el-select>
                   </div>
                 </div>
@@ -1267,7 +1279,7 @@ onBeforeUnmount(() => {
             <span v-if="getNodePublicIPv6(probeNode)" class="probe-ip-tag v6">IPv6</span>
           </div>
           <div class="probe-hero-sub">
-            <span>目标服务器位置: {{ probeNode.city || probeNode.location || '全球节点' }}</span>
+            <span>目标服务器位置: {{ probeNode.city || probeNode.location || '全球服务器' }}</span>
             <span v-if="getNodePublicIPv4(probeNode)"> · {{ getNodePublicIPv4(probeNode) }}</span>
             <span v-if="getNodePublicIPv6(probeNode)"> · {{ getNodePublicIPv6(probeNode) }}</span>
           </div>
@@ -1276,9 +1288,9 @@ onBeforeUnmount(() => {
 
       <div class="probe-mesh-panel">
         <div class="mesh-topbar">
-          <span class="mesh-hint">从当前节点服务器探测至集群内其他各 VPS 节点的网络互联、丢包与延迟</span>
+          <span class="mesh-hint">从当前服务器探测至集群内其他各 VPS 服务器的网络互联、丢包与延迟</span>
           <el-button type="primary" size="small" :icon="Refresh" :loading="peerProbing" @click="runPeerProbes('')">
-            一键检测所有互联节点
+            一键检测所有互联服务器
           </el-button>
         </div>
 

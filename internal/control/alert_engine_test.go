@@ -62,10 +62,10 @@ func TestNodeRecoveryRequiresPriorOffline(t *testing.T) {
 
 	mu.Lock()
 	defer mu.Unlock()
-	if !strings.Contains(received[0].Title, "节点离线") {
+	if !strings.Contains(received[0].Title, "服务器离线") {
 		t.Errorf("expected offline notification first, got %s", received[0].Title)
 	}
-	if !strings.Contains(received[1].Title, "节点恢复") {
+	if !strings.Contains(received[1].Title, "服务器恢复") {
 		t.Errorf("expected recovery notification second, got %s", received[1].Title)
 	}
 }
