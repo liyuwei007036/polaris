@@ -110,6 +110,15 @@ func (r *connectionRates) measure(nodeID string, connections []storedConnection,
 	return downloadRate, uploadRate, true
 }
 
+func (r *connectionRates) removeNode(nodeID string) {
+	if r == nil || nodeID == "" {
+		return
+	}
+	r.mu.Lock()
+	delete(r.previous, nodeID)
+	r.mu.Unlock()
+}
+
 // openedAfter reports whether sing-box says the connection started after the
 // given moment. An unparseable or absent timestamp reports false, so a
 // connection is never credited with traffic that may predate the interval.
@@ -691,6 +700,42 @@ func (h *connectionsHub) update(snap nodeConnectionsSnapshot) {
 	broadcast(snap)
 	for _, id := range stale {
 		broadcast(nodeConnectionsSnapshot{NodeID: id, Connections: json.RawMessage("[]")})
+	}
+}
+
+// removeNode drops an offline node's snapshot immediately so active connection
+// views and fleet totals do not linger for the full staleness timeout.
+func (h *connectionsHub) removeNode(nodeID string) {
+	if h == nil || nodeID == "" {
+		return
+	}
+	h.mu.Lock()
+	_, existed := h.latest[nodeID]
+	delete(h.latest, nodeID)
+	delete(h.receivedAt, nodeID)
+	delete(h.clockOffsets, nodeID)
+	for k, pair := range h.stickyPairs {
+		if pair.upstreamNodeID == nodeID || pair.targetNodeID == nodeID {
+			delete(h.stickyPairs, k)
+		}
+	}
+	var clients []chan nodeConnectionsSnapshot
+	if existed {
+		clients = make([]chan nodeConnectionsSnapshot, 0, len(h.clients))
+		for c := range h.clients {
+			clients = append(clients, c)
+		}
+	}
+	h.mu.Unlock()
+	if !existed {
+		return
+	}
+	empty := nodeConnectionsSnapshot{NodeID: nodeID, Connections: json.RawMessage("[]")}
+	for _, c := range clients {
+		select {
+		case c <- empty:
+		default:
+		}
 	}
 }
 

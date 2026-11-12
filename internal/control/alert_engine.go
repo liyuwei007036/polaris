@@ -62,12 +62,17 @@ type AlertEngine struct {
 	offlineNodes          map[string]time.Time
 	latestConns           map[string][]storedConnection
 	nodeNames             map[string]string
-	pendingChainFirstSeen map[string]time.Time
+	pendingChainFirstSeen map[string]pendingChainEntry
 	fail2banMu    sync.Mutex
 	fail2banBatch map[string]*fail2banBatch
 	fail2banWait  time.Duration
 	cached        AlertSettings
 	cacheTime     time.Time
+}
+
+type pendingChainEntry struct {
+	firstSeen time.Time
+	lastSeen  time.Time
 }
 
 type fail2banBatch struct {
@@ -102,7 +107,7 @@ func NewAlertEngine(store *Store, locator *ipLocator) *AlertEngine {
 		offlineNodes:  make(map[string]time.Time),
 		latestConns:           make(map[string][]storedConnection),
 		nodeNames:             make(map[string]string),
-		pendingChainFirstSeen: make(map[string]time.Time),
+		pendingChainFirstSeen: make(map[string]pendingChainEntry),
 		fail2banBatch: make(map[string]*fail2banBatch),
 		fail2banWait:  defaultFail2banWindow,
 	}
@@ -1072,19 +1077,21 @@ func (e *AlertEngine) confirmChainTargetTimeout(key string, now time.Time) bool 
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	if e.pendingChainFirstSeen == nil {
-		e.pendingChainFirstSeen = make(map[string]time.Time)
+		e.pendingChainFirstSeen = make(map[string]pendingChainEntry)
 	}
-	for k, ts := range e.pendingChainFirstSeen {
-		if now.Sub(ts) > 5*time.Minute {
+	for k, entry := range e.pendingChainFirstSeen {
+		if now.Sub(entry.lastSeen) > 5*time.Minute {
 			delete(e.pendingChainFirstSeen, k)
 		}
 	}
-	firstSeen, exists := e.pendingChainFirstSeen[key]
+	entry, exists := e.pendingChainFirstSeen[key]
 	if !exists {
-		e.pendingChainFirstSeen[key] = now
+		e.pendingChainFirstSeen[key] = pendingChainEntry{firstSeen: now, lastSeen: now}
 		return false
 	}
-	return now.Sub(firstSeen) >= chainRelayConfirmWait
+	entry.lastSeen = now
+	e.pendingChainFirstSeen[key] = entry
+	return now.Sub(entry.firstSeen) >= chainRelayConfirmWait
 }
 
 // checkProxyRouting reports destinations that belong to China or a private

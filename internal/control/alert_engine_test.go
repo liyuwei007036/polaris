@@ -483,3 +483,25 @@ func TestBarkAlertsNeverContainURL(t *testing.T) {
 		t.Errorf("expected Telegram notification to still include provider URL link, got: %s", gotTG[0])
 	}
 }
+
+func TestConfirmChainTargetTimeoutSurvivesFiveMinutes(t *testing.T) {
+	engine := NewAlertEngine(nil, nil)
+	t0 := time.Date(2026, 11, 12, 12, 0, 0, 0, time.UTC)
+
+	if engine.confirmChainTargetTimeout("node-1:c1", t0) {
+		t.Fatal("expected initial sighting to wait for chainRelayConfirmWait")
+	}
+	if !engine.confirmChainTargetTimeout("node-1:c1", t0.Add(6*time.Second)) {
+		t.Fatal("expected sighting after chainRelayConfirmWait to be confirmed")
+	}
+	// Long-lived active connections refreshed every 2 minutes must stay confirmed past 5 minutes.
+	for _, offset := range []time.Duration{2 * time.Minute, 4 * time.Minute, 6 * time.Minute, 8 * time.Minute} {
+		if !engine.confirmChainTargetTimeout("node-1:c1", t0.Add(offset)) {
+			t.Fatalf("expected active connection at +%v to remain confirmed without re-freezing", offset)
+		}
+	}
+	// Once absent for >5 minutes after last sighting at +8m, it is evicted cleanly.
+	if engine.confirmChainTargetTimeout("node-1:c1", t0.Add(14*time.Minute)) {
+		t.Fatal("expected entry absent for >5 minutes to be evicted and require fresh confirmation")
+	}
+}

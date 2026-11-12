@@ -405,3 +405,36 @@ func TestFleetTotalsMixedChainAndDirectConnections(t *testing.T) {
 		t.Fatalf("expected rate ↓2300 ↑300, got ↓%v ↑%v", totals.DownloadRate, totals.UploadRate)
 	}
 }
+
+func TestConnectionsHubRemoveNodeClearsImmediately(t *testing.T) {
+	hub := newConnectionsHub()
+	ch := hub.subscribe()
+	defer hub.unsubscribe(ch)
+
+	hub.update(nodeConnectionsSnapshot{NodeID: "node-a", ConnectionCount: 4, HasRates: true, ReceivedRate: 1000, SentRate: 200})
+	hub.update(nodeConnectionsSnapshot{NodeID: "node-b", ConnectionCount: 2, HasRates: true, ReceivedRate: 500, SentRate: 100})
+
+	// Drain initial update events
+	for i := 0; i < 2; i++ {
+		<-ch
+	}
+
+	hub.removeNode("node-a")
+
+	select {
+	case snap := <-ch:
+		if snap.NodeID != "node-a" || string(snap.Connections) != "[]" {
+			t.Fatalf("expected empty broadcast for node-a, got %+v (%s)", snap, string(snap.Connections))
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for removeNode empty snapshot broadcast")
+	}
+
+	if _, ok := hub.node("node-a"); ok {
+		t.Fatal("expected node-a to be removed from hub immediately")
+	}
+	totals := hub.totals(time.Now(), nil)
+	if totals.Nodes != 1 || totals.ConnectionCount != 2 || totals.DownloadRate != 500 {
+		t.Fatalf("unexpected totals after removeNode: %+v", totals)
+	}
+}

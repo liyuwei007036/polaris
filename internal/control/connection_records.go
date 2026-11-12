@@ -401,6 +401,25 @@ func (s *Store) DeviceSummaryStats(ctx context.Context, since time.Time) (Device
 	return stats, nil
 }
 
+// CloseOrphanConnectionRecords closes any leftover open connection records
+// (closed_at = 0) from a previous master run so they do not stay stuck as "连接中".
+func (s *Store) CloseOrphanConnectionRecords(ctx context.Context) error {
+	if s == nil || s.db == nil {
+		return nil
+	}
+	_, err := s.db.ExecContext(ctx, `
+		UPDATE connection_records
+		SET closed_at = CASE
+			WHEN created_at >= started_at AND created_at > 0 THEN created_at
+			ELSE started_at
+		END
+		WHERE closed_at = 0`)
+	if err != nil {
+		return fmt.Errorf("close orphan connection records: %w", err)
+	}
+	return nil
+}
+
 // PurgeExpiredConnectionRecords removes connection records older than the retention duration.
 func (s *Store) PurgeExpiredConnectionRecords(ctx context.Context, retention time.Duration) (int64, error) {
 	cutoff := time.Now().UTC().Add(-retention).Unix()

@@ -595,3 +595,174 @@ func TestConnectionRecordsSorting(t *testing.T) {
 	}
 }
 
+func TestCloseOrphanConnectionRecords(t *testing.T) {
+	store, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+
+	ctx := context.Background()
+	started := time.Now().UTC().Add(-2 * time.Minute).Truncate(time.Second)
+	closed := started.Add(30 * time.Second).Format(time.RFC3339)
+
+	if err := store.SaveConnectionRecords(ctx, []ConnectionRecord{
+		{
+			ID:           "node-1:open-orphan",
+			NodeID:       "node-1",
+			NodeName:     "HK-01",
+			ConnectionID: "open-orphan",
+			SourceIP:     "1.2.3.4",
+			Host:         "example.com",
+			Network:      "tcp",
+			StartedAt:    started.Format(time.RFC3339),
+		},
+		{
+			ID:           "node-1:already-closed",
+			NodeID:       "node-1",
+			NodeName:     "HK-01",
+			ConnectionID: "already-closed",
+			SourceIP:     "1.2.3.4",
+			Host:         "closed.example.com",
+			Network:      "tcp",
+			StartedAt:    started.Format(time.RFC3339),
+			ClosedAt:     closed,
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := store.CloseOrphanConnectionRecords(ctx); err != nil {
+		t.Fatalf("CloseOrphanConnectionRecords: %v", err)
+	}
+
+	recs, total, err := store.ListConnectionRecords(ctx, ConnectionRecordFilter{}, 1, 10)
+	if err != nil || total != 2 {
+		t.Fatalf("ListConnectionRecords got total=%d err=%v", total, err)
+	}
+	byID := map[string]ConnectionRecord{}
+	for _, r := range recs {
+		byID[r.ID] = r
+	}
+	if byID["node-1:open-orphan"].ClosedAt == "" {
+		t.Fatal("expected orphan open connection record to get a closed_at timestamp")
+	}
+	if byID["node-1:already-closed"].ClosedAt != closed {
+		t.Fatalf("expected already-closed record to keep %q, got %q", closed, byID["node-1:already-closed"].ClosedAt)
+	}
+}
+
+func TestConnectionRecorderShortOnChainTargetAndCloseNode(t *testing.T) {
+	store, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+
+	ctx := context.Background()
+	now := time.Date(2026, 11, 12, 12, 0, 0, 0, time.UTC)
+	rec := newConnectionRecorder(store)
+	rec.nowFn = func() time.Time { return now }
+	rec.confirmWait = 5 * time.Second
+	rec.SetChainRelayMatcher(func(targetNodeID string, c storedConnection) bool {
+		return c.Host == "matched-relay.example"
+	})
+
+	// Push 1: two short OnChainTarget connections arrive (normal + unmatched-later relay) + 1 normal direct connection.
+	rec.RecordPush("node-b", "TW-01", []storedConnection{
+		{
+			ID:            "short-normal",
+			Network:       "tcp",
+			SourceIP:      "203.0.113.10",
+			Source:        "203.0.113.10:40001",
+			Destination:   "93.184.216.34:443",
+			Host:          "short-normal.example",
+			User:          "alice",
+			OutboundName:  "直连",
+			Upload:        128,
+			Download:      512,
+			StartedAt:     now.Format(time.RFC3339),
+			OnChainTarget: true,
+		},
+		{
+			ID:            "short-relay",
+			Network:       "tcp",
+			SourceIP:      "198.19.1.2",
+			Source:        "198.19.1.2:40002",
+			Destination:   "1.2.3.4:443",
+			Host:          "matched-relay.example",
+			User:          "relay-user",
+			OutboundName:  "直连",
+			Upload:        256,
+			Download:      1024,
+			StartedAt:     now.Format(time.RFC3339),
+			OnChainTarget: true,
+		},
+		{
+			ID:           "long-open",
+			Network:      "tcp",
+			SourceIP:     "203.0.113.20",
+			Source:       "203.0.113.20:40003",
+			Destination:  "8.8.4.4:443",
+			Host:         "long-open.example",
+			User:         "bob",
+			OutboundName: "直连",
+			Upload:       64,
+			Download:     128,
+			StartedAt:    now.Format(time.RFC3339),
+		},
+	})
+
+	// Push 2 at t+2s: both OnChainTarget connections closed before 5s; only long-open remains.
+	now = now.Add(2 * time.Second)
+	rec.RecordPush("node-b", "TW-01", []storedConnection{
+		{
+			ID:           "long-open",
+			Network:      "tcp",
+			SourceIP:     "203.0.113.20",
+			Source:       "203.0.113.20:40003",
+			Destination:  "8.8.4.4:443",
+			Host:         "long-open.example",
+			User:         "bob",
+			OutboundName: "直连",
+			Upload:       64,
+			Download:     128,
+			StartedAt:    now.Add(-2 * time.Second).Format(time.RFC3339),
+		},
+	})
+	rec.Flush(ctx)
+
+	// Before confirmWait elapses, only long-open is flushed (still open).
+	recs, total, err := store.ListConnectionRecords(ctx, ConnectionRecordFilter{}, 1, 10)
+	if err != nil || total != 1 || recs[0].ConnectionID != "long-open" {
+		t.Fatalf("expected only long-open before confirmWait, got total=%d recs=%+v err=%v", total, recs, err)
+	}
+
+	// Advance past confirmWait (t+6s) and flush: short-normal is promoted with ClosedAt=t+2s; short-relay is discarded!
+	now = now.Add(4 * time.Second)
+	rec.Flush(ctx)
+
+	// Now node-b disconnects while long-open is still active: CloseNode marks it closed and Flush persists ClosedAt.
+	now = now.Add(1 * time.Second)
+	rec.CloseNode("node-b")
+	rec.Flush(ctx)
+
+	recs, total, err = store.ListConnectionRecords(ctx, ConnectionRecordFilter{}, 1, 10)
+	if err != nil || total != 2 {
+		t.Fatalf("expected 2 records (short-normal + closed long-open), got total=%d recs=%+v err=%v", total, recs, err)
+	}
+	byConn := map[string]ConnectionRecord{}
+	for _, r := range recs {
+		byConn[r.ConnectionID] = r
+	}
+	if sn, ok := byConn["short-normal"]; !ok || sn.ClosedAt == "" || sn.DurationSeconds != 2 {
+		t.Fatalf("expected short-normal to be recorded with 2s duration, got %+v (found=%v)", sn, ok)
+	}
+	if _, exists := byConn["short-relay"]; exists {
+		t.Fatalf("expected matched short-relay to be discarded, got %+v", byConn["short-relay"])
+	}
+	if lo, ok := byConn["long-open"]; !ok || lo.ClosedAt == "" {
+		t.Fatalf("expected long-open to be closed on CloseNode, got %+v (found=%v)", lo, ok)
+	}
+}
+

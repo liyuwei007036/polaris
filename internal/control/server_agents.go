@@ -333,6 +333,23 @@ func (s *Server) runAgentSession(ctx context.Context, conn *wire.Conn, node Node
 			return
 		}
 		log.Printf("[AGENT_SESSION] Node %s (%s) session from %s genuinely closed, marking offline", node.ID, node.Name, remoteAddr)
+		if s.connHub != nil {
+			s.connHub.removeNode(node.ID)
+			if s.connHub.watched() {
+				now := time.Now()
+				var popular []popularNode
+				if s.connActivity != nil {
+					popular = s.connActivity.popular(now, popularNodeLimit)
+				}
+				s.connHub.broadcastTotals(s.connHub.totals(now, popular))
+			}
+		}
+		if s.connRates != nil {
+			s.connRates.removeNode(node.ID)
+		}
+		if s.connRecorder != nil {
+			s.connRecorder.CloseNode(node.ID)
+		}
 		isOffline := false
 		s.liveHub.publish(liveEvent{
 			Kind:   "node",
@@ -1251,6 +1268,55 @@ func (s *Server) matchRecentChainEntry(currentNodeID string, upstreams []string,
 		}
 	}
 	return "", false
+}
+
+func (s *Server) isPendingChainRelay(targetNodeID string, probe storedConnection) bool {
+	if s == nil || targetNodeID == "" {
+		return false
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+
+	var matchedEndpointIDs []string
+	if s.connHub != nil {
+		for upID, conns := range s.connHub.activeNodeConnections() {
+			if upID == targetNodeID {
+				continue
+			}
+			for _, oc := range conns {
+				if epID := connectionChainEndpointID(oc); epID != "" && connectionDestMatches(oc, probe) {
+					matchedEndpointIDs = append(matchedEndpointIDs, epID)
+				}
+			}
+		}
+	}
+
+	now := time.Now()
+	s.recentChainMu.Lock()
+	for upID, entries := range s.recentChainEntries {
+		if upID == targetNodeID {
+			continue
+		}
+		for i := len(entries) - 1; i >= 0; i-- {
+			entry := entries[i]
+			if now.Sub(entry.seenAt) <= recentChainEntryTTL && entry.endpointID != "" && connectionDestMatches(entry.conn, probe) {
+				matchedEndpointIDs = append(matchedEndpointIDs, entry.endpointID)
+			}
+		}
+	}
+	s.recentChainMu.Unlock()
+
+	seenEP := make(map[string]bool, len(matchedEndpointIDs))
+	for _, epID := range matchedEndpointIDs {
+		if seenEP[epID] {
+			continue
+		}
+		seenEP[epID] = true
+		if meta, ok := lookupChainEndpointMeta(ctx, s.store, epID); ok && meta.NodeID == targetNodeID {
+			return true
+		}
+	}
+	return false
 }
 
 // connectionListenerID resolves the listener a connection arrived on. sing-box

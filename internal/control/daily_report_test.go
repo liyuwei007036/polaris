@@ -201,11 +201,36 @@ func TestIsNoiseTarget(t *testing.T) {
 		"93.184.216.34:443",
 		"google.com",
 		"cloudflare.com",
+		"2001:db8::1",
+		"[2001:db8::1]:443",
+		"example.com:80:extra",
 	}
 	for _, target := range valid {
 		if isNoiseTarget(target) {
 			t.Errorf("expected isNoiseTarget(%q) = false, got true", target)
 		}
+	}
+	if !isNoiseTarget("dns.google:") {
+		t.Errorf("expected isNoiseTarget(\"dns.google:\") = true, got false")
+	}
+}
+
+func TestDailyReportFallbackTrafficDirection(t *testing.T) {
+	payload := (dailyReportData{
+		Date:          "2026-11-11",
+		Connections:   10,
+		Devices:       2,
+		Nodes:         1,
+		Download:      2048,
+		Upload:        1024,
+		TotalBytes:    3072,
+		TrafficByRate: false,
+	}).alertPayload()
+	if !strings.Contains(payload.Telegram, "↓ 2.00 KB / ↑ 1.00 KB") {
+		t.Fatalf("expected Telegram fallback traffic to show download under ↓ and upload under ↑, got: %s", payload.Telegram)
+	}
+	if !strings.Contains(payload.BarkBody, "流量 ↓ 2.00 KB / ↑ 1.00 KB") {
+		t.Fatalf("expected Bark fallback traffic to show download under ↓ and upload under ↑, got: %s", payload.BarkBody)
 	}
 }
 

@@ -280,9 +280,11 @@ func isNoiseTarget(raw string) bool {
 	if h, p, err := net.SplitHostPort(host); err == nil {
 		host = h
 		port = p
-	} else if idx := strings.LastIndex(host, ":"); idx != -1 && !strings.Contains(host, "]") {
-		host = host[:idx]
-		port = host[idx+1:]
+	} else if strings.Count(host, ":") == 1 {
+		if idx := strings.LastIndex(host, ":"); idx != -1 {
+			port = host[idx+1:]
+			host = host[:idx]
+		}
 	}
 	host = strings.Trim(host, "[]")
 
@@ -630,7 +632,7 @@ func (r dailyReportData) alertPayload() alertPayload {
 		b.WriteString(fmt.Sprintf("• <b>总流量</b>：%s\n", formatReportBytes(r.TotalBytes)))
 	} else {
 		b.WriteString(fmt.Sprintf("• <b>总流量</b>：↓ %s / ↑ %s（共 %s）\n",
-			formatReportBytes(r.Upload), formatReportBytes(r.Download), formatReportBytes(r.TotalBytes)))
+			formatReportBytes(r.Download), formatReportBytes(r.Upload), formatReportBytes(r.TotalBytes)))
 	}
 	if r.ProbeChecks > 0 && r.ProbeOK == 0 {
 		b.WriteString("• <b>探针</b>：丢包 100%（全部超时）\n")
@@ -731,7 +733,7 @@ func (r dailyReportData) alertPayload() alertPayload {
 	if r.TrafficByRate {
 		barkLines = append(barkLines, fmt.Sprintf("流量 %s", formatReportBytes(r.TotalBytes)))
 	} else {
-		barkLines = append(barkLines, fmt.Sprintf("流量 ↓ %s / ↑ %s", formatReportBytes(r.Upload), formatReportBytes(r.Download)))
+		barkLines = append(barkLines, fmt.Sprintf("流量 ↓ %s / ↑ %s", formatReportBytes(r.Download), formatReportBytes(r.Upload)))
 	}
 	if r.ProbeChecks > 0 && r.ProbeOK == 0 {
 		barkLines = append(barkLines, "探针：丢包 100%（全部超时）")

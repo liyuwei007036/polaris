@@ -168,6 +168,7 @@ func NewServer(store *Store, secureCookies bool) (*Server, error) {
 	}
 	server.connHub.onWatchers = server.setFleetStreaming
 	server.connRecorder.SetConnectionsHub(server.connHub)
+	server.connRecorder.SetChainRelayMatcher(server.isPendingChainRelay)
 	server.alertEngine.SetConnectionsHub(server.connHub)
 	go server.runExpiryReminders()
 	return server, nil
@@ -247,6 +248,11 @@ func (s *Server) fleetStreamingState() bool {
 // EnableConnectionRecording switches on continuous connection streaming and
 // starts the background recorder worker so all connection records are persisted.
 func (s *Server) EnableConnectionRecording(ctx context.Context) {
+	if s.store != nil {
+		if err := s.store.CloseOrphanConnectionRecords(ctx); err != nil {
+			log.Printf("close orphan connection records: %v", err)
+		}
+	}
 	s.controlMu.Lock()
 	s.recordConnections = true
 	s.controlMu.Unlock()
