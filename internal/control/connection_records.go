@@ -9,8 +9,8 @@ import (
 )
 
 // ConnectionRecordsRetention bounds how long historical connection records are kept.
-// Records older than 30 days are automatically pruned.
-const ConnectionRecordsRetention = 30 * 24 * time.Hour
+// Records older than 7 days are automatically pruned.
+const ConnectionRecordsRetention = 7 * 24 * time.Hour
 
 type ConnectionRecord struct {
 	ID                  string `json:"id"`

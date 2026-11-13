@@ -10,8 +10,9 @@ import (
 )
 
 type trackedConnection struct {
-	record   ConnectionRecord
-	lastSeen time.Time
+	record          ConnectionRecord
+	lastSeen        time.Time
+	resolveAttempts int
 }
 
 type pendingChainConn struct {
@@ -137,10 +138,18 @@ func (r *connectionRecorder) run(ctx context.Context) {
 	}
 }
 
-func (r *connectionRecorder) resolveOutboundName(nodeID, nodeName string, c storedConnection) string {
+func (r *connectionRecorder) resolveOutboundName(nodeID, nodeName string, c storedConnection, activeConns ...map[string][]storedConnection) string {
 	outboundName := c.OutboundName
 	if connectionChainEndpointID(c) != "" {
-		resolved := resolveChainRoute(context.Background(), r.store, r.hub, nil, nil, nodeID, nodeName, c)
+		var active map[string][]storedConnection
+		if len(activeConns) > 0 {
+			active = activeConns[0]
+		}
+		var hub *connectionsHub
+		if active == nil {
+			hub = r.hub
+		}
+		resolved := resolveChainRoute(context.Background(), r.store, hub, active, nil, nodeID, nodeName, c)
 		if resolved.HopResolved && resolved.FinalOutbound != "" {
 			if len(resolved.Path) > 1 {
 				outboundName = strings.Join(resolved.Path[1:], " → ") + " → " + resolved.FinalOutbound
@@ -152,7 +161,7 @@ func (r *connectionRecorder) resolveOutboundName(nodeID, nodeName string, c stor
 	return outboundName
 }
 
-func (r *connectionRecorder) buildConnectionRecord(nodeID, nodeName string, c storedConnection, nowRFC string) ConnectionRecord {
+func (r *connectionRecorder) buildConnectionRecord(nodeID, nodeName string, c storedConnection, nowRFC string, activeConns ...map[string][]storedConnection) ConnectionRecord {
 	key := nodeID + ":" + c.ID
 	sourcePort := ""
 	if _, port, err := net.SplitHostPort(c.Source); err == nil {
@@ -173,7 +182,7 @@ func (r *connectionRecorder) buildConnectionRecord(nodeID, nodeName string, c st
 		destLocation = r.locator.Locate(destIP)
 	}
 
-	outboundName := r.resolveOutboundName(nodeID, nodeName, c)
+	outboundName := r.resolveOutboundName(nodeID, nodeName, c, activeConns...)
 
 	return ConnectionRecord{
 		ID:                  key,
@@ -285,6 +294,14 @@ func (r *connectionRecorder) RecordPush(nodeID, nodeName string, connections []s
 		r.nodeConns[nodeID] = prevConnIDs
 	}
 
+	var activeConns map[string][]storedConnection
+	getActiveConns := func() map[string][]storedConnection {
+		if activeConns == nil && r.hub != nil {
+			activeConns = r.hub.activeNodeConnections()
+		}
+		return activeConns
+	}
+
 	wait := r.confirmWaitDuration()
 	for _, c := range connections {
 		if c.ID == "" {
@@ -328,8 +345,16 @@ func (r *connectionRecorder) RecordPush(nodeID, nodeName string, connections []s
 
 		tracked, exists := r.active[key]
 		if !exists {
-			rec := r.buildConnectionRecord(nodeID, nodeName, c, nowRFC)
-			r.active[key] = &trackedConnection{record: rec, lastSeen: now}
+			var active map[string][]storedConnection
+			if connectionChainEndpointID(c) != "" {
+				active = getActiveConns()
+			}
+			rec := r.buildConnectionRecord(nodeID, nodeName, c, nowRFC, active)
+			r.active[key] = &trackedConnection{
+				record:          rec,
+				lastSeen:        now,
+				resolveAttempts: 1,
+			}
 			r.dirty[key] = rec
 		} else {
 			changed := false
@@ -339,8 +364,9 @@ func (r *connectionRecorder) RecordPush(nodeID, nodeName string, connections []s
 				tracked.lastSeen = now
 				changed = true
 			}
-			if connectionChainEndpointID(c) != "" {
-				if updatedOutbound := r.resolveOutboundName(nodeID, nodeName, c); updatedOutbound != "" && updatedOutbound != tracked.record.OutboundName {
+			if connectionChainEndpointID(c) != "" && tracked.resolveAttempts < 3 {
+				tracked.resolveAttempts++
+				if updatedOutbound := r.resolveOutboundName(nodeID, nodeName, c, getActiveConns()); updatedOutbound != "" && updatedOutbound != tracked.record.OutboundName {
 					tracked.record.OutboundName = updatedOutbound
 					changed = true
 				}

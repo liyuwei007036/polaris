@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"net"
 	"strings"
+	"sync"
+	"time"
 )
 
 const maxChainResolveHops = 16
@@ -72,10 +74,44 @@ func firstNonEmpty(values ...string) string {
 	return ""
 }
 
+type chainEndpointMetaCacheEntry struct {
+	meta      chainEndpointMeta
+	ok        bool
+	expiresAt time.Time
+}
+
+type nodeDisplayNameCacheEntry struct {
+	name      string
+	expiresAt time.Time
+}
+
+type dbOutboundCacheEntry struct {
+	displayName string
+	isDirect    bool
+	ok          bool
+	expiresAt   time.Time
+}
+
+var (
+	chainResolverCacheMu   sync.RWMutex
+	chainEndpointMetaCache = make(map[string]chainEndpointMetaCacheEntry)
+	nodeDisplayNameCache   = make(map[string]nodeDisplayNameCacheEntry)
+	dbOutboundCache        = make(map[string]dbOutboundCacheEntry)
+)
+
 func lookupChainEndpointMeta(ctx context.Context, store *Store, endpointID string) (chainEndpointMeta, bool) {
-	if store == nil || store.db == nil || strings.TrimSpace(endpointID) == "" {
+	epID := strings.TrimSpace(endpointID)
+	if store == nil || store.db == nil || epID == "" {
 		return chainEndpointMeta{}, false
 	}
+	now := time.Now()
+	chainResolverCacheMu.RLock()
+	if entry, found := chainEndpointMetaCache[epID]; found && now.Before(entry.expiresAt) {
+		chainResolverCacheMu.RUnlock()
+		return entry.meta, entry.ok
+	}
+	chainResolverCacheMu.RUnlock()
+
 	var meta chainEndpointMeta
 	err := store.db.QueryRowContext(ctx, `
 		SELECT n.id, n.name, e.outbound_id, l.outbound_id
@@ -83,21 +119,46 @@ func lookupChainEndpointMeta(ctx context.Context, store *Store, endpointID strin
 		JOIN listeners l ON l.id = e.listener_id
 		JOIN nodes n ON n.id = l.node_id
 		WHERE e.id = ? AND n.revoked_at IS NULL`,
-		endpointID,
+		epID,
 	).Scan(&meta.NodeID, &meta.NodeName, &meta.EndpointOutboundID, &meta.ListenerOutboundID)
-	if err != nil {
-		return chainEndpointMeta{}, false
+	ok := (err == nil)
+
+	chainResolverCacheMu.Lock()
+	chainEndpointMetaCache[epID] = chainEndpointMetaCacheEntry{
+		meta:      meta,
+		ok:        ok,
+		expiresAt: now.Add(30 * time.Second),
 	}
-	return meta, true
+	chainResolverCacheMu.Unlock()
+	return meta, ok
 }
 
 func lookupNodeDisplayName(ctx context.Context, store *Store, cached map[string]string, nodeID, fallback string) string {
 	if name := strings.TrimSpace(cached[nodeID]); name != "" {
 		return name
 	}
-	if store != nil && nodeID != "" {
-		if node, err := store.NodeByID(ctx, nodeID); err == nil && strings.TrimSpace(node.Name) != "" {
-			return strings.TrimSpace(node.Name)
+	trimmedID := strings.TrimSpace(nodeID)
+	if store != nil && trimmedID != "" {
+		now := time.Now()
+		chainResolverCacheMu.RLock()
+		if entry, found := nodeDisplayNameCache[trimmedID]; found && now.Before(entry.expiresAt) {
+			chainResolverCacheMu.RUnlock()
+			if entry.name != "" {
+				return entry.name
+			}
+		} else {
+			chainResolverCacheMu.RUnlock()
+		}
+
+		if node, err := store.NodeByID(ctx, trimmedID); err == nil && strings.TrimSpace(node.Name) != "" {
+			name := strings.TrimSpace(node.Name)
+			chainResolverCacheMu.Lock()
+			nodeDisplayNameCache[trimmedID] = nodeDisplayNameCacheEntry{
+				name:      name,
+				expiresAt: now.Add(30 * time.Second),
+			}
+			chainResolverCacheMu.Unlock()
+			return name
 		}
 	}
 	if strings.TrimSpace(fallback) != "" {
@@ -122,11 +183,38 @@ func resolveDBOutbound(ctx context.Context, store *Store, rawOutboundID string) 
 	if store == nil || store.db == nil {
 		return id, isDirectOutbound(id), false
 	}
+
+	now := time.Now()
+	chainResolverCacheMu.RLock()
+	if entry, found := dbOutboundCache[id]; found && now.Before(entry.expiresAt) {
+		chainResolverCacheMu.RUnlock()
+		return entry.displayName, entry.isDirect, entry.ok
+	}
+	chainResolverCacheMu.RUnlock()
+
 	var name, obType string
 	if err := store.db.QueryRowContext(ctx, `SELECT name, type FROM outbounds WHERE id = ?`, id).Scan(&name, &obType); err == nil {
 		isDirect = strings.EqualFold(strings.TrimSpace(obType), "direct") || isDirectOutbound(name)
-		return firstNonEmpty(name, id), isDirect, true
+		resName := firstNonEmpty(name, id)
+		chainResolverCacheMu.Lock()
+		dbOutboundCache[id] = dbOutboundCacheEntry{
+			displayName: resName,
+			isDirect:    isDirect,
+			ok:          true,
+			expiresAt:   now.Add(30 * time.Second),
+		}
+		chainResolverCacheMu.Unlock()
+		return resName, isDirect, true
 	}
+
+	chainResolverCacheMu.Lock()
+	dbOutboundCache[id] = dbOutboundCacheEntry{
+		displayName: id,
+		isDirect:    isDirectOutbound(id),
+		ok:          false,
+		expiresAt:   now.Add(30 * time.Second),
+	}
+	chainResolverCacheMu.Unlock()
 	return id, isDirectOutbound(id), false
 }
 
