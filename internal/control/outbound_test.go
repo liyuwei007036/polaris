@@ -117,7 +117,14 @@ func TestManagedOutboundCompilation(t *testing.T) {
 	if err := json.Unmarshal([]byte(configuration), &compiled); err != nil {
 		t.Fatal(err)
 	}
-	if len(compiled.Route.Rules) == 0 || compiled.Route.Rules[0]["outbound"] != "outbound-"+outbound.ID {
+	var matchedRule map[string]any
+	for _, r := range compiled.Route.Rules {
+		if r["outbound"] == "outbound-"+outbound.ID {
+			matchedRule = r
+			break
+		}
+	}
+	if matchedRule == nil {
 		t.Fatalf("managed route rule did not use the compiled outbound tag: %#v", compiled.Route.Rules)
 	}
 

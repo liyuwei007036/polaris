@@ -144,9 +144,6 @@ func (s *Store) CompileNodeConfig(ctx context.Context, nodeID string) (string, s
 		}
 		compiledRules = append(compiledRules, compiled)
 	}
-	// An account-level outbound is authoritative for that authenticated user.
-	// Put these rules before general server rules so the per-account selection
-	// made in the inbound form cannot be overridden by a broader rule.
 	accountRules := make([]map[string]any, 0, len(endpointSelections))
 	for _, selection := range endpointSelections {
 		tag := "direct"
@@ -164,9 +161,23 @@ func (s *Store) CompileNodeConfig(ctx context.Context, nodeID string) (string, s
 			"outbound":  tag,
 		})
 	}
-	compiledRules = append(accountRules, compiledRules...)
+
+	// Inbound DNS hijacking: ensure queries to port 53 (such as DNS leak tests or explicit
+	// client DNS lookups) are resolved by this node's local-dns rather than forwarded blindly.
+	finalRules := []map[string]any{
+		{
+			"port":   53,
+			"action": "hijack-dns",
+		},
+	}
+	// User-defined route rules (e.g. domain/IP matching, reject rules) must take
+	// precedence over account-level catch-all rules so operators can selectively block
+	// or redirect specific traffic for all users.
+	finalRules = append(finalRules, compiledRules...)
+	finalRules = append(finalRules, accountRules...)
+
 	// Each listener with a selected outbound gets a fallback rule routing its
-	// inbound to that outbound; user-defined rules above still take precedence.
+	// inbound to that outbound; user-defined and account rules still take precedence.
 	for _, listener := range listeners {
 		if !listener.Enabled || listener.OutboundID == "" {
 			continue
@@ -175,12 +186,14 @@ func (s *Store) CompileNodeConfig(ctx context.Context, nodeID string) (string, s
 		if !ok {
 			continue
 		}
-		compiledRules = append(compiledRules, map[string]any{
+		finalRules = append(finalRules, map[string]any{
 			"inbound":  []string{"listener-" + listener.ID},
 			"action":   "route",
 			"outbound": tag,
 		})
 	}
+	compiledRules = finalRules
+
 	configuration := map[string]any{
 		// sing-box logs to a file rather than only the journal so Fail2Ban has
 		// a log path to watch; a jail whose logpath does not exist refuses to

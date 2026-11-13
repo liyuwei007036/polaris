@@ -443,7 +443,13 @@ func TestSharedPortInboundCreatesMultipleUsersAndNginxRoutes(t *testing.T) {
 	if err := json.Unmarshal([]byte(compiled), &configuration); err != nil {
 		t.Fatal(err)
 	}
-	if len(configuration.Route.Rules) < 2 || configuration.Route.Rules[0]["auth_user"] == nil || configuration.Route.Rules[1]["auth_user"] == nil {
+	var nonSystemRules []map[string]any
+	for _, r := range configuration.Route.Rules {
+		if r["action"] != "hijack-dns" {
+			nonSystemRules = append(nonSystemRules, r)
+		}
+	}
+	if len(nonSystemRules) < 2 || nonSystemRules[0]["auth_user"] == nil || nonSystemRules[1]["auth_user"] == nil {
 		t.Fatalf("account rules are not first: %#v", configuration.Route.Rules)
 	}
 
