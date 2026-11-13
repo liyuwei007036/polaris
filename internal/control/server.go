@@ -80,6 +80,8 @@ type Server struct {
 	fleetIPCache           map[string][]string
 	fleetIPCachedAt        time.Time
 	chainTargetCache       map[string]chainTargetEntry
+	chainRouteMu           sync.RWMutex
+	chainRouteCache        map[string]chainRouteCacheEntry
 	recentChainMu          sync.Mutex
 	recentChainEntries     map[string][]recentChainEntry
 	connectionsInterval    time.Duration

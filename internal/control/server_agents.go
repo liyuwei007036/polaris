@@ -986,6 +986,11 @@ type storedConnection struct {
 	ChainNodeIDs         []string `json:"chain_node_ids,omitempty"`
 }
 
+type chainRouteCacheEntry struct {
+	route     resolvedChainRoute
+	expiresAt time.Time
+}
+
 func (s *Server) convertConnections(ctx context.Context, nodeID string, in []wire.ConnectionInfo) []storedConnection {
 	names := s.listenerNames(ctx, nodeID)
 	aliases := s.endpointAliases(ctx, nodeID)
@@ -1013,7 +1018,6 @@ func (s *Server) convertConnections(ctx context.Context, nodeID string, in []wir
 		}
 		return cachedNodeNames
 	}
-	resolvedChainCache := make(map[string]resolvedChainRoute)
 
 	out := make([]storedConnection, 0, len(in))
 	for _, c := range in {
@@ -1176,15 +1180,45 @@ func (s *Server) convertConnections(ctx context.Context, nodeID string, in []wir
 		}
 		liveActive[nodeID] = out
 		nodeNames := getNodeNames()
+		now := time.Now()
 		for i := range out {
 			if out[i].ChainedTarget == "" || out[i].IsChainRelay {
 				continue
 			}
-			cacheKey := out[i].ChainedTarget + "\x00" + out[i].ID + "\x00" + out[i].Destination + "\x00" + out[i].Host + "\x00" + out[i].Network
-			resolved, cached := resolvedChainCache[cacheKey]
+			cacheKey := nodeID + "\x00" + out[i].ChainedTarget + "\x00" + out[i].ID + "\x00" + out[i].Destination + "\x00" + out[i].Host + "\x00" + out[i].Network
+			var resolved resolvedChainRoute
+			var cached bool
+			s.chainRouteMu.RLock()
+			if s.chainRouteCache != nil {
+				if entry, found := s.chainRouteCache[cacheKey]; found && now.Before(entry.expiresAt) {
+					resolved = entry.route
+					cached = true
+				}
+			}
+			s.chainRouteMu.RUnlock()
+
 			if !cached {
 				resolved = resolveChainRouteWithActive(ctx, s.store, s.connHub, liveActive, nodeNames, nodeID, nodeNames[nodeID], out[i])
-				resolvedChainCache[cacheKey] = resolved
+				ttl := 30 * time.Second
+				if !resolved.HopResolved {
+					ttl = 3 * time.Second
+				}
+				s.chainRouteMu.Lock()
+				if s.chainRouteCache == nil {
+					s.chainRouteCache = make(map[string]chainRouteCacheEntry)
+				}
+				s.chainRouteCache[cacheKey] = chainRouteCacheEntry{
+					route:     resolved,
+					expiresAt: now.Add(ttl),
+				}
+				if len(s.chainRouteCache) > 2000 {
+					for k, v := range s.chainRouteCache {
+						if now.After(v.expiresAt) {
+							delete(s.chainRouteCache, k)
+						}
+					}
+				}
+				s.chainRouteMu.Unlock()
 			}
 			if resolved.HopResolved && resolved.FinalOutbound != "" {
 				if resolved.FinalIsDirect && resolved.FinalNodeName != "" && resolved.FinalNodeName != nodeNames[nodeID] {

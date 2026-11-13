@@ -235,6 +235,19 @@ func matchDownstreamRelayConnScored(
 		clockOffsets = hub.clockOffsetsSnapshot()
 	}
 
+	// Fast-path: if this connection already established a sticky pair with a downstream relay
+	// leg in a previous round and that leg is still alive and matching destination, reuse it directly.
+	if hub != nil && entryConn.ID != "" {
+		if stickyNode, stickyConn, hasSticky := hub.stickyPairFor(fromNodeID, entryConn.ID, hopIndex); hasSticky && stickyNode != "" && stickyConn != "" && !visitedNodes[stickyNode] {
+			for _, cand := range active[stickyNode] {
+				if cand.ID == stickyConn && connectionDestMatches(entryConn, cand) {
+					hub.rememberStickyPair(fromNodeID, entryConn.ID, hopIndex, stickyNode, stickyConn, time.Now())
+					return stickyNode, cand, true
+				}
+			}
+		}
+	}
+
 	// Legacy synthetic test structs without ID cannot participate in multi-entry
 	// deduplication cleanly; evaluate all candidates directly by score.
 	if entryConn.ID == "" {

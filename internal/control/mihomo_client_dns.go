@@ -58,10 +58,11 @@ func defaultMihomoClientDNS() MihomoClientDNS {
 		FakeIPRange:           "198.18.0.1/16",
 		FakeIPFilterMode:      "rule",
 		FakeIPFilter:          []string{"MATCH,fake-ip"},
-		DefaultNameserver:     []string{"https://223.5.5.5/dns-query"},
+		DefaultNameserver:     []string{"223.5.5.5", "119.29.29.29"},
 		Nameserver:            []string{"https://223.5.5.5/dns-query"},
 		ProxyServerNameserver: []string{"https://223.5.5.5/dns-query"},
 		DirectNameserver:      []string{"https://223.5.5.5/dns-query"},
+		RespectRules:          true,
 	}
 }
 
