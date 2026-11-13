@@ -197,3 +197,44 @@ func TestExtractSingBoxArchive(t *testing.T) {
 		t.Fatalf("unexpected extracted binary: %q", content)
 	}
 }
+
+func TestReleasingDropsDirectPortsWhenAlone(t *testing.T) {
+	// When only one TCP inbound is configured on port 443, placement assigns it directly.
+	// Nginx releasing routes must not include 443 so Nginx lets go of the port.
+	config := `{"inbounds":[{"tag":"reality","type":"vless","listen":"::","listen_port":443}]}`
+	sni := map[string]string{"reality": "images.unsplash.com"}
+	plan, err := planListenerPlacement(config, sni, map[uint16]bool{}, func() (uint16, bool) { return 20000, true })
+	if err != nil {
+		t.Fatalf("planListenerPlacement failed: %v", err)
+	}
+	if !plan.directPorts[443] {
+		t.Fatalf("expected port 443 in directPorts, got: %#v", plan.directPorts)
+	}
+	if len(plan.routes) != 0 {
+		t.Fatalf("expected empty routes, got: %#v", plan.routes)
+	}
+}
+
+func TestSingBoxDropInContentsWithMemLimit(t *testing.T) {
+	// 1GB host: 60% of 1073741824 = 644245094 bytes -> 614MiB
+	content1G := singBoxDropInContents(1024 * 1024 * 1024)
+	if !strings.Contains(content1G, `Environment="GOMEMLIMIT=614MiB"`) {
+		t.Errorf("expected 1GB host to have ~614MiB limit, got: %s", content1G)
+	}
+	if !strings.Contains(content1G, `Environment="GODEBUG=madvdontneed=1"`) {
+		t.Errorf("expected GODEBUG=madvdontneed=1 in drop-in, got: %s", content1G)
+	}
+
+	// 0 / unknown host: fallback to 512MiB
+	content0 := singBoxDropInContents(0)
+	if !strings.Contains(content0, `Environment="GOMEMLIMIT=512MiB"`) {
+		t.Errorf("expected 0 host to have 512MiB fallback limit, got: %s", content0)
+	}
+
+	// 4GB host: 75% of 4GB = 3072MiB
+	content4G := singBoxDropInContents(4 * 1024 * 1024 * 1024)
+	if !strings.Contains(content4G, `Environment="GOMEMLIMIT=3072MiB"`) {
+		t.Errorf("expected 4GB host to have 3072MiB limit, got: %s", content4G)
+	}
+}
+

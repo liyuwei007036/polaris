@@ -391,12 +391,26 @@ EOF
 
   log "配置 sing-box 进程特权与 OOM 保护 (drop-in 覆盖)..."
   mkdir -p /etc/systemd/system/sing-box.service.d
-  cat <<'EOF' >/etc/systemd/system/sing-box.service.d/10-polaris-priority.conf
+  local mem_limit="512MiB"
+  local mem_total_kb
+  mem_total_kb=$(awk '$1 == "MemTotal:" { print $2 }' /proc/meminfo 2>/dev/null || echo 0)
+  if [[ "$mem_total_kb" -gt 0 ]]; then
+    if [[ "$mem_total_kb" -le 1048576 ]]; then
+      mem_limit="$((mem_total_kb * 60 / 100 / 1024))MiB"
+    elif [[ "$mem_total_kb" -le 2097152 ]]; then
+      mem_limit="$((mem_total_kb * 70 / 100 / 1024))MiB"
+    else
+      mem_limit="$((mem_total_kb * 75 / 100 / 1024))MiB"
+    fi
+  fi
+  cat <<EOF >/etc/systemd/system/sing-box.service.d/10-polaris-priority.conf
 [Service]
 Nice=-10
 CPUWeight=1000
 OOMScoreAdjust=-900
 LimitNOFILE=1048576
+Environment="GOMEMLIMIT=${mem_limit}"
+Environment="GODEBUG=madvdontneed=1"
 EOF
   if command -v systemctl >/dev/null 2>&1; then
     systemctl daemon-reload >/dev/null 2>&1 || true

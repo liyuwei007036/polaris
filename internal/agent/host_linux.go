@@ -307,3 +307,12 @@ func readVirt() string {
 	}
 	return "none"
 }
+
+func readHostMemTotal() uint64 {
+	memTotal, _, _, _, ok := readMemAndSwapInfo()
+	if !ok {
+		return 0
+	}
+	return memTotal
+}
+

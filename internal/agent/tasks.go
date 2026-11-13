@@ -256,6 +256,9 @@ func installSingBox(ctx context.Context, task Task, dataDir string) TaskResult {
 	}
 	binaryPath := managedSystemPath("/usr/local/bin/sing-box")
 	if output, err := exec.CommandContext(ctx, binaryPath, "version").CombinedOutput(); err == nil && strings.Contains(string(output), "version "+manifest.Version) && singBoxServiceActive(ctx) {
+		if updated, _ := ensureSingBoxPriorityDropIn(ctx); updated {
+			_ = restartSingBox(ctx)
+		}
 		return TaskResult{Status: "succeeded", Summary: "requested sing-box version is already active", SingBoxVersion: manifest.Version}
 	}
 
@@ -1086,8 +1089,9 @@ func applySingBoxConfig(ctx context.Context, task Task, dataDir string, passthro
 	if digestErr != nil {
 		return TaskResult{Status: "failed", Summary: "生成 Nginx 分流配置失败：" + digestErr.Error()}
 	}
+	dropInUpdated, _ := ensureSingBoxPriorityDropIn(ctx)
 	currentConfig, err := os.ReadFile(managedSingBoxConfig)
-	if err == nil && strings.TrimSpace(string(currentConfig)) == strings.TrimSpace(plan.configuration) && singBoxServiceActive(ctx) {
+	if !dropInUpdated && err == nil && strings.TrimSpace(string(currentConfig)) == strings.TrimSpace(plan.configuration) && singBoxServiceActive(ctx) {
 		router := applyNginxConfiguration(ctx, routerConfiguration, dataDir, passthrough)
 		if router.Status == "failed" {
 			return TaskResult{Status: "failed", Summary: "Nginx 分流未能应用：" + router.Summary}
@@ -1134,31 +1138,25 @@ func applySingBoxConfig(ctx context.Context, task Task, dataDir string, passthro
 	if output, err := exec.CommandContext(ctx, "sing-box", "check", "-c", temporaryPath).CombinedOutput(); err != nil {
 		return TaskResult{Status: "failed", Summary: commandSummary("sing-box check", output, err)}
 	}
-	// Checked before the configuration is put in place: a port owned by another
-	// process only makes sing-box fail on start, and the restart loop that
-	// follows is far harder to read than this message. Placement has already
-	// moved every service it could off a contended port, so whatever is left
-	// here genuinely cannot be resolved on the node.
-	if conflicts := singBoxPortConflicts(ctx, plan.configuration); len(conflicts) > 0 {
-		return TaskResult{Status: "failed", Summary: "端口冲突：" + strings.Join(conflicts, "；") + "。请停止占用该端口的程序，或为接入服务改用其他端口"}
-	}
 	// Nginx has to let go of any port a service is about to bind directly
 	// before sing-box starts, and may only take over a port after sing-box has
 	// released it. Hence the two passes around the restart: the first drops
-	// what the router must give up, the second binds what it now serves. The
-	// second is a no-op whenever nothing changed.
-	routerConfiguration, digestErr = nginxroute.Compile(plan.routes)
-	if digestErr != nil {
-		return TaskResult{Status: "failed", Summary: "生成 Nginx 分流配置失败：" + digestErr.Error()}
-	}
+	// what the router must give up, the second binds what it now serves.
 	releasing, releaseErr := nginxroute.Compile(plan.routesExcept(currentlySingBoxHeldPorts(ctx)))
 	if releaseErr != nil {
 		return TaskResult{Status: "failed", Summary: "生成 Nginx 分流配置失败：" + releaseErr.Error()}
 	}
-	if releasing != routerConfiguration {
-		if released := applyNginxConfiguration(ctx, releasing, dataDir, passthrough); released.Status == "failed" {
-			return released
-		}
+	if released := applyNginxConfiguration(ctx, releasing, dataDir, passthrough); released.Status == "failed" {
+		return released
+	}
+
+	// Checked before the configuration is put in place: now that Nginx has
+	// released any ports handed over to sing-box, verify that no foreign process
+	// holds any inbound ports. Placement has already moved every service it
+	// could off a contended port, so whatever is left here genuinely cannot be
+	// resolved on the node.
+	if conflicts := singBoxPortConflicts(ctx, plan.configuration); len(conflicts) > 0 {
+		return TaskResult{Status: "failed", Summary: "端口冲突：" + strings.Join(conflicts, "；") + "。请停止占用该端口的程序，或为接入服务改用其他端口"}
 	}
 	backupPath := managedSingBoxConfig + ".polaris.last-good"
 	if current, err := os.ReadFile(managedSingBoxConfig); err == nil {
@@ -1173,12 +1171,14 @@ func applySingBoxConfig(ctx context.Context, task Task, dataDir string, passthro
 	}
 	result := restartSingBox(ctx)
 	if result.Status == "succeeded" {
-		router := applyNginxConfiguration(ctx, routerConfiguration, dataDir, passthrough)
-		if router.Status == "failed" {
-			// sing-box is already serving the new services; the router is what
-			// is missing, and saying so beats a rollback that would take the
-			// working half down with it.
-			return TaskResult{Status: "failed", Summary: "接入服务已生效，但 Nginx 分流未能应用：" + router.Summary}
+		if routerConfiguration != releasing {
+			router := applyNginxConfiguration(ctx, routerConfiguration, dataDir, passthrough)
+			if router.Status == "failed" {
+				// sing-box is already serving the new services; the router is what
+				// is missing, and saying so beats a rollback that would take the
+				// working half down with it.
+				return TaskResult{Status: "failed", Summary: "接入服务已生效，但 Nginx 分流未能应用：" + router.Summary}
+			}
 		}
 		if err := saveSingBoxConfigurationState(dataDir, task.ExpectedHash); err != nil {
 			result.Summary += "；记录配置状态失败：" + err.Error()
@@ -1191,6 +1191,11 @@ func applySingBoxConfig(ctx context.Context, task Task, dataDir string, passthro
 	if backup, err := os.ReadFile(backupPath); err == nil {
 		if restoreErr := os.WriteFile(managedSingBoxConfig, backup, 0o640); restoreErr == nil {
 			if rollback := restartSingBox(ctx); rollback.Status == "succeeded" {
+				nginxBackupPath := managedNginxConfig + ".polaris.last-good"
+				if nginxBackup, err := os.ReadFile(nginxBackupPath); err == nil {
+					_ = os.WriteFile(managedNginxConfig, nginxBackup, 0o640)
+					_, _ = exec.CommandContext(ctx, "systemctl", "reload", "nginx.service").CombinedOutput()
+				}
 				return TaskResult{Status: "rolled_back", Summary: "new configuration failed (" + result.Summary + "); restored last successful configuration"}
 			}
 		}
@@ -1280,27 +1285,55 @@ func ensureSingBoxLogrotate() error {
 	return os.WriteFile(managedSingBoxLogrotate, []byte(singBoxLogrotateConfig), 0o644)
 }
 
-const singBoxDropInContents = `[Service]
+func singBoxDropInContents(memTotal uint64) string {
+	limit := "512MiB"
+	if memTotal > 0 {
+		var limitBytes uint64
+		if memTotal <= 1024*1024*1024 { // <= 1GB
+			// On <=1GB hosts, cap sing-box at 60% of physical RAM to guarantee
+			// OS, agent, fail2ban, and nginx have plenty of headroom.
+			limitBytes = memTotal * 60 / 100
+		} else if memTotal <= 2*1024*1024*1024 { // <= 2GB
+			limitBytes = memTotal * 70 / 100
+		} else { // > 2GB
+			limitBytes = memTotal * 75 / 100
+		}
+		if limitBytes < 256*1024*1024 {
+			limitBytes = 256 * 1024 * 1024
+		}
+		limit = fmt.Sprintf("%dMiB", limitBytes/(1024*1024))
+	}
+	return fmt.Sprintf(`[Service]
 Nice=-10
 CPUWeight=1000
 OOMScoreAdjust=-900
 LimitNOFILE=1048576
-`
+Environment="GOMEMLIMIT=%s"
+Environment="GODEBUG=madvdontneed=1"
+`, limit)
+}
 
 var managedSingBoxDropIn = managedSystemPath("/etc/systemd/system/sing-box.service.d/10-polaris-priority.conf")
 
-func ensureSingBoxPriorityDropIn() error {
+func ensureSingBoxPriorityDropIn(ctx context.Context) (bool, error) {
 	if runtime.GOOS != "linux" {
-		return nil
+		return false, nil
 	}
 	dir := filepath.Dir(managedSingBoxDropIn)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return err
+		return false, err
 	}
-	if current, err := os.ReadFile(managedSingBoxDropIn); err == nil && string(current) == singBoxDropInContents {
-		return nil
+	desired := singBoxDropInContents(readHostMemTotal())
+	if current, err := os.ReadFile(managedSingBoxDropIn); err == nil && string(current) == desired {
+		return false, nil
 	}
-	return os.WriteFile(managedSingBoxDropIn, []byte(singBoxDropInContents), 0o644)
+	if err := os.WriteFile(managedSingBoxDropIn, []byte(desired), 0o644); err != nil {
+		return false, err
+	}
+	if ctx != nil {
+		_ = exec.CommandContext(ctx, "systemctl", "daemon-reload").Run()
+	}
+	return true, nil
 }
 
 // ensureSingBoxService installs and enables a systemd unit for sing-box the
@@ -1312,7 +1345,7 @@ func ensureSingBoxPriorityDropIn() error {
 // left untouched.
 func ensureSingBoxService(ctx context.Context) error {
 	_ = ensureSingBoxLogrotate()
-	_ = ensureSingBoxPriorityDropIn()
+	_, _ = ensureSingBoxPriorityDropIn(ctx)
 	if _, err := os.Stat(managedSingBoxConfig); errors.Is(err, os.ErrNotExist) {
 		if err := os.MkdirAll(filepath.Dir(managedSingBoxConfig), 0o750); err != nil {
 			return errors.New("create sing-box configuration directory: " + err.Error() + permissionHint(err))
