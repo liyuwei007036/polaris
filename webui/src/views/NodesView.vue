@@ -1,7 +1,10 @@
 <script setup>
 import { computed, inject, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
-import { ElMessage, ElMessageBox } from 'element-plus'
+import { ElMessage, ElMessageBox, ElNotification } from 'element-plus'
 import {
+  BellFilled,
+  Check,
+  Clock,
   Close,
   Connection,
   CopyDocument,
@@ -20,7 +23,7 @@ import {
 } from '@element-plus/icons-vue'
 import { api, post, put } from '../api'
 import { buildDDNSIPOptions, formatDDNSBindLabel } from '../ddns'
-import { formatBytes, formatDateTime, formatUptime, includesText } from '../format'
+import { formatBytes, formatDateTime, formatDate, formatRelativeTime, formatUptime, includesText } from '../format'
 import { subscribeLive } from '../live'
 import { performAgentUpgrade } from '../agent_upgrade'
 import { isNewerVersion } from '../version'
@@ -61,6 +64,76 @@ function handleCardAction({ command, node }) {
 const loading = ref(false)
 const refreshing = ref(false)
 const pending = ref([])
+const approvingIds = ref(new Set())
+const notifiedPendingIds = new Set()
+
+function checkNewPending(list) {
+  if (!list || !list.length) return
+  for (const item of list) {
+    if (!notifiedPendingIds.has(item.id)) {
+      notifiedPendingIds.add(item.id)
+      ElNotification({
+        title: '新服务器申请接入',
+        message: `检测到服务器「${item.node_name}」申请接入，请确认批准。`,
+        type: 'warning',
+        duration: 8000,
+        position: 'top-right',
+      })
+    }
+  }
+}
+
+function parseCapabilities(raw) {
+  if (!raw) {
+    return {
+      os: 'linux',
+      osLabel: 'Linux',
+      arch: 'amd64',
+      version: '',
+      pmtu: '',
+      tags: [],
+    }
+  }
+  let obj = {}
+  if (typeof raw === 'object') {
+    obj = raw
+  } else {
+    try {
+      obj = JSON.parse(raw)
+    } catch {
+      return {
+        os: 'linux',
+        osLabel: 'Linux',
+        arch: '',
+        version: '',
+        pmtu: '',
+        tags: [String(raw)],
+      }
+    }
+  }
+  const os = (obj.os || 'linux').toLowerCase()
+  const osMap = { linux: 'Linux', darwin: 'macOS', windows: 'Windows', freebsd: 'FreeBSD' }
+  const osLabel = osMap[os] || os
+  const arch = obj.architecture || obj.arch || ''
+  const version = obj.agent_version || obj.version || ''
+  const pmtu = obj.pmtu ? `MTU ${obj.pmtu}` : ''
+
+  const tags = []
+  for (const [k, v] of Object.entries(obj)) {
+    if (!['os', 'architecture', 'arch', 'agent_version', 'version', 'pmtu'].includes(k) && v) {
+      tags.push(typeof v === 'boolean' ? k : `${k}: ${v}`)
+    }
+  }
+
+  return {
+    os,
+    osLabel,
+    arch,
+    version,
+    pmtu,
+    tags,
+  }
+}
 const metrics = ref({})
 const probesDialog = ref(false)
 
@@ -371,7 +444,9 @@ async function load(silent = false) {
       isAdmin.value ? api('/registrations').catch(() => ({ registrations: [] })) : Promise.resolve({ registrations: [] }),
       api('/nodes/metrics').catch(() => ({ nodes: [] })),
     ])
-    pending.value = registrations.registrations || []
+    const nextPending = registrations.registrations || []
+    checkNewPending(nextPending)
+    pending.value = nextPending
     metrics.value = Object.fromEntries((metricResult.nodes || []).map((entry) => [entry.node_id, entry.report]))
     if (metricResult.nodes && metricResult.nodes.length) {
       for (const entry of metricResult.nodes) {
@@ -541,13 +616,29 @@ async function copyInstallCommand() {
 }
 
 async function approve(registration) {
-  await ElMessageBox.confirm(
-    `允许服务器“${registration.node_name}”接入管理平台？批准后即可远程管理该服务器。`,
-    '确认服务器接入',
-  )
-  await post(`/nodes/${registration.id}/approve`, {})
-  ElMessage.success('服务器已接入')
-  await load()
+  try {
+    await ElMessageBox.confirm(
+      `允许服务器“${registration.node_name}”接入管理平台？批准后即可远程管理该服务器并下发配置。`,
+      '确认服务器接入',
+      {
+        confirmButtonText: '确认批准',
+        cancelButtonText: '取消',
+        type: 'warning',
+      },
+    )
+  } catch {
+    return
+  }
+  approvingIds.value.add(registration.id)
+  try {
+    await post(`/nodes/${registration.id}/approve`, {})
+    ElMessage.success(`服务器「${registration.node_name}」接入成功！`)
+    await load(true)
+  } catch (e) {
+    ElMessage.error(e?.message || '批准接入失败')
+  } finally {
+    approvingIds.value.delete(registration.id)
+  }
 }
 
 async function revoke(node) {
@@ -826,23 +917,40 @@ watch(
   { deep: true },
 )
 
+let pendingPollTimer = null
+
 onMounted(() => {
   load()
   window.addEventListener('sb:authenticated', onAuthSuccess)
   stopConnections = subscribeConnections(() => {})
   stopLive = subscribeLive((event) => {
     // 节点状态变更通过 App.vue 增量 patch，性能指标通过 connections SSE 增量推流
-    // 禁止全量调用 load() 重复查询数据库，仅当注册审批变动时轻量同步审批列表
+    // 当注册审批变动时轻量同步审批列表
     if (event.kind === 'registration' && isAdmin.value) {
       api('/registrations').then((res) => {
-        pending.value = res.registrations || []
+        const next = res.registrations || []
+        checkNewPending(next)
+        pending.value = next
       }).catch(() => {})
     }
+    if (event.kind === 'node') {
+      loadNodes().catch(() => {})
+    }
   })
+  if (isAdmin.value) {
+    pendingPollTimer = setInterval(() => {
+      api('/registrations').then((res) => {
+        const next = res.registrations || []
+        checkNewPending(next)
+        pending.value = next
+      }).catch(() => {})
+    }, 10000)
+  }
 })
 
 onBeforeUnmount(() => {
   window.removeEventListener('sb:authenticated', onAuthSuccess)
+  if (pendingPollTimer) clearInterval(pendingPollTimer)
   stopLive?.()
   stopConnections?.()
 })
@@ -955,29 +1063,89 @@ onBeforeUnmount(() => {
         <!-- 3. 等待接入审核卡片 (Pending) -->
         <template v-if="pending.length">
           <div class="pending-section-banner">
-            <div class="banner-title">
-              <span class="status-indicator pending pulse-sm" />
-              <span>待批准接入的服务器</span>
-              <span class="badge-pending-count">{{ pending.length }}</span>
+            <div class="banner-left">
+              <div class="banner-icon-wrap">
+                <el-icon class="banner-pulse-icon"><BellFilled /></el-icon>
+              </div>
+              <div class="banner-info">
+                <div class="banner-title">
+                  <span>待批准接入的服务器</span>
+                  <span class="badge-pending-count">{{ pending.length }}</span>
+                </div>
+                <div class="banner-sub">
+                  检测到有新服务器通过注册令牌发起接入申请，请核对主机名与运行环境后批准
+                </div>
+              </div>
             </div>
           </div>
+
           <div class="pending-grid">
-            <div v-for="item in filteredPending" :key="item.id" class="pending-card neu">
-              <div class="pending-header">
-                <div class="pending-title">
-                  <span class="flag-icon">⚡</span>
-                  <strong>{{ item.node_name }}</strong>
+            <div
+              v-for="item in filteredPending"
+              :key="item.id"
+              class="pending-card openlat-node-card neu rise"
+            >
+              <!-- 暖金柔光角标 -->
+              <span class="corner-glow glow-warning" />
+
+              <div class="pending-card-head">
+                <div class="pending-server-title">
+                  <span class="pending-status-pulse" />
+                  <span class="pending-node-name" :title="item.node_name">{{ item.node_name }}</span>
+                  <span class="pending-badge">待审批</span>
                 </div>
-                <el-button type="primary" size="small" @click="approve(item)">批准接入</el-button>
+                <el-button
+                  type="primary"
+                  size="small"
+                  class="pending-approve-btn"
+                  :loading="approvingIds.has(item.id)"
+                  :icon="Check"
+                  @click="approve(item)"
+                >
+                  批准接入
+                </el-button>
               </div>
-              <div class="pending-body">
-                <div class="pending-line">
-                  <span class="pending-label">支持特性:</span>
-                  <span class="pending-val">{{ item.capabilities || '基础代理转发' }}</span>
+
+              <!-- 运行规格解析徽标区 -->
+              <div class="pending-specs">
+                <!-- 操作系统与架构 -->
+                <div class="spec-pill">
+                  <OsIcon :os="parseCapabilities(item.capabilities).os" class="spec-os-icon" />
+                  <span>{{ parseCapabilities(item.capabilities).osLabel }}</span>
+                  <span v-if="parseCapabilities(item.capabilities).arch" class="spec-divider">/</span>
+                  <span v-if="parseCapabilities(item.capabilities).arch" class="spec-arch">{{ parseCapabilities(item.capabilities).arch }}</span>
                 </div>
-                <div class="pending-line">
-                  <span class="pending-label">接入申请:</span>
-                  <span class="pending-val font-mono">{{ formatDateTime(item.created_at) }}</span>
+
+                <!-- Agent 版本 -->
+                <div v-if="parseCapabilities(item.capabilities).version" class="spec-pill spec-pill--ver">
+                  <span class="spec-label">Agent</span>
+                  <span class="font-mono">v{{ parseCapabilities(item.capabilities).version }}</span>
+                </div>
+
+                <!-- 网络 MTU -->
+                <div v-if="parseCapabilities(item.capabilities).pmtu" class="spec-pill spec-pill--mtu">
+                  <span class="spec-label">MTU</span>
+                  <span class="font-mono">{{ parseCapabilities(item.capabilities).pmtu }}</span>
+                </div>
+
+                <!-- 其它补充 tag -->
+                <div
+                  v-for="(tag, idx) in parseCapabilities(item.capabilities).tags"
+                  :key="idx"
+                  class="spec-pill"
+                >
+                  <span>{{ tag }}</span>
+                </div>
+              </div>
+
+              <!-- 底部时间栏 -->
+              <div class="pending-footer">
+                <div class="pending-time" :title="formatDateTime(item.created_at)">
+                  <el-icon class="mr-1 text-xs opacity-75"><Clock /></el-icon>
+                  <span>申请于 {{ formatRelativeTime(item.created_at) }}</span>
+                </div>
+                <div class="pending-id-hint" :title="item.id">
+                  <span>ID: {{ item.id.slice(0, 8) }}</span>
                 </div>
               </div>
             </div>
@@ -1543,63 +1711,224 @@ onBeforeUnmount(() => {
 
 /* ── 3. 待接入横幅 (Pending Section) ────────────────────── */
 .pending-section-banner {
-  margin-bottom: 12px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 16px;
+  margin-bottom: 14px;
+  background: linear-gradient(135deg, rgba(245, 158, 11, 0.08) 0%, rgba(245, 158, 11, 0.02) 100%);
+  border: 1px solid rgba(245, 158, 11, 0.25);
+  border-radius: 12px;
+  box-shadow: 0 2px 12px rgba(245, 158, 11, 0.05);
+}
+.banner-left {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.banner-icon-wrap {
+  width: 34px;
+  height: 34px;
+  border-radius: 10px;
+  background: rgba(245, 158, 11, 0.15);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--sb-warning);
+  font-size: 16px;
+  flex-shrink: 0;
+  box-shadow: inset 0 0 8px rgba(245, 158, 11, 0.2);
+}
+.banner-pulse-icon {
+  animation: pending-bell-ring 2.5s infinite ease-in-out;
+}
+@keyframes pending-bell-ring {
+  0%, 100% { transform: rotate(0deg); }
+  10%, 30% { transform: rotate(-12deg); }
+  20%, 40% { transform: rotate(12deg); }
+  50% { transform: rotate(0deg); }
+}
+.banner-info {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
 }
 .banner-title {
   display: flex;
   align-items: center;
   gap: 8px;
-  font-size: 13px;
+  font-size: 14px;
   font-weight: 600;
-  color: var(--sb-text-2);
+  color: var(--sb-text-1);
 }
 .badge-pending-count {
   font-size: 11px;
   font-weight: 700;
-  padding: 1px 6px;
+  padding: 1px 7px;
   border-radius: 10px;
   background: rgba(245, 158, 11, 0.2);
-  color: var(--sb-warning);
+  color: #d97706;
   border: 1px solid rgba(245, 158, 11, 0.4);
 }
+.banner-sub {
+  font-size: 12px;
+  color: var(--sb-text-3);
+}
+
 .pending-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
-  gap: 12px;
+  grid-template-columns: repeat(auto-fill, minmax(340px, 1fr));
+  gap: 14px;
   margin-bottom: 24px;
 }
 .pending-card {
-  padding: 14px 16px;
-  background: rgba(245, 158, 11, 0.04);
-  border: 1px solid rgba(245, 158, 11, 0.25);
-  border-radius: 10px;
-}
-.pending-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  margin-bottom: 10px;
-}
-.pending-title {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  font-size: 14px;
-  color: var(--sb-warning);
-}
-.pending-body {
-  font-size: 12px;
-  color: var(--sb-muted);
+  position: relative;
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  padding: 16px;
+  background: var(--sb-surface);
+  border: 1px solid rgba(245, 158, 11, 0.3);
+  border-radius: 14px;
+  box-shadow: var(--sb-neu-shadow, 0 4px 16px rgba(0, 0, 0, 0.04));
+  overflow: hidden;
+  transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
 }
-.pending-line {
+.pending-card:hover {
+  border-color: rgba(245, 158, 11, 0.5);
+  box-shadow: 0 6px 20px rgba(245, 158, 11, 0.12);
+  transform: translateY(-2px);
+}
+.glow-warning {
+  position: absolute;
+  top: -24px;
+  right: -24px;
+  width: 90px;
+  height: 90px;
+  border-radius: 50%;
+  background: radial-gradient(circle, rgba(245, 158, 11, 0.25) 0%, transparent 70%);
+  pointer-events: none;
+}
+.pending-card-head {
   display: flex;
+  align-items: center;
   justify-content: space-between;
+  margin-bottom: 14px;
 }
-.pending-val {
+.pending-server-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.pending-status-pulse {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #f59e0b;
+  box-shadow: 0 0 0 0 rgba(245, 158, 11, 0.7);
+  animation: pending-dot-pulse 1.8s infinite;
+  flex-shrink: 0;
+}
+@keyframes pending-dot-pulse {
+  0% { transform: scale(0.95); box-shadow: 0 0 0 0 rgba(245, 158, 11, 0.7); }
+  70% { transform: scale(1); box-shadow: 0 0 0 6px rgba(245, 158, 11, 0); }
+  100% { transform: scale(0.95); box-shadow: 0 0 0 0 rgba(245, 158, 11, 0); }
+}
+.pending-node-name {
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--sb-text-1);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.pending-badge {
+  font-size: 10px;
+  font-weight: 600;
+  padding: 1px 6px;
+  border-radius: 6px;
+  background: rgba(245, 158, 11, 0.12);
+  color: #d97706;
+  border: 1px solid rgba(245, 158, 11, 0.25);
+  flex-shrink: 0;
+}
+.pending-approve-btn {
+  font-weight: 600;
+  border-radius: 8px;
+  background: linear-gradient(135deg, #f59e0b 0%, #d97706 100%) !important;
+  border: none !important;
+  box-shadow: 0 2px 8px rgba(245, 158, 11, 0.3);
+  color: #fff !important;
+  transition: all 0.2s ease;
+}
+.pending-approve-btn:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgba(245, 158, 11, 0.4);
+}
+
+.pending-specs {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 14px;
+}
+.spec-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 8px;
+  border-radius: 6px;
+  font-size: 11px;
+  font-weight: 500;
+  background: var(--sb-track, rgba(0, 0, 0, 0.04));
   color: var(--sb-text-2);
+  border: 1px solid var(--sb-border, rgba(0, 0, 0, 0.06));
+}
+.spec-os-icon {
+  width: 14px;
+  height: 14px;
+}
+.spec-divider {
+  opacity: 0.4;
+}
+.spec-arch {
+  color: var(--sb-text-1);
+  font-weight: 600;
+}
+.spec-pill--ver {
+  background: rgba(59, 130, 246, 0.08);
+  border-color: rgba(59, 130, 246, 0.2);
+  color: #2563eb;
+}
+.spec-pill--mtu {
+  background: rgba(16, 185, 129, 0.08);
+  border-color: rgba(16, 185, 129, 0.2);
+  color: #059669;
+}
+.spec-label {
+  opacity: 0.75;
+  font-size: 10px;
+}
+
+.pending-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding-top: 10px;
+  margin-top: auto;
+  border-top: 1px solid var(--sb-border, rgba(0, 0, 0, 0.06));
+  font-size: 11px;
+  color: var(--sb-text-3);
+}
+.pending-time {
+  display: flex;
+  align-items: center;
+}
+.pending-id-hint {
+  font-family: monospace;
+  font-size: 10px;
+  opacity: 0.6;
 }
 
 /* ── 服务器卡片与列表视图 (Openlat micro-neomorphic) ─────── */

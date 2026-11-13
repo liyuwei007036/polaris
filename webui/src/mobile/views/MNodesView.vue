@@ -5,7 +5,7 @@ import { Check, Delete, Plus, Refresh, Search } from '@element-plus/icons-vue'
 import { api, post, put } from '../../api'
 import { buildDDNSIPOptions } from '../../ddns'
 import { writeClipboard } from '../../clipboard'
-import { formatBandwidth, formatBytes, formatDateTime, includesText } from '../../format'
+import { formatBandwidth, formatBytes, formatDateTime, formatRelativeTime, includesText } from '../../format'
 import { subscribeLive } from '../../live'
 import { performAgentUpgrade } from '../../agent_upgrade'
 import { connectionSnapshots, subscribeConnections } from '../../connections'
@@ -27,6 +27,59 @@ const loadNodes = inject('loadNodes')
 const loading = ref(false)
 const refreshing = ref(false)
 const pending = ref([])
+const approvingIds = ref(new Set())
+
+function parseCapabilities(raw) {
+  if (!raw) {
+    return {
+      os: 'linux',
+      osLabel: 'Linux',
+      arch: 'amd64',
+      version: '',
+      pmtu: '',
+      tags: [],
+    }
+  }
+  let obj = {}
+  if (typeof raw === 'object') {
+    obj = raw
+  } else {
+    try {
+      obj = JSON.parse(raw)
+    } catch {
+      return {
+        os: 'linux',
+        osLabel: 'Linux',
+        arch: '',
+        version: '',
+        pmtu: '',
+        tags: [String(raw)],
+      }
+    }
+  }
+  const os = (obj.os || 'linux').toLowerCase()
+  const osMap = { linux: 'Linux', darwin: 'macOS', windows: 'Windows', freebsd: 'FreeBSD' }
+  const osLabel = osMap[os] || os
+  const arch = obj.architecture || obj.arch || ''
+  const version = obj.agent_version || obj.version || ''
+  const pmtu = obj.pmtu ? `MTU ${obj.pmtu}` : ''
+
+  const tags = []
+  for (const [k, v] of Object.entries(obj)) {
+    if (!['os', 'architecture', 'arch', 'agent_version', 'version', 'pmtu'].includes(k) && v) {
+      tags.push(typeof v === 'boolean' ? k : `${k}: ${v}`)
+    }
+  }
+
+  return {
+    os,
+    osLabel,
+    arch,
+    version,
+    pmtu,
+    tags,
+  }
+}
 const metrics = ref({})
 const keyword = ref('')
 // 从看板的「在线服务器」「N 台离线」点进来时直接落在筛好的那一档上，
@@ -190,10 +243,29 @@ async function copyInstallCommand() {
 }
 
 async function approve(registration) {
-  await ElMessageBox.confirm(`允许服务器“${registration.node_name}”接入管理平台？批准后即可远程管理该服务器。`, '确认服务器接入')
-  await post(`/nodes/${registration.id}/approve`, {})
-  ElMessage.success('服务器已接入')
-  await load()
+  try {
+    await ElMessageBox.confirm(
+      `允许服务器“${registration.node_name}”接入管理平台？批准后即可远程管理该服务器并下发配置。`,
+      '确认服务器接入',
+      {
+        confirmButtonText: '确认批准',
+        cancelButtonText: '取消',
+        type: 'warning',
+      },
+    )
+  } catch {
+    return
+  }
+  approvingIds.value.add(registration.id)
+  try {
+    await post(`/nodes/${registration.id}/approve`, {})
+    ElMessage.success(`服务器「${registration.node_name}」接入成功！`)
+    await load(true)
+  } catch (e) {
+    ElMessage.error(e?.message || '批准接入失败')
+  } finally {
+    approvingIds.value.delete(registration.id)
+  }
 }
 
 function agentUpdateAvailable(node) {
@@ -407,16 +479,28 @@ function openProvider(node) {
   if (node.provider_url) window.open(node.provider_url, '_blank', 'noopener,noreferrer')
 }
 
+let mobilePendingTimer = null
+
 onMounted(() => {
   load()
   stopConnections = subscribeConnections(() => {})
   stopLive = subscribeLive((event) => {
     // 节点状态变更通过 MobileApp.vue 增量 patch，性能指标通过 connections SSE 增量推流
-    if (event.kind === 'registration') load(true).catch(() => {})
+    if (event.kind === 'registration' || event.kind === 'node') load(true).catch(() => {})
   })
+  if (isAdmin.value) {
+    mobilePendingTimer = setInterval(() => {
+      if (isAdmin.value) {
+        api('/registrations').then((res) => {
+          pending.value = res.registrations || []
+        }).catch(() => {})
+      }
+    }, 10000)
+  }
 })
 
 onBeforeUnmount(() => {
+  if (mobilePendingTimer) clearInterval(mobilePendingTimer)
   stopLive?.()
   stopConnections?.()
 })
@@ -445,15 +529,40 @@ onBeforeUnmount(() => {
     </div>
 
     <template v-if="filteredPending.length">
-      <div class="m-section">等待确认的服务器</div>
-      <article v-for="row in filteredPending" :key="row.id" class="m-item">
+      <div class="m-section flex items-center justify-between">
+        <span>等待确认的服务器（{{ filteredPending.length }}）</span>
+      </div>
+      <article v-for="row in filteredPending" :key="row.id" class="m-item m-pending-item">
         <div class="m-item__hit is-static">
-          <div class="m-item__head"><span class="m-item__title">{{ row.node_name }}</span></div>
-          <div class="m-item__meta">{{ row.capabilities || '未上报支持的功能' }}</div>
-          <div class="m-item__meta">申请于 {{ formatDateTime(row.created_at) }}</div>
+          <div class="m-item__head flex items-center gap-2">
+            <span class="m-item__title font-semibold">{{ row.node_name }}</span>
+            <span class="m-pending-tag">待接入</span>
+          </div>
+          <div class="m-pending-specs">
+            <span class="m-spec-chip">
+              <OsIcon :os="parseCapabilities(row.capabilities).os" class="w-3.5 h-3.5 inline-block mr-1" />
+              {{ parseCapabilities(row.capabilities).osLabel }}
+              <template v-if="parseCapabilities(row.capabilities).arch">/ {{ parseCapabilities(row.capabilities).arch }}</template>
+            </span>
+            <span v-if="parseCapabilities(row.capabilities).version" class="m-spec-chip font-mono">
+              v{{ parseCapabilities(row.capabilities).version }}
+            </span>
+            <span v-if="parseCapabilities(row.capabilities).pmtu" class="m-spec-chip font-mono">
+              {{ parseCapabilities(row.capabilities).pmtu }}
+            </span>
+          </div>
+          <div class="m-item__meta mt-1 text-xs opacity-75">
+            申请于 {{ formatRelativeTime(row.created_at) }}
+          </div>
         </div>
-        <button type="button" class="m-item__act" :aria-label="`接入 ${row.node_name}`" @click="approve(row)">
-          <el-icon :size="18"><Check /></el-icon><small>接入</small>
+        <button
+          type="button"
+          class="m-item__act m-item__act--primary"
+          :aria-label="`接入 ${row.node_name}`"
+          :disabled="approvingIds.has(row.id)"
+          @click="approve(row)"
+        >
+          <el-icon :size="18"><Check /></el-icon><small>{{ approvingIds.has(row.id) ? '处理中' : '接入' }}</small>
         </button>
       </article>
     </template>
@@ -1052,6 +1161,37 @@ html.dark .gauge-dot.is-conn { background: #34D399; }
 .m-node-offline-hint {
   color: var(--sb-danger);
   font-weight: 500;
+}
+.m-pending-item {
+  border: 1px solid rgba(245, 158, 11, 0.35);
+  background: rgba(245, 158, 11, 0.04);
+}
+.m-pending-tag {
+  font-size: 10px;
+  font-weight: 600;
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: rgba(245, 158, 11, 0.15);
+  color: #d97706;
+}
+.m-pending-specs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 6px;
+}
+.m-spec-chip {
+  display: inline-flex;
+  align-items: center;
+  font-size: 11px;
+  padding: 2px 6px;
+  border-radius: 4px;
+  background: var(--sb-surface-2, rgba(0, 0, 0, 0.04));
+  color: var(--sb-text-2);
+  border: 1px solid var(--sb-line, rgba(0, 0, 0, 0.06));
+}
+.m-item__act--primary {
+  color: var(--sb-warning) !important;
 }
 
 </style>

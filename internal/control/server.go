@@ -20,6 +20,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -347,6 +348,12 @@ func untilNextRound(now time.Time, interval time.Duration) time.Duration {
 // show-pubkey") — the WireGuard-style replacement for distributing a CA cert.
 func (s *Server) NoisePublicKey() [wire.KeySize]byte {
 	return s.noiseKeypair.Public
+}
+
+// SubscribeLive returns a channel of live events and a cancel function.
+func (s *Server) SubscribeLive() (<-chan LiveEvent, func()) {
+	ch := s.liveHub.subscribe()
+	return ch, func() { s.liveHub.unsubscribe(ch) }
 }
 
 // SetAgentPort records the Noise KCP/UDP port agents must dial, so the console can
@@ -1085,6 +1092,7 @@ func (s *Server) dispatchNodeConfigurations(ctx context.Context, nodeIDs []strin
 // without recompiling or changing the sing-box configurations on those nodes.
 func (s *Server) dispatchNodeDNSUpdate(ctx context.Context, nodeIDs []string, domains []string, ip, operatorID string) ([]Task, error) {
 	domains = deduplicateStrings(domains)
+	sort.Strings(domains)
 	if len(nodeIDs) == 0 || len(domains) == 0 || ip == "" {
 		return nil, nil
 	}
@@ -3400,6 +3408,8 @@ func (s *Server) approveRegistration(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	_ = s.store.AppendAudit(r.Context(), operator.ID, "node.registration_approved", "registration", registration.ID, "node public key approved")
+	s.liveHub.publish(liveEvent{Kind: "registration"})
+	s.liveHub.publish(liveEvent{Kind: "node", NodeID: registration.NodeID})
 	writeJSON(w, http.StatusOK, map[string]string{"node_id": registration.NodeID, "status": registration.Status})
 }
 
@@ -3417,6 +3427,7 @@ func (s *Server) revokeNode(w http.ResponseWriter, r *http.Request) {
 	s.invalidateConnMetadataCache()
 	s.disconnectAgent(nodeID)
 	_ = s.store.AppendAudit(r.Context(), operator.ID, "node.certificate_revoked", "node", nodeID, "node revoked")
+	s.liveHub.publish(liveEvent{Kind: "node", NodeID: nodeID})
 	w.WriteHeader(http.StatusNoContent)
 }
 

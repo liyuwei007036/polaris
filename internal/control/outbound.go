@@ -592,3 +592,80 @@ func (s *Store) NodeConnectionDomains(ctx context.Context, nodeID string) ([]str
 	return domains, rows.Err()
 }
 
+// NodeChainedDDNSTarget represents a DDNS-enabled target node that a given node chains to.
+type NodeChainedDDNSTarget struct {
+	TargetNodeID string
+	TargetIP     string
+	Domains      []string
+}
+
+// NodeChainedDDNSTargets returns all DDNS-enabled target nodes and their domains/IPs
+// that the given node chains to.
+func (s *Store) NodeChainedDDNSTargets(ctx context.Context, nodeID string) ([]NodeChainedDDNSTarget, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT DISTINCT target_n.id, target_n.ddns_domain, target_n.ddns_domains, target_n.last_observed_ip
+		FROM listeners l
+		LEFT JOIN endpoints e ON e.listener_id = l.id
+		JOIN endpoints target_e ON (
+			e.outbound_id = 'chain:' || target_e.id
+			OR l.outbound_id = 'chain:' || target_e.id
+		)
+		JOIN listeners target_l ON target_l.id = target_e.listener_id
+		JOIN nodes target_n ON target_n.id = target_l.node_id
+		WHERE l.node_id = ?
+		  AND target_n.id <> ?
+		  AND target_n.revoked_at IS NULL
+		  AND target_n.ddns_enabled = 1
+		  AND target_n.last_observed_ip <> ''`, nodeID, nodeID)
+	if err != nil {
+		return nil, fmt.Errorf("list node chained ddns targets: %w", err)
+	}
+	defer rows.Close()
+
+	type rawTarget struct {
+		targetID       string
+		ddnsDomain     string
+		rawDDNSDomains string
+		lastObservedIP string
+	}
+	var raws []rawTarget
+	for rows.Next() {
+		var item rawTarget
+		if err := rows.Scan(&item.targetID, &item.ddnsDomain, &item.rawDDNSDomains, &item.lastObservedIP); err != nil {
+			return nil, fmt.Errorf("read node chained ddns target: %w", err)
+		}
+		raws = append(raws, item)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	_ = rows.Close()
+
+	var targets []NodeChainedDDNSTarget
+	for _, item := range raws {
+		var domains []string
+		if item.rawDDNSDomains != "" {
+			var parsed []string
+			if err := json.Unmarshal([]byte(item.rawDDNSDomains), &parsed); err == nil {
+				domains = append(domains, parsed...)
+			}
+		}
+		if item.ddnsDomain != "" {
+			domains = append(domains, item.ddnsDomain)
+		}
+		listenerDomains, _ := s.NodeConnectionDomains(ctx, item.targetID)
+		domains = append(domains, listenerDomains...)
+		domains = deduplicateStrings(domains)
+
+		if len(domains) > 0 && item.lastObservedIP != "" {
+			targets = append(targets, NodeChainedDDNSTarget{
+				TargetNodeID: item.targetID,
+				TargetIP:     item.lastObservedIP,
+				Domains:      domains,
+			})
+		}
+	}
+	return targets, nil
+}
+
+

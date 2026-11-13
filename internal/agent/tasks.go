@@ -135,7 +135,7 @@ func executeTask(ctx context.Context, task Task, options TaskOptions) TaskResult
 	case "probe.configure":
 		return configurePingProbes(task, options.DataDir)
 	case "dns.update":
-		return updateDNS(ctx, task)
+		return updateDNS(ctx, task, options.DataDir)
 	default:
 		return TaskResult{Status: "failed", Summary: "task kind is not implemented by this agent build"}
 	}

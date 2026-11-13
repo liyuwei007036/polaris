@@ -90,6 +90,22 @@ func reportedSingBoxConfigurationHash(dataDir string) string {
 	return reportedConfigurationHash(dataDir, "singbox.json", managedSingBoxConfig)
 }
 
+func updateEffectiveSingBoxConfigurationState(dataDir string) error {
+	statePath := filepath.Join(dataDir, "desired-state", "singbox.json")
+	stateContent, err := os.ReadFile(statePath)
+	if err != nil {
+		return err
+	}
+	var state configurationState
+	if err := json.Unmarshal(stateContent, &state); err != nil {
+		return err
+	}
+	if state.DesiredHash == "" {
+		return nil
+	}
+	return saveConfigurationState(dataDir, "singbox.json", managedSingBoxConfig, state.DesiredHash)
+}
+
 func configurationFileHash(path string) (string, error) {
 	content, err := os.ReadFile(path)
 	if err != nil {

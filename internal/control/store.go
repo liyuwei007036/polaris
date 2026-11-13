@@ -2529,6 +2529,38 @@ func (s *Store) CompleteTask(ctx context.Context, taskID, nodeID, status, summar
 	return nil
 }
 
+// HasActiveOrSucceededDNSTask checks if a dns.update task for expectedHash is currently active
+// (queued or dispatched), or already succeeded AFTER the latest singbox.apply_config.
+func (s *Store) HasActiveOrSucceededDNSTask(ctx context.Context, nodeID, expectedHash string) (bool, error) {
+	var exists int
+	err := s.db.QueryRowContext(ctx, `
+		SELECT 1 FROM tasks
+		WHERE node_id = ?
+		  AND kind = 'dns.update'
+		  AND expected_hash = ?
+		  AND (
+			status IN ('queued', 'dispatched')
+			OR (
+				status = 'succeeded'
+				AND finished_at >= (
+					SELECT COALESCE(MAX(finished_at), 0)
+					FROM tasks
+					WHERE node_id = ?
+					  AND kind = 'singbox.apply_config'
+					  AND status = 'succeeded'
+				)
+			)
+		  )
+		LIMIT 1`, nodeID, expectedHash, nodeID).Scan(&exists)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return exists == 1, nil
+}
+
 // AppendAudit stores an intentionally redacted summary. Callers must never pass
 // credentials, private keys, subscription values, or full configuration bodies.
 func (s *Store) AppendAudit(ctx context.Context, operatorID, action, targetType, targetID, summary string) error {

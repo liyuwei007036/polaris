@@ -2,6 +2,9 @@ package control
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -571,3 +574,45 @@ func (s *Server) syncNodeDDNS(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"status": "ok", "ip": resolvedIP, "domains": updatedNode.DDNSDomains})
 }
+
+// reconcileNodeChainedDDNS ensures any DDNS-enabled target nodes chained by the given node
+// have their latest IP and DNS resolution properly synchronized to this node.
+// If the node missed a previous dns.update (e.g. was offline during IP change, or task was interrupted),
+// this reconciles and dispatches the update immediately upon reconnect.
+func (s *Server) reconcileNodeChainedDDNS(ctx context.Context, nodeID string) {
+	targets, err := s.store.NodeChainedDDNSTargets(ctx, nodeID)
+	if err != nil || len(targets) == 0 {
+		return
+	}
+	operatorID := s.store.SystemOperatorID(ctx)
+	for _, tgt := range targets {
+		domains := deduplicateStrings(tgt.Domains)
+		sort.Strings(domains)
+		if len(domains) == 0 || tgt.TargetIP == "" {
+			continue
+		}
+		payloadBytes, err := json.Marshal(map[string]any{
+			"domains": domains,
+			"ip":      tgt.TargetIP,
+		})
+		if err != nil {
+			continue
+		}
+		digest := sha256.Sum256(payloadBytes)
+		hash := hex.EncodeToString(digest[:])
+
+		hasActiveOrSucceeded, err := s.store.HasActiveOrSucceededDNSTask(ctx, nodeID, hash)
+		if err != nil {
+			log.Printf("reconcileNodeChainedDDNS error checking task for node %s: %v", nodeID, err)
+			continue
+		}
+		if hasActiveOrSucceeded {
+			continue
+		}
+		log.Printf("reconcileNodeChainedDDNS: dispatching missing/interrupted dns.update to node %s (target IP: %s, domains: %v)", nodeID, tgt.TargetIP, domains)
+		if _, err := s.dispatchNodeDNSUpdate(ctx, []string{nodeID}, domains, tgt.TargetIP, operatorID); err != nil {
+			log.Printf("reconcileNodeChainedDDNS: dispatch dns.update for node %s failed: %v", nodeID, err)
+		}
+	}
+}
+

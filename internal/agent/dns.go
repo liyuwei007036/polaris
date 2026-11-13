@@ -8,7 +8,9 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"time"
@@ -32,8 +34,180 @@ func flushSystemDNSCache(ctx context.Context) {
 	_ = exec.CommandContext(ctx, "systemctl", "restart", "nscd").Run()
 }
 
+// syncHostsFile best-effort updates /etc/hosts with a managed polaris block.
+// Returns true if successfully updated, or false if non-root lacking write permission (or error).
+func syncHostsFile(domains []string, targetIP string) bool {
+	if runtime.GOOS == "windows" {
+		return false
+	}
+	targetIP = strings.TrimSpace(targetIP)
+	if targetIP == "" || len(domains) == 0 {
+		return false
+	}
+	hostsPath := "/etc/hosts"
+	content, err := os.ReadFile(hostsPath)
+	if err != nil {
+		return false
+	}
+	lines := strings.Split(string(content), "\n")
+	var newLines []string
+	inPolarisBlock := false
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "# BEGIN POLARIS DDNS" {
+			inPolarisBlock = true
+			continue
+		}
+		if trimmed == "# END POLARIS DDNS" {
+			inPolarisBlock = false
+			continue
+		}
+		if inPolarisBlock {
+			continue
+		}
+		hasDomain := false
+		for _, d := range domains {
+			if strings.Contains(line, d) {
+				hasDomain = true
+				break
+			}
+		}
+		if !hasDomain {
+			newLines = append(newLines, line)
+		}
+	}
+
+	var managedBlock []string
+	managedBlock = append(managedBlock, "# BEGIN POLARIS DDNS")
+	for _, d := range domains {
+		d = strings.TrimSpace(d)
+		if d != "" {
+			managedBlock = append(managedBlock, fmt.Sprintf("%s %s", targetIP, d))
+		}
+	}
+	managedBlock = append(managedBlock, "# END POLARIS DDNS")
+
+	newContent := strings.TrimRight(strings.Join(newLines, "\n"), "\n") + "\n" + strings.Join(managedBlock, "\n") + "\n"
+	if err := os.WriteFile(hostsPath, []byte(newContent), 0o644); err != nil {
+		return false
+	}
+	return true
+}
+
+// updateSingBoxDNSOverride updates sing-box's configuration file (managed by agent)
+// with a predefined DNS rule mapping domain -> targetIP.
+// This works under both root and non-root agent executions without requiring /etc/hosts.
+func updateSingBoxDNSOverride(domains []string, targetIP, dataDir string) (bool, error) {
+	configPath := managedSingBoxConfig
+	if _, err := os.Stat(configPath); err != nil {
+		return false, nil
+	}
+	configBytes, err := os.ReadFile(configPath)
+	if err != nil {
+		return false, err
+	}
+
+	var configMap map[string]any
+	if err := json.Unmarshal(configBytes, &configMap); err != nil {
+		return false, err
+	}
+
+	dnsMap, ok := configMap["dns"].(map[string]any)
+	if !ok || dnsMap == nil {
+		dnsMap = make(map[string]any)
+		configMap["dns"] = dnsMap
+	}
+
+	rtype := "A"
+	if parsed := net.ParseIP(targetIP); parsed != nil && parsed.To4() == nil {
+		rtype = "AAAA"
+	}
+
+	var rules []any
+	if existingRules, ok := dnsMap["rules"].([]any); ok {
+		rules = existingRules
+	}
+
+	domainSet := make(map[string]bool)
+	for _, d := range domains {
+		d = strings.TrimSpace(strings.ToLower(strings.TrimSuffix(d, ".")))
+		if d != "" {
+			domainSet[d] = true
+		}
+	}
+
+	// Filter out any existing predefined rules for these domains
+	var filteredRules []any
+	for _, r := range rules {
+		rMap, ok := r.(map[string]any)
+		if !ok {
+			filteredRules = append(filteredRules, r)
+			continue
+		}
+		if rMap["action"] == "predefined" {
+			match := false
+			if dList, ok := rMap["domain"].([]any); ok {
+				for _, dItem := range dList {
+					if dStr, ok := dItem.(string); ok && domainSet[strings.ToLower(strings.TrimSuffix(dStr, "."))] {
+						match = true
+						break
+					}
+				}
+			}
+			if match {
+				continue
+			}
+		}
+		filteredRules = append(filteredRules, r)
+	}
+
+	// Append updated predefined rules
+	for d := range domainSet {
+		filteredRules = append(filteredRules, map[string]any{
+			"domain": []any{d},
+			"action": "predefined",
+			"answer": []any{fmt.Sprintf("%s. 60 IN %s %s", d, rtype, targetIP)},
+		})
+	}
+	dnsMap["rules"] = filteredRules
+
+	encoded, err := json.MarshalIndent(configMap, "", "  ")
+	if err != nil {
+		return false, err
+	}
+
+	configDir := filepath.Dir(configPath)
+	tempFile, err := os.CreateTemp(configDir, ".singbox-ddns-*.json")
+	if err != nil {
+		return false, err
+	}
+	tempPath := tempFile.Name()
+	defer os.Remove(tempPath)
+
+	if _, err := tempFile.Write(encoded); err != nil {
+		tempFile.Close()
+		return false, err
+	}
+	if err := tempFile.Chmod(0o640); err != nil {
+		tempFile.Close()
+		return false, err
+	}
+	if err := tempFile.Close(); err != nil {
+		return false, err
+	}
+
+	if err := os.Rename(tempPath, configPath); err != nil {
+		return false, err
+	}
+
+	if dataDir != "" {
+		_ = updateEffectiveSingBoxConfigurationState(dataDir)
+	}
+	return true, nil
+}
+
 // closeStaleClashConnections selectively terminates only the active connections targeting
-// the affected domain(s) or stale IP via DELETE /connections/:id.
+// the affected domain(s), stale destination IP, or through the affected chain outbound(s) via DELETE /connections/:id.
 // This guarantees that all other unrelated user connections, inbounds, and direct routes
 // on sing-box remain completely unaffected and uninterrupted.
 func closeStaleClashConnections(ctx context.Context, domains []string, targetIP string) error {
@@ -63,7 +237,8 @@ func closeStaleClashConnections(ctx context.Context, domains []string, targetIP 
 
 	var payload struct {
 		Connections []struct {
-			ID       string `json:"id"`
+			ID       string   `json:"id"`
+			Chains   []string `json:"chains"`
 			Metadata struct {
 				Host          string `json:"host"`
 				DestinationIP string `json:"destinationIP"`
@@ -72,6 +247,31 @@ func closeStaleClashConnections(ctx context.Context, domains []string, targetIP 
 	}
 	if err := json.NewDecoder(io.LimitReader(resp.Body, 8*1024*1024)).Decode(&payload); err != nil {
 		return nil
+	}
+
+	// Read config to find outbound tags matching any of the affected domains
+	affectedOutboundTags := make(map[string]bool)
+	if configBytes, err := os.ReadFile(managedSingBoxConfig); err == nil {
+		var cfg struct {
+			Outbounds []struct {
+				Tag    string `json:"tag"`
+				Server string `json:"server"`
+				TLS    struct {
+					ServerName string `json:"server_name"`
+				} `json:"tls"`
+			} `json:"outbounds"`
+		}
+		if json.Unmarshal(configBytes, &cfg) == nil {
+			for _, ob := range cfg.Outbounds {
+				srv := strings.TrimSpace(strings.ToLower(strings.TrimSuffix(ob.Server, ".")))
+				sni := strings.TrimSpace(strings.ToLower(strings.TrimSuffix(ob.TLS.ServerName, ".")))
+				if domainMap[srv] || domainMap[sni] {
+					if ob.Tag != "" {
+						affectedOutboundTags[ob.Tag] = true
+					}
+				}
+			}
+		}
 	}
 
 	client := &http.Client{Timeout: 2 * time.Second}
@@ -89,6 +289,14 @@ func closeStaleClashConnections(ctx context.Context, domains []string, targetIP 
 				}
 			}
 		}
+		if !match {
+			for _, ch := range conn.Chains {
+				if affectedOutboundTags[ch] {
+					match = true
+					break
+				}
+			}
+		}
 		if match && conn.ID != "" {
 			delReq, _ := http.NewRequestWithContext(ctx, http.MethodDelete, clashAPIBase+"/connections/"+conn.ID, nil)
 			if delResp, err := client.Do(delReq); err == nil {
@@ -99,30 +307,20 @@ func closeStaleClashConnections(ctx context.Context, domains []string, targetIP 
 	return nil
 }
 
-// reloadSingBoxState hot-reloads sing-box (SIGHUP) to invalidate dialer caches and reset outbound states.
-// It does not modify configuration files or change configuration hashes.
+// reloadSingBoxState restarts sing-box to invalidate dialer caches and reset outbound states.
 func reloadSingBoxState(ctx context.Context) error {
-	// 1. If running under systemd, reload unit
-	if commandExists("systemctl") {
-		if output, err := exec.CommandContext(ctx, "systemctl", "reload", "sing-box.service").CombinedOutput(); err == nil {
-			return nil
-		} else {
-			_ = output
-		}
-	}
-	// 2. Try pkill -HUP for user-owned sing-box process (works for non-root without sudo)
-	if commandExists("pkill") {
-		if err := exec.CommandContext(ctx, "pkill", "-HUP", "-f", "sing-box").Run(); err == nil {
-			return nil
-		}
-	}
-	// 3. Fallback: if sing-box service is active, restart it
+	// Sing-box does NOT support SIGHUP configuration reload or dialer cache flush.
+	// To reliably terminate stale QUIC/TCP session pools and apply the new target IP,
+	// sing-box must be restarted. Restarting sing-box takes ~30ms.
 	if singBoxServiceActive(ctx) {
 		res := restartSingBox(ctx)
 		if res.Status == "succeeded" {
 			return nil
 		}
 		return errors.New(res.Summary)
+	}
+	if commandExists("pkill") {
+		_ = exec.CommandContext(ctx, "pkill", "-HUP", "-f", "sing-box").Run()
 	}
 	return nil
 }
@@ -161,7 +359,7 @@ func verifyDomainResolution(ctx context.Context, domain, expectedIP string, time
 	return nil, false
 }
 
-func updateDNS(ctx context.Context, task Task) TaskResult {
+func updateDNS(ctx context.Context, task Task, dataDirOpts ...string) TaskResult {
 	var payload DNSUpdatePayload
 	if err := json.Unmarshal([]byte(task.Payload), &payload); err != nil {
 		return TaskResult{Status: "failed", Summary: "invalid dns.update payload: " + err.Error()}
@@ -171,48 +369,69 @@ func updateDNS(ctx context.Context, task Task) TaskResult {
 		domains = append(domains, payload.Domain)
 	}
 	domains = append(domains, payload.Domains...)
+	domains = deduplicateStrings(domains)
 	if len(domains) == 0 {
 		return TaskResult{Status: "failed", Summary: "missing target domains in dns.update payload"}
 	}
+	expectedIP := strings.TrimSpace(payload.IP)
+	if expectedIP == "" {
+		return TaskResult{Status: "failed", Summary: "missing target IP in dns.update payload"}
+	}
 
-	// 1. Best-effort system DNS cache flush (non-fatal if non-root)
+	var dataDir string
+	if len(dataDirOpts) > 0 && dataDirOpts[0] != "" {
+		dataDir = dataDirOpts[0]
+	}
+
+	var notes []string
+
+	// 1. Best-effort /etc/hosts update (0ms resolution, works when running as root)
+	if syncHostsFile(domains, expectedIP) {
+		notes = append(notes, "已同步 /etc/hosts")
+	}
+
+	// 2. Best-effort system DNS cache flush
 	flushSystemDNSCache(ctx)
 
-	// 2. Active verification: verify whether the target domain actually resolves to the new IP locally
-	expectedIP := strings.TrimSpace(payload.IP)
-	var verifyNotes []string
-	allVerified := true
-	if expectedIP != "" {
-		for _, domain := range domains {
-			resolved, ok := verifyDomainResolution(ctx, domain, expectedIP, 2*time.Second)
-			if ok {
-				verifyNotes = append(verifyNotes, fmt.Sprintf("%s -> %s (已验证生效)", domain, expectedIP))
-			} else if len(resolved) > 0 {
-				allVerified = false
-				verifyNotes = append(verifyNotes, fmt.Sprintf("%s -> %s (等待上游同步，目标: %s)", domain, strings.Join(resolved, ","), expectedIP))
-			} else {
-				allVerified = false
-				verifyNotes = append(verifyNotes, fmt.Sprintf("%s (待同步，目标: %s)", domain, expectedIP))
-			}
-		}
+	// 3. Update sing-box configuration with predefined DNS rules
+	// This guarantees 0ms local DNS resolution inside sing-box without requiring root access to /etc/hosts.
+	if updated, err := updateSingBoxDNSOverride(domains, expectedIP, dataDir); err == nil && updated {
+		notes = append(notes, "已写入 sing-box 静态解析规则")
 	}
 
-	// 3. Selectively terminate ONLY the stale connections targeting the affected NAT domain/IP.
-	// Other unrelated proxy users, inbounds, and direct routes remain completely unaffected.
+	// 4. Selectively terminate stale connections targeting the affected NAT domain/IP/chain
 	_ = closeStaleClashConnections(ctx, domains, expectedIP)
 
-	// 4. Hot-reload sing-box state (SIGHUP) only to flush dialer caches for the next requests
-	_ = reloadSingBoxState(ctx)
-
-	summary := fmt.Sprintf("已执行动态 DNS 刷新与连接自愈：%s", strings.Join(domains, ", "))
-	if len(verifyNotes) > 0 {
-		summary += "；解析状态：" + strings.Join(verifyNotes, "，")
+	// 5. Restart sing-box to flush persistent QUIC/Hysteria2/TCP pools and re-dial immediately
+	if singBoxServiceActive(ctx) {
+		if res := restartSingBox(ctx); res.Status == "succeeded" {
+			notes = append(notes, "已重启 sing-box 重置出站连接池")
+		} else {
+			notes = append(notes, "sing-box 重启提示: "+res.Summary)
+		}
+	} else if commandExists("pkill") {
+		_ = exec.CommandContext(ctx, "pkill", "-HUP", "-f", "sing-box").Run()
 	}
-	if !allVerified && expectedIP != "" {
-		summary += "；提示：上游 DNS 尚在传播收敛中，sing-box 正常运行，仅该中转链路等待 DNS 最终同步"
+
+	summary := fmt.Sprintf("已执行动态 DNS 刷新与链路自愈：%s -> %s", strings.Join(domains, ", "), expectedIP)
+	if len(notes) > 0 {
+		summary += "（" + strings.Join(notes, "，") + "）"
 	}
 	return TaskResult{
 		Status:  "succeeded",
 		Summary: summary,
 	}
 }
+
+func deduplicateStrings(values []string) []string {
+	seen := make(map[string]bool, len(values))
+	result := make([]string, 0, len(values))
+	for _, v := range values {
+		if v != "" && !seen[v] {
+			seen[v] = true
+			result = append(result, v)
+		}
+	}
+	return result
+}
+

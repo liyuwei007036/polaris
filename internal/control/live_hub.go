@@ -2,7 +2,7 @@ package control
 
 import "sync"
 
-type liveEvent struct {
+type LiveEvent struct {
 	Kind           string `json:"kind"`
 	NodeID         string `json:"node_id,omitempty"`
 	TaskID         string `json:"task_id,omitempty"`
@@ -12,6 +12,8 @@ type liveEvent struct {
 	LastObservedIP string `json:"last_observed_ip,omitempty"`
 	AgentVersion   string `json:"agent_version,omitempty"`
 }
+
+type liveEvent = LiveEvent
 
 type liveHub struct {
 	mu      sync.Mutex

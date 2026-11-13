@@ -1319,3 +1319,164 @@ func TestServerDDNSPartialFailureRetriesAndAuditsTrueIP(t *testing.T) {
 		t.Errorf("expected rec-2 audit summary to report actual changed IP 198.51.100.2, got %q (events=%+v)", rec2Summary, events)
 	}
 }
+
+func TestReconcileNodeChainedDDNS(t *testing.T) {
+	ctx := t.Context()
+	store, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+
+	server, err := NewServer(store, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	node1ID := createTestNode(t, store, "Entry Node 1", "198.51.100.1")
+	node2ID := createTestNode(t, store, "NAT Node 2", "198.51.100.10")
+
+	enabled := true
+	recID := "rec-nat-reconcile"
+	domain := "nat.target.com"
+	if err := store.UpdateNodeWithDDNS(ctx, node2ID, "NAT Node 2", "nat.target.com", &enabled, &recID, &domain); err != nil {
+		t.Fatalf("update node2 ddns: %v", err)
+	}
+	if err := store.SetNodeLastObservedIP(ctx, node2ID, "198.51.100.200"); err != nil {
+		t.Fatalf("set node2 last observed ip: %v", err)
+	}
+
+	listener2, err := store.CreateListener(ctx, Listener{
+		NodeID:     node2ID,
+		Name:       "node2-svc",
+		Domain:     "nat.target.com",
+		Port:       10443,
+		ListenAddr: "0.0.0.0",
+		Enabled:    true,
+		Spec: ProtocolSpec{
+			Protocol:  "vless",
+			Network:   "tcp",
+			Transport: TransportOptions{Type: "httpupgrade", Path: "/ws"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("create listener2: %v", err)
+	}
+	ep2, err := store.CreateEndpoint(ctx, Endpoint{
+		ListenerID: listener2.ID,
+		Name:       "user2",
+		Enabled:    true,
+	}, EndpointCredentials{UUID: "22222222-2222-2222-2222-222222222222"})
+	if err != nil {
+		t.Fatalf("create ep2: %v", err)
+	}
+
+	listener1, err := store.CreateListener(ctx, Listener{
+		NodeID:     node1ID,
+		Name:       "node1-in",
+		Domain:     "entry.test.com",
+		Port:       8443,
+		ListenAddr: "0.0.0.0",
+		Enabled:    true,
+		Spec: ProtocolSpec{
+			Protocol:  "vless",
+			Network:   "tcp",
+			Transport: TransportOptions{Type: "httpupgrade", Path: "/ws"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("create listener1: %v", err)
+	}
+	_, err = store.CreateEndpoint(ctx, Endpoint{
+		ListenerID: listener1.ID,
+		Name:       "user1",
+		Enabled:    true,
+		OutboundID: "chain:" + ep2.ID,
+	}, EndpointCredentials{UUID: "11111111-1111-1111-1111-111111111111"})
+	if err != nil {
+		t.Fatalf("create ep1: %v", err)
+	}
+
+	// 1. Verify NodeChainedDDNSTargets correctly discovers node2
+	targets, err := store.NodeChainedDDNSTargets(ctx, node1ID)
+	if err != nil {
+		t.Fatalf("NodeChainedDDNSTargets error: %v", err)
+	}
+	if len(targets) != 1 {
+		t.Fatalf("expected 1 target, got %d", len(targets))
+	}
+	if targets[0].TargetNodeID != node2ID || targets[0].TargetIP != "198.51.100.200" {
+		t.Fatalf("unexpected target: %+v", targets[0])
+	}
+	if len(targets[0].Domains) == 0 || targets[0].Domains[0] != "nat.target.com" {
+		t.Fatalf("unexpected target domains: %+v", targets[0].Domains)
+	}
+
+	// 2. Offline node recovery: Node 1 missed the dns.update task
+	tasks, _, _ := store.ListTasks(ctx, node1ID, "", 1, 20)
+	if len(tasks) != 0 {
+		t.Fatalf("expected 0 tasks initially, got %d", len(tasks))
+	}
+
+	server.reconcileNodeChainedDDNS(ctx, node1ID)
+
+	tasks, _, err = store.ListTasks(ctx, node1ID, "", 1, 20)
+	if err != nil || len(tasks) != 1 {
+		t.Fatalf("expected 1 dispatched task, got %d (err: %v)", len(tasks), err)
+	}
+	task1, err := store.TaskByID(ctx, tasks[0].ID)
+	if err != nil {
+		t.Fatalf("TaskByID error: %v", err)
+	}
+	if task1.Kind != "dns.update" {
+		t.Fatalf("expected dns.update task, got %s", task1.Kind)
+	}
+	if !strings.Contains(task1.Payload, "198.51.100.200") || !strings.Contains(task1.Payload, "nat.target.com") {
+		t.Fatalf("expected payload to have target IP and domain: %s", task1.Payload)
+	}
+
+	// 3. Mark task succeeded; calling reconcileNodeChainedDDNS again must NOT duplicate
+	if err := store.CompleteTask(ctx, task1.ID, node1ID, "succeeded", "ok"); err != nil {
+		t.Fatalf("complete task1: %v", err)
+	}
+	server.reconcileNodeChainedDDNS(ctx, node1ID)
+	tasks, _, _ = store.ListTasks(ctx, node1ID, "", 1, 20)
+	if len(tasks) != 1 {
+		t.Fatalf("expected still exactly 1 task (no duplicates), got %d", len(tasks))
+	}
+
+	// 4. If singbox.apply_config runs and succeeds after dns.update,
+	// reconcileNodeChainedDDNS must automatically re-dispatch dns.update to restore overrides
+	_, _ = store.db.ExecContext(ctx, "UPDATE tasks SET finished_at = ? WHERE id = ?", nowUnix()-10, task1.ID)
+	applyConfigTask, err := store.CreateTask(ctx, Task{
+		NodeID:         node1ID,
+		Kind:           "singbox.apply_config",
+		IdempotencyKey: "apply-config-test-1",
+		Payload:        `{"configuration": "{}"}`,
+		ExpectedHash:   "hash-config-1",
+	})
+	if err != nil {
+		t.Fatalf("create apply_config task: %v", err)
+	}
+	if err := store.CompleteTask(ctx, applyConfigTask.ID, node1ID, "succeeded", "applied"); err != nil {
+		t.Fatalf("complete applyConfigTask: %v", err)
+	}
+
+	server.reconcileNodeChainedDDNS(ctx, node1ID)
+	tasks, _, _ = store.ListTasks(ctx, node1ID, "", 1, 20)
+	// Now there should be 3 tasks: initial dns.update, apply_config, and the newly reconciled dns.update!
+	if len(tasks) != 3 {
+		t.Fatalf("expected 3 tasks after config rewrite, got %d", len(tasks))
+	}
+	var newDNSTask *Task
+	for i := range tasks {
+		if tasks[i].Kind == "dns.update" && tasks[i].ID != task1.ID {
+			newDNSTask = &tasks[i]
+			break
+		}
+	}
+	if newDNSTask == nil {
+		t.Fatalf("expected new dns.update task to be created after singbox.apply_config")
+	}
+}
+

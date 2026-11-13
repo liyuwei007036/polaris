@@ -173,6 +173,7 @@ func (s *Server) handleRegistrationAttempt(ctx context.Context, conn *wire.Conn,
 		return
 	}
 	_ = conn.WriteMessage(wire.MsgRegisterAck, ackBody)
+	s.liveHub.publish(liveEvent{Kind: "registration"})
 }
 
 type agentInboundMessage struct {
@@ -320,6 +321,7 @@ func (s *Server) runAgentSession(ctx context.Context, conn *wire.Conn, node Node
 	if probeTasks, probeErr := s.store.ListPingTasks(ctx); probeErr == nil {
 		_ = s.reconcilePingTasksNode(ctx, node.ID, probeTasks, "")
 	}
+	go s.reconcileNodeChainedDDNS(context.Background(), node.ID)
 	defer func() {
 		s.controlMu.Lock()
 		isCurrent := (s.controls[node.ID] == session)
@@ -514,6 +516,7 @@ func (s *Server) handleAgentMessage(ctx context.Context, node *Node, msgType byt
 			s.reconcileNodeDesiredState(ctx, node.ID, st.SingBoxVersion, st.SingBoxConfigHash, st.NginxConfigHash)
 		}
 		s.reconcileNodeDDNS(ctx, node.ID)
+		go s.reconcileNodeChainedDDNS(context.Background(), node.ID)
 		var currentLatency *storedLatency
 		if err := s.mergeNodeMetrics(ctx, node.ID, func(m *storedMetrics) {
 			m.CollectedAt = st.CollectedAt
@@ -650,6 +653,9 @@ func (s *Server) handleAgentMessage(ctx context.Context, node *Node, msgType byt
 		}
 		if task.OperatorID != "" {
 			_ = s.store.AppendAudit(ctx, task.OperatorID, "task.completed."+res.Status, "task", task.ID, "agent task completed: "+task.Kind)
+		}
+		if task.Kind == "singbox.apply_config" && res.Status == "succeeded" {
+			go s.reconcileNodeChainedDDNS(context.Background(), node.ID)
 		}
 		if task.Kind == "dns.update" {
 			summary := fmt.Sprintf("前置服务器「%s」完成动态 DNS 刷新与链路自愈：%s", node.Name, res.Summary)
