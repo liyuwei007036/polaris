@@ -85,7 +85,7 @@ func (s *Store) ListSubscriptionAccess(ctx context.Context, filter SubscriptionA
 	}
 	queryArgs := append(append([]any{}, args...), pageSize, (page-1)*pageSize)
 	rows, err := s.db.QueryContext(ctx, `SELECT id, config_id, config_name, ip, location, user_agent, accessed_at
-		FROM subscription_access_logs`+where+` ORDER BY accessed_at DESC, id DESC LIMIT ? OFFSET ?`, queryArgs...)
+		FROM subscription_access_logs`+where+` ORDER BY accessed_at DESC, rowid DESC LIMIT ? OFFSET ?`, queryArgs...)
 	if err != nil {
 		return nil, 0, err
 	}

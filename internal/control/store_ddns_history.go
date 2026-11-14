@@ -115,7 +115,7 @@ func (s *Store) ListDDNSHistory(ctx context.Context, filter DDNSHistoryFilter, p
 		r.domain, r.record_type, r.record_id, r.old_ip, r.new_ip,
 		r.trigger_type, r.status, r.error_message, r.created_at
 		FROM ddns_change_records r
-		LEFT JOIN nodes n ON n.id = r.node_id` + where + ` ORDER BY r.created_at DESC, r.id DESC LIMIT ? OFFSET ?`
+		LEFT JOIN nodes n ON n.id = r.node_id` + where + ` ORDER BY r.created_at DESC, r.rowid DESC LIMIT ? OFFSET ?`
 
 	pagedArgs := append(append([]any{}, args...), pageSize, (page-1)*pageSize)
 	rows, err := s.db.QueryContext(ctx, query, pagedArgs...)
