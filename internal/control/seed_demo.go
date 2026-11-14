@@ -946,8 +946,9 @@ func (s *Server) EnsureDemoFleetData(ctx context.Context) error {
 			domJSON, _ := json.Marshal(rr.domains)
 			sufJSON, _ := json.Marshal(rr.suffixes)
 			cidrJSON, _ := json.Marshal(rr.cidrs)
-			_, _ = s.store.db.ExecContext(ctx, `INSERT INTO route_rules (id, node_id, priority, enabled, domains, domain_suffix, cidrs, port, network, protocol, inbound_tag, endpoint_name, action, outbound_tag, created_at, updated_at) VALUES (?, ?, ?, 1, ?, ?, ?, ?, ?, ?, '', '', ?, ?, ?, ?)`,
-				rr.id, rr.nodeID, rr.priority, string(domJSON), string(sufJSON), string(cidrJSON), rr.port, rr.network, rr.protocol, rr.action, rr.outboundTag, now, now)
+			nodeIDsJSON, _ := json.Marshal([]string{rr.nodeID})
+			_, _ = s.store.db.ExecContext(ctx, `INSERT INTO route_rules (id, node_id, node_ids, priority, enabled, domains, domain_suffix, cidrs, port, network, protocol, inbound_tag, endpoint_name, action, outbound_tag, created_at, updated_at) VALUES (?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, '', '', ?, ?, ?, ?)`,
+				rr.id, rr.nodeID, string(nodeIDsJSON), rr.priority, string(domJSON), string(sufJSON), string(cidrJSON), rr.port, rr.network, rr.protocol, rr.action, rr.outboundTag, now, now)
 		}
 	}
 

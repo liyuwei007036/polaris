@@ -26,7 +26,7 @@ const selectedNode = ref('')
 const selectedAction = ref('')
 const outboundOptions = computed(() => [{ label: '服务器直连', value: 'direct' }, { label: '阻断连接', value: 'block' }, ...outbounds.value.filter((item) => item.enabled && item.type !== 'direct').map((item) => ({ label: item.name, value: item.id }))])
 const accountOptions = computed(() => {
-  const ids = editing.value ? [form.node_id] : form.node_ids
+  const ids = form.node_ids || []
   return listeners.value
     .filter((listener) => ids.includes(listener.node_id))
     .flatMap((listener) => endpoints.value
@@ -39,6 +39,30 @@ const accountOptions = computed(() => {
 const nodeNames = computed(() => Object.fromEntries(appState.nodes.map((node) => [node.id, node.name])))
 const isAllNodesSelected = computed(() => appState.nodes.length > 0 && form.node_ids.length === appState.nodes.length)
 const isIndeterminateNodes = computed(() => form.node_ids.length > 0 && form.node_ids.length < appState.nodes.length)
+
+function getRowNodeIDs(row) {
+  if (Array.isArray(row.node_ids) && row.node_ids.length > 0) return row.node_ids
+  if (row.node_id) return [row.node_id]
+  return []
+}
+
+function formatNodesText(row) {
+  const ids = getRowNodeIDs(row)
+  if (!ids.length) return '未指定服务器'
+  if (appState.nodes.length > 0 && ids.length === appState.nodes.length) {
+    return '全部服务器'
+  }
+  const names = ids.map((id) => nodeNames.value[id] || id).filter(Boolean)
+  if (names.length <= 2) {
+    return names.join('、')
+  }
+  return `${names.slice(0, 2).join('、')} 等 ${names.length} 台`
+}
+
+function formatNodeTooltip(row) {
+  const ids = getRowNodeIDs(row)
+  return ids.map((id) => nodeNames.value[id] || id).join('、')
+}
 
 function toggleSelectAllNodes(val) {
   if (val) {
@@ -53,9 +77,12 @@ function onSelectedNodesChange() {
   loadAccounts(form.node_ids)
 }
 const filteredRows = computed(() => rows.value.filter((row) => {
-  if (selectedNode.value && row.node_id !== selectedNode.value) return false
+  if (selectedNode.value) {
+    const ids = getRowNodeIDs(row)
+    if (!ids.includes(selectedNode.value)) return false
+  }
   if (selectedAction.value && row.action !== selectedAction.value) return false
-  return includesText([nodeNames.value[row.node_id], matchText(row), actionText(row), row.priority], keyword.value)
+  return includesText([formatNodeTooltip(row), matchText(row), actionText(row), row.priority], keyword.value)
 }))
 
 async function load() {
@@ -110,8 +137,8 @@ function openCreate() {
 function openEdit(row) {
   editing.value = row
   Object.assign(form, row)
-  form.node_ids = [row.node_id]
-  loadAccounts(row.node_id)
+  form.node_ids = getRowNodeIDs(row)
+  loadAccounts(form.node_ids)
   form.outbound_tag = row.action === 'reject' ? 'block' : row.action === 'direct' ? 'direct' : row.outbound_tag
   const candidates = [['domains', 'domains'], ['domain_suffix', 'domain_suffix'], ['cidrs', 'cidrs']]
   const selected = candidates.find(([field]) => row[field]?.length)
@@ -121,6 +148,7 @@ function openEdit(row) {
 }
 function payload() {
   return {
+    node_ids: form.node_ids,
     priority: Number(form.priority), enabled: form.enabled,
     domains: matchKind.value === 'domains' ? values.value : [],
     domain_suffix: matchKind.value === 'domain_suffix' ? values.value : [],
@@ -133,7 +161,7 @@ function payload() {
   }
 }
 async function save() {
-  if (!editing.value && (!form.node_ids || form.node_ids.length === 0)) {
+  if (!form.node_ids || form.node_ids.length === 0) {
     ElMessage.warning('请选择至少一台服务器')
     return
   }
@@ -143,12 +171,8 @@ async function save() {
       await put(`/rules/${editing.value.id}`, payload())
       ElMessage.success('访问规则已保存')
     } else {
-      try {
-        await post('/rules', { node_ids: form.node_ids, ...payload() })
-      } catch (err) {
-        await Promise.all(form.node_ids.map((id) => post(`/nodes/${id}/rules`, payload())))
-      }
-      ElMessage.success(`已为 ${form.node_ids.length} 台服务器创建访问规则`)
+      await post('/rules', payload())
+      ElMessage.success('访问规则已保存')
     }
     dialogOpen.value = false
     await load()
@@ -186,7 +210,7 @@ onMounted(load)
       </div>
       <div class="table-panel">
         <PagedTable :rows="filteredRows" :loading="loading" empty-text="还没有访问规则">
-          <el-table-column label="服务器" min-width="150"><template #default="{ row }">{{ nodeNames[row.node_id] || row.node_id }}</template></el-table-column>
+          <el-table-column label="服务器" min-width="160"><template #default="{ row }"><span :title="formatNodeTooltip(row)">{{ formatNodesText(row) }}</span></template></el-table-column>
           <el-table-column label="优先级" prop="priority" width="90" />
           <el-table-column label="匹配条件" min-width="340"><template #default="{ row }"><strong>{{ matchText(row) }}</strong></template></el-table-column>
           <el-table-column label="处理方式" min-width="180"><template #default="{ row }"><el-tag :type="row.action === 'reject' ? 'danger' : 'primary'">{{ actionText(row) }}</el-tag></template></el-table-column>
@@ -199,46 +223,39 @@ onMounted(load)
     <el-dialog v-model="dialogOpen" :title="editing ? '编辑服务器访问规则' : '新建服务器访问规则'" width="680px">
       <el-form label-position="top">
         <el-form-item label="服务器" required>
-          <template v-if="!editing">
-            <div class="node-select-bar">
-              <el-checkbox
-                :model-value="isAllNodesSelected"
-                :indeterminate="isIndeterminateNodes"
-                @change="toggleSelectAllNodes"
-              >
-                全部服务器
-              </el-checkbox>
-              <span class="node-select-badge">已选择 {{ form.node_ids.length }} / {{ appState.nodes.length }} 台</span>
-            </div>
-            <el-select
-              v-model="form.node_ids"
-              multiple
-              filterable
-              collapse-tags
-              collapse-tags-tooltip
-              :max-collapse-tags="4"
-              placeholder="请选择要应用规则的服务器（可多选）"
-              style="width: 100%"
-              @change="onSelectedNodesChange"
+          <div class="node-select-bar">
+            <el-checkbox
+              :model-value="isAllNodesSelected"
+              :indeterminate="isIndeterminateNodes"
+              @change="toggleSelectAllNodes"
             >
-              <el-option
-                v-for="node in appState.nodes"
-                :key="node.id"
-                :label="node.name"
-                :value="node.id"
-              >
-                <div class="node-option-row">
-                  <span>{{ node.name }}</span>
-                  <span class="node-option-sub">{{ node.endpoint || node.ip || '' }}</span>
-                </div>
-              </el-option>
-            </el-select>
-          </template>
-          <template v-else>
-            <el-select :model-value="form.node_id" disabled style="width: 100%">
-              <el-option v-for="node in appState.nodes" :key="node.id" :label="node.name" :value="node.id" />
-            </el-select>
-          </template>
+              全部服务器
+            </el-checkbox>
+            <span class="node-select-badge">已选择 {{ form.node_ids.length }} / {{ appState.nodes.length }} 台</span>
+          </div>
+          <el-select
+            v-model="form.node_ids"
+            multiple
+            filterable
+            collapse-tags
+            collapse-tags-tooltip
+            :max-collapse-tags="4"
+            placeholder="请选择要应用规则的服务器（可多选）"
+            style="width: 100%"
+            @change="onSelectedNodesChange"
+          >
+            <el-option
+              v-for="node in appState.nodes"
+              :key="node.id"
+              :label="node.name"
+              :value="node.id"
+            >
+              <div class="node-option-row">
+                <span>{{ node.name }}</span>
+                <span class="node-option-sub">{{ node.endpoint || node.ip || '' }}</span>
+              </div>
+            </el-option>
+          </el-select>
         </el-form-item>
         <el-form-item label="匹配方式"><el-radio-group v-model="matchKind"><el-radio-button value="domain_suffix">域名后缀</el-radio-button><el-radio-button value="domains">完整域名</el-radio-button><el-radio-button value="cidrs">目标网段</el-radio-button><el-radio-button value="port">目标端口</el-radio-button><el-radio-button value="advanced">高级条件</el-radio-button></el-radio-group></el-form-item>
         <el-form-item v-if="['domain_suffix','domains','cidrs'].includes(matchKind)" :label="matchKind === 'cidrs' ? '网段列表' : '域名列表'"><el-select v-model="values" multiple filterable allow-create default-first-option style="width: 100%" :placeholder="matchKind === 'cidrs' ? '例如 10.0.0.0/8' : '输入后按回车添加'" /></el-form-item>

@@ -12,7 +12,8 @@ import (
 // control plane. It is not an arbitrary sing-box route JSON fragment.
 type RouteRule struct {
 	ID           string   `json:"id"`
-	NodeID       string   `json:"node_id"`
+	NodeID       string   `json:"node_id,omitempty"`
+	NodeIDs      []string `json:"node_ids"`
 	Priority     int      `json:"priority"`
 	Enabled      bool     `json:"enabled"`
 	Domains      []string `json:"domains"`
@@ -27,9 +28,30 @@ type RouteRule struct {
 	OutboundTag  string   `json:"outbound_tag"`
 }
 
+func normalizeNodeIDs(ids []string, fallback string) []string {
+	seen := make(map[string]bool)
+	var res []string
+	for _, id := range ids {
+		id = strings.TrimSpace(id)
+		if id != "" && !seen[id] {
+			seen[id] = true
+			res = append(res, id)
+		}
+	}
+	if len(res) == 0 && strings.TrimSpace(fallback) != "" {
+		res = append(res, strings.TrimSpace(fallback))
+	}
+	return res
+}
+
 func ValidateRouteRule(rule RouteRule) error {
-	if rule.NodeID == "" {
+	if len(rule.NodeIDs) == 0 && rule.NodeID == "" {
 		return errors.New("rule node is required")
+	}
+	for _, nid := range rule.NodeIDs {
+		if strings.TrimSpace(nid) == "" {
+			return errors.New("rule node is required")
+		}
 	}
 	if rule.Priority < 0 || rule.Priority > 1_000_000 {
 		return errors.New("rule priority is out of range")

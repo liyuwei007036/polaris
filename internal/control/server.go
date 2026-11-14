@@ -542,7 +542,7 @@ func (s *Server) registerBrowserRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("PUT /api/v1/ingress-routes/{id}", s.updateIngressRoute)
 	mux.HandleFunc("DELETE /api/v1/ingress-routes/{id}", s.deleteIngressRoute)
 	mux.HandleFunc("GET /api/v1/rules", s.listRouteRules)
-	mux.HandleFunc("POST /api/v1/rules", s.createRouteRulesBatch)
+	mux.HandleFunc("POST /api/v1/rules", s.createRouteRule)
 	mux.HandleFunc("GET /api/v1/nodes/{id}/rules", s.listRouteRules)
 	mux.HandleFunc("POST /api/v1/nodes/{id}/rules", s.createRouteRule)
 	mux.HandleFunc("GET /api/v1/nodes/{id}/rules/preview", s.previewRouteRules)
@@ -1199,12 +1199,14 @@ func (s *Server) endpointNodeID(ctx context.Context, endpointID string) (string,
 }
 
 func (s *Server) routeRuleNodeID(ctx context.Context, ruleID string) (string, error) {
-	var nodeID string
-	err := s.store.db.QueryRowContext(ctx, `SELECT node_id FROM route_rules WHERE id = ?`, ruleID).Scan(&nodeID)
-	if errors.Is(err, sql.ErrNoRows) {
+	nodeIDs, err := s.store.RouteRuleNodeIDs(ctx, ruleID)
+	if err != nil {
+		return "", err
+	}
+	if len(nodeIDs) == 0 {
 		return "", ErrNotFound
 	}
-	return nodeID, err
+	return nodeIDs[0], nil
 }
 
 func (s *Server) ingressRouteNodeID(ctx context.Context, routeID string) (string, error) {
@@ -3228,11 +3230,31 @@ func (s *Server) createRouteRule(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
-	var rule RouteRule
-	if !decodeJSON(w, r, &rule) {
+	var input struct {
+		RouteRule
+		NodeIDs []string `json:"node_ids"`
+	}
+	if !decodeJSON(w, r, &input) {
 		return
 	}
-	rule.NodeID = r.PathValue("id")
+	rule := input.RouteRule
+	if len(input.NodeIDs) > 0 {
+		rule.NodeIDs = input.NodeIDs
+	}
+	if pathNodeID := r.PathValue("id"); pathNodeID != "" {
+		if len(rule.NodeIDs) == 0 {
+			rule.NodeIDs = []string{pathNodeID}
+		}
+		rule.NodeID = pathNodeID
+	}
+	rule.NodeIDs = normalizeNodeIDs(rule.NodeIDs, rule.NodeID)
+	if len(rule.NodeIDs) == 0 {
+		writeError(w, userErrorf("请选择至少一台服务器"))
+		return
+	}
+	if rule.NodeID == "" && len(rule.NodeIDs) > 0 {
+		rule.NodeID = rule.NodeIDs[0]
+	}
 	created, err := s.store.CreateRouteRule(r.Context(), rule)
 	if err != nil {
 		writeError(w, err)
@@ -3242,65 +3264,15 @@ func (s *Server) createRouteRule(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
-	task, err := s.dispatchNodeConfiguration(r.Context(), created.NodeID, operator.ID)
+	tasks, err := s.dispatchNodeConfigurations(r.Context(), created.NodeIDs, operator.ID)
 	if err != nil {
 		writeError(w, err)
 		return
 	}
-	setAutoApplyTaskHeader(w, task)
+	if len(tasks) > 0 {
+		setAutoApplyTaskHeader(w, tasks[len(tasks)-1])
+	}
 	writeJSON(w, http.StatusCreated, created)
-}
-
-func (s *Server) createRouteRulesBatch(w http.ResponseWriter, r *http.Request) {
-	operator, err := s.writer(r)
-	if err != nil {
-		writeError(w, err)
-		return
-	}
-	var input struct {
-		RouteRule
-		NodeIDs []string `json:"node_ids"`
-	}
-	if !decodeJSON(w, r, &input) {
-		return
-	}
-	nodeIDs := input.NodeIDs
-	if len(nodeIDs) == 0 && input.NodeID != "" {
-		nodeIDs = []string{input.NodeID}
-	}
-	if len(nodeIDs) == 0 {
-		writeError(w, userErrorf("请选择至少一台服务器"))
-		return
-	}
-
-	var createdRules []RouteRule
-	var lastTask Task
-	var hasTask bool
-	for _, nodeID := range nodeIDs {
-		rule := input.RouteRule
-		rule.NodeID = nodeID
-		created, err := s.store.CreateRouteRule(r.Context(), rule)
-		if err != nil {
-			writeError(w, err)
-			return
-		}
-		if err := s.store.AppendAudit(r.Context(), operator.ID, "route_rule.created", "route_rule", created.ID, "structured route rule created"); err != nil {
-			writeError(w, err)
-			return
-		}
-		task, err := s.dispatchNodeConfiguration(r.Context(), created.NodeID, operator.ID)
-		if err != nil {
-			writeError(w, err)
-			return
-		}
-		lastTask = task
-		hasTask = true
-		createdRules = append(createdRules, created)
-	}
-	if hasTask {
-		setAutoApplyTaskHeader(w, lastTask)
-	}
-	writeJSON(w, http.StatusCreated, map[string]any{"rules": createdRules})
 }
 
 func (s *Server) previewRouteRules(w http.ResponseWriter, r *http.Request) {
@@ -3322,11 +3294,19 @@ func (s *Server) updateRouteRule(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
-	var rule RouteRule
-	if !decodeJSON(w, r, &rule) {
+	var input struct {
+		RouteRule
+		NodeIDs []string `json:"node_ids"`
+	}
+	if !decodeJSON(w, r, &input) {
 		return
 	}
+	rule := input.RouteRule
+	if len(input.NodeIDs) > 0 {
+		rule.NodeIDs = input.NodeIDs
+	}
 	rule.ID = r.PathValue("id")
+	oldNodeIDs, _ := s.store.RouteRuleNodeIDs(r.Context(), rule.ID)
 	updated, err := s.store.UpdateRouteRule(r.Context(), rule)
 	if err != nil {
 		writeError(w, err)
@@ -3336,12 +3316,15 @@ func (s *Server) updateRouteRule(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
-	task, err := s.dispatchNodeConfiguration(r.Context(), updated.NodeID, operator.ID)
+	allAffected := normalizeNodeIDs(append(oldNodeIDs, updated.NodeIDs...), "")
+	tasks, err := s.dispatchNodeConfigurations(r.Context(), allAffected, operator.ID)
 	if err != nil {
 		writeError(w, err)
 		return
 	}
-	setAutoApplyTaskHeader(w, task)
+	if len(tasks) > 0 {
+		setAutoApplyTaskHeader(w, tasks[len(tasks)-1])
+	}
 	writeJSON(w, http.StatusOK, updated)
 }
 
@@ -3357,7 +3340,7 @@ func (s *Server) setRouteRuleEnabled(w http.ResponseWriter, r *http.Request) {
 	if !decodeJSON(w, r, &input) {
 		return
 	}
-	nodeID, err := s.routeRuleNodeID(r.Context(), r.PathValue("id"))
+	nodeIDs, err := s.store.RouteRuleNodeIDs(r.Context(), r.PathValue("id"))
 	if err != nil {
 		writeError(w, err)
 		return
@@ -3370,12 +3353,14 @@ func (s *Server) setRouteRuleEnabled(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
-	task, err := s.dispatchNodeConfiguration(r.Context(), nodeID, operator.ID)
+	tasks, err := s.dispatchNodeConfigurations(r.Context(), nodeIDs, operator.ID)
 	if err != nil {
 		writeError(w, err)
 		return
 	}
-	setAutoApplyTaskHeader(w, task)
+	if len(tasks) > 0 {
+		setAutoApplyTaskHeader(w, tasks[len(tasks)-1])
+	}
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -3391,7 +3376,7 @@ func (s *Server) setRouteRulePriority(w http.ResponseWriter, r *http.Request) {
 	if !decodeJSON(w, r, &input) {
 		return
 	}
-	nodeID, err := s.routeRuleNodeID(r.Context(), r.PathValue("id"))
+	nodeIDs, err := s.store.RouteRuleNodeIDs(r.Context(), r.PathValue("id"))
 	if err != nil {
 		writeError(w, err)
 		return
@@ -3404,12 +3389,14 @@ func (s *Server) setRouteRulePriority(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
-	task, err := s.dispatchNodeConfiguration(r.Context(), nodeID, operator.ID)
+	tasks, err := s.dispatchNodeConfigurations(r.Context(), nodeIDs, operator.ID)
 	if err != nil {
 		writeError(w, err)
 		return
 	}
-	setAutoApplyTaskHeader(w, task)
+	if len(tasks) > 0 {
+		setAutoApplyTaskHeader(w, tasks[len(tasks)-1])
+	}
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -3419,7 +3406,7 @@ func (s *Server) deleteRouteRule(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
-	nodeID, err := s.routeRuleNodeID(r.Context(), r.PathValue("id"))
+	nodeIDs, err := s.store.RouteRuleNodeIDs(r.Context(), r.PathValue("id"))
 	if err != nil {
 		writeError(w, err)
 		return
@@ -3432,12 +3419,14 @@ func (s *Server) deleteRouteRule(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
-	task, err := s.dispatchNodeConfiguration(r.Context(), nodeID, operator.ID)
+	tasks, err := s.dispatchNodeConfigurations(r.Context(), nodeIDs, operator.ID)
 	if err != nil {
 		writeError(w, err)
 		return
 	}
-	setAutoApplyTaskHeader(w, task)
+	if len(tasks) > 0 {
+		setAutoApplyTaskHeader(w, tasks[len(tasks)-1])
+	}
 	w.WriteHeader(http.StatusNoContent)
 }
 

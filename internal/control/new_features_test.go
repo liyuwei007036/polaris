@@ -376,7 +376,7 @@ func TestCreateRouteRulesBatch(t *testing.T) {
 	nodeID1 := approveTestNode(t, server, baseURL, session, csrfToken, "batch-node-1")
 	nodeID2 := approveTestNode(t, server, baseURL, session, csrfToken, "batch-node-2")
 
-	// 1. Batch create rule for both nodes
+	// 1. Create a single rule applied to both nodes
 	resp := request(t, http.MethodPost, baseURL+"/api/v1/rules", map[string]any{
 		"node_ids":      []string{nodeID1, nodeID2},
 		"priority":      150,
@@ -387,15 +387,22 @@ func TestCreateRouteRulesBatch(t *testing.T) {
 	if resp.StatusCode != http.StatusCreated {
 		t.Fatalf("expected 201, got %d: %s", resp.StatusCode, readBodyForTest(t, resp))
 	}
-	var result struct {
-		Rules []control.RouteRule `json:"rules"`
+	var created control.RouteRule
+	decodeBody(t, resp, &created)
+	if created.ID == "" {
+		t.Fatalf("expected created rule to have ID")
 	}
-	decodeBody(t, resp, &result)
-	if len(result.Rules) != 2 {
-		t.Fatalf("expected 2 rules created, got %d", len(result.Rules))
+	if len(created.NodeIDs) != 2 {
+		t.Fatalf("expected rule to have 2 node_ids, got %v", created.NodeIDs)
 	}
 
-	// 2. Verify rules exist on both nodes
+	// 2. Verify only 1 rule exists in global list
+	allRules, err := store.ListRouteRules(t.Context(), "")
+	if err != nil || len(allRules) != 1 {
+		t.Fatalf("global rules count: err=%v, count=%d, want 1", err, len(allRules))
+	}
+
+	// 3. Verify the same rule exists on both nodes
 	rules1, err := store.ListRouteRules(t.Context(), nodeID1)
 	if err != nil || len(rules1) != 1 {
 		t.Fatalf("node 1 rules: err=%v, count=%d", err, len(rules1))
@@ -404,11 +411,14 @@ func TestCreateRouteRulesBatch(t *testing.T) {
 	if err != nil || len(rules2) != 1 {
 		t.Fatalf("node 2 rules: err=%v, count=%d", err, len(rules2))
 	}
+	if rules1[0].ID != rules2[0].ID || rules1[0].ID != created.ID {
+		t.Fatalf("expected same rule ID across nodes: %s vs %s vs %s", rules1[0].ID, rules2[0].ID, created.ID)
+	}
 	if rules1[0].Priority != 150 || rules2[0].Priority != 150 {
 		t.Fatalf("unexpected rule priority: %d, %d", rules1[0].Priority, rules2[0].Priority)
 	}
 
-	// 3. Test validation: empty node_ids returns 400
+	// 4. Test validation: empty node_ids returns 400
 	respBad := request(t, http.MethodPost, baseURL+"/api/v1/rules", map[string]any{
 		"node_ids": []string{},
 		"priority": 100,

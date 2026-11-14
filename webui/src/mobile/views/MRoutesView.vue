@@ -47,7 +47,7 @@ const outboundOptions = computed(() => [
   ...outbounds.value.filter((item) => item.enabled && item.type !== 'direct').map((item) => ({ value: item.id, label: item.name })),
 ])
 const accountOptions = computed(() => {
-  const ids = editing.value ? [form.node_id] : form.node_ids
+  const ids = form.node_ids || []
   return [
     { value: '', label: '适用于全部节点' },
     ...listeners.value
@@ -59,10 +59,38 @@ const accountOptions = computed(() => {
 })
 const networkOptions = [{ value: '', label: '不限' }, { value: 'tcp', label: 'TCP' }, { value: 'udp', label: 'UDP' }]
 const nodeNames = computed(() => Object.fromEntries(appState.nodes.map((node) => [node.id, node.name])))
+
+function getRowNodeIDs(row) {
+  if (Array.isArray(row.node_ids) && row.node_ids.length > 0) return row.node_ids
+  if (row.node_id) return [row.node_id]
+  return []
+}
+
+function formatNodesText(row) {
+  const ids = getRowNodeIDs(row)
+  if (!ids.length) return '未指定服务器'
+  if (appState.nodes.length > 0 && ids.length === appState.nodes.length) {
+    return '全部服务器'
+  }
+  const names = ids.map((id) => nodeNames.value[id] || id).filter(Boolean)
+  if (names.length <= 2) {
+    return names.join('、')
+  }
+  return `${names.slice(0, 2).join('、')} 等 ${names.length} 台`
+}
+
+function formatNodeTooltip(row) {
+  const ids = getRowNodeIDs(row)
+  return ids.map((id) => nodeNames.value[id] || id).join('、')
+}
+
 const filteredRows = computed(() => rows.value.filter((row) => {
-  if (selectedNode.value && row.node_id !== selectedNode.value) return false
+  if (selectedNode.value) {
+    const ids = getRowNodeIDs(row)
+    if (!ids.includes(selectedNode.value)) return false
+  }
   if (selectedAction.value && row.action !== selectedAction.value) return false
-  return includesText([nodeNames.value[row.node_id], matchText(row), actionText(row), row.priority], keyword.value)
+  return includesText([formatNodeTooltip(row), matchText(row), actionText(row), row.priority], keyword.value)
 }))
 
 async function load() {
@@ -119,8 +147,8 @@ function openCreate() {
 function openEdit(row) {
   editing.value = row
   Object.assign(form, row)
-  form.node_ids = [row.node_id]
-  loadAccounts(row.node_id)
+  form.node_ids = getRowNodeIDs(row)
+  loadAccounts(form.node_ids)
   form.outbound_tag = row.action === 'reject' ? 'block' : row.action === 'direct' ? 'direct' : row.outbound_tag
   const candidates = [['domains', 'domains'], ['domain_suffix', 'domain_suffix'], ['cidrs', 'cidrs']]
   const selected = candidates.find(([field]) => row[field]?.length)
@@ -140,6 +168,7 @@ function toggleAllNodesMobile() {
 
 function payload() {
   return {
+    node_ids: form.node_ids,
     priority: Number(form.priority), enabled: form.enabled,
     domains: matchKind.value === 'domains' ? values.value : [],
     domain_suffix: matchKind.value === 'domain_suffix' ? values.value : [],
@@ -153,7 +182,7 @@ function payload() {
 }
 
 async function save() {
-  if (!editing.value && (!form.node_ids || form.node_ids.length === 0)) {
+  if (!form.node_ids || form.node_ids.length === 0) {
     ElMessage.error('请选择至少一台服务器')
     return
   }
@@ -161,15 +190,10 @@ async function save() {
   try {
     if (editing.value) {
       await put(`/rules/${editing.value.id}`, payload())
-      ElMessage.success('服务器访问规则已保存，正在自动应用')
     } else {
-      try {
-        await post('/rules', { node_ids: form.node_ids, ...payload() })
-      } catch (err) {
-        await Promise.all(form.node_ids.map((id) => post(`/nodes/${id}/rules`, payload())))
-      }
-      ElMessage.success(`已为 ${form.node_ids.length} 台服务器创建访问规则，正在自动应用`)
+      await post('/rules', payload())
     }
+    ElMessage.success('服务器访问规则已保存，正在自动应用')
     sheetOpen.value = false
     await load()
   } catch (error) {
@@ -181,7 +205,7 @@ const details = computed(() => {
   const row = actionTarget.value
   if (!row) return []
   return [
-    { label: '服务器', value: nodeNames.value[row.node_id] || row.node_id },
+    { label: '服务器', value: formatNodeTooltip(row) },
     { label: '匹配条件', value: matchText(row) },
     { label: '处理方式', value: actionText(row) },
     { label: '优先级', value: String(row.priority) },
@@ -271,7 +295,7 @@ onMounted(load)
           </span>
           <span class="m-stat"><b>{{ row.priority }}</b><small>优先级</small></span>
         </div>
-        <div class="m-item__meta">{{ nodeNames[row.node_id] || row.node_id }}</div>
+        <div class="m-item__meta">{{ formatNodesText(row) }}</div>
       </button>
     </article>
 
@@ -284,7 +308,6 @@ onMounted(load)
         <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
           <label class="m-field__label" style="margin: 0;">服务器 <em>*</em></label>
           <button
-            v-if="!editing"
             type="button"
             style="background: none; border: none; color: var(--sb-accent); font-size: 12px; cursor: pointer; padding: 0;"
             @click="toggleAllNodesMobile"
@@ -293,7 +316,6 @@ onMounted(load)
           </button>
         </div>
         <MPicker
-          v-if="!editing"
           v-model="form.node_ids"
           multiple
           :options="nodeOptions"
@@ -301,7 +323,6 @@ onMounted(load)
           placeholder="请选择服务器（可多选）"
           @update:model-value="loadAccounts(form.node_ids)"
         />
-        <div v-else class="m-field-readonly">{{ nodeNames[form.node_id] || form.node_id }}</div>
       </div>
       <div class="m-field">
         <label class="m-field__label">匹配方式</label>

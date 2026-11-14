@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"sort"
 	"strings"
 	"time"
 
@@ -472,22 +473,39 @@ func (s *Store) outboundReferenced(ctx context.Context, outboundID string) (bool
 
 func (s *Store) OutboundNodeIDs(ctx context.Context, outboundID string) ([]string, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT node_id FROM listeners WHERE outbound_id = ?
-		UNION SELECT l.node_id FROM endpoints e JOIN listeners l ON l.id = e.listener_id WHERE e.outbound_id = ?
-		UNION SELECT node_id FROM route_rules WHERE action = 'outbound' AND outbound_tag = ?
-		ORDER BY 1`, outboundID, outboundID, outboundID)
+		SELECT node_id, '' AS node_ids FROM listeners WHERE outbound_id = ?
+		UNION SELECT l.node_id, '' AS node_ids FROM endpoints e JOIN listeners l ON l.id = e.listener_id WHERE e.outbound_id = ?
+		UNION SELECT node_id, node_ids FROM route_rules WHERE action = 'outbound' AND outbound_tag = ?`,
+		outboundID, outboundID, outboundID)
 	if err != nil {
 		return nil, fmt.Errorf("list outbound nodes: %w", err)
 	}
 	defer rows.Close()
-	var nodeIDs []string
+	nodeSet := make(map[string]bool)
 	for rows.Next() {
-		var nodeID string
-		if err := rows.Scan(&nodeID); err != nil {
+		var nodeID, nodeIDsJSON string
+		if err := rows.Scan(&nodeID, &nodeIDsJSON); err != nil {
 			return nil, fmt.Errorf("read outbound node: %w", err)
 		}
-		nodeIDs = append(nodeIDs, nodeID)
+		if nodeID != "" {
+			nodeSet[nodeID] = true
+		}
+		if nodeIDsJSON != "" {
+			var ids []string
+			if err := json.Unmarshal([]byte(nodeIDsJSON), &ids); err == nil {
+				for _, id := range ids {
+					if id != "" {
+						nodeSet[id] = true
+					}
+				}
+			}
+		}
 	}
+	nodeIDs := make([]string, 0, len(nodeSet))
+	for id := range nodeSet {
+		nodeIDs = append(nodeIDs, id)
+	}
+	sort.Strings(nodeIDs)
 	return nodeIDs, rows.Err()
 }
 

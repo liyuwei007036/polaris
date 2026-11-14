@@ -2276,6 +2276,10 @@ func (s *Store) ListEndpoints(ctx context.Context, listenerID string) ([]Endpoin
 }
 
 func (s *Store) CreateRouteRule(ctx context.Context, rule RouteRule) (RouteRule, error) {
+	rule.NodeIDs = normalizeNodeIDs(rule.NodeIDs, rule.NodeID)
+	if rule.NodeID == "" && len(rule.NodeIDs) > 0 {
+		rule.NodeID = rule.NodeIDs[0]
+	}
 	if err := ValidateRouteRule(rule); err != nil {
 		return RouteRule{}, err
 	}
@@ -2284,23 +2288,26 @@ func (s *Store) CreateRouteRule(ctx context.Context, rule RouteRule) (RouteRule,
 			return RouteRule{}, err
 		}
 	}
-	var exists int
-	if err := s.db.QueryRowContext(ctx, `SELECT 1 FROM nodes WHERE id = ? AND revoked_at IS NULL`, rule.NodeID).Scan(&exists); err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return RouteRule{}, ErrNotFound
+	for _, nid := range rule.NodeIDs {
+		var exists int
+		if err := s.db.QueryRowContext(ctx, `SELECT 1 FROM nodes WHERE id = ? AND revoked_at IS NULL`, nid).Scan(&exists); err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return RouteRule{}, ErrNotFound
+			}
+			return RouteRule{}, err
 		}
-		return RouteRule{}, err
 	}
 	domains, _ := json.Marshal(rule.Domains)
 	suffixes, _ := json.Marshal(rule.DomainSuffix)
 	cidrs, _ := json.Marshal(rule.CIDRs)
+	nodeIDsJSON, _ := json.Marshal(rule.NodeIDs)
 	id, err := newID()
 	if err != nil {
 		return RouteRule{}, err
 	}
 	rule.ID = id
-	_, err = s.db.ExecContext(ctx, `INSERT INTO route_rules (id, node_id, priority, enabled, domains, domain_suffix, cidrs, port, network, protocol, inbound_tag, endpoint_name, action, outbound_tag, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, rule.ID, rule.NodeID, rule.Priority, rule.Enabled, string(domains), string(suffixes), string(cidrs), rule.Port, rule.Network, rule.Protocol, rule.InboundTag, rule.EndpointName, rule.Action, rule.OutboundTag, nowUnix(), nowUnix())
+	_, err = s.db.ExecContext(ctx, `INSERT INTO route_rules (id, node_id, node_ids, priority, enabled, domains, domain_suffix, cidrs, port, network, protocol, inbound_tag, endpoint_name, action, outbound_tag, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, rule.ID, rule.NodeID, string(nodeIDsJSON), rule.Priority, rule.Enabled, string(domains), string(suffixes), string(cidrs), rule.Port, rule.Network, rule.Protocol, rule.InboundTag, rule.EndpointName, rule.Action, rule.OutboundTag, nowUnix(), nowUnix())
 	if err != nil {
 		return RouteRule{}, fmt.Errorf("create route rule: %w", err)
 	}
@@ -2310,14 +2317,8 @@ func (s *Store) CreateRouteRule(ctx context.Context, rule RouteRule) (RouteRule,
 // ListRouteRules returns one node's rules, or every node's when nodeID is
 // empty so the console can render the whole list from one request.
 func (s *Store) ListRouteRules(ctx context.Context, nodeID string) ([]RouteRule, error) {
-	query := `SELECT id, node_id, priority, enabled, domains, domain_suffix, cidrs, port, network, protocol, inbound_tag, endpoint_name, action, outbound_tag FROM route_rules`
-	args := []any{}
-	if nodeID != "" {
-		query += " WHERE node_id = ?"
-		args = append(args, nodeID)
-	}
-	query += " ORDER BY node_id, priority, id"
-	rows, err := s.db.QueryContext(ctx, query, args...)
+	query := `SELECT id, node_id, node_ids, priority, enabled, domains, domain_suffix, cidrs, port, network, protocol, inbound_tag, endpoint_name, action, outbound_tag FROM route_rules ORDER BY priority, id`
+	rows, err := s.db.QueryContext(ctx, query)
 	if err != nil {
 		return nil, err
 	}
@@ -2325,8 +2326,8 @@ func (s *Store) ListRouteRules(ctx context.Context, nodeID string) ([]RouteRule,
 	var rules []RouteRule
 	for rows.Next() {
 		var rule RouteRule
-		var domains, suffixes, cidrs string
-		if err := rows.Scan(&rule.ID, &rule.NodeID, &rule.Priority, &rule.Enabled, &domains, &suffixes, &cidrs, &rule.Port, &rule.Network, &rule.Protocol, &rule.InboundTag, &rule.EndpointName, &rule.Action, &rule.OutboundTag); err != nil {
+		var nodeIDsJSON, domains, suffixes, cidrs string
+		if err := rows.Scan(&rule.ID, &rule.NodeID, &nodeIDsJSON, &rule.Priority, &rule.Enabled, &domains, &suffixes, &cidrs, &rule.Port, &rule.Network, &rule.Protocol, &rule.InboundTag, &rule.EndpointName, &rule.Action, &rule.OutboundTag); err != nil {
 			return nil, err
 		}
 		if err := json.Unmarshal([]byte(domains), &rule.Domains); err != nil {
@@ -2338,6 +2339,22 @@ func (s *Store) ListRouteRules(ctx context.Context, nodeID string) ([]RouteRule,
 		if err := json.Unmarshal([]byte(cidrs), &rule.CIDRs); err != nil {
 			return nil, err
 		}
+		if nodeIDsJSON != "" {
+			_ = json.Unmarshal([]byte(nodeIDsJSON), &rule.NodeIDs)
+		}
+		rule.NodeIDs = normalizeNodeIDs(rule.NodeIDs, rule.NodeID)
+		if nodeID != "" {
+			matched := false
+			for _, nid := range rule.NodeIDs {
+				if nid == nodeID {
+					matched = true
+					break
+				}
+			}
+			if !matched && rule.NodeID != nodeID {
+				continue
+			}
+		}
 		rules = append(rules, rule)
 	}
 	return rules, rows.Err()
@@ -2347,6 +2364,10 @@ func (s *Store) UpdateRouteRule(ctx context.Context, rule RouteRule) (RouteRule,
 	if rule.ID == "" {
 		return RouteRule{}, errors.New("rule ID is required")
 	}
+	rule.NodeIDs = normalizeNodeIDs(rule.NodeIDs, rule.NodeID)
+	if rule.NodeID == "" && len(rule.NodeIDs) > 0 {
+		rule.NodeID = rule.NodeIDs[0]
+	}
 	if err := ValidateRouteRule(rule); err != nil {
 		return RouteRule{}, err
 	}
@@ -2355,26 +2376,49 @@ func (s *Store) UpdateRouteRule(ctx context.Context, rule RouteRule) (RouteRule,
 			return RouteRule{}, err
 		}
 	}
-	var currentNodeID string
-	err := s.db.QueryRowContext(ctx, `SELECT node_id FROM route_rules WHERE id = ?`, rule.ID).Scan(&currentNodeID)
+	var existingID string
+	err := s.db.QueryRowContext(ctx, `SELECT id FROM route_rules WHERE id = ?`, rule.ID).Scan(&existingID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return RouteRule{}, ErrNotFound
 	}
 	if err != nil {
 		return RouteRule{}, fmt.Errorf("load route rule: %w", err)
 	}
-	if currentNodeID != rule.NodeID {
-		return RouteRule{}, ErrForbidden
+	for _, nid := range rule.NodeIDs {
+		var exists int
+		if err := s.db.QueryRowContext(ctx, `SELECT 1 FROM nodes WHERE id = ? AND revoked_at IS NULL`, nid).Scan(&exists); err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return RouteRule{}, ErrNotFound
+			}
+			return RouteRule{}, err
+		}
 	}
 	domains, _ := json.Marshal(rule.Domains)
 	suffixes, _ := json.Marshal(rule.DomainSuffix)
 	cidrs, _ := json.Marshal(rule.CIDRs)
-	_, err = s.db.ExecContext(ctx, `UPDATE route_rules SET priority = ?, enabled = ?, domains = ?, domain_suffix = ?, cidrs = ?, port = ?, network = ?, protocol = ?, inbound_tag = ?, endpoint_name = ?, action = ?, outbound_tag = ?, updated_at = ? WHERE id = ?`,
-		rule.Priority, rule.Enabled, string(domains), string(suffixes), string(cidrs), rule.Port, rule.Network, rule.Protocol, rule.InboundTag, rule.EndpointName, rule.Action, rule.OutboundTag, nowUnix(), rule.ID)
+	nodeIDsJSON, _ := json.Marshal(rule.NodeIDs)
+	_, err = s.db.ExecContext(ctx, `UPDATE route_rules SET node_id = ?, node_ids = ?, priority = ?, enabled = ?, domains = ?, domain_suffix = ?, cidrs = ?, port = ?, network = ?, protocol = ?, inbound_tag = ?, endpoint_name = ?, action = ?, outbound_tag = ?, updated_at = ? WHERE id = ?`,
+		rule.NodeID, string(nodeIDsJSON), rule.Priority, rule.Enabled, string(domains), string(suffixes), string(cidrs), rule.Port, rule.Network, rule.Protocol, rule.InboundTag, rule.EndpointName, rule.Action, rule.OutboundTag, nowUnix(), rule.ID)
 	if err != nil {
 		return RouteRule{}, fmt.Errorf("update route rule: %w", err)
 	}
 	return rule, nil
+}
+
+func (s *Store) RouteRuleNodeIDs(ctx context.Context, ruleID string) ([]string, error) {
+	var nodeID, nodeIDsJSON string
+	err := s.db.QueryRowContext(ctx, `SELECT node_id, node_ids FROM route_rules WHERE id = ?`, ruleID).Scan(&nodeID, &nodeIDsJSON)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+	var nodeIDs []string
+	if nodeIDsJSON != "" {
+		_ = json.Unmarshal([]byte(nodeIDsJSON), &nodeIDs)
+	}
+	return normalizeNodeIDs(nodeIDs, nodeID), nil
 }
 
 func (s *Store) SetRouteRuleEnabled(ctx context.Context, ruleID string, enabled bool) error {
@@ -2678,7 +2722,7 @@ CREATE TABLE IF NOT EXISTS outbounds (
   credentials BLOB, enabled INTEGER NOT NULL, expires_at INTEGER, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL
 );
 CREATE TABLE IF NOT EXISTS route_rules (
-  id TEXT PRIMARY KEY, node_id TEXT NOT NULL REFERENCES nodes(id), priority INTEGER NOT NULL, enabled INTEGER NOT NULL,
+  id TEXT PRIMARY KEY, node_id TEXT NOT NULL REFERENCES nodes(id), node_ids TEXT NOT NULL DEFAULT '[]', priority INTEGER NOT NULL, enabled INTEGER NOT NULL,
   domains TEXT NOT NULL, domain_suffix TEXT NOT NULL, cidrs TEXT NOT NULL, port INTEGER NOT NULL, network TEXT NOT NULL,
   protocol TEXT NOT NULL, inbound_tag TEXT NOT NULL, endpoint_name TEXT NOT NULL, action TEXT NOT NULL, outbound_tag TEXT NOT NULL,
   created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL
@@ -3046,6 +3090,10 @@ CREATE INDEX IF NOT EXISTS idx_ddns_change_records_domain ON ddns_change_records
 	if err := s.addAuditEventColumn(ctx, "status TEXT NOT NULL DEFAULT 'succeeded'"); err != nil {
 		return err
 	}
+	if err := s.addRouteRuleColumn(ctx, "node_ids TEXT NOT NULL DEFAULT '[]'"); err != nil {
+		return err
+	}
+	_, _ = s.db.ExecContext(ctx, "UPDATE route_rules SET node_ids = '[\"' || node_id || '\"]' WHERE (node_ids = '' OR node_ids = '[]') AND node_id != ''")
 	_, _ = s.db.ExecContext(ctx, `CREATE INDEX IF NOT EXISTS idx_audit_events_created_at ON audit_events(created_at DESC)`)
 	_, _ = s.db.ExecContext(ctx, `CREATE INDEX IF NOT EXISTS idx_audit_events_target ON audit_events(target_type, target_id)`)
 	return nil
@@ -3220,6 +3268,14 @@ func (s *Store) addDDNSChangeRecordColumn(ctx context.Context, definition string
 		return nil
 	}
 	return fmt.Errorf("migrate ddns_change_records table: %w", err)
+}
+
+func (s *Store) addRouteRuleColumn(ctx context.Context, definition string) error {
+	_, err := s.db.ExecContext(ctx, "ALTER TABLE route_rules ADD COLUMN "+definition)
+	if err == nil || strings.Contains(err.Error(), "duplicate column name") {
+		return nil
+	}
+	return fmt.Errorf("migrate route_rules table: %w", err)
 }
 
 func loadOrCreateMasterKey(dataDir string) ([]byte, error) {
