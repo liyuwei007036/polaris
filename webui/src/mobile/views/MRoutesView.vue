@@ -25,7 +25,7 @@ const sheetOpen = ref(false)
 const editing = ref(null)
 const matchKind = ref('domain_suffix')
 const values = ref([])
-const form = reactive({ node_id: '', priority: 100, enabled: true, network: '', protocol: '', inbound_tag: '', endpoint_name: '', port: 0, action: 'route', outbound_tag: 'direct' })
+const form = reactive({ node_id: '', node_ids: [], priority: 100, enabled: true, network: '', protocol: '', inbound_tag: '', endpoint_name: '', port: 0, action: 'route', outbound_tag: 'direct' })
 const keyword = ref('')
 const selectedNode = ref('')
 const selectedAction = ref('')
@@ -46,14 +46,17 @@ const outboundOptions = computed(() => [
   { value: 'block', label: '阻断连接' },
   ...outbounds.value.filter((item) => item.enabled && item.type !== 'direct').map((item) => ({ value: item.id, label: item.name })),
 ])
-const accountOptions = computed(() => [
-  { value: '', label: '适用于全部节点' },
-  ...listeners.value
-    .filter((listener) => listener.node_id === form.node_id)
-    .flatMap((listener) => endpoints.value
-      .filter((endpoint) => endpoint.listener_id === listener.id && endpoint.enabled)
-      .map((endpoint) => ({ value: endpoint.name, label: endpoint.name, desc: listener.name }))),
-])
+const accountOptions = computed(() => {
+  const ids = editing.value ? [form.node_id] : form.node_ids
+  return [
+    { value: '', label: '适用于全部节点' },
+    ...listeners.value
+      .filter((listener) => ids.includes(listener.node_id))
+      .flatMap((listener) => endpoints.value
+        .filter((endpoint) => endpoint.listener_id === listener.id && endpoint.enabled)
+        .map((endpoint) => ({ value: endpoint.name, label: endpoint.name, desc: `${nodeNames.value[listener.node_id] || ''} · ${listener.name}` }))),
+  ]
+})
 const networkOptions = [{ value: '', label: '不限' }, { value: 'tcp', label: 'TCP' }, { value: 'udp', label: 'UDP' }]
 const nodeNames = computed(() => Object.fromEntries(appState.nodes.map((node) => [node.id, node.name])))
 const filteredRows = computed(() => rows.value.filter((row) => {
@@ -77,14 +80,31 @@ async function load() {
 }
 
 // 用户名单只有弹窗里的高级条件用得到，打开时再取，不拖慢列表刷新。
-async function loadAccounts(nodeID) {
-  const forNode = listeners.value.filter((listener) => listener.node_id === nodeID && listener.endpoint_count > 0)
-  const results = await Promise.all(forNode.map((listener) => api(`/listeners/${listener.id}/endpoints`).catch(() => ({ endpoints: [] }))))
+async function loadAccounts(nodeIDs) {
+  const ids = Array.isArray(nodeIDs) ? nodeIDs : [nodeIDs].filter(Boolean)
+  if (!ids.length) {
+    endpoints.value = []
+    return
+  }
+  const forNodes = listeners.value.filter((listener) => ids.includes(listener.node_id) && listener.endpoint_count > 0)
+  const results = await Promise.all(forNodes.map((listener) => api(`/listeners/${listener.id}/endpoints`).catch(() => ({ endpoints: [] }))))
   endpoints.value = results.flatMap((result) => result.endpoints || [])
 }
 
 function resetForm() {
-  Object.assign(form, { node_id: appState.nodes[0]?.id || '', priority: 100, enabled: true, network: '', protocol: '', inbound_tag: '', endpoint_name: '', port: 0, action: 'route', outbound_tag: 'direct' })
+  Object.assign(form, {
+    node_id: appState.nodes[0]?.id || '',
+    node_ids: selectedNode.value ? [selectedNode.value] : appState.nodes.map((n) => n.id),
+    priority: 100,
+    enabled: true,
+    network: '',
+    protocol: '',
+    inbound_tag: '',
+    endpoint_name: '',
+    port: 0,
+    action: 'route',
+    outbound_tag: 'direct',
+  })
   matchKind.value = 'domain_suffix'
   values.value = []
 }
@@ -92,13 +112,14 @@ function resetForm() {
 function openCreate() {
   editing.value = null
   resetForm()
-  loadAccounts(form.node_id)
+  loadAccounts(form.node_ids)
   sheetOpen.value = true
 }
 
 function openEdit(row) {
   editing.value = row
   Object.assign(form, row)
+  form.node_ids = [row.node_id]
   loadAccounts(row.node_id)
   form.outbound_tag = row.action === 'reject' ? 'block' : row.action === 'direct' ? 'direct' : row.outbound_tag
   const candidates = [['domains', 'domains'], ['domain_suffix', 'domain_suffix'], ['cidrs', 'cidrs']]
@@ -106,6 +127,15 @@ function openEdit(row) {
   matchKind.value = selected?.[1] || (row.port ? 'port' : 'advanced')
   values.value = selected ? [...row[selected[0]]] : []
   sheetOpen.value = true
+}
+
+function toggleAllNodesMobile() {
+  if (form.node_ids.length === appState.nodes.length) {
+    form.node_ids = []
+  } else {
+    form.node_ids = appState.nodes.map((n) => n.id)
+  }
+  loadAccounts(form.node_ids)
 }
 
 function payload() {
@@ -123,11 +153,23 @@ function payload() {
 }
 
 async function save() {
+  if (!editing.value && (!form.node_ids || form.node_ids.length === 0)) {
+    ElMessage.error('请选择至少一台服务器')
+    return
+  }
   saving.value = true
   try {
-    if (editing.value) await put(`/rules/${editing.value.id}`, payload())
-    else await post(`/nodes/${form.node_id}/rules`, payload())
-    ElMessage.success(editing.value ? '服务器访问规则已保存，正在自动应用' : '服务器访问规则已创建，正在自动应用')
+    if (editing.value) {
+      await put(`/rules/${editing.value.id}`, payload())
+      ElMessage.success('服务器访问规则已保存，正在自动应用')
+    } else {
+      try {
+        await post('/rules', { node_ids: form.node_ids, ...payload() })
+      } catch (err) {
+        await Promise.all(form.node_ids.map((id) => post(`/nodes/${id}/rules`, payload())))
+      }
+      ElMessage.success(`已为 ${form.node_ids.length} 台服务器创建访问规则，正在自动应用`)
+    }
     sheetOpen.value = false
     await load()
   } catch (error) {
@@ -239,8 +281,27 @@ onMounted(load)
 
     <MSheet v-model="sheetOpen" :title="editing ? '编辑服务器访问规则' : '新建服务器访问规则'" full>
       <div class="m-field">
-        <label class="m-field__label">服务器 <em>*</em></label>
-        <MPicker :model-value="form.node_id" :options="nodeOptions" :disabled="Boolean(editing)" title="选择服务器" @update:model-value="form.node_id = $event; form.endpoint_name = ''; loadAccounts($event)" />
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
+          <label class="m-field__label" style="margin: 0;">服务器 <em>*</em></label>
+          <button
+            v-if="!editing"
+            type="button"
+            style="background: none; border: none; color: var(--sb-accent); font-size: 12px; cursor: pointer; padding: 0;"
+            @click="toggleAllNodesMobile"
+          >
+            {{ form.node_ids.length === appState.nodes.length ? '清空' : `全选 (${appState.nodes.length})` }}
+          </button>
+        </div>
+        <MPicker
+          v-if="!editing"
+          v-model="form.node_ids"
+          multiple
+          :options="nodeOptions"
+          title="选择服务器（可多选）"
+          placeholder="请选择服务器（可多选）"
+          @update:model-value="loadAccounts(form.node_ids)"
+        />
+        <div v-else class="m-field-readonly">{{ nodeNames[form.node_id] || form.node_id }}</div>
       </div>
       <div class="m-field">
         <label class="m-field__label">匹配方式</label>

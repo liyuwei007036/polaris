@@ -24,11 +24,13 @@
       <span>{{ xLabels[0] }}</span>
       <span>{{ xLabels[1] }}</span>
     </div>
-    <div v-if="hover" class="trend-tip" :style="{ left: `${(hover.x / W) * 100}%` }">
-      <strong v-for="(item, index) in hover.values" :key="index">
-        <span v-if="lines.length > 1" class="trend-swatch" :style="{ background: item.color }" />{{ item.text }}
-      </strong>
-      <small>{{ hover.time }}</small>
+    <div v-if="hover" class="trend-tip" :style="tipStyle">
+      <div v-for="(item, index) in hover.values" :key="index" class="trend-tip-row">
+        <span class="trend-swatch" :style="{ background: item.color }" />
+        <span v-if="item.name" class="trend-tip-label">{{ item.name }}</span>
+        <strong class="trend-tip-value">{{ item.text }}</strong>
+      </div>
+      <small class="trend-tip-time">{{ hover.time }}</small>
     </div>
     <p v-if="!hasData" class="trend-empty">这段时间没有历史数据</p>
   </div>
@@ -38,9 +40,11 @@
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 
 const props = defineProps({
-  // 单序列简写：points + color。多序列用 series。
+  // 单序列简写：points + color + name/label。多序列用 series。
   points: { type: Array, default: () => [] },
   color: { type: String, default: 'var(--sb-accent)' },
+  name: { type: String, default: '' },
+  label: { type: String, default: '' },
   series: { type: Array, default: () => [] },
   height: { type: Number, default: 176 },
   area: { type: Boolean, default: true },
@@ -71,11 +75,12 @@ onMounted(() => {
 onBeforeUnmount(() => observer?.disconnect())
 
 const sources = computed(() =>
-  props.series.length ? props.series : [{ points: props.points, color: props.color }],
+  props.series.length ? props.series : [{ points: props.points, color: props.color, name: props.name || props.label || '' }],
 )
 
 const linesData = computed(() =>
   sources.value.map((source) => ({
+    name: source.name || '',
     color: source.color || props.color,
     points: (source.points || [])
       .filter((p) => Number.isFinite(Number(p.ts)))
@@ -188,7 +193,7 @@ function onMove(event) {
     )
     const { x, y } = project(nearest)
     dots.push({ x, y, color: line.color })
-    values.push({ text: props.format(nearest.v), color: line.color })
+    values.push({ name: line.name, text: props.format(nearest.v), color: line.color })
     if (!reference) reference = nearest
   }
   if (!reference) return
@@ -199,6 +204,18 @@ function onMove(event) {
     time: new Date(Number(reference.ts) * 1000).toLocaleString('zh-CN'),
   }
 }
+
+const tipStyle = computed(() => {
+  if (!hover.value) return {}
+  const ratio = hover.value.x / (W.value || 1)
+  let translateX = '-50%'
+  if (ratio < 0.15) translateX = '0%'
+  else if (ratio > 0.85) translateX = '-100%'
+  return {
+    left: `${(Math.min(Math.max(ratio, 0), 1) * 100).toFixed(1)}%`,
+    transform: `translateX(${translateX})`,
+  }
+})
 </script>
 
 <style scoped>
@@ -208,9 +225,52 @@ function onMove(event) {
 .trend-axis { fill: var(--sb-muted); font-size: 10px; }
 .trend-cursor { stroke: var(--sb-muted); stroke-dasharray: 3 3; stroke-width: 1; }
 .trend-x { display: flex; justify-content: space-between; margin-top: 4px; padding: 0 6px 0 52px; color: var(--sb-muted); font-size: 10.5px; }
-.trend-tip { position: absolute; top: -6px; transform: translateX(-50%); padding: 4px 8px; border-radius: 8px; background: var(--sb-surface); border: 1px solid var(--sb-line); box-shadow: var(--sb-shadow); display: grid; gap: 1px; pointer-events: none; }
-.trend-tip strong { display: flex; align-items: center; gap: 5px; font-size: 12px; color: var(--sb-text); font-variant-numeric: tabular-nums; font-weight: 600; }
-.trend-swatch { width: 7px; height: 7px; border-radius: 2px; }
-.trend-tip small { font-size: 10px; color: var(--sb-muted); }
+.trend-tip {
+  position: absolute;
+  top: -6px;
+  padding: 6px 10px;
+  border-radius: 8px;
+  background: var(--sb-surface);
+  border: 1px solid var(--sb-line);
+  box-shadow: var(--sb-shadow);
+  display: grid;
+  gap: 4px;
+  pointer-events: none;
+  z-index: 20;
+  white-space: nowrap;
+}
+.trend-tip-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--sb-text);
+  font-variant-numeric: tabular-nums;
+  line-height: 1.3;
+}
+.trend-swatch {
+  width: 8px;
+  height: 8px;
+  border-radius: 2px;
+  flex-shrink: 0;
+}
+.trend-tip-label {
+  color: var(--sb-muted);
+  font-size: 11px;
+  font-weight: 500;
+}
+.trend-tip-value {
+  font-weight: 600;
+  color: var(--sb-text);
+  margin-left: auto;
+  padding-left: 8px;
+}
+.trend-tip-time {
+  font-size: 10px;
+  color: var(--sb-muted);
+  border-top: 1px dashed var(--sb-line);
+  padding-top: 3px;
+  margin-top: 2px;
+}
 .trend-empty { position: absolute; inset: 0; display: grid; place-items: center; margin: 0; font-size: 12.5px; color: var(--sb-muted); }
 </style>

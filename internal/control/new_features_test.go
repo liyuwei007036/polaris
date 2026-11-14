@@ -370,3 +370,51 @@ func readBodyForTest(t *testing.T, response *http.Response) string {
 	}
 	return string(body)
 }
+
+func TestCreateRouteRulesBatch(t *testing.T) {
+	store, server, baseURL, session, csrfToken := newFeatureServer(t)
+	nodeID1 := approveTestNode(t, server, baseURL, session, csrfToken, "batch-node-1")
+	nodeID2 := approveTestNode(t, server, baseURL, session, csrfToken, "batch-node-2")
+
+	// 1. Batch create rule for both nodes
+	resp := request(t, http.MethodPost, baseURL+"/api/v1/rules", map[string]any{
+		"node_ids":      []string{nodeID1, nodeID2},
+		"priority":      150,
+		"enabled":       true,
+		"domain_suffix": []string{"openai.com", "chatgpt.com"},
+		"action":        "direct",
+	}, session, csrfToken)
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("expected 201, got %d: %s", resp.StatusCode, readBodyForTest(t, resp))
+	}
+	var result struct {
+		Rules []control.RouteRule `json:"rules"`
+	}
+	decodeBody(t, resp, &result)
+	if len(result.Rules) != 2 {
+		t.Fatalf("expected 2 rules created, got %d", len(result.Rules))
+	}
+
+	// 2. Verify rules exist on both nodes
+	rules1, err := store.ListRouteRules(t.Context(), nodeID1)
+	if err != nil || len(rules1) != 1 {
+		t.Fatalf("node 1 rules: err=%v, count=%d", err, len(rules1))
+	}
+	rules2, err := store.ListRouteRules(t.Context(), nodeID2)
+	if err != nil || len(rules2) != 1 {
+		t.Fatalf("node 2 rules: err=%v, count=%d", err, len(rules2))
+	}
+	if rules1[0].Priority != 150 || rules2[0].Priority != 150 {
+		t.Fatalf("unexpected rule priority: %d, %d", rules1[0].Priority, rules2[0].Priority)
+	}
+
+	// 3. Test validation: empty node_ids returns 400
+	respBad := request(t, http.MethodPost, baseURL+"/api/v1/rules", map[string]any{
+		"node_ids": []string{},
+		"priority": 100,
+		"action":   "direct",
+	}, session, csrfToken)
+	if respBad.StatusCode != http.StatusBadRequest {
+		t.Fatalf("expected 400 for empty node_ids, got %d", respBad.StatusCode)
+	}
+}

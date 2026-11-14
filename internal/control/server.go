@@ -539,6 +539,7 @@ func (s *Server) registerBrowserRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("PUT /api/v1/ingress-routes/{id}", s.updateIngressRoute)
 	mux.HandleFunc("DELETE /api/v1/ingress-routes/{id}", s.deleteIngressRoute)
 	mux.HandleFunc("GET /api/v1/rules", s.listRouteRules)
+	mux.HandleFunc("POST /api/v1/rules", s.createRouteRulesBatch)
 	mux.HandleFunc("GET /api/v1/nodes/{id}/rules", s.listRouteRules)
 	mux.HandleFunc("POST /api/v1/nodes/{id}/rules", s.createRouteRule)
 	mux.HandleFunc("GET /api/v1/nodes/{id}/rules/preview", s.previewRouteRules)
@@ -3245,6 +3246,58 @@ func (s *Server) createRouteRule(w http.ResponseWriter, r *http.Request) {
 	}
 	setAutoApplyTaskHeader(w, task)
 	writeJSON(w, http.StatusCreated, created)
+}
+
+func (s *Server) createRouteRulesBatch(w http.ResponseWriter, r *http.Request) {
+	operator, err := s.writer(r)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	var input struct {
+		RouteRule
+		NodeIDs []string `json:"node_ids"`
+	}
+	if !decodeJSON(w, r, &input) {
+		return
+	}
+	nodeIDs := input.NodeIDs
+	if len(nodeIDs) == 0 && input.NodeID != "" {
+		nodeIDs = []string{input.NodeID}
+	}
+	if len(nodeIDs) == 0 {
+		writeError(w, userErrorf("请选择至少一台服务器"))
+		return
+	}
+
+	var createdRules []RouteRule
+	var lastTask Task
+	var hasTask bool
+	for _, nodeID := range nodeIDs {
+		rule := input.RouteRule
+		rule.NodeID = nodeID
+		created, err := s.store.CreateRouteRule(r.Context(), rule)
+		if err != nil {
+			writeError(w, err)
+			return
+		}
+		if err := s.store.AppendAudit(r.Context(), operator.ID, "route_rule.created", "route_rule", created.ID, "structured route rule created"); err != nil {
+			writeError(w, err)
+			return
+		}
+		task, err := s.dispatchNodeConfiguration(r.Context(), created.NodeID, operator.ID)
+		if err != nil {
+			writeError(w, err)
+			return
+		}
+		lastTask = task
+		hasTask = true
+		createdRules = append(createdRules, created)
+	}
+	if hasTask {
+		setAutoApplyTaskHeader(w, lastTask)
+	}
+	writeJSON(w, http.StatusCreated, map[string]any{"rules": createdRules})
 }
 
 func (s *Server) previewRouteRules(w http.ResponseWriter, r *http.Request) {

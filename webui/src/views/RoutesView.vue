@@ -20,17 +20,38 @@ const dialogOpen = ref(false)
 const editing = ref(null)
 const matchKind = ref('domain_suffix')
 const values = ref([])
-const form = reactive({ node_id: '', priority: 100, enabled: true, network: '', protocol: '', inbound_tag: '', endpoint_name: '', port: 0, action: 'route', outbound_tag: 'direct' })
+const form = reactive({ node_id: '', node_ids: [], priority: 100, enabled: true, network: '', protocol: '', inbound_tag: '', endpoint_name: '', port: 0, action: 'route', outbound_tag: 'direct' })
 const keyword = ref('')
 const selectedNode = ref('')
 const selectedAction = ref('')
 const outboundOptions = computed(() => [{ label: '服务器直连', value: 'direct' }, { label: '阻断连接', value: 'block' }, ...outbounds.value.filter((item) => item.enabled && item.type !== 'direct').map((item) => ({ label: item.name, value: item.id }))])
-const accountOptions = computed(() => listeners.value
-  .filter((listener) => listener.node_id === form.node_id)
-  .flatMap((listener) => endpoints.value
-    .filter((endpoint) => endpoint.listener_id === listener.id && endpoint.enabled)
-    .map((endpoint) => ({ value: endpoint.name, label: `${endpoint.name} · ${listener.name}` }))))
+const accountOptions = computed(() => {
+  const ids = editing.value ? [form.node_id] : form.node_ids
+  return listeners.value
+    .filter((listener) => ids.includes(listener.node_id))
+    .flatMap((listener) => endpoints.value
+      .filter((endpoint) => endpoint.listener_id === listener.id && endpoint.enabled)
+      .map((endpoint) => ({
+        value: endpoint.name,
+        label: `${endpoint.name} · ${nodeNames.value[listener.node_id] || ''} (${listener.name})`,
+      })))
+})
 const nodeNames = computed(() => Object.fromEntries(appState.nodes.map((node) => [node.id, node.name])))
+const isAllNodesSelected = computed(() => appState.nodes.length > 0 && form.node_ids.length === appState.nodes.length)
+const isIndeterminateNodes = computed(() => form.node_ids.length > 0 && form.node_ids.length < appState.nodes.length)
+
+function toggleSelectAllNodes(val) {
+  if (val) {
+    form.node_ids = appState.nodes.map((n) => n.id)
+  } else {
+    form.node_ids = []
+  }
+  loadAccounts(form.node_ids)
+}
+
+function onSelectedNodesChange() {
+  loadAccounts(form.node_ids)
+}
 const filteredRows = computed(() => rows.value.filter((row) => {
   if (selectedNode.value && row.node_id !== selectedNode.value) return false
   if (selectedAction.value && row.action !== selectedAction.value) return false
@@ -53,20 +74,43 @@ async function load() {
 
 // Account names are only needed by the advanced matcher in the dialog, so
 // they are fetched when it opens rather than on every list refresh.
-async function loadAccounts(nodeID) {
-  const forNode = listeners.value.filter((listener) => listener.node_id === nodeID && listener.endpoint_count > 0)
-  const results = await Promise.all(forNode.map((listener) => api(`/listeners/${listener.id}/endpoints`).catch(() => ({ endpoints: [] }))))
+async function loadAccounts(nodeIDs) {
+  const ids = Array.isArray(nodeIDs) ? nodeIDs : [nodeIDs].filter(Boolean)
+  if (!ids.length) {
+    endpoints.value = []
+    return
+  }
+  const forNodes = listeners.value.filter((listener) => ids.includes(listener.node_id) && listener.endpoint_count > 0)
+  const results = await Promise.all(forNodes.map((listener) => api(`/listeners/${listener.id}/endpoints`).catch(() => ({ endpoints: [] }))))
   endpoints.value = results.flatMap((result) => result.endpoints || [])
 }
 function resetForm() {
-  Object.assign(form, { node_id: appState.nodes[0]?.id || '', priority: 100, enabled: true, network: '', protocol: '', inbound_tag: '', endpoint_name: '', port: 0, action: 'route', outbound_tag: 'direct' })
+  Object.assign(form, {
+    node_id: appState.nodes[0]?.id || '',
+    node_ids: selectedNode.value ? [selectedNode.value] : appState.nodes.map((n) => n.id),
+    priority: 100,
+    enabled: true,
+    network: '',
+    protocol: '',
+    inbound_tag: '',
+    endpoint_name: '',
+    port: 0,
+    action: 'route',
+    outbound_tag: 'direct',
+  })
   matchKind.value = 'domain_suffix'
   values.value = []
 }
-function openCreate() { editing.value = null; resetForm(); loadAccounts(form.node_id); dialogOpen.value = true }
+function openCreate() {
+  editing.value = null
+  resetForm()
+  loadAccounts(form.node_ids)
+  dialogOpen.value = true
+}
 function openEdit(row) {
   editing.value = row
   Object.assign(form, row)
+  form.node_ids = [row.node_id]
   loadAccounts(row.node_id)
   form.outbound_tag = row.action === 'reject' ? 'block' : row.action === 'direct' ? 'direct' : row.outbound_tag
   const candidates = [['domains', 'domains'], ['domain_suffix', 'domain_suffix'], ['cidrs', 'cidrs']]
@@ -89,13 +133,27 @@ function payload() {
   }
 }
 async function save() {
+  if (!editing.value && (!form.node_ids || form.node_ids.length === 0)) {
+    ElMessage.warning('请选择至少一台服务器')
+    return
+  }
   saving.value = true
   try {
-    if (editing.value) await put(`/rules/${editing.value.id}`, payload())
-    else await post(`/nodes/${form.node_id}/rules`, payload())
-    ElMessage.success(editing.value ? '访问规则已保存' : '访问规则已创建')
+    if (editing.value) {
+      await put(`/rules/${editing.value.id}`, payload())
+      ElMessage.success('访问规则已保存')
+    } else {
+      try {
+        await post('/rules', { node_ids: form.node_ids, ...payload() })
+      } catch (err) {
+        await Promise.all(form.node_ids.map((id) => post(`/nodes/${id}/rules`, payload())))
+      }
+      ElMessage.success(`已为 ${form.node_ids.length} 台服务器创建访问规则`)
+    }
     dialogOpen.value = false
     await load()
+  } catch (error) {
+    ElMessage.error(error instanceof Error ? error.message : '保存访问规则失败')
   } finally { saving.value = false }
 }
 async function toggle(row) { await post(`/rules/${row.id}/enabled`, { enabled: !row.enabled }); ElMessage.success('状态已更新'); await load() }
@@ -140,7 +198,48 @@ onMounted(load)
 
     <el-dialog v-model="dialogOpen" :title="editing ? '编辑服务器访问规则' : '新建服务器访问规则'" width="680px">
       <el-form label-position="top">
-        <el-form-item label="服务器" required><el-select v-model="form.node_id" :disabled="Boolean(editing)" style="width: 100%" @change="form.endpoint_name = ''"><el-option v-for="node in appState.nodes" :key="node.id" :label="node.name" :value="node.id" /></el-select></el-form-item>
+        <el-form-item label="服务器" required>
+          <template v-if="!editing">
+            <div class="node-select-bar">
+              <el-checkbox
+                :model-value="isAllNodesSelected"
+                :indeterminate="isIndeterminateNodes"
+                @change="toggleSelectAllNodes"
+              >
+                全部服务器
+              </el-checkbox>
+              <span class="node-select-badge">已选择 {{ form.node_ids.length }} / {{ appState.nodes.length }} 台</span>
+            </div>
+            <el-select
+              v-model="form.node_ids"
+              multiple
+              filterable
+              collapse-tags
+              collapse-tags-tooltip
+              :max-collapse-tags="4"
+              placeholder="请选择要应用规则的服务器（可多选）"
+              style="width: 100%"
+              @change="onSelectedNodesChange"
+            >
+              <el-option
+                v-for="node in appState.nodes"
+                :key="node.id"
+                :label="node.name"
+                :value="node.id"
+              >
+                <div class="node-option-row">
+                  <span>{{ node.name }}</span>
+                  <span class="node-option-sub">{{ node.endpoint || node.ip || '' }}</span>
+                </div>
+              </el-option>
+            </el-select>
+          </template>
+          <template v-else>
+            <el-select :model-value="form.node_id" disabled style="width: 100%">
+              <el-option v-for="node in appState.nodes" :key="node.id" :label="node.name" :value="node.id" />
+            </el-select>
+          </template>
+        </el-form-item>
         <el-form-item label="匹配方式"><el-radio-group v-model="matchKind"><el-radio-button value="domain_suffix">域名后缀</el-radio-button><el-radio-button value="domains">完整域名</el-radio-button><el-radio-button value="cidrs">目标网段</el-radio-button><el-radio-button value="port">目标端口</el-radio-button><el-radio-button value="advanced">高级条件</el-radio-button></el-radio-group></el-form-item>
         <el-form-item v-if="['domain_suffix','domains','cidrs'].includes(matchKind)" :label="matchKind === 'cidrs' ? '网段列表' : '域名列表'"><el-select v-model="values" multiple filterable allow-create default-first-option style="width: 100%" :placeholder="matchKind === 'cidrs' ? '例如 10.0.0.0/8' : '输入后按回车添加'" /></el-form-item>
         <el-form-item v-if="matchKind === 'port'" label="目标端口"><el-input-number v-model="form.port" :min="1" :max="65535" /></el-form-item>
@@ -151,3 +250,28 @@ onMounted(load)
     </el-dialog>
   </div>
 </template>
+
+<style scoped>
+.node-select-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 6px;
+  width: 100%;
+}
+.node-select-badge {
+  font-size: 12px;
+  color: var(--sb-muted);
+}
+.node-option-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+}
+.node-option-sub {
+  font-size: 11px;
+  color: var(--sb-muted);
+  font-family: var(--sb-mono);
+}
+</style>

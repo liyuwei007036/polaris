@@ -131,27 +131,39 @@
     <!-- 资源 -->
     <div v-if="tab === 'resources'" class="chart-grid">
       <section class="chart-panel neu">
-        <h4>CPU 使用率</h4>
-        <TrendChart :points="series.cpu" color="var(--sb-chart-1)" :min="0" :max="100" :format="formatCpuTick" />
+        <div class="chart-panel-head">
+          <h4>CPU 使用率</h4>
+        </div>
+        <TrendChart :points="series.cpu" name="CPU 使用率" color="var(--sb-chart-1)" :min="0" :max="100" :format="formatCpuTick" />
       </section>
       <section class="chart-panel neu">
-        <h4>内存 · {{ formatBytes(host.memory_total) }}</h4>
-        <TrendChart :points="series.mem" color="var(--sb-chart-2)" :min="0" :max="host.memory_total || undefined" :format="(v) => formatBytes(v)" />
+        <div class="chart-panel-head">
+          <h4>内存 · {{ formatBytes(host.memory_total) }}</h4>
+        </div>
+        <TrendChart :points="series.mem" name="内存使用" color="var(--sb-chart-2)" :min="0" :max="host.memory_total || undefined" :format="(v) => formatBytes(v)" />
       </section>
       <section class="chart-panel neu">
-        <h4>网络速率</h4>
+        <div class="chart-panel-head">
+          <h4>网络速率</h4>
+          <div class="chart-legend">
+            <span class="legend-chip"><span class="legend-swatch" style="background: var(--sb-info)" />下行</span>
+            <span class="legend-chip"><span class="legend-swatch" style="background: var(--sb-chart-4)" />上行</span>
+          </div>
+        </div>
         <TrendChart
           :series="[
-            { points: series.rx, color: 'var(--sb-info)' },
-            { points: series.tx, color: 'var(--sb-chart-4)' },
+            { name: '下行', points: series.rx, color: 'var(--sb-info)' },
+            { name: '上行', points: series.tx, color: 'var(--sb-chart-4)' },
           ]"
           :min="0"
           :format="(v) => formatBytes(v, '/s')"
         />
       </section>
       <section class="chart-panel neu">
-        <h4>硬盘 · {{ formatBytes(host.disk_total) }}</h4>
-        <TrendChart :points="series.disk" color="var(--sb-chart-3)" :min="0" :max="host.disk_total || undefined" :format="(v) => formatBytes(v)" />
+        <div class="chart-panel-head">
+          <h4>硬盘 · {{ formatBytes(host.disk_total) }}</h4>
+        </div>
+        <TrendChart :points="series.disk" name="硬盘使用" color="var(--sb-chart-3)" :min="0" :max="host.disk_total || undefined" :format="(v) => formatBytes(v)" />
       </section>
     </div>
 
@@ -589,6 +601,7 @@ const shownProbes = computed(() => {
 
 const latencySeries = computed(() =>
   shownProbes.value.map((probe) => ({
+    name: probe.name,
     color: probeColor(probe.id),
     points: (probe.points || probe.hours || [])
       .map((slot) => ({ ts: slot.ts, v: slot.latency }))
@@ -902,7 +915,12 @@ onMounted(loadHistory)
 
 .chart-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
 .chart-panel { padding: 14px 16px; border-radius: 16px; border: 1px solid var(--sb-line); }
+.chart-panel-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; }
+.chart-panel-head h4 { margin: 0; font-size: 12px; font-weight: 500; color: var(--sb-muted); }
 .chart-panel h4 { margin: 0 0 10px; font-size: 12px; font-weight: 500; color: var(--sb-muted); }
+.chart-legend { display: flex; align-items: center; gap: 10px; font-size: 11px; color: var(--sb-muted); }
+.legend-chip { display: inline-flex; align-items: center; gap: 5px; }
+.legend-swatch { width: 7px; height: 7px; border-radius: 2px; }
 
 .latency-tab { display: flex; flex-direction: column; gap: 12px; }
 .latency-chart { padding: 0; overflow: hidden; }
