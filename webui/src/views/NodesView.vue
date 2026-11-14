@@ -355,12 +355,15 @@ function getPriceText(node) {
 
 const cards = computed(() => filteredNodes.value.map((node) => {
   const host = node.online ? metrics.value[node.id]?.host : null
+  const nodeTraffic = metrics.value[node.id]?.node
   const proxy = metrics.value[node.id]?.proxy
+  const mainTraffic = nodeTraffic || proxy
   const latency = metrics.value[node.id]?.latency
   const snap = live.value.get(node.id)
   const { status, statusText } = getNodeStatus(node)
   const avatar = getAvatar(node.name)
-  const used = (proxy?.received_bytes || 0) + (proxy?.sent_bytes || 0)
+  const used = Number(mainTraffic?.monthly_received_bytes ?? mainTraffic?.received_bytes ?? 0) +
+    Number(mainTraffic?.monthly_sent_bytes ?? mainTraffic?.sent_bytes ?? 0)
 
   let trafficLimit = 0
   if (node.traffic_plan) {

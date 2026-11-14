@@ -57,6 +57,7 @@ type shareNode struct {
 	IPAddresses     []string          `json:"ip_addresses,omitempty"`
 	DDNSDomains     []string          `json:"ddns_domains,omitempty"`
 	Host            *HostResources    `json:"host,omitempty"`
+	Node            map[string]uint64 `json:"node,omitempty"`
 	Proxy           map[string]uint64 `json:"proxy,omitempty"`
 	ConnectionCount int               `json:"connection_count"`
 	ReceivedRate    float64           `json:"received_rate"`
@@ -215,11 +216,17 @@ func (s *Server) buildSharePayload(ctx context.Context, page string) (sharePaylo
 		}
 		if report, ok := reports[node.ID]; ok {
 			var stored storedMetrics
-			if len(report) > 0 && json.Unmarshal(report, &stored) == nil && stored.Proxy != nil {
-				summary.ReceivedBytes += stored.Proxy["received_bytes"]
-				summary.SentBytes += stored.Proxy["sent_bytes"]
-				summary.MonthlyReceivedBytes += stored.Proxy["monthly_received_bytes"]
-				summary.MonthlySentBytes += stored.Proxy["monthly_sent_bytes"]
+			if len(report) > 0 && json.Unmarshal(report, &stored) == nil {
+				trafficSource := stored.Node
+				if trafficSource == nil {
+					trafficSource = stored.Proxy
+				}
+				if trafficSource != nil {
+					summary.ReceivedBytes += trafficSource["received_bytes"]
+					summary.SentBytes += trafficSource["sent_bytes"]
+					summary.MonthlyReceivedBytes += trafficSource["monthly_received_bytes"]
+					summary.MonthlySentBytes += trafficSource["monthly_sent_bytes"]
+				}
 			}
 		}
 	}
@@ -267,6 +274,7 @@ func (s *Server) buildSharePayload(ctx context.Context, page string) (sharePaylo
 				if node.Online {
 					item.Host = stored.Host
 				}
+				item.Node = stored.Node
 				item.Proxy = stored.Proxy
 			}
 		}

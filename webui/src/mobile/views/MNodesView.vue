@@ -305,9 +305,9 @@ function statOf(node, pick) {
 // 脚注答的是「客户端连的是哪个地址」和「这台机器到现在搬了多少数据」。
 // 系统、架构、版本号看一眼就够，留在详情里，不和这两条抢同一行。
 function totalText(node) {
-  const proxy = metrics.value[node.id]?.proxy
-  if (!proxy) return '累计流量等待上报'
-  return `累计 ↓ ${formatBytes(proxy.received_bytes)} · ↑ ${formatBytes(proxy.sent_bytes)}`
+  const totals = metrics.value[node.id]?.node || metrics.value[node.id]?.proxy
+  if (!totals) return '累计流量等待上报'
+  return `累计 ↓ ${formatBytes(totals.received_bytes)} · ↑ ${formatBytes(totals.sent_bytes)}`
 }
 
 function addressText(node) {
@@ -321,7 +321,9 @@ function addressText(node) {
 const details = computed(() => {
   const node = actionTarget.value
   if (!node) return []
+  const nodeM = metrics.value[node.id]?.node
   const proxy = metrics.value[node.id]?.proxy
+  const mainM = nodeM || proxy
   const host = metrics.value[node.id]?.host
   const addrVal = node.client_address ? (node.ddns_enabled && node.last_observed_ip ? `${node.client_address} (DDNS: ${node.last_observed_ip})` : node.client_address) : '未配置，客户端拿不到节点链接'
   const items = [
@@ -339,7 +341,7 @@ const details = computed(() => {
     )
   }
   items.push(
-    { label: '累计流量', value: proxy ? '↓ ' + formatBytes(proxy.received_bytes) + ' · ↑ ' + formatBytes(proxy.sent_bytes) : '等待上报' },
+    { label: '累计流量', value: mainM ? '↓ ' + formatBytes(mainM.received_bytes) + ' · ↑ ' + formatBytes(mainM.sent_bytes) : '等待上报' },
     { label: '最后在线', value: formatDateTime(node.last_seen_at, '从未在线') },
   )
   return items

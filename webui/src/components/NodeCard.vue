@@ -174,7 +174,7 @@
         :pct="trafficPercent"
         :foot="trafficFootText"
         :empty="trafficEmptyText"
-        :title="`本月实际消耗: ${formatBytes(trafficUsedBytes)} · 上线以来累计: ${formatBytes(lifetimeTrafficBytes)}`"
+        :title="trafficTooltip"
       >
         <template #icon>
           <svg class="size-3.5 text-muted" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -513,22 +513,38 @@ const trafficLimitBytes = computed(() => {
   return parseTrafficLimitBytes(props.node.traffic_plan)
 })
 
-const trafficUsedBytes = computed(() => {
-  const p = props.metrics?.proxy
-  if (p && (p.monthly_received_bytes !== undefined || p.monthly_sent_bytes !== undefined)) {
-    return Number(p.monthly_received_bytes || 0) + Number(p.monthly_sent_bytes || 0)
-  }
-  const n = props.metrics?.node
-  if (n && (n.monthly_received_bytes !== undefined || n.monthly_sent_bytes !== undefined)) {
-    return Number(n.monthly_received_bytes || 0) + Number(n.monthly_sent_bytes || 0)
-  }
-  return 0
-})
+// 主机物理网卡流量（实际服务器进出，与云厂商/VPS 控制台对齐）
+const nodeTraffic = computed(() => props.metrics?.node || null)
+const hasNodeTraffic = computed(() => Boolean(
+  nodeTraffic.value &&
+  (nodeTraffic.value.monthly_received_bytes !== undefined || nodeTraffic.value.received_bytes !== undefined)
+))
 
-const lifetimeTrafficBytes = computed(() => {
-  const totals = props.metrics?.proxy || props.metrics?.node || {}
-  return Number(totals.received_bytes || 0) + Number(totals.sent_bytes || 0)
-})
+// 业务代理流量（sing-box 代理进程转发）
+const proxyTraffic = computed(() => props.metrics?.proxy || null)
+const hasProxyTraffic = computed(() => Boolean(
+  proxyTraffic.value &&
+  (proxyTraffic.value.monthly_received_bytes !== undefined || proxyTraffic.value.received_bytes !== undefined)
+))
+
+// 优先采用服务器物理网卡流量 (node)，无 node 时回退至业务代理 (proxy)
+const effectiveTraffic = computed(() => nodeTraffic.value || proxyTraffic.value || {})
+
+const effectiveMonthlyRx = computed(() => Number(effectiveTraffic.value.monthly_received_bytes || 0))
+const effectiveMonthlyTx = computed(() => Number(effectiveTraffic.value.monthly_sent_bytes || 0))
+const trafficUsedBytes = computed(() => effectiveMonthlyRx.value + effectiveMonthlyTx.value)
+
+const effectiveLifetimeRx = computed(() => Number(effectiveTraffic.value.received_bytes || 0))
+const effectiveLifetimeTx = computed(() => Number(effectiveTraffic.value.sent_bytes || 0))
+const lifetimeTrafficBytes = computed(() => effectiveLifetimeRx.value + effectiveLifetimeTx.value)
+
+const proxyMonthlyRx = computed(() => Number(proxyTraffic.value?.monthly_received_bytes || 0))
+const proxyMonthlyTx = computed(() => Number(proxyTraffic.value?.monthly_sent_bytes || 0))
+const proxyMonthlyTotal = computed(() => proxyMonthlyRx.value + proxyMonthlyTx.value)
+
+const proxyLifetimeRx = computed(() => Number(proxyTraffic.value?.received_bytes || 0))
+const proxyLifetimeTx = computed(() => Number(proxyTraffic.value?.sent_bytes || 0))
+const proxyLifetimeTotal = computed(() => proxyLifetimeRx.value + proxyLifetimeTx.value)
 
 const trafficPercent = computed(() => {
   const limit = trafficLimitBytes.value
@@ -551,6 +567,45 @@ const trafficFootText = computed(() => {
     return `${formatBytes(used)} / ${formatBytes(limit)}`
   }
   return `${formatBytes(used)} / ∞`
+})
+
+const trafficTooltip = computed(() => {
+  if (isShareMode) {
+    return '分享模式下已隐藏敏感流量详情'
+  }
+  const lines = []
+  const isHost = hasNodeTraffic.value
+
+  if (isHost) {
+    lines.push('【本月服务器物理网卡流量（与厂商对齐）】')
+    lines.push(`  ↓ 入站 (Rx): ${formatBytes(effectiveMonthlyRx.value)}`)
+    lines.push(`  ↑ 出站 (Tx): ${formatBytes(effectiveMonthlyTx.value)}`)
+    lines.push(`  Σ 合计消耗: ${formatBytes(trafficUsedBytes.value)}`)
+    lines.push('')
+    lines.push('【累计物理流量】')
+    lines.push(`  ↓ 累计入站: ${formatBytes(effectiveLifetimeRx.value)}`)
+    lines.push(`  ↑ 累计出站: ${formatBytes(effectiveLifetimeTx.value)}`)
+    lines.push(`  Σ 累计总额: ${formatBytes(lifetimeTrafficBytes.value)}`)
+  } else {
+    lines.push(`【本月实际消耗】${formatBytes(trafficUsedBytes.value)} (↓ ${formatBytes(effectiveMonthlyRx.value)} · ↑ ${formatBytes(effectiveMonthlyTx.value)})`)
+    lines.push(`【累计总额】${formatBytes(lifetimeTrafficBytes.value)}`)
+  }
+
+  if (hasProxyTraffic.value && isHost) {
+    lines.push('')
+    lines.push('【业务代理流量（sing-box 转发）】')
+    lines.push(`  本月: ↓ ${formatBytes(proxyMonthlyRx.value)} · ↑ ${formatBytes(proxyMonthlyTx.value)} (合计 ${formatBytes(proxyMonthlyTotal.value)})`)
+    lines.push(`  累计: ↓ ${formatBytes(proxyLifetimeRx.value)} · ↑ ${formatBytes(proxyLifetimeTx.value)} (合计 ${formatBytes(proxyLifetimeTotal.value)})`)
+  }
+
+  const limit = trafficLimitBytes.value
+  if (limit > 0) {
+    const remain = Math.max(0, limit - trafficUsedBytes.value)
+    lines.push('')
+    lines.push(`【套餐额度】${formatBytes(limit)} (剩余: ${formatBytes(remain)} · 已用: ${trafficPercent.value || 0}%)`)
+  }
+
+  return lines.join('\n')
 })
 
 const activeConnections = computed(() => {

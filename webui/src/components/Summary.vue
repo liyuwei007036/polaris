@@ -180,7 +180,7 @@ const txSpark = computed(() => {
 const totalRx = computed(() => {
   let sum = 0
   for (const n of props.nodes) {
-    const p = props.metrics[n.id]?.proxy || props.metrics[n.id]?.node
+    const p = props.metrics[n.id]?.node || props.metrics[n.id]?.proxy
     if (p && p.monthly_received_bytes !== undefined) {
       sum += Number(p.monthly_received_bytes)
     }
@@ -191,7 +191,7 @@ const totalRx = computed(() => {
 const totalTx = computed(() => {
   let sum = 0
   for (const n of props.nodes) {
-    const p = props.metrics[n.id]?.proxy || props.metrics[n.id]?.node
+    const p = props.metrics[n.id]?.node || props.metrics[n.id]?.proxy
     if (p && p.monthly_sent_bytes !== undefined) {
       sum += Number(p.monthly_sent_bytes)
     }

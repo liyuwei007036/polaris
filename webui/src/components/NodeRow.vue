@@ -92,7 +92,7 @@
     </div>
 
     <!-- Col 3: Traffic -->
-    <div class="row-col col-traffic">
+    <div class="row-col col-traffic" :title="trafficTooltip">
       <span class="col-label">流量</span>
       <span class="tnum traffic-val font-mono">{{ trafficText }}</span>
     </div>
@@ -292,11 +292,30 @@ const diskDetail = computed(() => {
   return `${formatBytes(hostMetrics.value.disk_used || 0)} / ${formatBytes(hostMetrics.value.disk_total || 0)}`
 })
 
+const trafficTotals = computed(() => props.metrics?.node || props.metrics?.proxy || {})
+
 const trafficText = computed(() => {
-  const p = props.metrics?.proxy || props.metrics?.node || {}
+  const p = trafficTotals.value
   const rx = p.monthly_received_bytes !== undefined ? p.monthly_received_bytes : p.received_bytes || 0
   const tx = p.monthly_sent_bytes !== undefined ? p.monthly_sent_bytes : p.sent_bytes || 0
   return formatBytes(Number(rx) + Number(tx))
+})
+
+const trafficTooltip = computed(() => {
+  const p = trafficTotals.value
+  const rx = p.monthly_received_bytes !== undefined ? p.monthly_received_bytes : p.received_bytes || 0
+  const tx = p.monthly_sent_bytes !== undefined ? p.monthly_sent_bytes : p.sent_bytes || 0
+  const total = Number(rx) + Number(tx)
+  const isNode = Boolean(props.metrics?.node)
+  const lines = [
+    `${isNode ? '本月服务器物理网卡流量（与厂商对齐）' : '本月流量'}: ${formatBytes(total)} (↓ ${formatBytes(rx)} · ↑ ${formatBytes(tx)})`,
+  ]
+  if (props.metrics?.proxy && isNode) {
+    const prx = props.metrics.proxy.monthly_received_bytes || 0
+    const ptx = props.metrics.proxy.monthly_sent_bytes || 0
+    lines.push(`业务代理流量 (sing-box): ${formatBytes(prx + ptx)} (↓ ${formatBytes(prx)} · ↑ ${formatBytes(ptx)})`)
+  }
+  return lines.join('\n')
 })
 
 const activeConnections = computed(() => {

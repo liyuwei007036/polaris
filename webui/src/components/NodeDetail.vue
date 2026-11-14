@@ -738,16 +738,47 @@ const factGroups = computed(() => {
   })
 
   // 3. 网络与流量
-  const totals = props.metrics.proxy || props.metrics.node || {}
-  const monthlyRx = totals.monthly_received_bytes || 0
-  const monthlyTx = totals.monthly_sent_bytes || 0
+  const nodeMetrics = props.metrics.node
+  const proxyMetrics = props.metrics.proxy
+  const mainTotals = nodeMetrics || proxyMetrics || {}
+  const monthlyRx = mainTotals.monthly_received_bytes || 0
+  const monthlyTx = mainTotals.monthly_sent_bytes || 0
+  const monthlySum = monthlyRx + monthlyTx
+  const lifetimeRx = mainTotals.received_bytes || 0
+  const lifetimeTx = mainTotals.sent_bytes || 0
+  const lifetimeSum = lifetimeRx + lifetimeTx
+
   const netFacts = [
-    { label: '本月流量', value: `↓ ${formatBytes(monthlyRx)} · ↑ ${formatBytes(monthlyTx)}` },
-    { label: '累计流量', value: `↓ ${formatBytes(totals.received_bytes || 0)} · ↑ ${formatBytes(totals.sent_bytes || 0)}` },
+    {
+      label: '本月流量 (物理网卡)',
+      value: `↓ ${formatBytes(monthlyRx)} · ↑ ${formatBytes(monthlyTx)} (合计 ${formatBytes(monthlySum)})`,
+    },
+    {
+      label: '累计流量 (物理网卡)',
+      value: `↓ ${formatBytes(lifetimeRx)} · ↑ ${formatBytes(lifetimeTx)} (合计 ${formatBytes(lifetimeSum)})`,
+    },
+  ]
+  if (nodeMetrics && proxyMetrics) {
+    const pMonthlyRx = proxyMetrics.monthly_received_bytes || 0
+    const pMonthlyTx = proxyMetrics.monthly_sent_bytes || 0
+    const pMonthlySum = pMonthlyRx + pMonthlyTx
+    const pLifeRx = proxyMetrics.received_bytes || 0
+    const pLifeTx = proxyMetrics.sent_bytes || 0
+    const pLifeSum = pLifeRx + pLifeTx
+    netFacts.push({
+      label: '本月代理流量 (sing-box)',
+      value: `↓ ${formatBytes(pMonthlyRx)} · ↑ ${formatBytes(pMonthlyTx)} (合计 ${formatBytes(pMonthlySum)})`,
+    })
+    netFacts.push({
+      label: '累计代理流量 (sing-box)',
+      value: `↓ ${formatBytes(pLifeRx)} · ↑ ${formatBytes(pLifeTx)} (合计 ${formatBytes(pLifeSum)})`,
+    })
+  }
+  netFacts.push(
     { label: '机器带宽', value: isShareMode ? '已隐藏' : formatBandwidth(node.bandwidth || '1 Gbps') },
     { label: '主机地址', value: node.client_address },
     { label: '地理位置', value: node.location || node.city },
-  ]
+  )
   groups.push({
     label: '网络与流量',
     icon: 'network',
@@ -774,7 +805,8 @@ const factGroups = computed(() => {
     cls: expiry.cls,
   })
   if (node.traffic_plan) {
-    billingFacts.push({ label: '流量配额', value: `${node.traffic_plan} / 月` })
+    const usedText = formatBytes(monthlySum)
+    billingFacts.push({ label: '流量配额', value: `${usedText} / ${node.traffic_plan} (月)` })
   }
   if (node.bandwidth) {
     billingFacts.push({ label: '带宽规格', value: formatBandwidth(node.bandwidth) })

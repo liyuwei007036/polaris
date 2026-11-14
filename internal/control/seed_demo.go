@@ -547,11 +547,17 @@ func (s *Server) EnsureDemoNodes(ctx context.Context) error {
 			},
 			Latency:      &latencyReport,
 			CurrentMonth: time.Now().UTC().Format("2006-01"),
-			Proxy: map[string]uint64{
+			Node: map[string]uint64{
 				"received_bytes":         uint64(rand.Int63n(800000000000) + 200000000000),  // 200GB - 1TB
 				"sent_bytes":             uint64(rand.Int63n(3000000000000) + 800000000000), // 800GB - 3.8TB
 				"monthly_received_bytes": uint64(rand.Int63n(30000000000) + 3000000000),     // 3GB - 33GB
 				"monthly_sent_bytes":     uint64(rand.Int63n(90000000000) + 10000000000),    // 10GB - 100GB
+			},
+			Proxy: map[string]uint64{
+				"received_bytes":         uint64(rand.Int63n(400000000000) + 100000000000),
+				"sent_bytes":             uint64(rand.Int63n(1500000000000) + 400000000000),
+				"monthly_received_bytes": uint64(rand.Int63n(15000000000) + 1500000000),
+				"monthly_sent_bytes":     uint64(rand.Int63n(45000000000) + 5000000000),
 			},
 			Health: &storedHealth{
 				Status:            "healthy",
