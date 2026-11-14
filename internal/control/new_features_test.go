@@ -418,3 +418,89 @@ func TestCreateRouteRulesBatch(t *testing.T) {
 		t.Fatalf("expected 400 for empty node_ids, got %d", respBad.StatusCode)
 	}
 }
+
+func TestShareMetricsMasksConnectionsForMap(t *testing.T) {
+	store, err := control.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	secret, err := store.CreateInitialAdmin(t.Context(), "admin@example.com", "correct horse battery staple")
+	if err != nil {
+		t.Fatal(err)
+	}
+	server, err := control.NewServer(store, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	httpServer := httptest.NewServer(server.Handler())
+	defer httpServer.Close()
+	session, csrfToken := login(t, httpServer.URL, secret)
+	nodeID := approveTestNode(t, server, httpServer.URL, session, csrfToken, "share-map-node")
+
+	// 1. Create a read-only share link for "nodes"
+	resp := request(t, http.MethodPost, httpServer.URL+"/api/v1/shares", map[string]any{
+		"page": "nodes", "expires_in": 3600,
+	}, session, csrfToken)
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("create share link: got %d", resp.StatusCode)
+	}
+	var shareResult struct {
+		Token string `json:"token"`
+	}
+	decodeBody(t, resp, &shareResult)
+	if shareResult.Token == "" {
+		t.Fatal("empty share token")
+	}
+
+	// 2. Push a live connection with sensitive details and map coordinates
+	connJSON := []byte(`[
+		{
+			"id": "conn-test-1",
+			"source_ip": "198.51.100.42",
+			"source": "198.51.100.42:54321",
+			"source_lat": 35.6895,
+			"source_lon": 139.6917,
+			"has_source_coords": true,
+			"destination": "secret-bank.internal:443",
+			"host": "secret-bank.internal",
+			"user": "alice",
+			"rule": "vip-users-rule"
+		}
+	]`)
+	server.PushConnectionsForTest(nodeID, time.Now().UTC().Format(time.RFC3339), connJSON)
+
+	// Also record node metrics so node is in metrics list
+	if err := store.UpdateNodeMetrics(t.Context(), nodeID, `{"host":{"cpu_percent":10}}`); err != nil {
+		t.Fatal(err)
+	}
+
+	// 3. Request share metrics endpoint
+	shareMetricsResp := request(t, http.MethodGet, httpServer.URL+"/api/v1/shares/access/"+shareResult.Token+"/nodes/metrics", nil, "", "")
+	if shareMetricsResp.StatusCode != http.StatusOK {
+		t.Fatalf("share node metrics: got %d: %s", shareMetricsResp.StatusCode, readBodyForTest(t, shareMetricsResp))
+	}
+	bodyStr := readBodyForTest(t, shareMetricsResp)
+
+	// 4. Verify sensitive fields are completely absent
+	if strings.Contains(bodyStr, "198.51.100.42") {
+		t.Fatalf("sensitive client IP leaked in share response: %s", bodyStr)
+	}
+	if strings.Contains(bodyStr, "secret-bank.internal") {
+		t.Fatalf("sensitive host leaked in share response: %s", bodyStr)
+	}
+	if strings.Contains(bodyStr, "vip-users-rule") {
+		t.Fatalf("rule name leaked in share response: %s", bodyStr)
+	}
+	if strings.Contains(bodyStr, `"alice"`) {
+		t.Fatalf("username leaked in share response: %s", bodyStr)
+	}
+
+	// 5. Verify coordinates are preserved for the map
+	if !strings.Contains(bodyStr, "35.6895") || !strings.Contains(bodyStr, "139.6917") {
+		t.Fatalf("coordinates missing from share response: %s", bodyStr)
+	}
+	if !strings.Contains(bodyStr, "conn-test-1") {
+		t.Fatalf("connection ID missing from share response: %s", bodyStr)
+	}
+}

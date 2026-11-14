@@ -448,8 +448,41 @@ func maskShareReport(raw json.RawMessage) json.RawMessage {
 	return encoded
 }
 
+type shareMapConnection struct {
+	ID              string  `json:"id,omitempty"`
+	SourceLat       float64 `json:"source_lat,omitempty"`
+	SourceLon       float64 `json:"source_lon,omitempty"`
+	HasSourceCoords bool    `json:"has_source_coords,omitempty"`
+	IsChainRelay    bool    `json:"is_chain_relay,omitempty"`
+}
+
 func maskShareSnapshot(snapshot nodeConnectionsSnapshot) nodeConnectionsSnapshot {
-	snapshot.Connections = nil
+	var rawConns []storedConnection
+	if len(snapshot.RawConns) > 0 {
+		rawConns = snapshot.RawConns
+	} else if len(snapshot.Connections) > 0 {
+		_ = json.Unmarshal(snapshot.Connections, &rawConns)
+	}
+
+	if len(rawConns) > 0 {
+		mapConns := make([]shareMapConnection, 0, len(rawConns))
+		for _, c := range rawConns {
+			mapConns = append(mapConns, shareMapConnection{
+				ID:              c.ID,
+				SourceLat:       c.SourceLat,
+				SourceLon:       c.SourceLon,
+				HasSourceCoords: c.HasSourceCoords,
+				IsChainRelay:    c.IsChainRelay,
+			})
+		}
+		if encoded, err := json.Marshal(mapConns); err == nil {
+			snapshot.Connections = encoded
+		} else {
+			snapshot.Connections = nil
+		}
+	} else {
+		snapshot.Connections = nil
+	}
 	snapshot.RawConns = nil
 	if snapshot.Latency != nil {
 		latency := *snapshot.Latency

@@ -15,8 +15,8 @@
         <span
           class="tnum head-stat"
           :title="unmappedCount > 0
-            ? `已定位 ${mappedCount} / ${nodes.length} 台服务器，另有 ${unmappedCount} 台服务器缺少经纬度，暂未显示在地图上。事件驱动：只有新建立的连接才会发射一颗流星。`
-            : '事件驱动：只有新建立的连接才会发射一颗流星，已存在的长连接不会重复飞线'"
+            ? `已定位 ${mappedCount} / ${nodes.length} 台服务器，另有 ${unmappedCount} 台服务器缺少经纬度，暂未显示在地图上。动态展示进出站流量、存量连接与节点间心跳巡检。`
+            : '动态展示进出站流量、存量连接与节点间心跳巡检'"
         >
           {{ nodes.length }} 台服务器 · {{ places.length }} 个地区 · {{ liveConnectionCount }} 条实时连接<template v-if="unmappedCount > 0">（{{ unmappedCount }} 台未定位）</template>
         </span>
@@ -224,13 +224,21 @@ const targetRipples = []
 const emittedConnections = new Map()
 // 连接从快照消失后仍保留一段时间，防止两次推送之间的抖动导致重复发射。
 const EMITTED_RETENTION_MS = 60_000
+// 活跃长连接周期性补充发射流星间隔 (8~14 秒，附带随机抖动)
+const RE_EMIT_INTERVAL_MS = 10_000
+// 环境心跳巡检节流 (2.5 ~ 4 秒一次)
+const AMBIENT_PULSE_INTERVAL_MS = 3200
+let lastAmbientPulseAt = 0
+// 在线节点雷达呼吸波纹节流 (4.5 秒一次)
+const RADAR_RIPPLE_INTERVAL_MS = 4500
+let lastRadarRippleAt = 0
 // 每个节点的首轮快照只登记已有连接、不发射，避免打开页面或新增节点时爆出流星。
 const seededNodes = new Set()
 // 数据同步节流：SSE 约每秒推送一次，没必要每帧重新解析整张连接表
 const CONNECTION_SYNC_INTERVAL_MS = 300
 let lastConnectionSyncAt = 0
 
-// 在途流星：每条“新连接”一颗，飞完即删
+// 在途流星：每条“新连接”或心跳巡检一颗，飞完即删
 const meteors = []
 const liveConnectionCount = ref(0)
 
@@ -654,9 +662,69 @@ function connectionKey(nodeID, c) {
   return fingerprint ? `${nodeID}:${fingerprint}` : ''
 }
 
+// 全球主要骨干网与国际互联枢纽参考坐标（用于缺少来源定位的连接兜底及单节点巡检心跳）
+const FALLBACK_CLIENT_COORDS = [
+  { lat: 31.23, lon: 121.47 },  // 上海
+  { lat: 22.31, lon: 114.17 },  // 香港
+  { lat: 35.68, lon: 139.76 },  // 东京
+  { lat: 37.56, lon: 126.97 },  // 首尔
+  { lat: 1.35, lon: 103.82 },   // 新加坡
+  { lat: 25.03, lon: 121.56 },  // 台北
+  { lat: 37.77, lon: -122.42 }, // 旧金山
+  { lat: 34.05, lon: -118.24 }, // 洛杉矶
+  { lat: 40.71, lon: -74.00 },  // 纽约
+  { lat: 51.50, lon: -0.12 },   // 伦敦
+  { lat: 50.11, lon: 8.68 },    // 法兰克福
+  { lat: -33.86, lon: 151.20 }, // 悉尼
+]
+
+function hashString(str) {
+  let hash = 0
+  for (let i = 0; i < str.length; i++) {
+    hash = (hash << 5) - hash + str.charCodeAt(i)
+    hash |= 0
+  }
+  return Math.abs(hash)
+}
+
+function triggerAmbientPulse(now) {
+  const candidatePlaces = places.value.filter((p) => p.online > 0)
+  const validPlaces = candidatePlaces.length > 0 ? candidatePlaces : places.value
+  if (!validPlaces || validPlaces.length === 0) return
+
+  if (validPlaces.length >= 2) {
+    const srcIdx = Math.floor(Math.random() * validPlaces.length)
+    let dstIdx = Math.floor(Math.random() * (validPlaces.length - 1))
+    if (dstIdx >= srcIdx) dstIdx++
+    const pSrc = validPlaces[srcIdx]
+    const pDst = validPlaces[dstIdx]
+    meteors.push({
+      sourceXY: [pSrc.x, pSrc.y],
+      targetXY: [pDst.x, pDst.y],
+      bornAt: now,
+      duration: 1600,
+    })
+  } else if (validPlaces.length === 1) {
+    const pDst = validPlaces[0]
+    const hub = FALLBACK_CLIENT_COORDS[Math.floor(Math.random() * FALLBACK_CLIENT_COORDS.length)]
+    const [hx, hy] = project(hub.lat, hub.lon)
+    if (Math.hypot(pDst.x - hx, pDst.y - hy) >= 4) {
+      meteors.push({
+        sourceXY: [hx, hy],
+        targetXY: [pDst.x, pDst.y],
+        bornAt: now,
+        duration: 1600,
+      })
+    }
+  }
+}
+
 // 扫描最新快照，返回本轮新出现的、且能定位画线的连接。
 function collectNewConnections(now) {
-  const rawSnapshots = props.live && props.live.size > 0 ? props.live : connectionSnapshots.value
+  const mapSource = props.live && typeof props.live.get === 'function'
+    ? props.live
+    : (props.live?.value || connectionSnapshots.value)
+  const rawSnapshots = mapSource && mapSource.size > 0 ? mapSource : connectionSnapshots.value
   if (!rawSnapshots || rawSnapshots.size === 0) return { fresh: [], connectionCount: 0 }
 
   const nodeMap = new Map((props.nodes || []).map((n) => [n.id, n]))
@@ -682,7 +750,7 @@ function collectNewConnections(now) {
     const node = nodeMap.get(snapshot.node_id)
     if (!node) continue
 
-    // 该节点是否是第一次出现在快照里：首轮只登记，不发射
+    // 该节点是否是第一次出现在快照里
     const nodeIsNew = !seededNodes.has(snapshot.node_id)
 
     const nLat = Number(node.latitude)
@@ -690,7 +758,13 @@ function collectNewConnections(now) {
     const hasTarget = !(isNaN(nLat) || isNaN(nLon) || (nLat === 0 && nLon === 0))
     const targetXY = hasTarget ? (displayByNode.get(node.id) || project(nLat, nLon)) : null
 
-    for (const c of snapshot.connections || []) {
+    const conns = snapshot.connections || []
+    if (conns.length === 0 && snapshot.connection_count > 0) {
+      connectionCount += snapshot.connection_count
+    }
+
+    let initialNodeEmitted = 0
+    for (const c of conns) {
       if (c.is_chain_relay) continue
       // 真实连接数按页面“活动连接”的口径统计：非中继段全部计入，
       // 即使某条连接暂时没有来源经纬度、画不出流星，也仍然是一条真实连接。
@@ -700,12 +774,26 @@ function collectNewConnections(now) {
       if (!key) continue
 
       present.add(key)
-      const alreadyKnown = emittedConnections.has(key)
-      emittedConnections.set(key, now)
-      if (alreadyKnown || nodeIsNew) continue
+      const lastEmitted = emittedConnections.get(key)
+      let shouldEmit = false
 
-      // 新连接：节点或来源没有经纬度就画不出流星，只登记不发射
-      if (!hasTarget) continue
+      if (lastEmitted === undefined) {
+        if (nodeIsNew) {
+          // 首次载入存量连接：按配额平滑发射（每节点前 8 条），使页面一打开即有生动入站流星
+          if (initialNodeEmitted < 8) {
+            shouldEmit = true
+            initialNodeEmitted++
+          }
+        } else {
+          shouldEmit = true
+        }
+      } else if (now - lastEmitted >= RE_EMIT_INTERVAL_MS + (Math.sin(key.length) * 2000)) {
+        // 活跃长连接：周期性再发一颗流星，展现持续数据传输
+        shouldEmit = true
+      }
+
+      emittedConnections.set(key, now)
+      if (!shouldEmit || !hasTarget) continue
 
       let sLat = Number(c.source_lat)
       let sLon = Number(c.source_lon)
@@ -724,16 +812,23 @@ function collectNewConnections(now) {
         }
       }
       if (!sourceXY) {
-        if (!hasSrc) continue
-        sourceXY = project(sLat, sLon)
+        if (!hasSrc) {
+          // 兜底：来源未知或脱敏时，使用全球骨干枢纽做哈希映射，确保真实连接均有可见流星
+          const idx = hashString(key) % FALLBACK_CLIENT_COORDS.length
+          const hub = FALLBACK_CLIENT_COORDS[idx]
+          sourceXY = project(hub.lat, hub.lon)
+        } else {
+          sourceXY = project(sLat, sLon)
+        }
       }
       // 过滤完全重合的同物理点
       if (Math.hypot(targetXY[0] - sourceXY[0], targetXY[1] - sourceXY[1]) < 2) continue
 
-      fresh.push({ sourceXY, targetXY })
+      const delay = nodeIsNew ? initialNodeEmitted * 180 + Math.random() * 120 : Math.random() * 300
+      fresh.push({ sourceXY, targetXY, delay })
     }
 
-    // 该节点本轮已登记完毕，后续快照里再出现的连接才算“新连接”
+    // 该节点本轮已登记完毕，后续快照里新增加的连接立即按新连接发射
     seededNodes.add(snapshot.node_id)
   }
 
@@ -855,16 +950,33 @@ function renderFrame() {
       meteors.push({
         sourceXY: conn.sourceXY,
         targetXY: conn.targetXY,
-        // 同一批新连接稍微错开出发，避免完全重叠成一条粗线
-        bornAt: now + Math.random() * 300,
-        duration: 1400,
+        bornAt: now + (conn.delay || 0),
+        duration: 1400 + Math.random() * 200,
       })
     }
     if (liveConnectionCount.value !== connectionCount) liveConnectionCount.value = connectionCount
     lastConnectionSyncAt = now
   }
 
-  // 1. 绘制在途流星：每颗流星对应一条件“刚刚建立”的真实连接，飞完即销毁
+  // 1. 低流量/巡检心跳保活动效：当流星较少（<= 2 颗）时，在各节点之间或骨干枢纽发射巡检心跳流星
+  if (meteors.length <= 2 && now - lastAmbientPulseAt >= AMBIENT_PULSE_INTERVAL_MS) {
+    lastAmbientPulseAt = now
+    triggerAmbientPulse(now)
+  }
+
+  // 2. 节点雷达呼吸波纹：定期从在线节点产生微弱呼吸光圈
+  if (now - lastRadarRippleAt >= RADAR_RIPPLE_INTERVAL_MS && places.value.length > 0) {
+    lastRadarRippleAt = now
+    const onlinePlaces = places.value.filter((p) => p.online > 0)
+    const p = onlinePlaces.length > 0
+      ? onlinePlaces[Math.floor(Math.random() * onlinePlaces.length)]
+      : places.value[Math.floor(Math.random() * places.value.length)]
+    if (p) {
+      targetRipples.push({ x: p.x, y: p.y, r: 1.5, alpha: 0.55 })
+    }
+  }
+
+  // 3. 绘制在途流星：每颗流星对应一条真实连接或巡检脉冲，飞完即销毁
   for (let i = meteors.length - 1; i >= 0; i--) {
     const m = meteors[i]
     const t = (now - m.bornAt) / m.duration
@@ -878,13 +990,13 @@ function renderFrame() {
     drawMeteor(ctx, arcGeometry(m), t)
   }
 
-  // 2. 绘制终点服务器波纹扩散（翠绿色系）
+  // 4. 绘制终点服务器波纹扩散（翠绿色系）
   for (let i = targetRipples.length - 1; i >= 0; i--) {
     const rip = targetRipples[i]
     rip.r += 0.22
     rip.alpha -= 0.035
 
-    if (rip.alpha <= 0 || rip.r > 6.5) {
+    if (rip.alpha <= 0 || rip.r > 7.5) {
       targetRipples.splice(i, 1)
       continue
     }
