@@ -157,14 +157,26 @@ func TestProxyRoutingSourceTrackingTelegram(t *testing.T) {
 	if !strings.Contains(msg, "10.0.0.1:443") {
 		t.Errorf("expected destination with port, got: %s", msg)
 	}
-	if !strings.Contains(msg, "来源追溯") {
-		t.Errorf("expected source tracking line, got: %s", msg)
+	if strings.Contains(msg, "核心结论") {
+		t.Errorf("expected no 核心结论 line, got: %s", msg)
 	}
-	if !strings.Contains(msg, "alice") || !strings.Contains(msg, "112.86.163.226") || !strings.Contains(msg, "江苏省 南京市") || !strings.Contains(msg, "节点入口-VLESS") {
-		t.Errorf("expected user, source IP, location and listener in source tracking, got: %s", msg)
+	if strings.Contains(msg, "来源追溯") {
+		t.Errorf("expected no 来源追溯 line, got: %s", msg)
 	}
-	if !strings.Contains(msg, "直接 IP 请求（无域名 SNI）") {
-		t.Errorf("expected direct IP notice, got: %s", msg)
+	if !strings.Contains(msg, "来源") || !strings.Contains(msg, "112.86.163.226") || !strings.Contains(msg, "江苏省 南京市") {
+		t.Errorf("expected source IP and location in 来源 line, got: %s", msg)
+	}
+	if !strings.Contains(msg, "节点") || !strings.Contains(msg, "alice") {
+		t.Errorf("expected user in 节点 line, got: %s", msg)
+	}
+	if !strings.Contains(msg, "最终出口") || !strings.Contains(msg, "Taiwan-HY2") {
+		t.Errorf("expected 最终出口 line, got: %s", msg)
+	}
+	if strings.Contains(msg, "时间：") {
+		t.Errorf("expected no 时间： label, got: %s", msg)
+	}
+	if strings.Contains(msg, "UTC") {
+		t.Errorf("expected clean timestamp without UTC, got: %s", msg)
 	}
 }
 
@@ -494,17 +506,14 @@ func TestProxyRoutingChainedProxyResolvesTrueFinalExit(t *testing.T) {
 	if !strings.Contains(gotTexts[0], "WARP-JP") {
 		t.Errorf("expected true final exit WARP-JP in Telegram, got: %s", gotTexts[0])
 	}
-	if !strings.Contains(gotTexts[0], "香港入口 → 台湾中转 → 日本落地 → WARP-JP") {
-		t.Errorf("expected full 3-hop chain path in Telegram, got: %s", gotTexts[0])
-	}
 	if strings.Contains(gotTexts[0], "台湾中转 · tw-in") || strings.Contains(gotTexts[0], "日本落地 · jp-in") {
 		t.Errorf("expected intermediate hop listener strings NOT to appear as final exit, got: %s", gotTexts[0])
 	}
 	if !strings.Contains(gotTexts[0], "alice") || !strings.Contains(gotTexts[0], "112.86.163.226") {
 		t.Errorf("expected original client source preserved, got: %s", gotTexts[0])
 	}
-	if !strings.Contains(barks[0].Body, "WARP-JP") || !strings.Contains(barks[0].Body, "香港入口 → 台湾中转 → 日本落地 → WARP-JP") {
-		t.Errorf("expected Bark to display final exit and chain clearly, got: %s", barks[0].Body)
+	if !strings.Contains(barks[0].Body, "WARP-JP") {
+		t.Errorf("expected Bark to display final exit clearly, got: %s", barks[0].Body)
 	}
 	mu.Unlock()
 
@@ -549,8 +558,8 @@ func TestProxyRoutingChainedProxyResolvesTrueFinalExit(t *testing.T) {
 	}
 	mu.Lock()
 	defer mu.Unlock()
-	if !strings.Contains(gotTexts[1], "WARP-JP") || !strings.Contains(gotTexts[1], "香港入口 → 台湾中转 → 日本落地 → WARP-JP") {
-		t.Errorf("expected static DB trace to resolve WARP-JP & 3-hop path, got: %s", gotTexts[1])
+	if !strings.Contains(gotTexts[1], "WARP-JP") {
+		t.Errorf("expected static DB trace to resolve WARP-JP, got: %s", gotTexts[1])
 	}
 }
 

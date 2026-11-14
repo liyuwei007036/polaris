@@ -658,7 +658,7 @@ func (s *Server) handleAgentMessage(ctx context.Context, node *Node, msgType byt
 			go s.reconcileNodeChainedDDNS(context.Background(), node.ID)
 		}
 		if task.Kind == "dns.update" {
-			summary := fmt.Sprintf("前置服务器「%s」完成动态 DNS 刷新与链路自愈：%s", node.Name, res.Summary)
+			summary := fmt.Sprintf("前置服务器「%s」完成动态 DNS 刷新：%s", node.Name, res.Summary)
 			_ = s.store.AppendAudit(ctx, task.OperatorID, "node.dns_update_completed", "node", node.ID, summary)
 			if s.alertEngine != nil && res.Status == "succeeded" {
 				s.alertEngine.NotifyChainedDNSCompleted(node.ID, node.Name, res.Summary)

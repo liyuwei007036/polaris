@@ -413,7 +413,7 @@ func updateDNS(ctx context.Context, task Task, dataDirOpts ...string) TaskResult
 		_ = exec.CommandContext(ctx, "pkill", "-HUP", "-f", "sing-box").Run()
 	}
 
-	summary := fmt.Sprintf("已执行动态 DNS 刷新与链路自愈：%s -> %s", strings.Join(domains, ", "), expectedIP)
+	summary := fmt.Sprintf("%s → %s", strings.Join(domains, ", "), expectedIP)
 	if len(notes) > 0 {
 		summary += "（" + strings.Join(notes, "，") + "）"
 	}

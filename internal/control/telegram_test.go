@@ -179,7 +179,7 @@ func TestAlertEngineTelegramOnlyChannel(t *testing.T) {
 	if !strings.Contains(gotText[0], "Polaris") || !strings.Contains(gotText[0], "<b>") {
 		t.Errorf("expected bot-style HTML message, got: %s", gotText[0])
 	}
-	if !strings.Contains(gotText[0], "详细信息") || strings.Contains(gotText[0], "建议操作") {
+	if !strings.Contains(gotText[0], "服务器信息") || strings.Contains(gotText[0], "建议操作") {
 		t.Errorf("expected detailed bot message without action advice, got: %s", gotText[0])
 	}
 	if strings.Contains(gotText[0], "🤖") {

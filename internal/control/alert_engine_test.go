@@ -87,13 +87,13 @@ func waitForMessages(t *testing.T, mu *sync.Mutex, messages *[]BarkMessage, want
 	}
 }
 
-func TestFormatAlertTimeIncludesZone(t *testing.T) {
+func TestFormatAlertTimeCleanValue(t *testing.T) {
 	got := FormatAlertTime(time.Date(2026, 11, 5, 12, 0, 0, 0, time.UTC))
 	if !strings.Contains(got, "2026-11-05") {
 		t.Errorf("expected formatted date, got %s", got)
 	}
-	if !strings.Contains(got, "UTC") {
-		t.Errorf("expected UTC offset in formatted time, got %s", got)
+	if strings.Contains(got, "UTC") || strings.Contains(got, "(") {
+		t.Errorf("expected clean datetime without UTC or timezone suffix, got %s", got)
 	}
 }
 
@@ -503,5 +503,141 @@ func TestConfirmChainTargetTimeoutSurvivesFiveMinutes(t *testing.T) {
 	// Once absent for >5 minutes after last sighting at +8m, it is evicted cleanly.
 	if engine.confirmChainTargetTimeout("node-1:c1", t0.Add(14*time.Minute)) {
 		t.Fatal("expected entry absent for >5 minutes to be evicted and require fresh confirmation")
+	}
+}
+
+func TestCleanDNSSummary(t *testing.T) {
+	cases := []struct {
+		input    string
+		expected string
+	}{
+		{
+			input:    "已执行动态 DNS 刷新与链路自愈：twhi.1x1x1.dpdns.org -> 36.234.152.63（已同步 /etc/hosts，已写入 sing-box 静态解析规则，已重启 sing-box 重置出站连接池）",
+			expected: "twhi.1x1x1.dpdns.org → 36.234.152.63",
+		},
+		{
+			input:    "twhi.1x1x1.dpdns.org -> 36.234.152.63",
+			expected: "twhi.1x1x1.dpdns.org → 36.234.152.63",
+		},
+		{
+			input:    "twhi.1x1x1.dpdns.org → 36.234.152.63（已同步 /etc/hosts）",
+			expected: "twhi.1x1x1.dpdns.org → 36.234.152.63",
+		},
+		{
+			input:    "a.com, b.com -> 1.2.3.4",
+			expected: "a.com, b.com → 1.2.3.4",
+		},
+	}
+	for _, tc := range cases {
+		got := cleanDNSSummary(tc.input)
+		if got != tc.expected {
+			t.Errorf("cleanDNSSummary(%q) = %q, want %q", tc.input, got, tc.expected)
+		}
+	}
+}
+
+func TestNotifyChainedDNSCompletedFormat(t *testing.T) {
+	ctx := context.Background()
+	var (
+		mu       sync.Mutex
+		gotTG    []string
+		gotBarks []BarkMessage
+	)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.Contains(r.URL.Path, "sendMessage") {
+			var msg telegramSendMessage
+			_ = json.NewDecoder(r.Body).Decode(&msg)
+			mu.Lock()
+			gotTG = append(gotTG, msg.Text)
+			mu.Unlock()
+		} else {
+			var bark BarkMessage
+			_ = json.NewDecoder(r.Body).Decode(&bark)
+			mu.Lock()
+			gotBarks = append(gotBarks, bark)
+			mu.Unlock()
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{"ok": true})
+	}))
+	defer server.Close()
+
+	store, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+
+	_, err = store.UpdateAlertSettings(ctx, AlertSettings{
+		TelegramEnabled:  true,
+		TelegramServer:   server.URL,
+		TelegramBotToken: "123:TOKEN",
+		TelegramChatID:   "12345",
+		BarkServer:       server.URL,
+		BarkDeviceKey:    "key",
+	})
+	if err != nil {
+		t.Fatalf("update alert settings: %v", err)
+	}
+
+	engine := NewAlertEngine(store, nil)
+	engine.NotifyChainedDNSCompleted("node-hk", "香港-LowEndCloud-182",
+		"已执行动态 DNS 刷新与链路自愈：twhi.1x1x1.dpdns.org -> 36.234.152.63（已同步 /etc/hosts，已写入 sing-box 静态解析规则，已重启 sing-box 重置出站连接池）")
+
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		mu.Lock()
+		tgCount := len(gotTG)
+		barkCount := len(gotBarks)
+		mu.Unlock()
+		if tgCount > 0 && barkCount > 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("timed out waiting for alerts")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	tg := gotTG[0]
+	bark := gotBarks[0]
+
+	// Check Telegram format
+	if !strings.Contains(tg, "<b>DNS 刷新完成</b>") {
+		t.Errorf("expected <b>DNS 刷新完成</b> title, got: %s", tg)
+	}
+	if strings.Contains(tg, "链路自愈 / DNS 刷新与验证完成") {
+		t.Errorf("expected no old title, got: %s", tg)
+	}
+	if strings.Contains(tg, "详细信息") {
+		t.Errorf("expected no 详细信息 header, got: %s", tg)
+	}
+	if strings.Contains(tg, "执行结果") || strings.Contains(tg, "当前状态") || strings.Contains(tg, "客户端影响") {
+		t.Errorf("expected no boilerplate fields, got: %s", tg)
+	}
+	if !strings.Contains(tg, "<code>twhi.1x1x1.dpdns.org</code> → <code>36.234.152.63</code>") {
+		t.Errorf("expected clean DNS mapping line, got: %s", tg)
+	}
+	if !strings.Contains(tg, "香港-LowEndCloud-182") {
+		t.Errorf("expected node name, got: %s", tg)
+	}
+	if strings.Contains(tg, "时间：") {
+		t.Errorf("expected no 时间： label, got: %s", tg)
+	}
+	if strings.Contains(tg, "UTC") {
+		t.Errorf("expected no UTC in timestamp, got: %s", tg)
+	}
+
+	// Check Bark format
+	if !strings.Contains(bark.Title, "DNS 刷新完成：香港-LowEndCloud-182") {
+		t.Errorf("expected Bark title to contain 'DNS 刷新完成：香港-LowEndCloud-182', got: %s", bark.Title)
+	}
+	if !strings.Contains(bark.Body, "twhi.1x1x1.dpdns.org → 36.234.152.63") {
+		t.Errorf("expected Bark body to contain clean DNS mapping, got: %s", bark.Body)
+	}
+	if strings.Contains(bark.Body, "已执行动态 DNS 刷新与链路自愈") || strings.Contains(bark.Body, "已同步 /etc/hosts") {
+		t.Errorf("expected clean Bark body without technical noise, got: %s", bark.Body)
 	}
 }

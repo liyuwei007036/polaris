@@ -27,25 +27,15 @@ var NotificationLocation = func() *time.Location {
 	return time.FixedZone("CST", 8*3600)
 }()
 
-// NowAlertTime returns the current time in the notification timezone, including
-// the zone name and UTC offset.
+// NowAlertTime returns the current time in the notification timezone.
 func NowAlertTime() string {
 	return FormatAlertTime(time.Now())
 }
 
-// FormatAlertTime formats a time in the notification timezone and includes the
-// zone name together with its UTC offset so notifications are unambiguous.
+// FormatAlertTime formats a time in the notification timezone as "YYYY-MM-DD HH:MM:SS".
 func FormatAlertTime(t time.Time) string {
 	local := t.In(NotificationLocation)
-	zoneName := NotificationLocation.String()
-	_, offset := local.Zone()
-	sign := "+"
-	if offset < 0 {
-		sign = "-"
-		offset = -offset
-	}
-	return fmt.Sprintf("%s (%s, UTC%s%02d:%02d)",
-		local.Format("2006-01-02 15:04:05"), zoneName, sign, offset/3600, (offset%3600)/60)
+	return local.Format("2006-01-02 15:04:05")
 }
 
 type AlertEngine struct {
@@ -170,14 +160,13 @@ func (e *AlertEngine) formatIP(ipStr string) string {
 	if clean == "" {
 		return "-"
 	}
-	loc := "未知归属地"
 	if e.locator != nil {
-		l := e.locator.Locate(clean)
-		if l != "" && l != "未知" {
-			loc = l
+		l := strings.TrimSpace(e.locator.Locate(clean))
+		if l != "" && l != "未知" && l != "未知归属地" {
+			return fmt.Sprintf("%s（%s）", clean, l)
 		}
 	}
-	return fmt.Sprintf("%s (%s)", clean, loc)
+	return clean
 }
 
 func cleanIPAddress(ipStr string) string {
@@ -349,8 +338,12 @@ func (e *AlertEngine) summarizeSources(connections []storedConnection, limit int
 		} else {
 			label = "未知客户端"
 		}
-		if c.SourceLocation != "" && c.SourceLocation != "未知" && !strings.Contains(label, c.SourceLocation) {
-			label = fmt.Sprintf("%s（%s）", label, c.SourceLocation)
+		srcLoc := c.SourceLocation
+		if (srcLoc == "" || srcLoc == "未知") && srcIP != "" && e.locator != nil {
+			srcLoc = strings.TrimSpace(e.locator.Locate(srcIP))
+		}
+		if srcLoc != "" && srcLoc != "未知" && srcLoc != "未知归属地" && !strings.Contains(label, srcLoc) {
+			label = fmt.Sprintf("%s（%s）", label, srcLoc)
 		}
 		sourceCounts[label]++
 	}
@@ -464,7 +457,11 @@ func (e *AlertEngine) withNodeInfo(ctx nodeAlertContext, lines []string) []strin
 	}
 	out := make([]string, 0, len(lines)+len(nodeLines)+1)
 	out = append(out, lines...)
-	out = append(out, "\n<b>服务器信息</b>")
+	if len(lines) > 0 {
+		out = append(out, "\n<b>服务器信息</b>")
+	} else {
+		out = append(out, "<b>服务器信息</b>")
+	}
 	out = append(out, nodeLines...)
 	return out
 }
@@ -1197,9 +1194,11 @@ func (e *AlertEngine) checkProxyRouting(nodeID, nodeName string, connections []s
 			}
 		}
 		if srcIP != "" {
-			srcDesc := srcIP
-			if loc := strings.TrimSpace(connection.SourceLocation); loc != "" && loc != "未知" {
-				srcDesc += fmt.Sprintf("（%s）", loc)
+			srcDesc := e.formatIP(srcIP)
+			if !strings.Contains(srcDesc, "（") {
+				if loc := strings.TrimSpace(connection.SourceLocation); loc != "" && loc != "未知" && loc != "未知归属地" {
+					srcDesc += fmt.Sprintf("（%s）", loc)
+				}
 			}
 			issue.sourceIPs = appendDistinctLimit(issue.sourceIPs, srcDesc, 3)
 		}
@@ -1235,9 +1234,7 @@ func (e *AlertEngine) checkProxyRouting(nodeID, nodeName string, connections []s
 	}
 
 	nodeCtx := e.nodeContext(nodeID, nodeName)
-	lines := []string{
-		tgLine("核心结论", fmt.Sprintf("发现 %d 个国内/局域网目标经代理转发", len(list))),
-	}
+	lines := make([]string, 0, len(list)*4)
 
 	barkBlocks := make([]string, 0, 3)
 	for index, issue := range list {
@@ -1248,6 +1245,11 @@ func (e *AlertEngine) checkProxyRouting(nodeID, nodeName string, connections []s
 			addrLabel += fmt.Sprintf(" (端口 %s)", strings.Join(issue.ports, ", "))
 		}
 
+		nodeDesc := strings.Join(issue.users, "、")
+		if nodeDesc == "" && len(issue.listeners) > 0 {
+			nodeDesc = strings.Join(issue.listeners, "、")
+		}
+
 		if index < 5 {
 			var titleHTML string
 			if issue.host != "" {
@@ -1255,28 +1257,19 @@ func (e *AlertEngine) checkProxyRouting(nodeID, nodeName string, connections []s
 			} else {
 				titleHTML = fmt.Sprintf("<code>%s</code>", tgEscape(addrLabel))
 			}
-			lines = append(lines, fmt.Sprintf("\n<b>[%d] %s</b>｜%s · %d 条",
-				index+1, titleHTML, tgEscape(issue.location), issue.count))
-			lines = append(lines, tgCodeLine("最终出口", issue.outbound))
-			if issue.chainPath != "" {
-				lines = append(lines, tgLine("代理链路", issue.chainPath))
+			itemHeader := fmt.Sprintf("<b>[%d] %s</b>｜%s · %d 条",
+				index+1, titleHTML, tgEscape(issue.location), issue.count)
+			if index > 0 {
+				itemHeader = "\n" + itemHeader
 			}
-			var sourceParts []string
-			if len(issue.users) > 0 {
-				sourceParts = append(sourceParts, "节点 "+strings.Join(issue.users, "、"))
+			lines = append(lines, itemHeader)
+			if nodeDesc != "" {
+				lines = append(lines, tgLine("节点", nodeDesc))
 			}
 			if len(issue.sourceIPs) > 0 {
-				sourceParts = append(sourceParts, strings.Join(issue.sourceIPs, "、"))
+				lines = append(lines, tgLine("来源", strings.Join(issue.sourceIPs, "、")))
 			}
-			if len(issue.listeners) > 0 {
-				sourceParts = append(sourceParts, "入站 "+strings.Join(issue.listeners, "、"))
-			}
-			if issue.host == "" {
-				sourceParts = append(sourceParts, "直接 IP 请求（无域名 SNI）")
-			}
-			if len(sourceParts) > 0 {
-				lines = append(lines, tgLine("来源追溯", strings.Join(sourceParts, "｜")))
-			}
+			lines = append(lines, tgCodeLine("最终出口", issue.outbound))
 		}
 
 		if index < 3 {
@@ -1286,24 +1279,13 @@ func (e *AlertEngine) checkProxyRouting(nodeID, nodeName string, connections []s
 			}
 			var itemLines []string
 			itemLines = append(itemLines, fmt.Sprintf("%d. %s [%s · %d条]", index+1, barkTarget, issue.location, issue.count))
-			if issue.chainPath != "" {
-				itemLines = append(itemLines, fmt.Sprintf("   出口：%s｜链路：%s", issue.outbound, issue.chainPath))
-			} else {
-				itemLines = append(itemLines, fmt.Sprintf("   出口：%s", issue.outbound))
-			}
-			var barkSrc []string
-			if len(issue.users) > 0 {
-				barkSrc = append(barkSrc, strings.Join(issue.users, ","))
+			if nodeDesc != "" {
+				itemLines = append(itemLines, "   节点："+nodeDesc)
 			}
 			if len(issue.sourceIPs) > 0 {
-				barkSrc = append(barkSrc, strings.Join(issue.sourceIPs, ","))
+				itemLines = append(itemLines, "   来源："+strings.Join(issue.sourceIPs, ","))
 			}
-			if len(issue.listeners) > 0 {
-				barkSrc = append(barkSrc, strings.Join(issue.listeners, ","))
-			}
-			if len(barkSrc) > 0 {
-				itemLines = append(itemLines, "   来源："+strings.Join(barkSrc, "｜"))
-			}
+			itemLines = append(itemLines, fmt.Sprintf("   出口：%s", issue.outbound))
 			barkBlocks = append(barkBlocks, strings.Join(itemLines, "\n"))
 		}
 	}
@@ -1340,15 +1322,11 @@ func (e *AlertEngine) NotifyNodeOffline(nodeID, nodeName string) {
 		e.offlineNodes[nodeID] = time.Now()
 		e.mu.Unlock()
 		nodeCtx := e.nodeContext(nodeID, nodeName)
-		lines := []string{
-			tgLine("当前状态", "控制端已失去该服务器心跳（Agent 离线）"),
-			tgLine("影响范围", "该服务器上的代理、监控和任务下发暂时不可用"),
-		}
-		telegramText := buildTelegramAlert(severityCritical, "服务器状态", "服务器已离线", nodeName, e.withNodeInfo(nodeCtx, lines), "")
+		telegramText := buildTelegramAlertRaw(severityCritical, "服务器已离线", "", nodeName, e.withNodeInfo(nodeCtx, nil))
 		e.sendAlert(context.Background(), alertPayload{
 			Severity:  severityCritical,
 			BarkTitle: fmt.Sprintf("服务器离线：%s", nodeName),
-			BarkBody:  e.barkWithNode(nodeCtx, "控制端已失去该服务器心跳。\n代理与监控服务暂停，请检查主机网络与 Agent。"),
+			BarkBody:  e.barkWithNode(nodeCtx, "控制端已失去该服务器心跳（Agent 离线）。"),
 			BarkGroup: "服务器状态",
 			BarkSound: "alarm.caf",
 			Telegram:  telegramText,
@@ -1376,14 +1354,11 @@ func (e *AlertEngine) NotifyNodeOnline(nodeID, nodeName string) {
 	alertKey := "online:" + nodeID
 	if e.canAlert(alertKey, settings.CooldownMinutes) {
 		nodeCtx := e.nodeContext(nodeID, nodeName)
-		lines := []string{
-			tgLine("当前状态", "控制通道已重建，服务已恢复正常"),
-		}
-		telegramText := buildTelegramAlert(severityRecovery, "服务器状态", "服务器已恢复", nodeName, e.withNodeInfo(nodeCtx, lines), "")
+		telegramText := buildTelegramAlertRaw(severityRecovery, "服务器已恢复", "", nodeName, e.withNodeInfo(nodeCtx, nil))
 		e.sendAlert(context.Background(), alertPayload{
 			Severity:  severityRecovery,
 			BarkTitle: fmt.Sprintf("服务器恢复：%s", nodeName),
-			BarkBody:  e.barkWithNode(nodeCtx, "控制通道已重建，代理与监控服务已恢复。"),
+			BarkBody:  e.barkWithNode(nodeCtx, "控制通道已重建，服务已恢复正常。"),
 			BarkGroup: "服务器状态",
 			BarkSound: "calypso.caf",
 			Telegram:  telegramText,
@@ -1404,7 +1379,7 @@ func (e *AlertEngine) NotifyServerExpiry(node Node, days int) {
 		tgLines = append(tgLines, tgLinkLine("管理入口", node.ProviderURL, "打开服务商管理后台"))
 	}
 	nodeCtx := e.nodeContext(node.ID, node.Name)
-	telegramText := buildTelegramAlert(severityWarning, "服务器到期", "服务器即将到期", node.Name, e.withNodeInfo(nodeCtx, tgLines), "请在到期前完成续费或迁移。若已经续费，可忽略这条提醒。")
+	telegramText := buildTelegramAlert(severityWarning, "服务器即将到期", "", node.Name, e.withNodeInfo(nodeCtx, tgLines), "")
 
 	e.sendAlert(context.Background(), alertPayload{
 		Severity:  severityWarning,
@@ -1420,18 +1395,15 @@ func (e *AlertEngine) NotifyDDNSUpdated(nodeID, nodeName, oldIP, currentIP, doma
 	alertKey := "ddns:" + nodeID + ":" + currentIP
 	if e.canAlert(alertKey, 1) {
 		nodeCtx := e.nodeContext(nodeID, nodeName)
-		telegramText := buildTelegramAlert(severityInfo, "DDNS", "NAT 服务器 IP 变更", nodeName, e.withNodeInfo(nodeCtx, []string{
-			tgLine("原公网 IP", e.formatIP(oldIP)),
-			tgLine("新公网 IP", e.formatIP(currentIP)),
+		telegramText := buildTelegramAlert(severityInfo, "DDNS IP 变更", "", nodeName, e.withNodeInfo(nodeCtx, []string{
 			tgLine("解析域名", domain),
-			tgLine("同步状态", "Cloudflare DNS 已更新，TTL 为 60 秒"),
-			tgLine("影响", "依赖该域名的前置服务器会刷新 DNS 并重建连接；客户端无需修改配置"),
-		}), "如业务异常，请检查 Cloudflare 记录、DNS 缓存以及依赖该域名的前置服务器。")
+			tgLine("IP 变更", fmt.Sprintf("%s → %s", e.formatIP(oldIP), e.formatIP(currentIP))),
+		}), "")
 		e.sendAlert(context.Background(), alertPayload{
 			Severity:  severityInfo,
 			BarkTitle: fmt.Sprintf("服务器 IP 变更：%s", nodeName),
-			BarkBody: e.barkWithNode(nodeCtx, fmt.Sprintf("%s → %s\n%s 已同步 Cloudflare（TTL 60s）",
-				e.formatIP(oldIP), e.formatIP(currentIP), domain)),
+			BarkBody: e.barkWithNode(nodeCtx, fmt.Sprintf("%s\n%s → %s",
+				domain, e.formatIP(oldIP), e.formatIP(currentIP))),
 			BarkGroup: "DDNS监控",
 			BarkSound: "bell.caf",
 			Telegram:  telegramText,
@@ -1449,39 +1421,60 @@ func (e *AlertEngine) NotifyChainedDNSHealing(targetNodeName string, chainedCoun
 				nodeCtx.Location = location
 			}
 		}
-		telegramText := buildTelegramAlert(severityWarning, "链路自愈", "已触发前置服务器 DNS 刷新", targetNodeName, e.withNodeInfo(nodeCtx, []string{
-			tgLine("依赖前置服务器", fmt.Sprintf("%d 台", chainedCount)),
+		telegramText := buildTelegramAlert(severityWarning, "触发前置 DNS 刷新", "", targetNodeName, e.withNodeInfo(nodeCtx, []string{
 			tgLine("影响域名", strings.Join(domains, "、")),
 			tgLine("目标最新 IP", e.formatIP(targetIP)),
-			tgLine("当前动作", "已下发轻量自愈指令，重置旧连接并刷新解析"),
-		}), "系统已自动处理，请等待完成通知。若 5 分钟内仍未恢复，请检查前置服务器在线状态和 DNS 解析。")
+			tgLine("依赖前置服务器", fmt.Sprintf("%d 台", chainedCount)),
+		}), "")
 		e.sendAlert(context.Background(), alertPayload{
 			Severity:  severityWarning,
-			BarkTitle: "链路自愈已触发",
+			BarkTitle: "前置 DNS 刷新已触发",
 			BarkBody: e.barkWithNode(nodeCtx, fmt.Sprintf("%d 台前置服务器正在刷新 DNS\n域名：%s",
 				chainedCount, strings.Join(domains, "、"))),
-			BarkGroup: "链路自愈",
+			BarkGroup: "DNS",
 			BarkSound: "anticipate.caf",
 			Telegram:  telegramText,
 		})
 	}
 }
 
-// NotifyChainedDNSCompleted sends a notification when a chained node completes DNS refresh and verification.
+func cleanDNSSummary(summary string) string {
+	s := strings.TrimSpace(summary)
+	if idx := strings.Index(s, "（"); idx != -1 {
+		s = strings.TrimSpace(s[:idx])
+	} else if idx := strings.Index(s, "("); idx != -1 {
+		s = strings.TrimSpace(s[:idx])
+	}
+	if idx := strings.LastIndex(s, "："); idx != -1 {
+		s = strings.TrimSpace(s[idx+len("："):])
+	} else if idx := strings.LastIndex(s, ":"); idx != -1 {
+		s = strings.TrimSpace(s[idx+1:])
+	}
+	s = strings.ReplaceAll(s, " -> ", " → ")
+	return s
+}
+
+func formatDNSMappingHTML(clean string) string {
+	parts := strings.Split(clean, " → ")
+	if len(parts) == 2 {
+		return fmt.Sprintf("<code>%s</code> → <code>%s</code>", tgEscape(parts[0]), tgEscape(parts[1]))
+	}
+	return tgEscape(clean)
+}
+
+// NotifyChainedDNSCompleted sends a notification when a chained node completes DNS refresh.
 func (e *AlertEngine) NotifyChainedDNSCompleted(nodeID, nodeName, summary string) {
 	alertKey := "dns_completed:" + nodeID
 	if e.canAlert(alertKey, 1) {
 		nodeCtx := e.nodeContext(nodeID, nodeName)
-		telegramText := buildTelegramAlert(severityRecovery, "链路自愈", "DNS 刷新与验证完成", nodeName, e.withNodeInfo(nodeCtx, []string{
-			tgLine("执行结果", summary),
-			tgLine("当前状态", "底层卡死连接已切断，DNS 状态已重载恢复"),
-			tgLine("客户端影响", "依赖该前置服务器的链路会使用最新解析，客户端无需修改配置"),
-		}), "")
+		cleanSummary := cleanDNSSummary(summary)
+		dnsLine := formatDNSMappingHTML(cleanSummary)
+		telegramText := buildTelegramAlertRaw(severityRecovery, "DNS 刷新完成", "", nodeName, e.withNodeInfo(nodeCtx, []string{dnsLine}))
 		e.sendAlert(context.Background(), alertPayload{
 			Severity:  severityRecovery,
-			BarkTitle: fmt.Sprintf("链路自愈完成：%s", nodeName),
-			BarkBody:  e.barkWithNode(nodeCtx, fmt.Sprintf("%s\nDNS 刷新与验证完成。", summary)),
-			BarkGroup: "链路自愈",
+			BarkTitle: fmt.Sprintf("DNS 刷新完成：%s", nodeName),
+			BarkBody:  e.barkWithNode(nodeCtx, cleanSummary),
+			BarkGroup: "DNS",
 			BarkSound: "calypso.caf",
 			Telegram:  telegramText,
 		})
@@ -1596,12 +1589,11 @@ func (e *AlertEngine) sendFail2banSummary(batch *fail2banBatch) {
 		telegramText := buildTelegramAlert(severityWarning, "安全防护", "已拦截恶意来源", batch.nodeName, e.withNodeInfo(nodeCtx, []string{
 			tgLine("拦截目标", e.formatIP(batch.ips[0])),
 			tgLine("触发规则", batch.jail),
-			tgLine("处置结果", "已自动加入服务器防火墙阻断列表"),
-		}), "若该 IP 是业务来源，请在服务器 Fail2Ban 白名单中添加；否则可以忽略。")
+		}), "")
 		e.sendAlert(context.Background(), alertPayload{
 			Severity:  severityWarning,
 			BarkTitle: fmt.Sprintf("已拦截恶意源：%s", batch.nodeName),
-			BarkBody:  e.barkWithNode(nodeCtx, fmt.Sprintf("%s\n规则：%s\n已加入防火墙阻断列表", e.formatIP(batch.ips[0]), batch.jail)),
+			BarkBody:  e.barkWithNode(nodeCtx, fmt.Sprintf("%s\n规则：%s", e.formatIP(batch.ips[0]), batch.jail)),
 			BarkGroup: "防御日志",
 			BarkSound: "chime.caf",
 			Telegram:  telegramText,
@@ -1614,8 +1606,7 @@ func (e *AlertEngine) sendFail2banSummary(batch *fail2banBatch) {
 		tgLine("触发规则", batch.jail),
 		tgLine("统计窗口", fmt.Sprintf("%s 至 %s，约 %d 秒", start, end, windowSeconds)),
 		tgLine("来源列表", ipList),
-		tgLine("处置结果", "已自动加入服务器防火墙阻断列表"),
-	}), "若这些 IP 是业务来源，请在服务器 Fail2Ban 白名单中添加；否则可以忽略。")
+	}), "")
 	e.sendAlert(context.Background(), alertPayload{
 		Severity:  severityWarning,
 		BarkTitle: fmt.Sprintf("已拦截 %d 个恶意来源：%s", total, batch.nodeName),
@@ -1631,16 +1622,14 @@ func (e *AlertEngine) sendFail2banSummary(batch *fail2banBatch) {
 func (e *AlertEngine) NotifyConsoleBruteForce(clientIP string, attempts int) {
 	alertKey := "bruteforce:" + clientIP
 	if e.canAlert(alertKey, 15) {
-		telegramText := buildTelegramAlert(severityCritical, "系统安全", "控制台防爆破已触发", clientIP, []string{
-			tgLine("攻击来源", e.formatIP(clientIP)),
+		telegramText := buildTelegramAlert(severityCritical, "系统安全", "控制台防爆破触发", "", []string{
+			tgLine("登录来源", e.formatIP(clientIP)),
 			tgLine("失败次数", fmt.Sprintf("15 分钟内连续失败 %d 次", attempts)),
-			tgLine("触发阈值", "同一 IP 15 分钟内失败 5 次"),
-			tgLine("当前处置", "该 IP 已被限制登录控制台"),
-		}, "如非本人操作，请立即修改管理密码并检查登录审计；如为本人，请确认密码未泄露。")
+		}, "")
 		e.sendAlert(context.Background(), alertPayload{
 			Severity:  severityCritical,
-			BarkTitle: fmt.Sprintf("控制台防爆破：%s", clientIP),
-			BarkBody:  fmt.Sprintf("%s\n15 分钟内连续失败 %d 次\n该 IP 已被限制登录", e.formatIP(clientIP), attempts),
+			BarkTitle: "控制台防爆破触发",
+			BarkBody:  fmt.Sprintf("%s\n15 分钟内连续失败 %d 次", e.formatIP(clientIP), attempts),
 			BarkGroup: "系统安全",
 			BarkSound: "alarm.caf",
 			Telegram:  telegramText,
@@ -1693,7 +1682,7 @@ func (e *AlertEngine) NotifyLoginFailed(username, ip, reason, userAgent string) 
 			tgLine("登录来源", e.formatIP(clean)),
 			tgLine("失败原因", reason),
 			tgLine("客户端", ua),
-		}, "如非本人操作，请检查密码是否泄露；同一 IP 15 分钟内失败 5 次会触发防爆破限制。")
+		}, "")
 		e.sendAlert(context.Background(), alertPayload{
 			Severity:  severityWarning,
 			BarkTitle: fmt.Sprintf("控制台登录失败：%s", username),
@@ -1728,12 +1717,11 @@ func (e *AlertEngine) NotifySubscriptionPullSuccess(configName, ip, userAgent st
 		telegramText := buildTelegramAlert(severityInfo, "订阅分发", "订阅下载成功", configName, []string{
 			tgLine("请求来源", e.formatIP(clean)),
 			tgLine("客户端", ua),
-			tgLine("获取状态", "200 OK"),
 		}, "")
 		e.sendAlert(context.Background(), alertPayload{
 			Severity:  severityInfo,
 			BarkTitle: fmt.Sprintf("订阅下载成功：%s", configName),
-			BarkBody:  fmt.Sprintf("%s\n200 OK，%s", e.formatIP(clean), ua),
+			BarkBody:  fmt.Sprintf("%s\n客户端：%s", e.formatIP(clean), ua),
 			BarkGroup: "订阅分发",
 			BarkSound: "glass.caf",
 			Telegram:  telegramText,
@@ -1764,8 +1752,7 @@ func (e *AlertEngine) NotifySubscriptionPullFailed(tokenHint, reason, ip, userAg
 			tgLine("请求来源", e.formatIP(clean)),
 			tgLine("客户端", ua),
 			tgLine("失败原因", reason),
-			tgLine("安全提示", "订阅请求未通过验证，可能为过期配置、错误客户端或外部扫描"),
-		}, "如果是你的客户端，请检查订阅链接是否过期、客户端 User-Agent 是否匹配访问限制；如果不是，请警惕外部扫描。")
+		}, "")
 		e.sendAlert(context.Background(), alertPayload{
 			Severity:  severityWarning,
 			BarkTitle: fmt.Sprintf("订阅下载失败：%s", tokenHint),
@@ -1809,7 +1796,6 @@ func (e *AlertEngine) NotifySubscriptionConfigChanged(resource, action, name, de
 		fmt.Sprintf("变更：%s%s", resource, action),
 		fmt.Sprintf("影响客户端：%d 个", len(affected)),
 		list,
-		"客户端下次拉取订阅时会自动更新；未开启自动更新时请手动更新。",
 	}
 	if strings.TrimSpace(detail) != "" {
 		barkLines = append(barkLines, detail)
@@ -1832,9 +1818,7 @@ func (e *AlertEngine) NotifySubscriptionConfigChanged(resource, action, name, de
 	if strings.TrimSpace(detail) != "" {
 		tgLines = append(tgLines, tgLine("变更内容", detail))
 	}
-	tgLines = append(tgLines, tgLine("客户端影响", "客户端下次拉取订阅时会获得新配置；未开启自动更新的客户端需要手动更新订阅"))
-	telegramText := buildTelegramAlertFor("订阅通知", severityInfo, "订阅配置", resource+action, name, tgLines,
-		"订阅用户：请在客户端更新订阅。管理员：如发现非预期变更，请检查操作审计并回滚。")
+	telegramText := buildTelegramAlertFor("订阅通知", severityInfo, "订阅配置", resource+action, name, tgLines, "")
 
 	e.sendAlert(context.Background(), alertPayload{
 		Severity:  severityInfo,

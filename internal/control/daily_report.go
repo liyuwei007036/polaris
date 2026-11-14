@@ -722,7 +722,7 @@ func (r dailyReportData) alertPayload() alertPayload {
 		}
 	}
 
-	b.WriteString("\n时间：")
+	b.WriteString("\n")
 	b.WriteString(tgEscape(NowAlertTime()))
 
 	telegramText := b.String()

@@ -67,6 +67,11 @@ func tgLinkLine(label, href, text string) string {
 		tgEscape(label), html.EscapeString(strings.TrimSpace(href)), tgEscape(text))
 }
 
+// buildTelegramAlertRaw renders a Telegram alert with custom body lines without the "详细信息" section header.
+func buildTelegramAlertRaw(severity, category, headline, subject string, lines []string) string {
+	return buildTelegramAlert(severity, category, headline, subject, lines, "")
+}
+
 // buildTelegramAlert renders a detailed bot-style HTML message. Every dynamic
 // value passed through tgLine/tgCodeLine/tgLinkLine is escaped for Telegram HTML.
 func buildTelegramAlert(severity, category, headline, subject string, lines []string, action string) string {
@@ -93,22 +98,15 @@ func buildTelegramAlertFor(audience, severity, category, headline, subject strin
 		b.WriteString("\n")
 	}
 
-	details := make([]string, 0, len(lines))
 	for _, line := range lines {
 		if strings.TrimSpace(line) == "" {
 			continue
 		}
-		details = append(details, line)
-	}
-	if len(details) > 0 {
-		b.WriteString("\n<b>详细信息</b>\n")
-		for _, line := range details {
-			b.WriteString(line)
-			b.WriteString("\n")
-		}
+		b.WriteString("\n")
+		b.WriteString(line)
 	}
 
-	b.WriteString("\n时间：")
+	b.WriteString("\n\n")
 	b.WriteString(tgEscape(NowAlertTime()))
 	return b.String()
 }
