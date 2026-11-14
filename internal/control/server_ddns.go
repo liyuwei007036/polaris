@@ -14,6 +14,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/liyuwei007036/polaris/internal/security"
 )
 
 var ddnsReconcileBackoff = []time.Duration{0, 15 * time.Second, 30 * time.Second, 1 * time.Minute, 2 * time.Minute, 5 * time.Minute}
@@ -270,13 +272,18 @@ func (s *Server) computeDDNSTargetDigest(ctx context.Context, node Node, explici
 
 // executeNodeDDNS performs the actual DNS record lookup and update with Cloudflare for all bound records of the node.
 func (s *Server) executeNodeDDNS(ctx context.Context, nodeID, currentIP string) error {
-	_, err := s.executeNodeDDNSWithResult(ctx, nodeID, currentIP)
+	_, err := s.executeNodeDDNSWithResult(ctx, nodeID, currentIP, "auto")
 	return err
 }
 
-func (s *Server) executeNodeDDNSWithResult(ctx context.Context, nodeID, currentIP string) (string, error) {
+func (s *Server) executeNodeDDNSWithResult(ctx context.Context, nodeID, currentIP string, triggerTypes ...string) (string, error) {
 	s.ddnsMu.Lock()
 	defer s.ddnsMu.Unlock()
+
+	triggerType := "auto"
+	if len(triggerTypes) > 0 && strings.TrimSpace(triggerTypes[0]) != "" {
+		triggerType = strings.TrimSpace(triggerTypes[0])
+	}
 
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
@@ -347,6 +354,18 @@ func (s *Server) executeNodeDDNSWithResult(ctx context.Context, nodeID, currentI
 			if err != nil {
 				log.Printf("ddns: update cloudflare record %s (%s) in %s failed: %v", record.Name, recID, zone.Name, err)
 				lastErr = err
+				_ = s.store.RecordDDNSChange(ctx, DDNSChangeRecord{
+					NodeID:       node.ID,
+					NodeName:     node.Name,
+					Domain:       record.Name,
+					RecordType:   record.Type,
+					RecordID:     recID,
+					OldIP:        prevContent,
+					NewIP:        targetIP,
+					TriggerType:  triggerType,
+					Status:       "failed",
+					ErrorMessage: err.Error(),
+				})
 				continue
 			}
 			if oldIP == "" {
@@ -354,6 +373,18 @@ func (s *Server) executeNodeDDNSWithResult(ctx context.Context, nodeID, currentI
 			}
 			changedIPs = appendUniqueString(changedIPs, targetIP)
 			updatedDomains = append(updatedDomains, updated.Name)
+
+			_ = s.store.RecordDDNSChange(ctx, DDNSChangeRecord{
+				NodeID:      node.ID,
+				NodeName:    node.Name,
+				Domain:      updated.Name,
+				RecordType:  record.Type,
+				RecordID:    recID,
+				OldIP:       prevContent,
+				NewIP:       targetIP,
+				TriggerType: triggerType,
+				Status:      "succeeded",
+			})
 		}
 	}
 	if oldIP == "" {
@@ -412,6 +443,9 @@ func (s *Server) executeNodeDDNSWithResult(ctx context.Context, nodeID, currentI
 
 	s.liveHub.publish(liveEvent{Kind: "node", NodeID: node.ID})
 	s.liveHub.publish(liveEvent{Kind: "cloudflare"})
+	if len(updatedDomains) > 0 {
+		s.liveHub.publish(liveEvent{Kind: "ddns", NodeID: node.ID})
+	}
 
 	_, signature := s.computeDDNSTargetDigest(ctx, node, primaryIP)
 	s.ddnsReconcileMu.Lock()
@@ -530,7 +564,8 @@ func (s *Server) reconcileNodeDDNS(ctx context.Context, nodeID string) {
 
 // syncNodeDDNSNow forces an immediate Cloudflare DNS record update for the specified node and IP.
 func (s *Server) syncNodeDDNSNow(ctx context.Context, node Node, currentIP, operatorID string) error {
-	return s.executeNodeDDNS(ctx, node.ID, currentIP)
+	_, err := s.executeNodeDDNSWithResult(ctx, node.ID, currentIP, "manual")
+	return err
 }
 
 // syncNodeDDNS is the HTTP handler for POST /api/v1/nodes/{id}/ddns/sync.
@@ -554,7 +589,7 @@ func (s *Server) syncNodeDDNS(w http.ResponseWriter, r *http.Request) {
 	if currentIP == "" {
 		currentIP = node.LastObservedIP
 	}
-	resolvedIP, err := s.executeNodeDDNSWithResult(r.Context(), node.ID, currentIP)
+	resolvedIP, err := s.executeNodeDDNSWithResult(r.Context(), node.ID, currentIP, "manual")
 	if err != nil {
 		if strings.Contains(err.Error(), "无效的公网 IP 地址") {
 			writeError(w, userErrorf("当前无法获取该服务器的公网 IP，请确认服务器已上线或检查 DDNS 绑定 IP"))
@@ -573,6 +608,79 @@ func (s *Server) syncNodeDDNS(w http.ResponseWriter, r *http.Request) {
 		_ = s.store.AppendAudit(r.Context(), operator.ID, "cloudflare_record.ddns_synced", "node", updatedNode.ID, summary)
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"status": "ok", "ip": resolvedIP, "domains": updatedNode.DDNSDomains})
+}
+
+// listDDNSHistory handles GET /api/v1/ddns/history.
+func (s *Server) listDDNSHistory(w http.ResponseWriter, r *http.Request) {
+	if _, err := s.operator(r, false); err != nil {
+		writeError(w, err)
+		return
+	}
+	page, err := security.ParsePositiveInt(r.URL.Query().Get("page"), 1, 1_000_000)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	pageSize, err := security.ParsePositiveInt(r.URL.Query().Get("page_size"), 20, 100)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	filter := DDNSHistoryFilter{
+		NodeID:      strings.TrimSpace(r.URL.Query().Get("node_id")),
+		Domain:      strings.TrimSpace(r.URL.Query().Get("domain")),
+		Keyword:     strings.TrimSpace(r.URL.Query().Get("keyword")),
+		Status:      strings.TrimSpace(r.URL.Query().Get("status")),
+		TriggerType: strings.TrimSpace(r.URL.Query().Get("trigger_type")),
+	}
+	records, total, err := s.store.ListDDNSHistory(r.Context(), filter, page, pageSize)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	if records == nil {
+		records = []DDNSChangeRecord{}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"records": records,
+		"total":   total,
+	})
+}
+
+// deleteDDNSHistory handles DELETE /api/v1/ddns/history/{id}.
+func (s *Server) deleteDDNSHistory(w http.ResponseWriter, r *http.Request) {
+	operator, err := s.writer(r)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	id := r.PathValue("id")
+	if err := s.store.DeleteDDNSHistory(r.Context(), id); err != nil {
+		writeError(w, err)
+		return
+	}
+	_ = s.store.AppendAudit(r.Context(), operator.ID, "ddns.record_deleted", "ddns", id, "删除了 1 条 DDNS 变更记录")
+	writeJSON(w, http.StatusOK, map[string]any{"status": "ok"})
+}
+
+// clearDDNSHistory handles DELETE /api/v1/ddns/history.
+func (s *Server) clearDDNSHistory(w http.ResponseWriter, r *http.Request) {
+	operator, err := s.writer(r)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	nodeID := strings.TrimSpace(r.URL.Query().Get("node_id"))
+	if err := s.store.ClearDDNSHistory(r.Context(), nodeID); err != nil {
+		writeError(w, err)
+		return
+	}
+	summary := "清空了所有 DDNS 变更记录"
+	if nodeID != "" {
+		summary = fmt.Sprintf("清空了服务器 (ID: %s) 的 DDNS 变更记录", nodeID)
+	}
+	_ = s.store.AppendAudit(r.Context(), operator.ID, "ddns.history_cleared", "ddns", nodeID, summary)
+	writeJSON(w, http.StatusOK, map[string]any{"status": "ok"})
 }
 
 // reconcileNodeChainedDDNS ensures any DDNS-enabled target nodes chained by the given node

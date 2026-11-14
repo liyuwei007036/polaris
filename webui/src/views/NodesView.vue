@@ -38,6 +38,7 @@ import NodeRow from '../components/NodeRow.vue'
 import NodeDetail from '../components/NodeDetail.vue'
 import ProbeManager from '../components/ProbeManager.vue'
 import ShareDialog from '../components/ShareDialog.vue'
+import DDNSHistoryTable from '../components/DDNSHistoryTable.vue'
 
 const MASTER_HOST_KEY = 'polaris_master_host'
 const PERIOD_LABELS = { day: '天', month: '月', quarter: '季', year: '年' }
@@ -894,6 +895,14 @@ const runPeerProbes = async (targetNodeId = '') => {
   }
 }
 
+const ddnsHistoryNode = ref(null)
+const ddnsHistoryVisible = ref(false)
+
+function openDDNSHistory(node) {
+  ddnsHistoryNode.value = node
+  ddnsHistoryVisible.value = true
+}
+
 function handleCardCommand(node, command) {
   if (command === 'edit') openEdit(node)
   else if (command === 'networkProbe') openNetworkProbe(node)
@@ -901,6 +910,7 @@ function handleCardCommand(node, command) {
   else if (command === 'upgradeSingBox') upgradeSingBox(node)
   else if (command === 'revoke') revoke(node)
   else if (command === 'syncDDNS') triggerManualDDNS(node)
+  else if (command === 'ddnsHistory') openDDNSHistory(node)
 }
 
 function onAuthSuccess() {
@@ -1534,6 +1544,16 @@ onBeforeUnmount(() => {
           </table>
         </div>
       </div>
+    </el-dialog>
+
+    <el-dialog
+      v-model="ddnsHistoryVisible"
+      :title="`DDNS 变更记录 · ${ddnsHistoryNode?.name || ''}`"
+      width="920px"
+      append-to-body
+      destroy-on-close
+    >
+      <DDNSHistoryTable :node-id="ddnsHistoryNode?.id || ''" in-dialog />
     </el-dialog>
   </div>
 </template>

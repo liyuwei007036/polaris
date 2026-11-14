@@ -9,6 +9,7 @@ import MSegmented from '../components/MSegmented.vue'
 import MSheet from '../components/MSheet.vue'
 import MPicker from '../components/MPicker.vue'
 import MActionSheet from '../components/MActionSheet.vue'
+import DDNSHistoryTable from '../../components/DDNSHistoryTable.vue'
 
 const isAdmin = inject('isAdmin')
 const appState = inject('appState')
@@ -308,9 +309,9 @@ onMounted(load)
       读取 Cloudflare 失败：{{ remoteError }}。请点上面的「设置」检查区域编号与访问令牌，并确认这台控制机可以访问 api.cloudflare.com。
     </div>
 
-    <MSegmented v-model="tab" :options="[{ value: 'records', label: '域名记录' }, { value: 'certificates', label: '源证书', badge: certificates.length }]" />
+    <MSegmented v-model="tab" :options="[{ value: 'records', label: '域名记录' }, { value: 'certificates', label: '源证书', badge: certificates.length }, { value: 'ddns-history', label: 'DDNS记录' }]" />
 
-    <el-input v-model="keyword" clearable :prefix-icon="Search" :placeholder="tab === 'records' ? '搜索域名、内容或服务器' : '搜索域名或证书'" />
+    <el-input v-if="tab !== 'ddns-history'" v-model="keyword" clearable :prefix-icon="Search" :placeholder="tab === 'records' ? '搜索域名、内容或服务器' : '搜索域名或证书'" />
     <div v-if="tab === 'records'" class="m-filters">
       <MSegmented v-model="selectedType" :options="[{ value: '', label: '全部类型' }, ...recordTypes.map((type) => ({ value: type, label: type }))]" />
     </div>
@@ -339,7 +340,7 @@ onMounted(load)
       <div v-if="!filteredRecords.length && !loading" class="m-empty">还没有域名记录</div>
     </template>
 
-    <template v-else>
+    <template v-else-if="tab === 'certificates'">
       <div class="m-notice m-notice--info">
         源证书用于 VLESS + httpupgrade / gRPC 经 Cloudflare 加速时的回源：接入服务的连接域名命中下面的域名后，会改用对应源证书对外提供 TLS，Cloudflare 的 SSL 模式即可使用「完全（严格）」。未配置时仍使用平台自签证书。
       </div>
@@ -365,6 +366,12 @@ onMounted(load)
         </button>
       </article>
       <div v-if="!filteredCertificates.length && !loading" class="m-empty">还没有源证书</div>
+    </template>
+
+    <template v-else-if="tab === 'ddns-history'">
+      <div style="margin-top: 10px;">
+        <DDNSHistoryTable />
+      </div>
     </template>
 
     <MActionSheet v-model="actionsOpen" :title="actionTarget?.name || actionTarget?.domain" :details="details" :actions="actions" @select="runAction" />
@@ -466,7 +473,7 @@ onMounted(load)
       </template>
     </MSheet>
 
-    <template v-if="isAdmin" #fab>
+    <template v-if="isAdmin && tab !== 'ddns-history'" #fab>
       <button
         type="button"
         class="m-fab"

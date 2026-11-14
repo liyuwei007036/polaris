@@ -44,6 +44,7 @@
               <el-dropdown-item command="edit"><el-icon><Edit /></el-icon>配置</el-dropdown-item>
               <el-dropdown-item v-if="node.online" command="networkProbe"><el-icon><Connection /></el-icon>线路排查</el-dropdown-item>
               <el-dropdown-item v-if="node.ddns_enabled" command="syncDDNS"><el-icon><Refresh /></el-icon>同步 DDNS</el-dropdown-item>
+              <el-dropdown-item v-if="node.ddns_enabled" command="ddnsHistory"><el-icon><Clock /></el-icon>DDNS 变更记录</el-dropdown-item>
               <el-dropdown-item v-if="isAdmin && singBoxUpdateAvailable" command="upgradeSingBox"><el-icon><Top /></el-icon>升级 sing-box</el-dropdown-item>
               <el-dropdown-item command="revoke" divided class="danger-item"><el-icon><RemoveFilled /></el-icon>移除</el-dropdown-item>
             </el-dropdown-menu>
@@ -264,6 +265,7 @@
 <script setup>
 import { computed, inject } from 'vue'
 import {
+  Clock,
   Connection,
   Edit,
   InfoFilled,

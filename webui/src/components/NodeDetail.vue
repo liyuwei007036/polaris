@@ -278,19 +278,34 @@
             </span>
             <span>{{ group.label }}</span>
           </h4>
-          <button
-            v-if="canWrite && group.action"
-            type="button"
-            class="fact-action-btn neu-track neu-press"
-            :disabled="group.actionLoading"
-            :title="group.actionText"
-            :aria-label="group.actionText"
-            @click="group.action"
-          >
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="size-3.5" :class="{ 'spin': group.actionLoading }">
-              <path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67" />
-            </svg>
-          </button>
+          <div class="fact-actions-wrap">
+            <button
+              v-if="group.historyAction"
+              type="button"
+              class="fact-action-btn neu-track neu-press"
+              :title="group.historyActionText"
+              :aria-label="group.historyActionText"
+              @click="group.historyAction"
+            >
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="size-3.5">
+                <circle cx="12" cy="12" r="10" />
+                <polyline points="12 6 12 12 16 14" />
+              </svg>
+            </button>
+            <button
+              v-if="canWrite && group.action"
+              type="button"
+              class="fact-action-btn neu-track neu-press"
+              :disabled="group.actionLoading"
+              :title="group.actionText"
+              :aria-label="group.actionText"
+              @click="group.action"
+            >
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="size-3.5" :class="{ 'spin': group.actionLoading }">
+                <path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67" />
+              </svg>
+            </button>
+          </div>
         </div>
         <dl>
           <template v-for="fact in group.facts" :key="fact.label">
@@ -318,6 +333,15 @@
                   <line x1="10" y1="14" x2="21" y2="3" />
                 </svg>
               </a>
+              <el-button
+                v-else-if="fact.isActionBtn"
+                link
+                type="primary"
+                size="small"
+                @click="fact.onClick"
+              >
+                {{ fact.value }}
+              </el-button>
               <span v-else-if="fact.badge" class="fact-badge" :class="fact.badgeClass">
                 <span class="badge-dot" />
                 {{ fact.value }}
@@ -328,6 +352,15 @@
         </dl>
       </section>
     </div>
+    <el-dialog
+      v-model="ddnsHistoryVisible"
+      :title="`DDNS 变更记录 · ${props.node?.name || ''}`"
+      width="920px"
+      append-to-body
+      destroy-on-close
+    >
+      <DDNSHistoryTable :node-id="props.node?.id || ''" in-dialog />
+    </el-dialog>
   </div>
 </template>
 
@@ -336,6 +369,7 @@ import { computed, inject, onMounted, ref, watch } from 'vue'
 import { ElMessage } from 'element-plus'
 import LatencyPanel from './LatencyPanel.vue'
 import TrendChart from './TrendChart.vue'
+import DDNSHistoryTable from './DDNSHistoryTable.vue'
 import { api, post } from '../api'
 import { formatDDNSBindSummary } from '../ddns'
 import { formatBandwidth, formatBytes, formatUptime } from '../format'
@@ -644,6 +678,12 @@ function getExpiryInfo(expiresOn) {
 }
 
 const syncingDDNS = ref(false)
+const ddnsHistoryVisible = ref(false)
+
+function openDDNSHistory() {
+  ddnsHistoryVisible.value = true
+}
+
 async function triggerSyncDDNS() {
   syncingDDNS.value = true
   try {
@@ -773,14 +813,21 @@ const factGroups = computed(() => {
       value: formatDDNSBindSummary(node),
       cls: 'font-mono',
     })
+    ddnsFacts.push({
+      label: '变更记录',
+      isActionBtn: true,
+      value: '查看历史记录',
+      onClick: openDDNSHistory,
+    })
   }
   groups.push({
     label: '动态域名解析',
     icon: 'dns',
     actionText: syncingDDNS.value ? '同步中…' : '立即同步',
     actionLoading: syncingDDNS.value,
-    // Nothing to sync when DDNS is off, so the refresh control stays hidden.
     action: node.ddns_enabled ? triggerSyncDDNS : null,
+    historyAction: node.ddns_enabled ? openDDNSHistory : null,
+    historyActionText: '查看 DDNS 变更记录',
     facts: ddnsFacts,
   })
 
@@ -998,6 +1045,11 @@ onMounted(loadHistory)
   font-size: 11.5px;
   font-weight: 500;
   word-break: break-all;
+}
+.fact-actions-wrap {
+  display: flex;
+  align-items: center;
+  gap: 6px;
 }
 .fact-action-btn {
   width: 26px;

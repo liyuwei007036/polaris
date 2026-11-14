@@ -5,6 +5,7 @@ import { ElMessage } from 'element-plus'
 import { api } from '../api'
 import { formatDateTime, localTimeZoneLabel } from '../format'
 import PageHeader from '../components/PageHeader.vue'
+import DDNSHistoryTable from '../components/DDNSHistoryTable.vue'
 import {
   AUDIT_MODULES, TARGET_NAMES, TASK_KINDS, STATUS_MAP,
   getModuleInfo, formatAuditTitle, parseJsonDetail
@@ -80,9 +81,12 @@ async function loadAudit() {
   }
 }
 
+const ddnsHistoryRef = ref(null)
+
 function refreshCurrent() {
   if (tab.value === 'tasks') loadTasks()
-  else loadAudit()
+  else if (tab.value === 'audit') loadAudit()
+  else if (ddnsHistoryRef.value) ddnsHistoryRef.value.refresh()
 }
 
 // 搜索防抖
@@ -374,6 +378,9 @@ onMounted(async () => {
                 @change="loadAudit"
               />
             </div>
+          </el-tab-pane>
+          <el-tab-pane label="DDNS 变更" name="ddns">
+            <DDNSHistoryTable ref="ddnsHistoryRef" />
           </el-tab-pane>
         </el-tabs>
       </div>

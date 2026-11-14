@@ -6,6 +6,7 @@ import { api, del, post, put } from '../api'
 import { formatDateTime, includesText } from '../format'
 import PageHeader from '../components/PageHeader.vue'
 import PagedTable from '../components/PagedTable.vue'
+import DDNSHistoryTable from '../components/DDNSHistoryTable.vue'
 
 const isAdmin = inject('isAdmin')
 const appState = inject('appState')
@@ -262,7 +263,7 @@ onMounted(load)
         :title="`读取 Cloudflare 失败：${remoteError}`"
         description="请点击「设置」检查区域编号与访问令牌，并确认这台控制机可以访问 api.cloudflare.com。"
         type="error" show-icon :closable="false" style="margin-bottom: 12px" />
-      <div class="search-toolbar">
+      <div v-if="tab !== 'ddns-history'" class="search-toolbar">
         <el-input v-model="keyword" clearable :prefix-icon="Search" :placeholder="tab === 'records' ? '搜索域名、内容或服务器' : '搜索域名或证书'" style="width: 260px" />
         <template v-if="tab === 'records'">
           <el-select v-model="selectedNode" clearable placeholder="全部服务器" style="width: 180px">
@@ -325,6 +326,9 @@ onMounted(load)
                 </template>
               </el-table-column>
             </PagedTable>
+          </el-tab-pane>
+          <el-tab-pane label="DDNS 变更记录" name="ddns-history">
+            <DDNSHistoryTable />
           </el-tab-pane>
         </el-tabs>
       </div>

@@ -2853,6 +2853,23 @@ CREATE TABLE IF NOT EXISTS alert_settings (
   updated_at INTEGER NOT NULL
 );
 INSERT OR IGNORE INTO alert_settings (id, updated_at) VALUES (1, unixepoch());
+CREATE TABLE IF NOT EXISTS ddns_change_records (
+  id TEXT PRIMARY KEY,
+  node_id TEXT NOT NULL,
+  node_name TEXT NOT NULL DEFAULT '',
+  domain TEXT NOT NULL DEFAULT '',
+  record_type TEXT NOT NULL DEFAULT 'A',
+  record_id TEXT NOT NULL DEFAULT '',
+  old_ip TEXT NOT NULL DEFAULT '',
+  new_ip TEXT NOT NULL DEFAULT '',
+  trigger_type TEXT NOT NULL DEFAULT 'auto',
+  status TEXT NOT NULL DEFAULT 'succeeded',
+  error_message TEXT NOT NULL DEFAULT '',
+  created_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_ddns_change_records_created ON ddns_change_records(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_ddns_change_records_node ON ddns_change_records(node_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_ddns_change_records_domain ON ddns_change_records(domain, created_at DESC);
 `)
 	if err != nil {
 		return fmt.Errorf("migrate database: %w", err)
@@ -3195,6 +3212,14 @@ func (s *Store) addMihomoClientConfigV3Column(ctx context.Context, definition st
 		return nil
 	}
 	return fmt.Errorf("migrate Mihomo v3 client configs table: %w", err)
+}
+
+func (s *Store) addDDNSChangeRecordColumn(ctx context.Context, definition string) error {
+	_, err := s.db.ExecContext(ctx, "ALTER TABLE ddns_change_records ADD COLUMN "+definition)
+	if err == nil || strings.Contains(err.Error(), "duplicate column name") {
+		return nil
+	}
+	return fmt.Errorf("migrate ddns_change_records table: %w", err)
 }
 
 func loadOrCreateMasterKey(dataDir string) ([]byte, error) {
