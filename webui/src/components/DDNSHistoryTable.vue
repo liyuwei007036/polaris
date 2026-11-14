@@ -321,10 +321,11 @@ defineExpose({ refresh: loadRecords })
   justify-content: flex-end;
 }
 .text-muted {
-  color: var(--el-text-color-secondary, #909399);
+  color: var(--sb-muted, #94a3b8);
 }
 .text-primary {
-  color: var(--el-color-primary, #409eff);
+  color: var(--sb-text, #f8fafc);
+  font-weight: 600;
 }
 .cursor-pointer {
   cursor: pointer;

@@ -168,23 +168,92 @@
           </svg>
         </template>
       </Meter>
-      <Meter
-        label="流量"
-        tone="net"
-        :pct="trafficPercent"
-        :foot="trafficFootText"
-        :empty="trafficEmptyText"
-        :title="trafficTooltip"
+      <el-tooltip
+        placement="top"
+        effect="dark"
+        :show-after="150"
+        popper-class="traffic-popper"
+        :disabled="isShareMode"
       >
-        <template #icon>
-          <svg class="size-3.5 text-muted" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <path d="m3 16 4 4 4-4" />
-            <path d="M7 20V4" />
-            <path d="m21 8-4-4-4 4" />
-            <path d="M17 4v16" />
-          </svg>
+        <template #content>
+          <div class="traffic-tip">
+            <div class="traffic-tip-section">
+              <div class="traffic-tip-head">
+                <span class="traffic-tip-label">本月流量</span>
+                <span class="traffic-tip-val font-mono">{{ formatBytes(trafficUsedBytes) }}</span>
+              </div>
+              <div class="traffic-tip-sub font-mono">
+                <span>↓ {{ formatBytes(effectiveMonthlyRx) }}</span>
+                <span class="traffic-tip-dot">·</span>
+                <span>↑ {{ formatBytes(effectiveMonthlyTx) }}</span>
+              </div>
+            </div>
+
+            <div class="traffic-tip-line" />
+
+            <div class="traffic-tip-section">
+              <div class="traffic-tip-head">
+                <span class="traffic-tip-label">累计流量</span>
+                <span class="traffic-tip-val font-mono">{{ formatBytes(lifetimeTrafficBytes) }}</span>
+              </div>
+              <div class="traffic-tip-sub font-mono">
+                <span>↓ {{ formatBytes(effectiveLifetimeRx) }}</span>
+                <span class="traffic-tip-dot">·</span>
+                <span>↑ {{ formatBytes(effectiveLifetimeTx) }}</span>
+              </div>
+            </div>
+
+            <template v-if="hasProxyTraffic && hasNodeTraffic">
+              <div class="traffic-tip-line" />
+              <div class="traffic-tip-section">
+                <div class="traffic-tip-head">
+                  <span class="traffic-tip-label">业务代理</span>
+                  <span class="traffic-tip-val font-mono">{{ formatBytes(proxyMonthlyTotal) }}</span>
+                </div>
+                <div class="traffic-tip-sub font-mono">
+                  <span>↓ {{ formatBytes(proxyMonthlyRx) }}</span>
+                  <span class="traffic-tip-dot">·</span>
+                  <span>↑ {{ formatBytes(proxyMonthlyTx) }}</span>
+                </div>
+              </div>
+            </template>
+
+            <template v-if="trafficLimitBytes > 0">
+              <div class="traffic-tip-line" />
+              <div class="traffic-tip-section">
+                <div class="traffic-tip-head">
+                  <span class="traffic-tip-label">套餐配额</span>
+                  <span class="traffic-tip-val font-mono">{{ trafficPercent || 0 }}%</span>
+                </div>
+                <div class="traffic-tip-sub font-mono">
+                  <span>{{ formatBytes(trafficUsedBytes) }} / {{ formatBytes(trafficLimitBytes) }}</span>
+                </div>
+                <div v-if="trafficLimitBytes > trafficUsedBytes" class="traffic-tip-sub font-mono traffic-tip-muted">
+                  剩余可用 {{ formatBytes(trafficLimitBytes - trafficUsedBytes) }}
+                </div>
+              </div>
+            </template>
+          </div>
         </template>
-      </Meter>
+        <div class="meter-wrap">
+          <Meter
+            label="流量"
+            tone="net"
+            :pct="trafficPercent"
+            :foot="trafficFootText"
+            :empty="trafficEmptyText"
+          >
+            <template #icon>
+              <svg class="size-3.5 text-muted" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="m3 16 4 4 4-4" />
+                <path d="M7 20V4" />
+                <path d="m21 8-4-4-4 4" />
+                <path d="M17 4v16" />
+              </svg>
+            </template>
+          </Meter>
+        </div>
+      </el-tooltip>
     </div>
 
     <!-- Latency & 24h Heat Tracks -->
@@ -569,44 +638,6 @@ const trafficFootText = computed(() => {
   return `${formatBytes(used)} / ∞`
 })
 
-const trafficTooltip = computed(() => {
-  if (isShareMode) {
-    return '分享模式下已隐藏敏感流量详情'
-  }
-  const lines = []
-  const isHost = hasNodeTraffic.value
-
-  if (isHost) {
-    lines.push('【本月服务器物理网卡流量（与厂商对齐）】')
-    lines.push(`  ↓ 入站 (Rx): ${formatBytes(effectiveMonthlyRx.value)}`)
-    lines.push(`  ↑ 出站 (Tx): ${formatBytes(effectiveMonthlyTx.value)}`)
-    lines.push(`  Σ 合计消耗: ${formatBytes(trafficUsedBytes.value)}`)
-    lines.push('')
-    lines.push('【累计物理流量】')
-    lines.push(`  ↓ 累计入站: ${formatBytes(effectiveLifetimeRx.value)}`)
-    lines.push(`  ↑ 累计出站: ${formatBytes(effectiveLifetimeTx.value)}`)
-    lines.push(`  Σ 累计总额: ${formatBytes(lifetimeTrafficBytes.value)}`)
-  } else {
-    lines.push(`【本月实际消耗】${formatBytes(trafficUsedBytes.value)} (↓ ${formatBytes(effectiveMonthlyRx.value)} · ↑ ${formatBytes(effectiveMonthlyTx.value)})`)
-    lines.push(`【累计总额】${formatBytes(lifetimeTrafficBytes.value)}`)
-  }
-
-  if (hasProxyTraffic.value && isHost) {
-    lines.push('')
-    lines.push('【业务代理流量（sing-box 转发）】')
-    lines.push(`  本月: ↓ ${formatBytes(proxyMonthlyRx.value)} · ↑ ${formatBytes(proxyMonthlyTx.value)} (合计 ${formatBytes(proxyMonthlyTotal.value)})`)
-    lines.push(`  累计: ↓ ${formatBytes(proxyLifetimeRx.value)} · ↑ ${formatBytes(proxyLifetimeTx.value)} (合计 ${formatBytes(proxyLifetimeTotal.value)})`)
-  }
-
-  const limit = trafficLimitBytes.value
-  if (limit > 0) {
-    const remain = Math.max(0, limit - trafficUsedBytes.value)
-    lines.push('')
-    lines.push(`【套餐额度】${formatBytes(limit)} (剩余: ${formatBytes(remain)} · 已用: ${trafficPercent.value || 0}%)`)
-  }
-
-  return lines.join('\n')
-})
 
 const activeConnections = computed(() => {
   if (!props.node.online) return 0
@@ -1032,5 +1063,10 @@ button.upgrade-tag {
   font-size: 11px;
   font-weight: 600;
   color: var(--sb-text);
+}
+
+.meter-wrap {
+  min-width: 0;
+  display: block;
 }
 </style>

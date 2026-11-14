@@ -92,10 +92,47 @@
     </div>
 
     <!-- Col 3: Traffic -->
-    <div class="row-col col-traffic" :title="trafficTooltip">
-      <span class="col-label">流量</span>
-      <span class="tnum traffic-val font-mono">{{ trafficText }}</span>
-    </div>
+    <el-tooltip
+      placement="top"
+      effect="dark"
+      :show-after="150"
+      popper-class="traffic-popper"
+      :disabled="isShareMode"
+    >
+      <template #content>
+        <div class="traffic-tip">
+          <div class="traffic-tip-section">
+            <div class="traffic-tip-head">
+              <span class="traffic-tip-label">本月流量</span>
+              <span class="traffic-tip-val font-mono">{{ trafficText }}</span>
+            </div>
+            <div class="traffic-tip-sub font-mono">
+              <span>↓ {{ formatBytes(effectiveMonthlyRx) }}</span>
+              <span class="traffic-tip-dot">·</span>
+              <span>↑ {{ formatBytes(effectiveMonthlyTx) }}</span>
+            </div>
+          </div>
+          <template v-if="hasProxyTraffic && hasNodeTraffic">
+            <div class="traffic-tip-line" />
+            <div class="traffic-tip-section">
+              <div class="traffic-tip-head">
+                <span class="traffic-tip-label">业务代理</span>
+                <span class="traffic-tip-val font-mono">{{ formatBytes(proxyMonthlyTotal) }}</span>
+              </div>
+              <div class="traffic-tip-sub font-mono">
+                <span>↓ {{ formatBytes(proxyMonthlyRx) }}</span>
+                <span class="traffic-tip-dot">·</span>
+                <span>↑ {{ formatBytes(proxyMonthlyTx) }}</span>
+              </div>
+            </div>
+          </template>
+        </div>
+      </template>
+      <div class="row-col col-traffic">
+        <span class="col-label">流量</span>
+        <span class="tnum traffic-val font-mono">{{ trafficText }}</span>
+      </div>
+    </el-tooltip>
 
     <!-- Col 4: Network Rates (Down & Up) -->
     <div class="row-col col-rates">
@@ -135,6 +172,7 @@ import OsIcon from './OsIcon.vue'
 import LatencyPanel from './LatencyPanel.vue'
 import { formatBandwidth } from '../format'
 import { formatDDNSBindLabel } from '../ddns'
+import { isShareMode } from '../share'
 import { isNewerVersion } from '../version'
 
 const props = defineProps({
@@ -292,30 +330,32 @@ const diskDetail = computed(() => {
   return `${formatBytes(hostMetrics.value.disk_used || 0)} / ${formatBytes(hostMetrics.value.disk_total || 0)}`
 })
 
-const trafficTotals = computed(() => props.metrics?.node || props.metrics?.proxy || {})
+const nodeTraffic = computed(() => props.metrics?.node || null)
+const hasNodeTraffic = computed(() => Boolean(
+  nodeTraffic.value &&
+  (nodeTraffic.value.monthly_received_bytes !== undefined || nodeTraffic.value.received_bytes !== undefined)
+))
+
+const proxyTraffic = computed(() => props.metrics?.proxy || null)
+const hasProxyTraffic = computed(() => Boolean(
+  proxyTraffic.value &&
+  (proxyTraffic.value.monthly_received_bytes !== undefined || proxyTraffic.value.received_bytes !== undefined)
+))
+
+const trafficTotals = computed(() => nodeTraffic.value || proxyTraffic.value || {})
+
+const effectiveMonthlyRx = computed(() => Number(trafficTotals.value.monthly_received_bytes || 0))
+const effectiveMonthlyTx = computed(() => Number(trafficTotals.value.monthly_sent_bytes || 0))
+
+const proxyMonthlyRx = computed(() => Number(proxyTraffic.value?.monthly_received_bytes || 0))
+const proxyMonthlyTx = computed(() => Number(proxyTraffic.value?.monthly_sent_bytes || 0))
+const proxyMonthlyTotal = computed(() => proxyMonthlyRx.value + proxyMonthlyTx.value)
 
 const trafficText = computed(() => {
   const p = trafficTotals.value
   const rx = p.monthly_received_bytes !== undefined ? p.monthly_received_bytes : p.received_bytes || 0
   const tx = p.monthly_sent_bytes !== undefined ? p.monthly_sent_bytes : p.sent_bytes || 0
   return formatBytes(Number(rx) + Number(tx))
-})
-
-const trafficTooltip = computed(() => {
-  const p = trafficTotals.value
-  const rx = p.monthly_received_bytes !== undefined ? p.monthly_received_bytes : p.received_bytes || 0
-  const tx = p.monthly_sent_bytes !== undefined ? p.monthly_sent_bytes : p.sent_bytes || 0
-  const total = Number(rx) + Number(tx)
-  const isNode = Boolean(props.metrics?.node)
-  const lines = [
-    `${isNode ? '本月服务器物理网卡流量（与厂商对齐）' : '本月流量'}: ${formatBytes(total)} (↓ ${formatBytes(rx)} · ↑ ${formatBytes(tx)})`,
-  ]
-  if (props.metrics?.proxy && isNode) {
-    const prx = props.metrics.proxy.monthly_received_bytes || 0
-    const ptx = props.metrics.proxy.monthly_sent_bytes || 0
-    lines.push(`业务代理流量 (sing-box): ${formatBytes(prx + ptx)} (↓ ${formatBytes(prx)} · ↑ ${formatBytes(ptx)})`)
-  }
-  return lines.join('\n')
 })
 
 const activeConnections = computed(() => {

@@ -541,6 +541,7 @@ html:not(.dark) .el-button--primary.is-disabled:hover {
   font-weight: 500 !important;
   background: transparent !important;
   border-color: transparent !important;
+  box-shadow: none !important;
 }
 .el-button.is-link:hover,
 .el-button--primary.is-link:hover,
@@ -949,6 +950,78 @@ html.dark .el-pagination.is-background .el-pager li.is-active {
   width: 0;
   height: 0;
 }
+
+/* ── 流量详情悬浮卡片 (Polaris Token 统一风格) ──────────────── */
+.traffic-popper.el-popper {
+  padding: 10px 14px !important;
+  border-radius: 10px !important;
+  background: var(--sb-surface-3) !important;
+  border: 1px solid var(--sb-line-strong) !important;
+  box-shadow: 0 12px 30px -6px rgba(0, 0, 0, 0.45) !important;
+  white-space: normal !important;
+  line-height: normal !important;
+}
+
+.traffic-popper.el-popper .el-popper__arrow::before {
+  background: var(--sb-surface-3) !important;
+  border: 1px solid var(--sb-line-strong) !important;
+}
+
+.traffic-tip {
+  font-size: 11.5px;
+  line-height: 1.45;
+  min-width: 160px;
+  color: var(--sb-text-2);
+  white-space: normal;
+}
+
+.traffic-tip-section {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.traffic-tip-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.traffic-tip-label {
+  font-weight: 600;
+  color: var(--sb-text);
+  font-size: 11.5px;
+}
+
+.traffic-tip-val {
+  font-weight: 600;
+  color: var(--sb-accent);
+  font-size: 11.5px;
+}
+
+.traffic-tip-sub {
+  font-size: 10.5px;
+  color: var(--sb-muted);
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.traffic-tip-muted {
+  opacity: 0.85;
+}
+
+.traffic-tip-dot {
+  opacity: 0.5;
+}
+
+.traffic-tip-line {
+  margin: 6px 0;
+  height: 1px;
+  background: var(--sb-line);
+}
+
 
 
 

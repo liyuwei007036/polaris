@@ -333,15 +333,18 @@
                   <line x1="10" y1="14" x2="21" y2="3" />
                 </svg>
               </a>
-              <el-button
+              <button
                 v-else-if="fact.isActionBtn"
-                link
-                type="primary"
-                size="small"
+                type="button"
+                class="fact-link fact-action-link"
                 @click="fact.onClick"
               >
-                {{ fact.value }}
-              </el-button>
+                <span>{{ fact.value }}</span>
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="size-3 inline-icon">
+                  <path d="M5 12h14" />
+                  <polyline points="12 5 19 12 12 19" />
+                </svg>
+              </button>
               <span v-else-if="fact.badge" class="fact-badge" :class="fact.badgeClass">
                 <span class="badge-dot" />
                 {{ fact.value }}
@@ -750,28 +753,21 @@ const factGroups = computed(() => {
 
   const netFacts = [
     {
-      label: '本月流量 (物理网卡)',
-      value: `↓ ${formatBytes(monthlyRx)} · ↑ ${formatBytes(monthlyTx)} (合计 ${formatBytes(monthlySum)})`,
+      label: '本月流量',
+      value: `↓ ${formatBytes(monthlyRx)} · ↑ ${formatBytes(monthlyTx)} (共 ${formatBytes(monthlySum)})`,
     },
     {
-      label: '累计流量 (物理网卡)',
-      value: `↓ ${formatBytes(lifetimeRx)} · ↑ ${formatBytes(lifetimeTx)} (合计 ${formatBytes(lifetimeSum)})`,
+      label: '累计流量',
+      value: `↓ ${formatBytes(lifetimeRx)} · ↑ ${formatBytes(lifetimeTx)} (共 ${formatBytes(lifetimeSum)})`,
     },
   ]
   if (nodeMetrics && proxyMetrics) {
     const pMonthlyRx = proxyMetrics.monthly_received_bytes || 0
     const pMonthlyTx = proxyMetrics.monthly_sent_bytes || 0
     const pMonthlySum = pMonthlyRx + pMonthlyTx
-    const pLifeRx = proxyMetrics.received_bytes || 0
-    const pLifeTx = proxyMetrics.sent_bytes || 0
-    const pLifeSum = pLifeRx + pLifeTx
     netFacts.push({
-      label: '本月代理流量 (sing-box)',
-      value: `↓ ${formatBytes(pMonthlyRx)} · ↑ ${formatBytes(pMonthlyTx)} (合计 ${formatBytes(pMonthlySum)})`,
-    })
-    netFacts.push({
-      label: '累计代理流量 (sing-box)',
-      value: `↓ ${formatBytes(pLifeRx)} · ↑ ${formatBytes(pLifeTx)} (合计 ${formatBytes(pLifeSum)})`,
+      label: '业务代理',
+      value: `↓ ${formatBytes(pMonthlyRx)} · ↑ ${formatBytes(pMonthlyTx)} (本月 ${formatBytes(pMonthlySum)})`,
     })
   }
   netFacts.push(
@@ -848,7 +844,7 @@ const factGroups = computed(() => {
     ddnsFacts.push({
       label: '变更记录',
       isActionBtn: true,
-      value: '查看历史记录',
+      value: '查看历史明细',
       onClick: openDDNSHistory,
     })
   }
@@ -1119,6 +1115,31 @@ onMounted(loadHistory)
 }
 .fact-link .inline-icon {
   opacity: 0.75;
+}
+
+.fact-action-link {
+  background: transparent;
+  border: none;
+  padding: 0;
+  margin: 0;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--sb-info);
+  cursor: pointer;
+  line-height: inherit;
+  transition: all 0.15s ease;
+}
+.fact-action-link:hover {
+  color: var(--sb-text);
+  text-decoration: underline;
+}
+.fact-action-link .inline-icon {
+  transition: transform 0.15s ease;
+}
+.fact-action-link:hover .inline-icon {
+  transform: translateX(2px);
+  opacity: 1;
 }
 
 .fact-badge {
